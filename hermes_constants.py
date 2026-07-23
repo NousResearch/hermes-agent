@@ -330,14 +330,28 @@ def node_tool_runnable(path: str | None) -> bool:
     import subprocess
 
     try:
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_cli._subprocess_compat import (
+            windows_batch_command,
+            windows_hide_flags,
+        )
 
+        command = [path, "--version"]
+        env = with_hermes_node_path()
+        use_windows_shell = sys.platform == "win32" and path.lower().endswith(
+            (".cmd", ".bat")
+        )
+        run_command = (
+            windows_batch_command(command, env, prefix="HERMES_NODE_PROBE")
+            if use_windows_shell
+            else command
+        )
         result = subprocess.run(
-            [path, "--version"],
+            run_command,
             capture_output=True,
             timeout=10,
-            env=with_hermes_node_path(),
+            env=env,
             creationflags=windows_hide_flags(),
+            shell=use_windows_shell,
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False

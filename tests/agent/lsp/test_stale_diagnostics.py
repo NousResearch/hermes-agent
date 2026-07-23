@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.client import LSPClient
+from agent.lsp.client import LSPClient, file_uri, uri_to_path
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -156,7 +156,7 @@ async def test_stale_pull_result_dropped_when_change_races(tmp_path: Path):
     try:
         v0 = await client.open_file(str(f), language_id="python")
         await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
-        doc = client._docs[os.path.abspath(str(f))]
+        doc = client._docs[uri_to_path(file_uri(str(f)))]
         assert doc.fresh_pull()
 
         # Simulate an edit racing in: the version bump invalidates the

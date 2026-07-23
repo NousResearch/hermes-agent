@@ -54,7 +54,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED,
@@ -69,6 +69,7 @@ from agent.lsp.protocol import (
     make_response,
     read_message,
 )
+from hermes_cli._subprocess_compat import windows_batch_command
 
 logger = logging.getLogger("agent.lsp.client")
 
@@ -85,30 +86,60 @@ MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5  # 0.5, 1.0, 2.0 — exponential
 
 
+def _absolute_path(path: str) -> str:
+    """Return an absolute normalized path without changing its case."""
+    return os.path.abspath(os.path.normpath(path))
+
+
+def _path_key(path: str) -> str:
+    """Return a stable key for per-file LSP state."""
+    parsed = urlsplit(path)
+    is_windows_drive = (
+        len(parsed.scheme) == 1 and len(path) >= 2 and path[1] == ":"
+    )
+    if parsed.scheme and parsed.scheme.lower() != "file" and not is_windows_drive:
+        # LSP also permits non-file document URIs such as ``untitled:``.
+        # They are opaque identifiers, not local paths: making them absolute
+        # or case-folding them changes their identity.
+        return path
+    if parsed.scheme.lower() == "file":
+        path = uri_to_path(path)
+    normalized = _absolute_path(path)
+    return os.path.normcase(normalized) if os.name == "nt" else normalized
+
+
 def file_uri(path: str) -> str:
     """Return ``file://`` URI for an absolute filesystem path.
 
     Mirrors Node's ``pathToFileURL`` — handles spaces, unicode, and
     Windows drive letters (``C:\\foo`` → ``file:///C:/foo``).
     """
-    abs_path = os.path.abspath(path)
+    abs_path = _absolute_path(path)
     if os.name == "nt":
-        # Windows: backslash → forward slash, prepend extra slash so
-        # the drive letter shows up as part of the path component.
+        # Windows: backslash → forward slash. UNC paths already start with
+        # ``//`` and therefore carry their file-URI authority directly.
         abs_path = abs_path.replace("\\", "/")
+        if abs_path.startswith("//"):
+            return "file:" + quote(abs_path, safe="/:")
         if not abs_path.startswith("/"):
             abs_path = "/" + abs_path
     return "file://" + quote(abs_path, safe="/:")
 
 
 def uri_to_path(uri: str) -> str:
-    """Inverse of :func:`file_uri`."""
+    """Inverse of :func:`file_uri`, normalized for stable dictionary keys."""
     if not uri.startswith("file://"):
         return uri
-    raw = uri[len("file://"):]
-    if os.name == "nt" and raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
+    if os.name != "nt":
+        return os.path.normpath(unquote(uri[len("file://"):]))
+
+    parsed = urlsplit(uri)
+    raw = unquote(parsed.path)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        raw = f"//{parsed.netloc}{raw}"
+    elif raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
         raw = raw[1:]  # strip leading slash before drive letter
-    return os.path.normpath(unquote(raw))
+    return _path_key(raw)
 
 
 def _end_position(text: str) -> Dict[str, int]:
@@ -156,6 +187,8 @@ class _DocState:
     pull: List[Dict[str, Any]] = field(default_factory=list)
     push_version: int = -1
     pull_version: int = -1
+    push_counter: int = 0
+    push_time: float = -1.0
     seed_seen: bool = False
 
     def fresh_push(self, version: Optional[int] = None) -> bool:
@@ -228,9 +261,15 @@ class LSPClient:
         }
 
         # Per-document state (version, text, diagnostic stores, and
-        # their freshness tags), keyed by absolute file path (NOT URI).
+        # their freshness tags), keyed by canonical absolute file path.
         # See _DocState for the version-based freshness model.
         self._docs: Dict[str, _DocState] = {}
+        # Keep document versions and notification ordering atomic when two
+        # file-tool calls touch the same client concurrently.
+        self._document_lock = asyncio.Lock()
+        # Push-sequence baselines are tied to the version returned by
+        # ``open_file`` so overlapping edits retain distinct freshness bounds.
+        self._diagnostic_baselines: Dict[tuple[str, int], int] = {}
         # Capability registrations — only diagnostic ones are tracked.
         self._diagnostic_registrations: Dict[str, Dict[str, Any]] = {}
 
@@ -279,12 +318,15 @@ class LSPClient:
             raise
 
     @staticmethod
-    def _win_wrap_cmd(cmd: List[str]) -> List[str]:
-        """On Windows, wrap .cmd/.bat shims so CreateProcess can run them."""
-        exe = cmd[0]
-        if exe.lower().endswith((".cmd", ".bat")):
-            return ["cmd.exe", "/c", *cmd]
-        return cmd
+    def _win_shell_command(cmd: List[str], env: Dict[str, str]) -> str:
+        """Build a safely quoted command for a Windows batch launcher.
+
+        ``cmd.exe`` treats characters such as ``&`` as operators even when
+        Python passes arguments as a list. Put each argument in the child
+        environment and expand it inside quotes so valid Windows paths and
+        arguments containing shell metacharacters retain their identity.
+        """
+        return windows_batch_command(cmd, env, prefix="HERMES_LSP_COMMAND")
 
     async def _spawn(self) -> None:
         env = dict(os.environ)
@@ -292,8 +334,9 @@ class LSPClient:
             env.update(self._env)
 
         cmd = self._command
-        if sys.platform == "win32":
-            cmd = self._win_wrap_cmd(cmd)
+        use_windows_shell = sys.platform == "win32" and cmd[0].lower().endswith(
+            (".cmd", ".bat")
+        )
 
         try:
             # start_new_session=True detaches the LSP server into its own
@@ -303,16 +346,23 @@ class LSPClient:
             # gateway's child set, it captures the LSP PID, records the
             # inherited pgid, and killpg() then kills the TUI parent itself.
             # See tui_gateway_crash.log "killpg → SIGTERM received" stacks.
-            self._proc = await asyncio.create_subprocess_exec(
-                cmd[0],
-                *cmd[1:],
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                cwd=self._cwd,
-                start_new_session=True,
-            )
+            spawn_kwargs = {
+                "stdin": asyncio.subprocess.PIPE,
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+                "env": env,
+                "cwd": self._cwd,
+                "start_new_session": True,
+            }
+            if use_windows_shell:
+                command_line = self._win_shell_command(cmd, env)
+                self._proc = await asyncio.create_subprocess_shell(
+                    command_line, **spawn_kwargs
+                )
+            else:
+                self._proc = await asyncio.create_subprocess_exec(
+                    cmd[0], *cmd[1:], **spawn_kwargs
+                )
         except FileNotFoundError as e:
             raise LSPProtocolError(
                 f"LSP server binary not found: {cmd[0]} ({e})"
@@ -675,13 +725,13 @@ class LSPClient:
         uri = params.get("uri")
         if not isinstance(uri, str):
             return
-        path = uri_to_path(uri)
+        path_key = _path_key(uri_to_path(uri))
         diagnostics = params.get("diagnostics") or []
         if not isinstance(diagnostics, list):
             diagnostics = []
         version = params.get("version")
 
-        doc = self._docs.setdefault(path, _DocState(version=-1))
+        doc = self._docs.setdefault(path_key, _DocState(version=-1))
         if self._seed_first_push and not doc.seed_seen:
             # First push: seed the store WITHOUT a freshness tag.  It
             # arrives before the user-triggered didChange could've
@@ -705,6 +755,8 @@ class LSPClient:
         # decide whether to keep waiting.  ``_push_counter`` is what
         # they actually compare against to detect a fresh event.
         self._push_counter += 1
+        doc.push_counter = self._push_counter
+        doc.push_time = asyncio.get_event_loop().time()
         self._push_event.set()
 
     # ------------------------------------------------------------------
@@ -717,17 +769,25 @@ class LSPClient:
         Returns the new document version number that the agent's
         ``wait_for_diagnostics`` should match against.
         """
+        async with self._document_lock:
+            return await self._open_file_locked(path, language_id=language_id)
+
+    async def _open_file_locked(
+        self, path: str, *, language_id: str = "plaintext"
+    ) -> int:
+        """Implement :meth:`open_file` while ``_document_lock`` is held."""
         if not self.is_running:
             raise LSPProtocolError("client not running")
 
-        abs_path = os.path.abspath(path)
+        abs_path = _absolute_path(path)
+        path_key = _path_key(abs_path)
         try:
             text = Path(abs_path).read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             raise LSPProtocolError(f"cannot read {abs_path}: {e}") from e
 
         uri = file_uri(abs_path)
-        doc = self._docs.get(abs_path)
+        doc = self._docs.get(path_key)
 
         if doc is not None and doc.version >= 0:
             # Re-open: bump version, fire didChangeWatchedFiles + didChange.
@@ -735,6 +795,7 @@ class LSPClient:
                 "workspace/didChangeWatchedFiles",
                 {"changes": [{"uri": uri, "type": 2}]},  # 2 = CHANGED
             )
+            diagnostic_counter = self._push_counter
             new_version = doc.version + 1
             old_text = doc.text
             content_changes: List[Dict[str, Any]]
@@ -750,6 +811,12 @@ class LSPClient:
                 ]
             else:
                 content_changes = [{"text": text}]
+            # Advance local state before the write can yield to the reader
+            # task. A fast unversioned push received during ``drain()`` must
+            # be tagged with the version carried by this didChange.
+            doc.version = new_version
+            doc.text = text
+            self._diagnostic_baselines[(path_key, new_version)] = diagnostic_counter
             await self._send_notification(
                 "textDocument/didChange",
                 {
@@ -757,11 +824,6 @@ class LSPClient:
                     "contentChanges": content_changes,
                 },
             )
-            # Bumping the version is the whole invalidation story:
-            # every stored result tagged with an older version is now
-            # stale by definition (see _DocState).
-            doc.version = new_version
-            doc.text = text
             return new_version
 
         # First open: didChangeWatchedFiles CREATED + didOpen.
@@ -769,9 +831,11 @@ class LSPClient:
             "workspace/didChangeWatchedFiles",
             {"changes": [{"uri": uri, "type": 1}]},  # 1 = CREATED
         )
+        diagnostic_counter = self._push_counter
         # Fresh doc state — anything stashed under this path by a
         # pre-open push (relatedDocuments spillover etc.) is discarded.
-        self._docs[abs_path] = _DocState(version=0, text=text)
+        self._docs[path_key] = _DocState(version=0, text=text)
+        self._diagnostic_baselines[(path_key, 0)] = diagnostic_counter
         await self._send_notification(
             "textDocument/didOpen",
             {
@@ -789,7 +853,7 @@ class LSPClient:
         """Send didSave for ``path``.  Some linters re-scan only on save."""
         if not self.is_running:
             return
-        abs_path = os.path.abspath(path)
+        abs_path = _absolute_path(path)
         await self._send_notification(
             "textDocument/didSave",
             {"textDocument": {"uri": file_uri(abs_path)}},
@@ -809,8 +873,9 @@ class LSPClient:
         Silently no-ops on errors (server may not support the pull
         endpoint).
         """
-        abs_path = os.path.abspath(path)
-        doc = self._docs.get(abs_path)
+        abs_path = _absolute_path(path)
+        path_key = _path_key(abs_path)
+        doc = self._docs.get(path_key)
         sent_version = doc.version if doc else -1
         try:
             params: Dict[str, Any] = {
@@ -828,7 +893,7 @@ class LSPClient:
             return
         items = result.get("items")
         if isinstance(items, list):
-            doc = self._docs.setdefault(abs_path, _DocState(version=-1))
+            doc = self._docs.setdefault(path_key, _DocState(version=-1))
             doc.pull = items
             doc.pull_version = sent_version
         related = result.get("relatedDocuments")
@@ -838,7 +903,9 @@ class LSPClient:
                     continue
                 sub_items = sub.get("items")
                 if isinstance(sub_items, list):
-                    rel = self._docs.setdefault(uri_to_path(uri), _DocState(version=-1))
+                    rel = self._docs.setdefault(
+                        _path_key(uri_to_path(uri)), _DocState(version=-1)
+                    )
                     rel.pull = sub_items
                     # Same send-anchored tagging: fresh only if that
                     # doc hasn't changed since the request went out.
@@ -874,7 +941,11 @@ class LSPClient:
         else:
             budget = DIAGNOSTICS_FULL_WAIT if mode == "full" else DIAGNOSTICS_DOCUMENT_WAIT
         deadline = asyncio.get_event_loop().time() + budget
-        abs_path = os.path.abspath(path)
+        abs_path = _absolute_path(path)
+        path_key = _path_key(abs_path)
+        baseline = self._diagnostic_baselines.pop(
+            (path_key, version), self._push_counter
+        )
 
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
@@ -883,23 +954,40 @@ class LSPClient:
 
             # Concurrent: document pull + push wait.
             pull_task = asyncio.create_task(self._pull_document_diagnostics(abs_path))
-            push_task = asyncio.create_task(self._wait_for_fresh_push(abs_path, version, remaining))
-            done, pending = await asyncio.wait(
-                {pull_task, push_task},
-                timeout=remaining,
-                return_when=asyncio.FIRST_COMPLETED,
+            push_task = asyncio.create_task(
+                self._wait_for_fresh_push(path_key, version, remaining, baseline)
             )
-            for t in pending:
-                t.cancel()
-            for t in pending:
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+            try:
+                done, _ = await asyncio.wait(
+                    {pull_task, push_task},
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
-            # If we got a fresh push for our version, we're done.
-            doc = self._docs.get(abs_path)
-            if doc and doc.fresh_push(version):
+                # Push-only servers such as typescript-language-server can
+                # reject textDocument/diagnostic immediately. Keep the push
+                # waiter alive instead of issuing unsupported pulls in a loop.
+                doc = self._docs.get(path_key)
+                if (
+                    pull_task in done
+                    and not push_task.done()
+                    and not (doc and doc.fresh_pull(version))
+                ):
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining > 0:
+                        try:
+                            await asyncio.wait_for(push_task, timeout=remaining)
+                        except asyncio.TimeoutError:
+                            pass
+            finally:
+                for task in (pull_task, push_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(pull_task, push_task, return_exceptions=True)
+
+            # If we got a fresh post-edit push for our version, we're done.
+            doc = self._docs.get(path_key)
+            if doc and doc.fresh_push(version) and doc.push_counter > baseline:
                 return True
 
             # Pull may have answered for the current version — that's
@@ -909,42 +997,59 @@ class LSPClient:
 
             # Loop until budget runs out.
 
-    async def _wait_for_fresh_push(self, path: str, version: int, timeout: float) -> None:
+    async def _wait_for_fresh_push(
+        self, path: str, version: int, timeout: float, baseline: int
+    ) -> None:
         """Wait until a fresh publishDiagnostics arrives for ``path`` at ``version``+."""
         deadline = asyncio.get_event_loop().time() + timeout
-        baseline = self._push_counter
+        observed_counter = self._push_counter
         while True:
             doc = self._docs.get(path)
-            if doc and doc.fresh_push(version):
-                # Debounce — wait a tick in case more diagnostics arrive
-                # immediately after.  TS often emits in pairs.  We
-                # snapshot the counter so we wake on a *new* push, not
-                # on the one that satisfied us a moment ago.
-                debounce_baseline = self._push_counter
-                debounce_deadline = asyncio.get_event_loop().time() + PUSH_DEBOUNCE
-                while self._push_counter == debounce_baseline:
-                    remaining = debounce_deadline - asyncio.get_event_loop().time()
-                    if remaining <= 0:
+            if doc and doc.fresh_push(version) and doc.push_counter > baseline:
+                # TypeScript can publish stale and corrected unversioned
+                # snapshots in quick succession. Debounce quietness for this
+                # path only so unrelated files neither satisfy nor prolong it.
+                while True:
+                    push_counter = doc.push_counter
+                    now = asyncio.get_event_loop().time()
+                    quiet_remaining = min(
+                        PUSH_DEBOUNCE - (now - doc.push_time),
+                        deadline - now,
+                    )
+                    if quiet_remaining <= 0:
                         break
                     self._push_event.clear()
+                    current_doc = self._docs.get(path)
+                    if current_doc is None:
+                        break
+                    if current_doc.push_counter != push_counter:
+                        doc = current_doc
+                        continue
                     try:
-                        await asyncio.wait_for(self._push_event.wait(), timeout=remaining)
+                        await asyncio.wait_for(
+                            self._push_event.wait(), timeout=quiet_remaining
+                        )
                     except asyncio.TimeoutError:
+                        break
+                    doc = self._docs.get(path)
+                    if doc is None:
                         break
                 return
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 return
-            if self._push_counter > baseline:
-                # New event arrived but predicate still false — re-check
-                # immediately without waiting again.
-                baseline = self._push_counter
+            if self._push_counter != observed_counter:
+                observed_counter = self._push_counter
                 continue
             self._push_event.clear()
+            if self._push_counter != observed_counter:
+                observed_counter = self._push_counter
+                continue
             try:
                 await asyncio.wait_for(self._push_event.wait(), timeout=min(remaining, 0.5))
             except asyncio.TimeoutError:
                 continue
+            observed_counter = self._push_counter
 
     def diagnostics_for(self, path: str, *, fresh_only: bool = False) -> List[Dict[str, Any]]:
         """Return current merged + deduped diagnostics for one file.
@@ -959,7 +1064,7 @@ class LSPClient:
         This is what report paths should use: after an edit, "stale
         errors" and "no errors" must not be conflated.
         """
-        doc = self._docs.get(os.path.abspath(path))
+        doc = self._docs.get(_path_key(path))
         if doc is None:
             return []
         if fresh_only:

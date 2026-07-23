@@ -20,9 +20,8 @@ Several common subprocess patterns break silently-or-loudly on Windows:
 This module centralizes the platform-branching logic so the rest of the
 codebase doesn't sprinkle ``if sys.platform == "win32":`` everywhere.
 
-**All helpers are no-ops on non-Windows** — calling them in Linux/macOS
-code paths is safe by design.  That's the "do no damage on POSIX"
-guarantee.
+Platform-flag helpers are no-ops on non-Windows. Windows command builders
+are only used after callers have identified a batch launcher.
 """
 
 from __future__ import annotations
@@ -30,11 +29,12 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from typing import Sequence
+from typing import MutableMapping, Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "windows_batch_command",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -60,8 +60,9 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     because CreateProcessW doesn't execute batch files directly.
 
     ``shutil.which(name)`` *does* resolve ``.cmd`` via PATHEXT and returns
-    the fully-qualified path — which CreateProcessW accepts because the
-    extension tells Windows to route through ``cmd.exe /c``.
+    the fully-qualified path. Callers that spawn a resolved batch shim must
+    still use :func:`windows_batch_command` with ``shell=True`` so ``cmd.exe``
+    cannot reinterpret metacharacters in valid paths and arguments.
 
     On POSIX ``shutil.which`` also returns a fully-qualified path when
     found.  That's a small change from bare-name resolution (the OS does
@@ -87,6 +88,27 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     if resolved:
         return [resolved, *argv]
     return [name, *argv]
+
+
+def windows_batch_command(
+    command: Sequence[str],
+    env: MutableMapping[str, str],
+    *,
+    prefix: str = "HERMES_BATCH_COMMAND",
+) -> str:
+    """Return a safely quoted command line for a Windows batch launcher.
+
+    ``cmd.exe`` reparses shell metacharacters even when Python receives an
+    argument list. Store each argument in the child-only environment and
+    expand it inside quotes so valid paths and arguments containing ``&``,
+    ``%``, spaces, or parentheses retain their identity.
+    """
+    placeholders = []
+    for index, arg in enumerate(command):
+        key = f"{prefix}_{index}"
+        env[key] = str(arg)
+        placeholders.append(f'"%{key}%"')
+    return " ".join(placeholders)
 
 
 # -----------------------------------------------------------------------------

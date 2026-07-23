@@ -244,6 +244,19 @@ class TestHermesManagedNode:
         assert parts[-1] == "system-node"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows .cmd probe")
+def test_node_tool_runnable_handles_batch_path_metacharacters(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNEXPANDED", "wrong")
+    npm = tmp_path / "node&a%UNEXPANDED%" / "npm.cmd"
+    npm.parent.mkdir()
+    npm.write_text(
+        os.linesep.join(["@echo off", "echo 11.10.0", "exit /b 0"])
+        + os.linesep
+    )
+
+    assert node_tool_runnable(str(npm)) is True
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
 class TestNodeToolRunnable:
     """node_tool_runnable() rejects broken Hermes-managed npm/node wrappers."""

@@ -14,7 +14,10 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 import io
+import os
+import subprocess
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
@@ -53,7 +56,7 @@ def test_install_npm_passes_extras_to_npm_command(tmp_path, monkeypatch):
     from agent.lsp import install as install_mod
 
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    monkeypatch.setattr(install_mod, "find_node_executable", lambda c: "/usr/bin/npm" if c == "npm" else None)
 
     install_mod._install_npm("typescript-language-server", "typescript-language-server",
                              extra_pkgs=["typescript"])
@@ -80,7 +83,7 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
     from agent.lsp import install as install_mod
 
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    monkeypatch.setattr(install_mod, "find_node_executable", lambda c: "/usr/bin/npm" if c == "npm" else None)
 
     install_mod._install_npm("pyright", "pyright-langserver")
 
@@ -109,6 +112,266 @@ def test_existing_binary_finds_windows_wrapper_in_staging(tmp_path, monkeypatch)
 
     assert install_mod._existing_binary("pyright-langserver") == str(wrapper)
     assert install_mod.detect_status("pyright") == "installed"
+
+
+def test_existing_binary_prefers_windows_wrapper_over_posix_shim(tmp_path, monkeypatch):
+    """A stale npm POSIX shim must not shadow its native Windows wrapper."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    staged = install_mod.hermes_lsp_bin_dir()
+    posix_shim = staged / "pyright-langserver"
+    posix_shim.write_text("#!/bin/sh\nexit 0\n")
+    posix_shim.chmod(0o755)
+    wrapper = staged / "pyright-langserver.cmd"
+    wrapper.write_text("@echo off\n")
+    wrapper.chmod(0o755)
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("pyright-langserver") == str(wrapper)
+
+
+def test_existing_binary_prefers_canonical_npm_wrapper(tmp_path, monkeypatch):
+    """The npm .cmd must run in node_modules/.bin so its relative paths work."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    staged = install_mod.hermes_lsp_bin_dir()
+    (staged / "pyright-langserver").write_text("#!/bin/sh\nexit 0\n")
+    (staged / "pyright-langserver.cmd").write_text("@echo off\n")
+    npm_bin = staged.parent / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    canonical = npm_bin / "pyright-langserver.cmd"
+    canonical.write_text("@echo off\n")
+    canonical.chmod(0o755)
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("pyright-langserver") == str(canonical)
+
+
+def test_existing_binary_rejects_posix_only_shim_on_windows(tmp_path, monkeypatch):
+    """An extensionless shebang script is not a Win32 executable."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    shim = install_mod.hermes_lsp_bin_dir() / "pyright-langserver"
+    shim.write_text("#!/bin/sh\nexit 0\n")
+    shim.chmod(0o755)
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("pyright-langserver") is None
+    assert install_mod.detect_status("pyright") == "missing"
+
+
+def test_existing_binary_accepts_native_extensionless_pe_on_windows(tmp_path, monkeypatch):
+    """A native PE executable remains valid even without a file suffix."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    binary = install_mod.hermes_lsp_bin_dir() / "custom-language-server"
+    binary.write_bytes(b"MZ\x90\x00native executable fixture")
+    binary.chmod(0o755)
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("custom-language-server") == str(binary)
+
+
+def test_non_windows_candidates_preserve_extensionless_launcher(monkeypatch):
+    """Linux and macOS keep the existing extensionless candidate behavior."""
+    from agent.lsp import install as install_mod
+
+    base = install_mod.hermes_lsp_bin_dir() / "pyright-langserver"
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: False)
+
+    assert install_mod._native_binary_candidates(base) == [base]
+
+
+def test_windows_npm_wrapper_uses_quoted_shell_placeholders():
+    from agent.lsp.client import LSPClient
+
+    command = [r"C:\Hermes\lsp\node_modules\.bin\pyright-langserver.cmd", "--stdio"]
+    env = {}
+
+    assert LSPClient._win_shell_command(command, env) == (
+        '"%HERMES_LSP_COMMAND_0%" "%HERMES_LSP_COMMAND_1%"'
+    )
+    assert env["HERMES_LSP_COMMAND_0"] == command[0]
+    assert env["HERMES_LSP_COMMAND_1"] == command[1]
+
+
+@pytest.mark.asyncio
+async def test_spawn_routes_windows_batch_launcher_through_shell(
+    tmp_path, monkeypatch
+):
+    from agent.lsp import client as client_mod
+
+    captured = {}
+
+    class FakeProcess:
+        stdout = None
+        stderr = None
+
+    async def fake_shell(command_line, **kwargs):
+        captured["command_line"] = command_line
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    async def unexpected_exec(*_args, **_kwargs):
+        pytest.fail("Windows batch launcher bypassed create_subprocess_shell")
+
+    monkeypatch.setattr(client_mod.sys, "platform", "win32")
+    monkeypatch.setattr(client_mod.asyncio, "create_subprocess_shell", fake_shell)
+    monkeypatch.setattr(client_mod.asyncio, "create_subprocess_exec", unexpected_exec)
+    wrapper = tmp_path / "a&b" / "server.cmd"
+    client = client_mod.LSPClient(
+        server_id="test",
+        workspace_root=str(tmp_path),
+        command=[str(wrapper), "--stdio"],
+    )
+
+    await client._spawn()
+    assert client._stderr_task is not None
+    assert client._reader_task is not None
+    await asyncio.gather(client._stderr_task, client._reader_task)
+
+    assert captured["command_line"] == (
+        '"%HERMES_LSP_COMMAND_0%" "%HERMES_LSP_COMMAND_1%"'
+    )
+    assert captured["kwargs"]["env"]["HERMES_LSP_COMMAND_0"] == str(wrapper)
+    assert captured["kwargs"]["env"]["HERMES_LSP_COMMAND_1"] == "--stdio"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path):
+    """A valid wrapper path containing ``&`` must not be split by cmd.exe."""
+    from agent.lsp.client import LSPClient
+
+    wrapper = tmp_path / "a&b%UNEXPANDED%" / "server.cmd"
+    wrapper.parent.mkdir()
+    wrapper.write_text(
+        "@echo off" + chr(13) + chr(10) + "echo READY [%1]" + chr(13) + chr(10)
+    )
+    env = dict(os.environ)
+    env["UNEXPANDED"] = "wrong"
+    command_line = LSPClient._win_shell_command(
+        [str(wrapper), "hello&%UNEXPANDED%"], env
+    )
+
+    result = subprocess.run(
+        command_line,
+        shell=True,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert 'READY ["hello&%UNEXPANDED%"]' in result.stdout
+
+
+def test_install_npm_uses_native_windows_wrapper_in_place(tmp_path, monkeypatch):
+    """npm repair should use .cmd where its relative package path stays valid."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    npm_bin = install_mod.hermes_lsp_bin_dir().parent / "node_modules" / ".bin"
+
+    def fake_run(cmd, **kwargs):
+        npm_bin.mkdir(parents=True, exist_ok=True)
+        (npm_bin / "pyright-langserver").write_text("#!/bin/sh\nexit 0\n")
+        (npm_bin / "pyright-langserver.cmd").write_text("@echo off\n")
+        return MagicMock(returncode=0, stderr="")
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        install_mod,
+        "find_node_executable",
+        lambda name: "C:\\Program Files\\nodejs\\npm.cmd" if name == "npm" else None,
+    )
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+    resolved = install_mod._install_npm("pyright", "pyright-langserver")
+
+    assert resolved == str(npm_bin / "pyright-langserver.cmd")
+    assert not (install_mod.hermes_lsp_bin_dir() / "pyright-langserver.cmd").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+def test_install_npm_handles_metacharacters_in_hermes_home(tmp_path, monkeypatch):
+    """npm.cmd must receive the complete --prefix path through cmd.exe."""
+    home = tmp_path / "home&b%UNEXPANDED%"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("UNEXPANDED", "wrong")
+
+    from agent.lsp import install as install_mod
+
+    fake_npm = home / "node" / "npm.cmd"
+    fake_npm.parent.mkdir(parents=True)
+    fake_npm.write_text(
+        os.linesep.join(
+            [
+                "@echo off",
+                'if "%~1"=="--version" (',
+                "    echo 1.0.0",
+                "    exit /b 0",
+                ")",
+                'set "prefix=%~3"',
+                r'if not exist "%prefix%\node_modules\.bin" mkdir "%prefix%\node_modules\.bin"',
+                r'> "%prefix%\node_modules\.bin\pyright-langserver.cmd" echo @echo off',
+                "exit /b 0",
+            ]
+        )
+        + os.linesep
+    )
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+
+    resolved = install_mod._install_npm("fake-package", "pyright-langserver")
+
+    expected = home / "lsp" / "node_modules" / ".bin" / "pyright-langserver.cmd"
+    assert resolved == str(expected)
+    assert expected.exists()
+
+
+def test_install_npm_preserves_path_lookup_off_windows(tmp_path, monkeypatch):
+    """Linux/macOS keep using PATH npm instead of the Windows resolver."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    captured = {}
+
+    def fake_run(cmd, **_kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stderr="")
+
+    def unexpected_windows_resolver(_name):
+        pytest.fail("non-Windows npm install used the Windows-safe resolver")
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: False)
+    monkeypatch.setattr(
+        install_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/npm" if name == "npm" else None,
+    )
+    monkeypatch.setattr(install_mod, "find_node_executable", unexpected_windows_resolver)
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+    assert install_mod._install_npm("pyright", "pyright-langserver") is None
+    assert captured["cmd"][0] == "/usr/bin/npm"
 
 
 def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
@@ -169,8 +432,8 @@ def test_backend_warnings_fires_when_bash_installed_but_shellcheck_missing(tmp_p
     from agent.lsp import cli as lsp_cli
 
     def which(name):
-        if name == "bash-language-server":
-            return "/fake/bin/bash-language-server"
+        if name in {"bash-language-server", "bash-language-server.cmd"}:
+            return "C:\\fake\\bash-language-server.cmd"
         return None  # shellcheck missing
 
     with patch("shutil.which", side_effect=which):
@@ -186,8 +449,8 @@ def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
 
     # Pretend bash-language-server is installed but shellcheck is missing
     def which(name):
-        if name == "bash-language-server":
-            return "/fake/bin/bash-language-server"
+        if name in {"bash-language-server", "bash-language-server.cmd"}:
+            return "C:\\fake\\bash-language-server.cmd"
         return None
 
     from agent.lsp import cli as lsp_cli

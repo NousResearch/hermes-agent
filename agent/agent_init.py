@@ -1942,6 +1942,19 @@ def init_agent(
         _config_context_length = _model_cfg.get("context_length")
     else:
         _config_context_length = None
+    # Issue #62152: scope the global override to the model it was
+    # written for. If config.names a different default model and the
+    # agent's actual model differs (e.g. per-session picker chose a
+    # different provider/model), drop the override so auto-detection
+    # resolves the real window. This mirrors the runtime fix at
+    # agent_runtime_helpers.py:_swap_model (line 1819) which clears
+    # the override on /model switch.
+    if (
+        isinstance(_model_cfg, dict)
+        and _model_cfg.get("default")
+        and _model_cfg.get("default") != agent.model
+    ):
+        _config_context_length = None
     if _config_context_length is not None:
         try:
             _config_context_length = int(_config_context_length)

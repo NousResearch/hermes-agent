@@ -468,6 +468,48 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     return env
 
 
+def _make_mcp_http_redirect_hooks(original_url: str):
+    """Build httpx response hooks for MCP HTTP/SSE clients.
+
+    Salvages #62929 (strip Authorization on cross-origin redirects) and closes
+    the remaining redirect-SSRF gap:
+
+    * A **public** configured MCP URL must not 302 into private/link-local
+      space (``is_safe_url``).
+    * Cloud metadata endpoints are always blocked via ``is_always_blocked_url``,
+      even when the original URL was intentionally private/loopback (local MCP).
+    """
+    import httpx
+
+    from tools.url_safety import is_always_blocked_url, is_safe_url
+
+    _original = httpx.URL(original_url)
+    _original_is_public = is_safe_url(original_url)
+
+    async def _on_redirect(response):
+        if not (response.is_redirect and response.next_request):
+            return
+        target = response.next_request.url
+        if (target.scheme, target.host, target.port) != (
+            _original.scheme, _original.host, _original.port,
+        ):
+            response.next_request.headers.pop("authorization", None)
+            response.next_request.headers.pop("Authorization", None)
+
+        target_url = str(target)
+        if is_always_blocked_url(target_url):
+            raise ValueError(
+                f"Blocked MCP redirect to cloud metadata / always-blocked "
+                f"address: {target_url}"
+            )
+        if _original_is_public and not is_safe_url(target_url):
+            raise ValueError(
+                f"Blocked MCP redirect to private/internal address: {target_url}"
+            )
+
+    return [_on_redirect]
+
+
 def _sanitize_error(text: str) -> str:
     """Strip credential-like patterns from error text before returning to LLM.
 
@@ -2599,6 +2641,7 @@ class MCPServerTask:
             "verify": ssl_verify,
             "follow_redirects": True,
             "timeout": _httpx.Timeout(timeout),
+            "event_hooks": {"response": _make_mcp_http_redirect_hooks(url)},
         }
         if client_cert is not None:
             client_kwargs["cert"] = client_cert
@@ -2811,6 +2854,9 @@ class MCPServerTask:
                     kwargs: dict = {
                         "follow_redirects": True,
                         "verify": _verify_for_factory,
+                        "event_hooks": {
+                            "response": _make_mcp_http_redirect_hooks(url),
+                        },
                     }
                     if timeout is not None:
                         kwargs["timeout"] = timeout
@@ -2863,23 +2909,12 @@ class MCPServerTask:
             # matching the SDK's own create_mcp_http_client defaults.
             import httpx
 
-            _original_url = httpx.URL(url)
-
-            async def _strip_auth_on_cross_origin_redirect(response):
-                """Strip Authorization headers when redirected to a different origin."""
-                if response.is_redirect and response.next_request:
-                    target = response.next_request.url
-                    if (target.scheme, target.host, target.port) != (
-                        _original_url.scheme, _original_url.host, _original_url.port,
-                    ):
-                        response.next_request.headers.pop("authorization", None)
-                        response.next_request.headers.pop("Authorization", None)
-
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                # Salvage #62929 auth stripping + close redirect-SSRF gap.
+                "event_hooks": {"response": _make_mcp_http_redirect_hooks(url)},
             }
             if headers:
                 client_kwargs["headers"] = headers

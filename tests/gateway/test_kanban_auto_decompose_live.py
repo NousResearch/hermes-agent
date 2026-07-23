@@ -9,9 +9,18 @@ called every tick, reading the current config.
 
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
+
 import pytest
 
-from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from hermes_cli.config import DEFAULT_CONFIG
+from gateway.kanban_watchers import (
+    _auto_decompose_board_allowed,
+    _run_auto_decompose_tick,
+    _resolve_auto_decompose_board_allowlist,
+    _resolve_auto_decompose_settings,
+)
 
 
 def test_enabled_by_default_when_key_absent():
@@ -81,3 +90,92 @@ def test_live_toggle_takes_effect_between_calls():
     # User edits config.yaml mid-run.
     state["kanban"]["auto_decompose"] = False
     assert _resolve_auto_decompose_settings(lambda: state)[0] is False
+
+
+def test_board_allowlist_is_unrestricted_when_key_absent():
+    assert _resolve_auto_decompose_board_allowlist(lambda: {"kanban": {}}) is None
+    assert _auto_decompose_board_allowed("household-control-plane-pilot", None)
+
+
+def test_default_config_keeps_auto_decompose_unrestricted():
+    assert _resolve_auto_decompose_board_allowlist(lambda: DEFAULT_CONFIG) is None
+    assert _auto_decompose_board_allowed("household-control-plane-pilot", None)
+
+
+def test_board_allowlist_is_explicit_and_normalized():
+    state = {
+        "kanban": {
+            "auto_decompose_allowed_boards": [
+                " default ",
+                "HOUSEHOLD-CONTROL-PLANE-PILOT",
+            ]
+        }
+    }
+    allowed = _resolve_auto_decompose_board_allowlist(lambda: state)
+    assert allowed == frozenset({"default", "household-control-plane-pilot"})
+    assert _auto_decompose_board_allowed("default", allowed)
+    assert _auto_decompose_board_allowed(" DEFAULT ", allowed)
+    assert not _auto_decompose_board_allowed("other-board", allowed)
+
+
+def test_malformed_or_unreadable_board_allowlist_fails_closed():
+    assert _resolve_auto_decompose_board_allowlist(
+        lambda: {"kanban": {"auto_decompose_allowed_boards": "default"}}
+    ) == frozenset()
+    assert _resolve_auto_decompose_board_allowlist(
+        lambda: {"kanban": {"auto_decompose_allowed_boards": ["default", 42]}}
+    ) == frozenset()
+    assert _resolve_auto_decompose_board_allowlist(
+        lambda: {"kanban": {"auto_decompose_allowed_boards": ["default", "bad/slug"]}}
+    ) == frozenset()
+    assert _resolve_auto_decompose_board_allowlist(lambda: None) == frozenset()
+
+    def _boom():
+        raise RuntimeError("config read failed")
+
+    assert _resolve_auto_decompose_board_allowlist(_boom) == frozenset()
+
+
+def test_dispatcher_tick_skips_disallowed_boards_before_decomposer(monkeypatch):
+    triage_calls = []
+    decompose_calls = []
+
+    class FakeKanbanDb:
+        DEFAULT_BOARD = "default"
+
+        @staticmethod
+        def list_boards(include_archived=False):
+            assert include_archived is False
+            return [
+                {"slug": "default"},
+                {"slug": "household-control-plane-pilot"},
+            ]
+
+        @staticmethod
+        def read_board_metadata(slug):
+            return {"slug": slug}
+
+    class FakeDecomposer:
+        @staticmethod
+        def list_triage_ids():
+            board = os.environ["HERMES_KANBAN_BOARD"]
+            triage_calls.append(board)
+            return [f"{board}-task"]
+
+        @staticmethod
+        def decompose_task(task_id, *, author):
+            decompose_calls.append((os.environ["HERMES_KANBAN_BOARD"], task_id, author))
+            return SimpleNamespace(ok=True, fanout=False, child_ids=[], reason="")
+
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    result = _run_auto_decompose_tick(
+        FakeKanbanDb,
+        FakeDecomposer,
+        auto_decompose_per_tick=3,
+        allowed_boards=frozenset({"default"}),
+    )
+
+    assert result == 1
+    assert triage_calls == ["default"]
+    assert decompose_calls == [("default", "default-task", "auto-decomposer")]
+    assert "HERMES_KANBAN_BOARD" not in os.environ

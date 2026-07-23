@@ -2884,6 +2884,11 @@ DEFAULT_CONFIG = {
         # decomposition is manual via `hermes kanban decompose <id>` or
         # the dashboard's Decompose button.
         "auto_decompose": True,
+        # Optional board allowlist for auto-decompose. ``None`` preserves the
+        # historical all-board behavior; an explicit list is fail-closed for
+        # boards not named in the list. This is resolved live by the gateway
+        # dispatcher so a board can be contained without a global code fork.
+        "auto_decompose_allowed_boards": None,
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.

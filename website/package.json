@@ -18,10 +18,10 @@
     "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
   },
   "dependencies": {
-    "@docusaurus/core": "3.9.2",
-    "@docusaurus/plugin-client-redirects": "3.9.2",
-    "@docusaurus/preset-classic": "3.9.2",
-    "@docusaurus/theme-mermaid": "^3.9.2",
+    "@docusaurus/core": "3.10.2",
+    "@docusaurus/plugin-client-redirects": "3.10.2",
+    "@docusaurus/preset-classic": "3.10.2",
+    "@docusaurus/theme-mermaid": "^3.10.2",
     "@easyops-cn/docusaurus-search-local": "^0.55.1",
     "@mdx-js/react": "^3.0.0",
     "clsx": "^2.0.0",
@@ -30,14 +30,27 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@docusaurus/module-type-aliases": "3.9.2",
-    "@docusaurus/tsconfig": "3.9.2",
-    "@docusaurus/types": "3.9.2",
+    "@docusaurus/module-type-aliases": "3.10.2",
+    "@docusaurus/tsconfig": "3.10.2",
+    "@docusaurus/types": "3.10.2",
     "typescript": "^6.0.3"
   },
   "overrides": {
     "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "fast-uri": "^4.1.1",
+    "websocket-driver": "^0.7.5",
+    "brace-expansion": "^1.1.16",
+    "dompurify": "^3.4.12",
+    "shell-quote": "^1.10.0",
+    "svgo": "^3.3.4",
+    "undici": "^7.28.0",
+    "js-yaml": "^4.3.0",
+    "@babel/core": "^7.29.7",
+    "body-parser": "^1.20.6",
+    "http-proxy-middleware": "^2.0.10",
+    "joi": "^17.13.4",
+    "launch-editor": "^2.14.1"
   },
   "browserslist": {
     "production": [

@@ -766,14 +766,14 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
     )
 
     # On Windows the incoming ``run_argv`` leads with the venv's console
-    # ``python.exe`` (from ``get_python_path()``).  Respawning the gateway
-    # with that interpreter — even under CREATE_NO_WINDOW — leaves a
-    # persistent console window, because uv's venv launcher re-execs the
-    # base console interpreter, which allocates its own conhost.  Rewrite
-    # the argv to the windowless ``pythonw.exe`` (mirroring the clean-start
-    # ``_spawn_detached`` path) and capture the cwd + env overlay the base
-    # interpreter needs to resolve imports without the venv launcher.
-    # No-op on POSIX.  See gateway_windows.windowless_gateway_restart_spec.
+    # ``python.exe`` (from ``get_python_path()``).  That's the interpreter we
+    # want: the watcher respawns it under CREATE_NO_WINDOW detach flags, so
+    # the gateway owns one hidden console that all descendants inherit —
+    # nothing flashes (#54220/#56747).  The spec helper normalizes the
+    # interpreter and captures the stable cwd + env overlay (HERMES_HOME,
+    # VIRTUAL_ENV, PYTHONPATH) so the respawn doesn't depend on the watcher's
+    # transient working directory.  No-op on POSIX.
+    # See gateway_windows.windowless_gateway_restart_spec.
     respawn_cwd = ""
     respawn_env_overlay: dict[str, str] = {}
     if sys.platform == "win32":

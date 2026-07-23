@@ -1155,6 +1155,9 @@ def run_conversation(
         for am in api_messages:
             tcs = am.get("tool_calls")
             if not tcs:
+                # Drop empty tool_calls arrays — providers reject them
+                # (HTTP 400: "empty array, expected minimum length 1").
+                am.pop("tool_calls", None)
                 continue
             new_tcs = []
             for tc in tcs:

@@ -881,10 +881,19 @@ PLATFORM_HINTS = {
         "— when a sticker is the right response, use yb_send_sticker."
     ),
     "api_server": (
-        "You're responding through an API server. The rendering layer is unknown — "
-        "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
-        "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural."
+        "You're responding through an API server. Markdown formatting and emoji "
+        "are supported. Follow the user's instructions for the expected content "
+        "and output format — if they ask for a specific structure, deliver "
+        "exactly that. "
+        "To display local media/files inline, include MEDIA:/absolute/path/to/file "
+        "in your response. Local file paths must be absolute. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images are sent as native photos, videos play inline "
+        "when supported, and other files arrive as downloadable documents. "
+        "Important: do NOT wrap the MEDIA: tag or the file path in backticks "
+        "(`) or code fences; write it as plain text so it can be detected. "
+        "Place the MEDIA: tag near the relevant explanation so the context "
+        "is clear."
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "

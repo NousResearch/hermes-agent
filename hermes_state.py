@@ -5864,10 +5864,12 @@ class SessionDB:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
                 try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                    tool_calls = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
-                    msg["tool_calls"] = []
+                    logger.warning("Failed to deserialize tool_calls in get_messages, skipping")
+                    tool_calls = None
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
             result.append(msg)
         return result
 
@@ -5931,12 +5933,14 @@ class SessionDB:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
                 try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                    tool_calls = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
                     logger.warning(
-                        "Failed to deserialize tool_calls in get_messages_around, falling back to []"
+                        "Failed to deserialize tool_calls in get_messages_around, skipping"
                     )
-                    msg["tool_calls"] = []
+                    tool_calls = None
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
             result.append(msg)
 
         # before_rows includes the anchor itself; subtract 1 for the count of
@@ -6053,12 +6057,14 @@ class SessionDB:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
                 try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                    tool_calls = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
                     logger.warning(
-                        "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
+                        "Failed to deserialize tool_calls in get_anchored_view, skipping"
                     )
-                    msg["tool_calls"] = []
+                    tool_calls = None
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
             return msg
 
         return {
@@ -6264,10 +6270,12 @@ class SessionDB:
                 msg["effect_disposition"] = row["effect_disposition"]
             if row["tool_calls"]:
                 try:
-                    msg["tool_calls"] = json.loads(row["tool_calls"])
+                    tool_calls = json.loads(row["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
-                    msg["tool_calls"] = []
+                    logger.warning("Failed to deserialize tool_calls in conversation replay, skipping")
+                    tool_calls = None
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
             # Surface the platform-side message id (e.g. yuanbao msg_id,
             # telegram update_id) so platform-specific flows like recall
             # can match by external identifier instead of having to fall

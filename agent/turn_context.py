@@ -767,10 +767,11 @@ def build_turn_context(
                 int(_compression_cooldown.get("remaining_seconds", 0.0)),
                 agent.session_id or "none",
             )
-            # Context is over threshold but compression is blocked by the
-            # summary-LLM cooldown — surface a warning (see block below).
-            _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
-            _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
+            if _preflight_tokens >= _compressor.threshold_tokens:
+                # Context is over threshold but compression is blocked by the
+                # summary-LLM cooldown — surface a warning (see block below).
+                _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
+                _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
         elif _codex_native_auto:
             logger.info(
                 "Skipping Hermes preflight compression for codex app-server "

@@ -4746,7 +4746,7 @@ def get_sessions(
     if profile:
         profile_name, _ = _cron_profile_home(profile)
     try:
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
@@ -5078,7 +5078,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     if not q or not q.strip():
         return {"results": []}
     try:
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
 
@@ -11231,7 +11231,7 @@ async def _read_session_import_body(request: Request) -> bytes:
 
 
 def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=False)
     try:
         return db.import_sessions(sessions)
     finally:
@@ -11281,7 +11281,7 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
             detail="ids must contain at most 500 entries",
         )
     def _delete() -> int:
-        db = _open_session_db_for_profile(body.profile)
+        db = _open_session_db_for_profile(body.profile, read_only=False)
         try:
             return db.delete_sessions(body.ids)
         finally:
@@ -11326,7 +11326,7 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     that does nothing. Cheap, single-COUNT query.
     """
     def _count() -> int:
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             return db.count_empty_sessions()
         finally:
@@ -11356,7 +11356,7 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     the two delete endpoints' DB-vs-disk behaviour consistent.
     """
     def _delete() -> int:
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=False)
         try:
             return db.delete_empty_sessions()
         finally:
@@ -11373,7 +11373,7 @@ async def get_session_stats(profile: Optional[str] = None):
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
     path isn't captured as a session id by the parameterized route.
     """
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
         total = db.session_count(include_archived=True)
         active_store = db.session_count(include_archived=False)
@@ -11397,24 +11397,111 @@ async def get_session_stats(profile: Optional[str] = None):
         db.close()
 
 
-def _open_session_db_for_profile(profile: Optional[str]):
-    """Open a SessionDB for read paths, optionally for another profile.
+# Serialises the one-time writable schema bootstrap for read-only opens.
+# Concurrent first-load polls otherwise race sqlite file creation: the losers
+# open mode=ro against a store whose schema is still being written and every
+# query raises "no such table: sessions".
+_session_db_bootstrap_lock = threading.Lock()
+
+# Stale-schema probe for read-only opens: compiled against the newest column
+# each dashboard read path actually queries (session list/count filter on
+# s.archived; transcript and search filter on m.active / m.compacted). Reads
+# at most one row per table. Read-only opens skip _reconcile_columns(), so a
+# store created before these columns existed would otherwise 500 on every
+# poll until something opened it writable.
+_SESSION_DB_READ_PROBE_SQL = (
+    "SELECT (SELECT archived FROM sessions LIMIT 1), "
+    "(SELECT active FROM messages LIMIT 1), "
+    "(SELECT compacted FROM messages LIMIT 1)"
+)
+
+
+def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
+    """Open a SessionDB with an explicit access mode for a profile.
 
     ``profile`` None/empty → this process's own ``state.db`` (the common,
     single-profile case). A named profile opens that profile's on-disk
-    ``state.db`` directly so the primary backend can serve cross-profile reads
-    (transcripts, detail) without spawning that profile's backend.
+    ``state.db`` directly so the primary backend can serve cross-profile
+    requests without spawning that profile's backend.
+
+    Writable opens keep their full init/reconcile/repair machinery. Read-only
+    opens self-heal the failure modes that machinery used to cover implicitly:
+
+    - A missing or zero-byte store gets the historical one-time writable
+      schema bootstrap, serialised under a module lock so concurrent
+      first-load polls can't race sqlite file creation. A fresh dashboard
+      returns an empty session list instead of a 500.
+    - A store predating the columns the read endpoints query (or with a
+      malformed schema) fails a cheap probe after the read-only open and gets
+      ONE writable healing open — running the existing init/reconcile/repair
+      machinery — before reopening read-only. Any other failure raises to the
+      caller's existing error handling.
+
+    The happy path stays read-only end to end: no writable open, no WAL
+    checkpoint.
     """
-    from hermes_state import SessionDB
-    if not profile:
-        return SessionDB()
-    _name, home = _cron_profile_home(profile)
-    return SessionDB(db_path=Path(home) / "state.db")
+    import sqlite3
+
+    from hermes_state import DEFAULT_DB_PATH, SessionDB, is_malformed_db_error
+    if profile:
+        _name, home = _cron_profile_home(profile)
+        db_path = Path(home) / "state.db"
+    else:
+        db_path = Path(DEFAULT_DB_PATH)
+    if not read_only:
+        return SessionDB(db_path=db_path, read_only=False)
+
+    def _needs_bootstrap():
+        # A zero-byte file (crashed first boot, stray touch) passes an
+        # exists() guard but holds no schema — treat it as missing. Any other
+        # stat failure falls through to the open, which raises the
+        # caller-visible error as before.
+        try:
+            return db_path.stat().st_size == 0
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+
+    if _needs_bootstrap():
+        with _session_db_bootstrap_lock:
+            # Re-check under the lock: the winner of a concurrent first-load
+            # race has fully initialised the store before releasing it.
+            if _needs_bootstrap():
+                SessionDB(db_path=db_path).close()
+
+    def _open_probed():
+        db = SessionDB(db_path=db_path, read_only=True)
+        # Unit-test fakes replace SessionDB without a raw sqlite handle;
+        # only probe real connections.
+        conn = getattr(db, "_conn", None)
+        if conn is not None:
+            try:
+                conn.execute(_SESSION_DB_READ_PROBE_SQL).fetchone()
+            except BaseException:
+                db.close()
+                raise
+        return db
+
+    try:
+        return _open_probed()
+    except sqlite3.DatabaseError as exc:
+        message = str(exc).lower()
+        stale_schema = "no such table" in message or "no such column" in message
+        if not stale_schema and not is_malformed_db_error(exc):
+            raise
+        # One writable healing open: before the read-only conversion every
+        # dashboard read ran the writable init, so old stores self-healed via
+        # _reconcile_columns() and the malformed-schema repair. Restore that
+        # exactly once, then reopen read-only; a second failure propagates to
+        # the endpoint's existing error handling.
+        SessionDB(db_path=db_path).close()
+        return _open_probed()
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
@@ -11434,7 +11521,7 @@ async def get_session_latest_descendant(
     profile: Optional[str] = None,
 ):
     def _lookup():
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             return _session_latest_descendant(session_id, db)
         finally:
@@ -11458,7 +11545,7 @@ async def get_session_messages(
     offset: int = 0,
 ):
     def _read():
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             sid = db.resolve_session_id(session_id)
             if not sid:
@@ -11491,7 +11578,7 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
     # opening its state.db directly. Remote profiles never reach here — the
     # desktop routes their DELETE to the remote backend. Omit for current/default.
     def _delete():
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=False)
         try:
             # Resolve exact ids / unique prefixes like every other session endpoint
             # (detail, messages, rename, export all do). A session that no longer
@@ -11529,7 +11616,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
     restores the session. Either field may be omitted. ``profile`` targets
     another profile's session.
     """
-    db = _open_session_db_for_profile(body.profile)
+    db = _open_session_db_for_profile(body.profile, read_only=False)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -11559,7 +11646,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""
     def _export():
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             sid = db.resolve_session_id(session_id)
             return db.export_session(sid) if sid else None
@@ -11625,7 +11712,7 @@ def _prune_sessions(body: SessionPrune):
     if has_window or (_attr_filters_set and not _older_than_explicit):
         _effective_older_than = None
     profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
-    db = _open_session_db_for_profile(body.profile)
+    db = _open_session_db_for_profile(body.profile, read_only=False)
     try:
         filters = dict(
             older_than_days=_effective_older_than,
@@ -12055,7 +12142,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     except (TypeError, ValueError):
         limit_n = 20
 
-    db = _open_session_db_for_profile(selected)
+    db = _open_session_db_for_profile(selected, read_only=True)
     try:
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
@@ -16456,7 +16543,7 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
@@ -16545,7 +16632,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
     Returns token/cost/session breakdown per model plus capability metadata
     from models.dev (context window, vision, tools, reasoning, etc.).
     """
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
 
@@ -17184,7 +17271,8 @@ def _resolve_chat_argv(
 
     if resume:
         _resume_db = _open_session_db_for_profile(
-            requested if profile_dir is not None else None
+            requested if profile_dir is not None else None,
+            read_only=True,
         )
         try:
             latest_resume, _latest_path = _session_latest_descendant(resume, _resume_db)

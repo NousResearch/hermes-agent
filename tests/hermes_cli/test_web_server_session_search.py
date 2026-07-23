@@ -13,6 +13,10 @@ class _FakeSessionDB:
     """
 
     closed = False
+    opened_read_only = None
+
+    def __init__(self, *args, **kwargs):
+        type(self).opened_read_only = kwargs.get("read_only")
 
     def search_sessions_by_id(self, query, limit=20, include_archived=True):
         assert query == "20260603"
@@ -60,6 +64,7 @@ class _FakeSessionDB:
 
 
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
+    _FakeSessionDB.opened_read_only = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
 
     response = asyncio.run(web_server.search_sessions(q="20260603", limit=2))
@@ -88,3 +93,4 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
             },
         ]
     }
+    assert _FakeSessionDB.opened_read_only is True

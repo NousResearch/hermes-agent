@@ -1547,6 +1547,151 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_poll_preserves_pending_wal(self):
+        """Repeated GET-only polls must not checkpoint another writer's WAL."""
+        import sqlite3
+
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        wal_path = Path(f"{db_path}-wal")
+        writer = SessionDB(db_path=db_path)
+        monitor = None
+        try:
+            writer._conn.execute("PRAGMA wal_autocheckpoint=0")
+            writer.create_session("poll-wal", source="cli")
+            writer.append_message(
+                "poll-wal",
+                role="user",
+                content="pending writer frame " + ("x" * 65_536),
+            )
+
+            monitor = sqlite3.connect(str(db_path), isolation_level=None)
+            wal_bytes_before = wal_path.stat().st_size
+            data_version_before = monitor.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+            counts_before = monitor.execute(
+                "SELECT (SELECT COUNT(*) FROM sessions), "
+                "(SELECT COUNT(*) FROM messages)"
+            ).fetchone()
+
+            responses = [
+                self.client.get(
+                    "/api/sessions?limit=50&offset=0&order=created"
+                )
+                for _ in range(3)
+            ]
+
+            wal_bytes_after = wal_path.stat().st_size
+            data_version_after = monitor.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+            counts_after = monitor.execute(
+                "SELECT (SELECT COUNT(*) FROM sessions), "
+                "(SELECT COUNT(*) FROM messages)"
+            ).fetchone()
+
+            assert all(response.status_code == 200 for response in responses)
+            assert all(response.json()["total"] == 1 for response in responses)
+            assert wal_bytes_before > 0
+            assert wal_bytes_after == wal_bytes_before
+            assert data_version_after == data_version_before
+            assert counts_after == counts_before == (1, 1)
+        finally:
+            if monitor is not None:
+                monitor.close()
+            writer.close()
+
+    def test_get_sessions_fresh_store_returns_empty_list(self):
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+        assert response.json()["total"] == 0
+
+    def test_get_sessions_heals_stale_schema_store(self):
+        """A store predating sessions.archived must heal on first poll, not 500.
+
+        Read-only opens skip _reconcile_columns(), so a pre-2026-06 store
+        raises "no such column: archived" on every dashboard read. The open
+        helper detects the stale schema, runs one writable healing open
+        (which reconciles the missing column back in), then serves the poll
+        read-only.
+        """
+        import sqlite3
+
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("stale-schema", source="cli")
+        finally:
+            seed.close()
+        # Rewind the live schema to the pre-archived shape old installs have.
+        legacy = sqlite3.connect(str(db_path))
+        try:
+            legacy.execute("ALTER TABLE sessions DROP COLUMN archived")
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert [s["id"] for s in response.json()["sessions"]] == ["stale-schema"]
+        healed = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
+            }
+        finally:
+            healed.close()
+        assert "archived" in columns
+
+    def test_get_sessions_zero_byte_store_returns_empty_list(self):
+        """A zero-byte state.db (crashed first boot) must bootstrap, not 500.
+
+        The empty file passes the old exists() bootstrap guard but holds no
+        schema, so a plain read-only open raised "no such table: sessions"
+        on every poll, permanently.
+        """
+        from hermes_constants import get_hermes_home
+
+        db_path = get_hermes_home() / "state.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.touch()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+        assert response.json()["total"] == 0
+
+    def test_concurrent_first_load_reads_all_succeed_on_fresh_store(self):
+        """Parallel first-load reads on a fresh store must all return 200.
+
+        Before the bootstrap was serialised under a lock, concurrent GETs
+        raced sqlite file creation: a loser saw the file exist mid-init,
+        skipped the bootstrap, opened mode=ro against a partially
+        initialised store, and 500'd with "no such table: sessions".
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        paths = [
+            "/api/sessions?limit=50&offset=0",
+            "/api/sessions/stats",
+            "/api/sessions/empty/count",
+            "/api/sessions?limit=10&offset=0&order=recent",
+        ] * 2
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            responses = list(pool.map(self.client.get, paths))
+
+        assert [r.status_code for r in responses] == [200] * len(paths)
+
     def _create_session_with_heavy_fields(self, session_id: str) -> None:
         from hermes_state import SessionDB
 

@@ -1244,13 +1244,18 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
-            command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
+            command = _render_command_stt_template(
+                command_template,
+                {
+                    "input_path": prepared_input,
+                    "output_dir": output_dir,
+                    "language": str(language),
+                    "model": normalized_model,
+                },
             )
-            # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
+            # User-provided templates may contain shell syntax, so preserve
+            # shell mode but render placeholders according to their quote
+            # context. Plain shlex.quote is only safe outside existing quotes.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
                 subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())

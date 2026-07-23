@@ -251,7 +251,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // the primary chat so the two can't diverge.
   const submitRewind = useCallback(
     (text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, runtimeIdRef.current, text, truncateOrdinal, interruptFirst),
+      runRewindSubmit(requestGateway, runtimeIdRef.current, text, truncateOrdinal, interruptFirst, storedIdRef.current),
     [requestGateway]
   )
 

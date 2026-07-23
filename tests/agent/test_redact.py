@@ -445,6 +445,20 @@ class TestElevenLabsTavilyExaKeys:
         assert "HOME=/home/user" in result
         assert "SHELL=/bin/bash" in result
 
+    def test_snake_case_identifier_not_falsely_redacted(self):
+        """sk_ followed by snake_case words must not be redacted (false positive guard)."""
+        text = "Call sk_compute_embedding(input_tensor) and sk_normalize_output(result)"
+        result = redact_sensitive_text(text)
+        assert "sk_compute_embedding" in result
+        assert "sk_normalize_output" in result
+
+    def test_elevenlabs_key_10_chars_redacted(self):
+        """Real ElevenLabs key with 10+ alphanumeric chars after sk_ is redacted."""
+        text = "key=sk_a1b2c3d4e5f6g7h8i9j0"
+        result = redact_sensitive_text(text)
+        assert "a1b2c3d4e5f6g7h8i9j0" not in result
+        assert "REDACTED" in result or "***" in result
+
 
 class TestJWTTokens:
     """JWT tokens start with eyJ (base64 for '{') and have dot-separated parts."""

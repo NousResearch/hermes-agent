@@ -118,6 +118,8 @@ def test_regression_oserror_on_log_read_does_not_propagate(
 
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
+    # NS-606: disable self-heal so the log-read branch is reached.
+    monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", _UnreadablePath(tmp_path / ".err"))
 
     result = adapter_mod.check_requirements()
@@ -264,6 +266,8 @@ def test_regression_debug_log_emitted_even_without_error_log(
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    # NS-606: disable self-heal so the debug-log branch is reached.
+    monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     # node_modules NOT created, error log NOT created
 
     with caplog.at_level(logging.DEBUG, logger="plugins.platforms.photon.adapter"):

@@ -105,6 +105,9 @@ def test_fix_logs_debug_with_sidecar_path_when_node_modules_missing(
     WARNING here would spam logs on every probe when photon is not configured."""
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
+    # NS-606: disable the connect-time self-heal branch (npm + writable dir
+    # would short-circuit to True) so this exercises the no-self-install path.
+    monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     # node_modules intentionally NOT created — simulates failed npm install
 
     with caplog.at_level(logging.DEBUG, logger="plugins.platforms.photon.adapter"):
@@ -148,6 +151,9 @@ def test_risk2_fix_empty_node_modules_no_longer_passes_guard(
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    # NS-606: disable the connect-time self-heal branch so the guard itself
+    # (empty node_modules must not read as installed) is what's under test.
+    monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
 
     # Fix verified: False instead of the old false-positive True.
@@ -264,6 +270,8 @@ def test_fix_risk3_check_requirements_surfaces_npm_error_in_debug_log(
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", error_log)
+    # NS-606: disable self-heal so the npm-error surfacing branch is reached.
+    monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     # node_modules NOT created
 
     with caplog.at_level(logging.DEBUG, logger="plugins.platforms.photon.adapter"):

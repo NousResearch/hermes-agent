@@ -191,20 +191,106 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
 
 
 @pytest.mark.asyncio
-async def test_start_sidecar_rejects_empty_node_modules(
+async def test_start_sidecar_cold_installs_missing_deps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Missing node_modules must trigger an install attempt, not a bare raise.
+
+    NS-606: on hosted images the user cannot shell in to run
+    `hermes photon setup`, so the connect path is the only chance to
+    bootstrap the sidecar deps (into the writable resolved dir).
+    """
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    installs: List[str] = []
+
+    def _fake_install() -> None:
+        installs.append("ran")
+        (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
+
+    monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", _fake_install)
+
+    async def _no_reap() -> None:
+        pass
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+
+    class _PatchResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "run", lambda *a, **k: _PatchResult()
+    )
+
+    class _FakeProc:
+        pid = 999
+        stdout = None
+        stdin = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "Popen", lambda *a, **k: _FakeProc()
+    )
+
+    class _HealthyClient(_ProbeClient):
+        async def post(self, *a: Any, **k: Any) -> Any:
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+
+    await adapter._start_sidecar()
+
+    assert installs == ["ran"]
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_reinstalls_empty_node_modules(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     """A partial/aborted npm install leaves an empty node_modules/ behind.
 
-    _start_sidecar() must reject it the same way check_requirements() does
-    (both go through sidecar_deps_installed()) instead of spawning a sidecar
-    that immediately crashes on a missing spectrum-ts module.
+    _start_sidecar() must treat it as not-installed the same way
+    check_requirements() does (both go through sidecar_deps_installed())
+    instead of spawning a sidecar that immediately crashes on a missing
+    spectrum-ts module. With the NS-606 cold-install path, "treat as
+    not-installed" means: attempt a reinstall, and raise the actionable
+    error if that still doesn't produce spectrum-ts.
     """
     adapter = _make_adapter(monkeypatch)
     (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
     monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
 
-    with pytest.raises(RuntimeError, match="not installed"):
+    installs: List[str] = []
+    monkeypatch.setattr(
+        photon_adapter, "_reinstall_sidecar_deps", lambda: installs.append("ran")
+    )
+
+    with pytest.raises(RuntimeError, match="could not be installed"):
+        await adapter._start_sidecar()
+
+    assert installs == ["ran"]
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_raises_when_cold_install_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """If the bootstrap install can't produce node_modules, fail with the
+    actionable error (surfaced as SIDECAR_FAILED by connect())."""
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", lambda: None)
+
+    with pytest.raises(RuntimeError, match="could not be installed"):
         await adapter._start_sidecar()
 
 

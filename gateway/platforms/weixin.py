@@ -1393,7 +1393,34 @@ class WeixinAdapter(BasePlatformAdapter):
                 logger.error("[%s] poll error (%d/%d): %s", self.name, consecutive_failures, MAX_CONSECUTIVE_FAILURES, exc)
                 await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    await self._refresh_poll_session_after_failures()
                     consecutive_failures = 0
+
+    async def _refresh_poll_session_after_failures(self) -> None:
+        """Recreate the long-poll HTTP session after repeated transport errors.
+
+        On some Windows networks the iLink long-poll connection can get stuck
+        after repeated SSL/socket failures. Keeping the same ClientSession can
+        leave the adapter apparently connected while inbound delivery remains
+        silent. Refreshing only the poll session is safe: the send session and
+        cached context tokens remain intact, while new getUpdates calls get a
+        fresh connector/socket pool.
+        """
+        if not AIOHTTP_AVAILABLE:
+            return
+        old_session = self._poll_session
+        try:
+            if old_session is not None and not old_session.closed:
+                await old_session.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[%s] failed to close stale Weixin poll session: %s", self.name, exc)
+        if not self._running:
+            return
+        self._poll_session = aiohttp.ClientSession(
+            trust_env=True,
+            connector=_make_ssl_connector(),
+        )
+        logger.warning("[%s] refreshed Weixin poll session after repeated failures", self.name)
 
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:

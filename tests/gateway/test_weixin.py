@@ -1205,3 +1205,41 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+    def test_poll_loop_refreshes_session_after_repeated_transport_errors(self):
+        class PollSession:
+            def __init__(self):
+                self.closed = False
+                self.close_calls = 0
+
+            async def close(self):
+                self.close_calls += 1
+                self.closed = True
+
+        adapter = _make_adapter()
+        old_session = PollSession()
+        new_session = PollSession()
+        adapter._poll_session = old_session
+        adapter._running = True
+        adapter._hermes_home = os.getcwd()
+        calls = 0
+
+        async def failing_then_stop(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls <= weixin.MAX_CONSECUTIVE_FAILURES:
+                raise OSError("Cannot connect to host ilinkai.weixin.qq.com:443 ssl:default")
+            adapter._running = False
+            return {"ret": 0, "msgs": [], "get_updates_buf": ""}
+
+        aiohttp_mock = Mock(ClientSession=Mock(return_value=new_session))
+        with patch("gateway.platforms.weixin._load_sync_buf", return_value=""), \
+             patch("gateway.platforms.weixin._get_updates", side_effect=failing_then_stop), \
+             patch("gateway.platforms.weixin._make_ssl_connector", return_value=None), \
+             patch("gateway.platforms.weixin.aiohttp", aiohttp_mock), \
+             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
+             patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock):
+            asyncio.run(adapter._poll_loop())
+
+        assert old_session.close_calls == 1
+        assert adapter._poll_session is new_session

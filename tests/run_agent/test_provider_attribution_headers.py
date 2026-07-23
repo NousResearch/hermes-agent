@@ -160,6 +160,29 @@ def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_opencode_go_base_url_picks_up_profile_user_agent(mock_openai):
+    """OCG runtime calls need profile.default_headers to avoid Cloudflare 1010."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://opencode.ai/zen/go/v1",
+        model="kimi-k2.6",
+        provider="opencode-go",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://opencode.ai/zen/go/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    ua = headers.get("User-Agent", "")
+    assert ua.startswith("hermes-cli/"), ua
+    assert not ua.startswith("Python-urllib"), ua
+    assert not ua.startswith("python-requests"), ua
+
+
+@patch("run_agent.OpenAI")
 def test_unknown_base_url_clears_default_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

@@ -609,9 +609,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument(
         "--kind", default=None, choices=sorted(kb.VALID_BLOCK_KINDS),
         help=(
-            "Typed block reason. 'dependency' waits in todo (auto-promoted "
-            "when parents finish, no human); 'needs_input'/'capability' go to "
-            "blocked for a human; 'transient' marks a maybe-flaky failure. "
+            "Typed block reason. 'dependency' waits in todo only when an "
+            "unresolved parent edge exists (auto-promoted when parents finish); "
+            "otherwise it routes to triage to repair the missing edge. "
+            "'needs_input'/'capability' go to blocked for a human; 'transient' "
+            "marks a maybe-flaky failure. "
             "Repeated same-kind re-blocks after unblock route the task to "
             "triage to break unblock loops. Omit for a generic block."
         ),
@@ -2184,13 +2186,21 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
-                # Report where the task actually landed — dependency blocks go
-                # to todo, and a tripped unblock-loop breaker routes to triage.
+                # Report where the task actually landed. Dependency waits with
+                # an unmet parent go to todo; missing dependency edges and a
+                # tripped unblock-loop breaker both route to triage, but need
+                # different remediation messages.
                 landed = kb.get_task(conn, tid)
                 where = landed.status if landed else "blocked"
                 suffix = f": {reason}" if reason else ""
                 if where == "todo":
                     print(f"{tid} → todo (dependency wait){suffix}")
+                elif where == "triage" and kind == "dependency":
+                    print(
+                        f"{tid} → triage (dependency block has no unresolved "
+                        f"parent edge — add/link the missing parent or choose "
+                        f"another block kind){suffix}"
+                    )
                 elif where == "triage":
                     print(
                         f"{tid} → triage (unblock loop detected — needs a "

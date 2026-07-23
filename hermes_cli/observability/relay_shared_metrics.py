@@ -925,9 +925,12 @@ def enabled() -> bool:
     """Return the shared-metrics policy for the active Hermes profile."""
     profile_key = relay_runtime.current_profile_key()
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import read_raw_config
 
-        config = load_config_readonly() or {}
+        # Collection consent is profile-owned. Managed config overlays may
+        # control runtime policy, but cannot opt a profile into or out of
+        # shared metrics.
+        config = read_raw_config() or {}
     except Exception:
         logger.debug("Unable to read Hermes shared-metrics policy", exc_info=True)
         value = False

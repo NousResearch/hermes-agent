@@ -23,6 +23,7 @@ LOGICAL_LLM_SCOPE = "hermes.logical_llm_call"
 RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
+_PROFILE_KEY_CACHE: dict[str, str] = {}
 
 
 @dataclass
@@ -201,14 +202,19 @@ class RelayRuntime:
                 raise RuntimeError("Hermes Relay session is closing")
             if session.context is None or session.handle is None:
                 raise RuntimeError("Hermes Relay session context is unavailable")
+            relay_context = session.context.copy()
 
-            def invoke() -> Any:
-                self.relay.get_scope_stack()
-                return callback(*args, **kwargs)
+        context = contextvars.copy_context()
+        for variable, value in relay_context.items():
+            context.run(variable.set, value)
 
-            # A copy permits a helper called by an existing Relay callback to
-            # re-enter the same logical session without re-entering Context.
-            return session.context.copy().run(invoke)
+        def invoke() -> Any:
+            self.relay.get_scope_stack()
+            return callback(*args, **kwargs)
+
+        # A copy permits a helper called by an existing Relay callback to
+        # re-enter the same logical session without re-entering Context.
+        return context.run(invoke)
 
     async def run_in_session_async(
         self,
@@ -224,7 +230,11 @@ class RelayRuntime:
                 raise RuntimeError("Hermes Relay session is closing")
             if session.context is None or session.handle is None:
                 raise RuntimeError("Hermes Relay session context is unavailable")
-            context = session.context.copy()
+            relay_context = session.context.copy()
+
+        context = contextvars.copy_context()
+        for variable, value in relay_context.items():
+            context.run(variable.set, value)
 
         async def invoke() -> Any:
             self.relay.get_scope_stack()
@@ -408,6 +418,9 @@ class RelayHostRegistry:
         create: bool = True,
     ) -> RelayHost | None:
         key = profile_key or current_profile_key()
+        host = self._hosts.get(key)
+        if host is not None or not create:
+            return host
         with self._lock:
             host = self._hosts.get(key)
             if host is not None or not create:
@@ -473,6 +486,7 @@ class RelayTurnContext:
         default=None,
         repr=False,
     )
+    _active_registered: bool = field(default=False, repr=False)
     closed: bool = False
 
 
@@ -491,6 +505,8 @@ class RelaySessionCoordinator:
             str,
             Callable[[RelayRuntime, dict[str, Any]], None],
         ] = {}
+        self._active_turns_lock = threading.RLock()
+        self._active_turns: dict[tuple[str, str], set[int]] = {}
 
     def register_session_initializer(
         self,
@@ -602,6 +618,10 @@ class RelaySessionCoordinator:
             except Exception:
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
         turn._token = _CURRENT_TURN.set(turn)
+        key = (lease.profile_key, lease.session_id)
+        with self._active_turns_lock:
+            self._active_turns.setdefault(key, set()).add(id(turn))
+            turn._active_registered = True
         return turn
 
     def end_turn(
@@ -636,7 +656,30 @@ class RelaySessionCoordinator:
                                 "Hermes Relay turn finalization failed", exc_info=True
                             )
             finally:
+                self._unregister_active_turn(turn)
                 self._reset_turn_context(turn)
+
+    def has_active_turn(self, *, profile_key: str, session_id: str) -> bool:
+        """Return whether a turn is still running for one profile/session."""
+        key = (profile_key, session_id)
+        with self._active_turns_lock:
+            return bool(self._active_turns.get(key))
+
+    def _unregister_active_turn(self, turn: RelayTurnContext) -> None:
+        if not turn._active_registered:
+            return
+        key = (turn.lease.profile_key, turn.lease.session_id)
+        with self._active_turns_lock:
+            active = self._active_turns.get(key)
+            if active is not None:
+                active.discard(id(turn))
+                if not active:
+                    self._active_turns.pop(key, None)
+            turn._active_registered = False
+
+    def _reset_active_turns_for_tests(self) -> None:
+        with self._active_turns_lock:
+            self._active_turns.clear()
 
     def finish_logical_calls(
         self,
@@ -768,7 +811,7 @@ def emit_mark(
     metadata: Any = None,
 ) -> bool:
     """Emit a fail-open Relay mark under a Hermes session."""
-    runtime = get_runtime()
+    runtime = get_runtime(create=False)
     if runtime is None:
         return False
     try:
@@ -792,7 +835,7 @@ def apply_tool_request_intercepts(
     """Return Relay-rewritten arguments at Hermes's authorization boundary."""
     if not session_id:
         return args
-    runtime = get_runtime()
+    runtime = get_runtime(create=False)
     if runtime is None:
         return args
     return runtime.apply_tool_request_intercepts(
@@ -899,7 +942,15 @@ def get_host(
 
 def current_profile_key() -> str:
     """Return the canonical profile identity used for runtime isolation."""
-    return str(get_hermes_home().expanduser().resolve())
+    home = get_hermes_home().expanduser()
+    if not home.is_absolute():
+        return str(home.resolve())
+    raw = str(home)
+    cached = _PROFILE_KEY_CACHE.get(raw)
+    if cached is not None:
+        return cached
+    resolved = str(home.resolve())
+    return _PROFILE_KEY_CACHE.setdefault(raw, resolved)
 
 
 def _load_nemo_relay() -> Any:
@@ -913,4 +964,6 @@ def _session_id(event: dict[str, Any]) -> str:
 
 def _reset_for_tests() -> None:
     """Reset all profile-scoped Relay hosts for isolated tests."""
+    SESSION_COORDINATOR._reset_active_turns_for_tests()
     HOST_REGISTRY.shutdown_all()
+    _PROFILE_KEY_CACHE.clear()

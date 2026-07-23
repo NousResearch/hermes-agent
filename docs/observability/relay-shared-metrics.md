@@ -9,9 +9,25 @@ Hermes execution remains available, while Relay scopes, middleware, plugins,
 and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
 as a no-op compatibility alias for existing installation commands.
 
-Hermes requires NeMo Relay 0.6 RC 3 or later. That release establishes the
-lossless provider-codec contract used for Anthropic Messages, OpenAI Chat
-Completions, and OpenAI Responses requests.
+Hermes requires NeMo Relay 0.6.0 or later within the 0.6 release line. That
+release establishes the lossless provider-codec contract used for Anthropic
+Messages, OpenAI Chat Completions, and OpenAI Responses requests.
+
+## Runtime Dependency and Data Boundary
+
+Hermes installs the platform-specific `nemo-relay` native wheel from the
+bounded `>=0.6.0,<0.7` dependency range. The published package is built from
+the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
+Unsupported platforms use the explicit no-op runtime described above rather
+than downloading a different implementation.
+
+When Relay managed execution is active, the provider request and response pass
+through that native module in the Hermes process so configured interceptors can
+operate on the real call. This is separate from the shared-metrics data
+contract. Shared-metrics mode installs no network exporter and its subscriber
+accepts only the versioned, allowlisted projection described below. Enabling a
+separately configured rich-observability or dynamic plugin can create a
+different data path and requires its own policy review.
 
 Collection remains off unless Hermes policy enables it:
 
@@ -20,6 +36,10 @@ telemetry:
   shared_metrics:
     enabled: true
 ```
+
+This choice is read from the profile's own `config.yaml`. A machine-managed
+configuration overlay cannot enable or disable shared metrics on the profile's
+behalf.
 
 The existing `observability/nemo_relay` plugin remains separate. Enable that
 plugin only for its opt-in rich observability exporters, adaptive execution,
@@ -46,12 +66,14 @@ Hermes turn, API, tool, and approval hooks
   -> immutable JSON delta package
 ```
 
-Hermes sends an empty `LLMRequest` into this metrics lifecycle. The terminal
-event contains only bounded model family, provider family, locality, call role,
-outcome, total latency, input/output token, physical retry, and estimated-cost
-values. Exact latency, token counts, and cost are bucketed before Relay event
-emission. Prompts, responses, exact model IDs, endpoints, errors, session IDs,
-task IDs, and request IDs are not included in the metrics event or package.
+Hermes sends an empty `LLMRequest` into the metrics-owned lifecycle. This does
+not describe the separate managed-execution call through the native runtime
+documented above. The terminal metrics event contains only bounded model
+family, provider family, locality, call role, outcome, total latency,
+input/output token, physical retry, and estimated-cost values. Exact latency,
+token counts, and cost are bucketed before Relay event emission. Prompts,
+responses, exact model IDs, endpoints, errors, session IDs, task IDs, and
+request IDs are not included in the metrics event or package.
 
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
@@ -101,6 +123,22 @@ are written with atomic replacement. Each package records the Hermes version,
 OS family, architecture, and install method as bounded client resources.
 Unrecognized platform or installation values are exported as `unknown`; raw
 platform strings, hostnames, and paths are never included.
+Fully packaged aggregate rows and successfully exported package rows and files
+are retained locally for 30 days.
+Pending package rows and counters with unexported deltas are never pruned.
+
+Each package contains an `install_id` generated as a random UUID. Despite the
+schema field name, its current scope is one `HERMES_HOME`, so it is more
+precisely a persistent pseudonymous profile identifier. It is not derived from
+hardware, account, host, path, or credential data. It remains stable across
+packages from that profile and can therefore link those local packages.
+Deleting `$HERMES_HOME/telemetry/shared_metrics` resets the identifier together
+with all aggregates and package files.
+
+This slice has no remote-delivery path. A future remote exporter must not reuse
+the persistent local identifier by default. It requires a separate product and
+privacy decision covering consent, identity scope, rotation or keyed
+pseudonymization, reset behavior, retention, and deletion.
 
 ## Smoke Test
 

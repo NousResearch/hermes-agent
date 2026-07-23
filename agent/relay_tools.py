@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from agent import relay_runtime
+
+logger = logging.getLogger(__name__)
 
 
 def execute(
@@ -27,12 +31,13 @@ def execute(
     observed_args = args
     raw_result: dict[str, Any] = {}
     callback_error: BaseException | None = None
+    callback_context = contextvars.copy_context()
 
     def invoke(next_args: Any) -> Any:
         nonlocal callback_error, observed_args
         observed_args = next_args if isinstance(next_args, dict) else args
         try:
-            result = callback(observed_args)
+            result = callback_context.copy().run(callback, observed_args)
         except BaseException as exc:
             callback_error = exc
             raise
@@ -58,11 +63,24 @@ def execute(
             and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
+        if (
+            isinstance(exc, Exception)
+            and callback_error is None
+            and "value" in raw_result
+        ):
+            logger.warning(
+                "NeMo Relay tool post-processing failed after dispatch success; "
+                "returning the Hermes tool result",
+                exc_info=True,
+            )
+            return raw_result["value"], observed_args
         raise
 
     if "value" in raw_result and _json_equal(managed, raw_result["json"]):
         return raw_result["value"], observed_args
-    return managed, observed_args
+    if isinstance(managed, str):
+        return managed, observed_args
+    return json.dumps(_jsonable(managed), ensure_ascii=False), observed_args
 
 
 def _jsonable(value: Any) -> Any:

@@ -874,3 +874,99 @@ class TestFormatCompatibility:
         img_path.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>')
         url = _file_to_data_url(img_path)
         assert url is None
+
+
+# ─── vision alias for custom providers ──────────────────────────────────────
+
+
+class TestCustomProviderVisionAlias:
+    """`vision: true` should work as an alias for `supports_vision: true`.
+
+    Covers both config shapes that host named custom providers:
+      * the ``providers.<name>.models`` dict, and
+      * the legacy list-style ``custom_providers`` entries.
+
+    Regression for the review of PR #31912: named custom providers resolve
+    to the runtime value ``provider="custom"`` while the config keeps the
+    user-declared name under ``model.provider``. The existing candidate-name
+    resolver must be *extended* to accept the ``vision`` alias, not replaced.
+    """
+
+    def test_providers_dict_vision_alias_true(self):
+        cfg = {
+            "providers": {
+                "my-vllm": {"models": {"llava-v1.6": {"vision": True}}}
+            }
+        }
+        assert _supports_vision_override(cfg, "my-vllm", "llava-v1.6") is True
+
+    def test_providers_dict_vision_alias_false(self):
+        cfg = {
+            "providers": {
+                "my-vllm": {"models": {"llama-3": {"vision": False}}}
+            }
+        }
+        assert _supports_vision_override(cfg, "my-vllm", "llama-3") is False
+
+    def test_supports_vision_wins_over_vision_alias(self):
+        """When both keys are present, the canonical key takes priority."""
+        cfg = {
+            "providers": {
+                "my-vllm": {
+                    "models": {
+                        "m": {"supports_vision": True, "vision": False}
+                    }
+                }
+            }
+        }
+        assert _supports_vision_override(cfg, "my-vllm", "m") is True
+
+    def test_named_custom_provider_bare_custom_runtime_vision_alias(self):
+        """Teknium's requested regression case.
+
+        A named custom provider (``model.provider: my-vllm``) is rewritten to
+        the runtime value ``provider="custom"`` by
+        ``hermes_cli/runtime_provider.py``. The resolver must still match the
+        ``my-vllm`` entry via the ``model.provider`` candidate and honour the
+        ``vision`` alias.
+        """
+        cfg = {
+            "model": {"provider": "my-vllm"},
+            "providers": {
+                "my-vllm": {"models": {"llava-v1.6": {"vision": True}}}
+            },
+        }
+        # Runtime provider is the bare normalized value "custom".
+        assert _supports_vision_override(cfg, "custom", "llava-v1.6") is True
+        assert decide_image_input_mode("custom", "llava-v1.6", cfg) == "native"
+
+    def test_custom_providers_list_bare_custom_runtime_vision_alias(self):
+        """Same regression, but the provider lives in the legacy list form."""
+        cfg = {
+            "model": {"provider": "my-vllm"},
+            "custom_providers": [
+                {
+                    "name": "my-vllm",
+                    "models": {"llava-v1.6": {"vision": True}},
+                }
+            ],
+        }
+        assert _supports_vision_override(cfg, "custom", "llava-v1.6") is True
+        assert decide_image_input_mode("custom", "llava-v1.6", cfg) == "native"
+
+    def test_custom_providers_list_vision_alias_false(self):
+        cfg = {
+            "model": {"provider": "my-vllm"},
+            "custom_providers": [
+                {"name": "my-vllm", "models": {"llama-3": {"vision": False}}}
+            ],
+        }
+        assert _supports_vision_override(cfg, "custom", "llama-3") is False
+
+    def test_vision_alias_none_when_model_absent(self):
+        cfg = {
+            "custom_providers": [
+                {"name": "my-vllm", "models": {"llava": {"vision": True}}}
+            ]
+        }
+        assert _supports_vision_override(cfg, "custom:my-vllm", "other") is None

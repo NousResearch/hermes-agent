@@ -2366,6 +2366,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     pass
 
         def _bedrock_call():
+            stream = None
             try:
                 from agent import relay_llm
                 from agent.bedrock_adapter import (
@@ -2476,6 +2477,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 result["response"] = stream.final_response or streamed_response
             except Exception as e:
                 result["error"] = e
+            finally:
+                if stream is not None:
+                    stream.close()
 
         t = threading.Thread(
             target=_context_thread_target(_bedrock_call), daemon=True
@@ -2635,6 +2639,22 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         "discarded_chunks": 0,
         "discarded_bytes": 0,
     }
+    managed_stream_holder = {"stream": None}
+
+    def _set_managed_stream(stream: Any) -> Any:
+        managed_stream_holder["stream"] = stream
+        return stream
+
+    def _close_managed_stream() -> None:
+        stream = managed_stream_holder.pop("stream", None)
+        if stream is None:
+            return
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug("Managed provider stream cleanup failed", exc_info=True)
 
     def _start_stream_attempt() -> int:
         with stream_attempt_lock:
@@ -2852,28 +2872,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         from agent import relay_llm
 
-        stream = relay_llm.stream(
-            api_kwargs,
-            _open_stream,
-            session_id=str(getattr(agent, "session_id", "") or ""),
-            name=str(getattr(agent, "provider", "") or "provider"),
-            model_name=str(getattr(agent, "model", "") or ""),
-            finalizer=_relay_final_response,
-            on_stream_created=_stream_created,
-            accept_chunk=_accept_stream_chunk,
-            completed_response_predicate=lambda value: hasattr(value, "choices"),
-            metadata={
-                "api_mode": "chat_completions",
-                "api_request_id": getattr(agent, "_current_api_request_id", None),
-                "call_role": (
-                    "delegated"
-                    if getattr(agent, "is_subagent", False)
-                    else "fallback"
-                    if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                    else "primary"
-                ),
-            },
-            defer_logical_completion=True,
+        stream = _set_managed_stream(
+            relay_llm.stream(
+                api_kwargs,
+                _open_stream,
+                session_id=str(getattr(agent, "session_id", "") or ""),
+                name=str(getattr(agent, "provider", "") or "provider"),
+                model_name=str(getattr(agent, "model", "") or ""),
+                finalizer=_relay_final_response,
+                on_stream_created=_stream_created,
+                accept_chunk=_accept_stream_chunk,
+                completed_response_predicate=lambda value: hasattr(value, "choices"),
+                metadata={
+                    "api_mode": "chat_completions",
+                    "api_request_id": getattr(agent, "_current_api_request_id", None),
+                    "call_role": (
+                        "delegated"
+                        if getattr(agent, "is_subagent", False)
+                        else "fallback"
+                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
+                        else "primary"
+                    ),
+                },
+                defer_logical_completion=True,
+            )
         )
         for chunk in stream:
             last_chunk_time["t"] = time.time()
@@ -3028,6 +3050,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Usage in the final chunk
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+
+        _close_managed_stream()
 
         if _stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(
@@ -3276,28 +3300,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             return False
 
-        stream = relay_llm.stream(
-            api_kwargs,
-            _open_anthropic_stream,
-            session_id=str(getattr(agent, "session_id", "") or ""),
-            name=str(getattr(agent, "provider", "") or "anthropic"),
-            model_name=str(getattr(agent, "model", "") or ""),
-            finalizer=accumulator.finalize,
-            on_stream_created=_anthropic_stream_created,
-            on_chunk=accumulator.observe,
-            accept_chunk=_accept_anthropic_event,
-            metadata={
-                "api_mode": "anthropic_messages",
-                "api_request_id": getattr(agent, "_current_api_request_id", None),
-                "call_role": (
-                    "delegated"
-                    if getattr(agent, "is_subagent", False)
-                    else "fallback"
-                    if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                    else "primary"
-                ),
-            },
-            defer_logical_completion=True,
+        stream = _set_managed_stream(
+            relay_llm.stream(
+                api_kwargs,
+                _open_anthropic_stream,
+                session_id=str(getattr(agent, "session_id", "") or ""),
+                name=str(getattr(agent, "provider", "") or "anthropic"),
+                model_name=str(getattr(agent, "model", "") or ""),
+                finalizer=accumulator.finalize,
+                on_stream_created=_anthropic_stream_created,
+                on_chunk=accumulator.observe,
+                accept_chunk=_accept_anthropic_event,
+                metadata={
+                    "api_mode": "anthropic_messages",
+                    "api_request_id": getattr(agent, "_current_api_request_id", None),
+                    "call_role": (
+                        "delegated"
+                        if getattr(agent, "is_subagent", False)
+                        else "fallback"
+                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
+                        else "primary"
+                    ),
+                },
+                defer_logical_completion=True,
+            )
         )
         try:
             for event in stream:
@@ -3351,9 +3377,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             ) from None
                         raise
         finally:
-            manager = _stream_context["manager"]
-            if manager is not None:
-                manager.__exit__(None, None, None)
+            try:
+                _close_managed_stream()
+            finally:
+                manager = _stream_context["manager"]
+                if manager is not None:
+                    manager.__exit__(None, None, None)
 
         if agent._interrupt_requested:
             return None
@@ -3412,6 +3441,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         result["response"] = _call_chat_completions(stream_attempt_id)
                     return  # success
                 except Exception as e:
+                    _close_managed_stream()
                     # If the main poll loop force-closed this request because
                     # of an interrupt, the resulting transport error is the
                     # expected consequence of our own close — NOT a transient
@@ -3708,6 +3738,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             result["error"] = e
             return
         finally:
+            _close_managed_stream()
             _close_request_client_once("stream_request_complete")
 
     # Provider-configured stale timeout takes priority over env default.

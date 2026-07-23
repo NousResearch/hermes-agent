@@ -342,7 +342,6 @@ class TestDelegationCleanup:
             raise RuntimeError("test abort")
 
         child.run_conversation.side_effect = run_conversation
-        child._relay_pending_turn_id = None
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **kwargs: relay_host)
 
@@ -379,12 +378,16 @@ class TestDelegationCleanup:
         parent._active_children_lock = threading.Lock()
         child = MagicMock()
         child.session_id = "active-child-session"
-        child._relay_pending_turn_id = "active-child-turn"
         child._delegate_saved_tool_names = ["tool1"]
         child.run_conversation.side_effect = RuntimeError("test abort")
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **kwargs: relay_host)
+        monkeypatch.setattr(
+            relay_runtime.SESSION_COORDINATOR,
+            "has_active_turn",
+            lambda **_kwargs: True,
+        )
 
         result = _run_single_child(
             task_index=0,
@@ -395,3 +398,90 @@ class TestDelegationCleanup:
 
         assert result["status"] == "error"
         relay_host.unregister_subagent.assert_not_called()
+
+    def test_timed_out_child_keeps_relay_session_until_its_turn_exits(
+        self, monkeypatch, tmp_path
+    ):
+        from unittest.mock import MagicMock
+
+        from agent import relay_runtime
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.delegate_tool import _run_single_child
+
+        relay_runtime._reset_for_tests()
+        profile_home = tmp_path / "profile-timeout"
+        profile_token = set_hermes_home_override(profile_home)
+        child_started = threading.Event()
+        release_child = threading.Event()
+        child_finished = threading.Event()
+        parent = MagicMock()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+        child = MagicMock()
+        child.session_id = "timed-out-child"
+        child._delegate_saved_tool_names = ["tool1"]
+        child.get_activity_summary.return_value = {"api_call_count": 1}
+        parent._active_children.append(child)
+        relay_host = MagicMock()
+        monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
+        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+
+        def run_conversation(**kwargs):
+            lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=child.session_id,
+                platform="subagent",
+            )
+            turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+                lease,
+                turn_id="timed-out-child-turn",
+                task_id=kwargs["task_id"],
+            )
+            child_started.set()
+            try:
+                release_child.wait(timeout=5)
+                return {
+                    "final_response": "late result",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+            finally:
+                relay_runtime.SESSION_COORDINATOR.end_turn(
+                    turn,
+                    outcome="cancelled",
+                )
+                relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+                child_finished.set()
+
+        child.run_conversation.side_effect = run_conversation
+        try:
+            result = _run_single_child(
+                task_index=0,
+                goal="test timed-out turn cleanup",
+                child=child,
+                parent_agent=parent,
+            )
+
+            assert child_started.is_set()
+            assert result["status"] == "timeout"
+            assert relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                profile_key=str(profile_home),
+                session_id=child.session_id,
+            )
+            relay_host.unregister_subagent.assert_not_called()
+
+            release_child.set()
+            assert child_finished.wait(timeout=5)
+            assert not relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                profile_key=str(profile_home),
+                session_id=child.session_id,
+            )
+        finally:
+            release_child.set()
+            reset_hermes_home_override(profile_token)
+            relay_runtime._reset_for_tests()

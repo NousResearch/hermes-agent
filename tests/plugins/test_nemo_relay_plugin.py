@@ -381,7 +381,7 @@ def test_shared_metrics_and_rich_plugin_share_one_core_session(
         "HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY", str(tmp_path / "atif")
     )
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_cli.config.read_raw_config",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     plugin = _fresh_plugin(monkeypatch, fake)

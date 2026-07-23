@@ -2395,6 +2395,42 @@ class TestInstallPathSafety:
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
 
+    def test_install_rolls_back_existing_skill_and_lock_on_failure(self, tmp_path, monkeypatch):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        (q_dir / "SKILL.md").write_text("---\nname: demo\n---\nnew\n")
+        installed = skills_dir / "demo"
+        installed.mkdir()
+        (installed / "SKILL.md").write_text("---\nname: demo\n---\nold\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(exist_ok=True)
+        lock_path.write_text('{"installed":{"demo":{"content_hash":"old"}}}')
+        before_lock = lock_path.read_bytes()
+        bundle = hub.SkillBundle(
+            name="demo", files={"SKILL.md": "new"}, source="community",
+            identifier="x", trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="demo", source="community", trust_level="community",
+            verdict="safe",
+        )
+
+        monkeypatch.setattr(hub.HubLockFile, "record_install", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("lock failed")))
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub, "LOCK_FILE", lock_path):
+            with pytest.raises(RuntimeError, match="lock failed"):
+                hub.install_from_quarantine(q_dir, "demo", "", bundle, scan_result)
+
+        assert (installed / "SKILL.md").read_text().endswith("old\n")
+        assert lock_path.read_bytes() == before_lock
+        assert not list(skills_dir.glob(".demo.rollback-*"))
+
 
 # ---------------------------------------------------------------------------
 # parallel_search_sources — overall_timeout must be honoured even when a

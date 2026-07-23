@@ -576,11 +576,8 @@ def test_run_review_records_state(curator_env):
     assert state["last_run_summary"] is not None
 
 
-def test_dry_run_does_not_advance_state(curator_env, monkeypatch):
-    """Dry-run previews must not bump last_run_at or run_count. A preview
-    shouldn't defer the next scheduled real pass or look like a real run in
-    `hermes curator status`. Fixes #18373.
-    """
+def test_dry_run_does_not_mutate_state_or_reports(curator_env, monkeypatch):
+    """A preview must leave curator state and report storage unchanged."""
     c = curator_env["curator"]
     u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
@@ -596,13 +593,22 @@ def test_dry_run_does_not_advance_state(curator_env, monkeypatch):
         },
     )
 
-    c.run_curator_review(synchronous=True, dry_run=True)
-    state = c.load_state()
-    assert state.get("last_run_at") is None, "dry-run must not seed last_run_at"
-    assert state.get("run_count", 0) == 0, "dry-run must not bump run_count"
-    assert "dry-run" in (state.get("last_run_summary") or ""), (
-        "dry-run summary should be labeled so status output is unambiguous"
+    before_state = c.load_state()
+    reports_root = c._reports_root()
+    before_reports = sorted(str(path.relative_to(reports_root)) for path in reports_root.rglob("*")) if reports_root.exists() else []
+    summaries = []
+
+    c.run_curator_review(
+        synchronous=True,
+        dry_run=True,
+        consolidate=True,
+        on_summary=summaries.append,
     )
+
+    assert c.load_state() == before_state
+    after_reports = sorted(str(path.relative_to(reports_root)) for path in reports_root.rglob("*")) if reports_root.exists() else []
+    assert after_reports == before_reports
+    assert any("dry-run" in summary for summary in summaries)
 
 
 def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):

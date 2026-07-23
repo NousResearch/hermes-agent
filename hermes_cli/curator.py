@@ -183,7 +183,7 @@ def _cmd_run(args) -> int:
     # so run_curator_review reads curator.consolidate from config.
     consolidate = True if bool(getattr(args, "consolidate", False)) else None
     if dry:
-        print("curator: running DRY-RUN (report only, no mutations)...")
+        print("curator: running DRY-RUN (preview only, no filesystem or state mutations)...")
     else:
         print("curator: running review pass...")
     if consolidate is None and not curator.get_consolidate():
@@ -221,8 +221,8 @@ def _cmd_run(args) -> int:
     if dry:
         if synchronous:
             print(
-                "dry-run: no changes applied. Read the report with "
-                "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+                "dry-run: no changes applied and no report/state files written. "
+                "Run `hermes curator run` (no flag) to apply."
             )
         else:
             print(
@@ -594,8 +594,8 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     )
     p_run.add_argument(
         "--dry-run", dest="dry_run", action="store_true",
-        help="Report only — no state changes, no archives, no consolidation "
-             "(use this to preview what curator would do)",
+        help="Preview only — no filesystem/state changes, archives, or consolidation "
+             "(prints what curator would do)",
     )
     p_run.add_argument(
         "--consolidate", dest="consolidate", action="store_true",

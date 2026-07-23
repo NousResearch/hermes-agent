@@ -1518,12 +1518,11 @@ def run_curator_review(
     skipped entirely (no aux-model cost).
 
     If *dry_run* is True, the automatic stale/archive transitions are SKIPPED
-    and the LLM review pass is instructed to produce a report only — no
-    skill_manage mutations, no terminal archive moves. The REPORT.md still
-    gets written and ``state.last_report_path`` still records it so users
-    can read what the curator WOULD have done. A dry-run also honors
-    *consolidate*: when consolidation is off, the preview only reports the
-    deterministic prune candidates.
+    and the LLM review pass is instructed to preview only — no skill_manage
+    mutations, terminal archive moves, report files, or curator-state writes.
+    The preview is returned through the normal summary callback/stdout surface.
+    A dry-run also honors *consolidate*: when consolidation is off, the preview
+    only reports the deterministic prune candidates.
     """
     if consolidate is None:
         consolidate = get_consolidate()
@@ -1567,18 +1566,15 @@ def run_curator_review(
         auto_summary_parts.append(f"{counts['reactivated']} reactivated")
     auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
 
-    # Persist state before the LLM pass so a crash mid-review still records
-    # the run and doesn't immediately re-trigger. In dry-run we do NOT bump
-    # last_run_at or run_count — a preview shouldn't push the next scheduled
-    # real pass out. We still record a summary so `hermes curator status`
-    # shows that a preview ran.
-    state = load_state()
+    # Persist only real runs. A preview is observational: no report, state,
+    # timestamp, counter, or summary write is allowed.
+    prefix = "dry-run auto: " if dry_run else "auto: "
     if not dry_run:
+        state = load_state()
         state["last_run_at"] = start.isoformat()
         state["run_count"] = int(state.get("run_count", 0)) + 1
-    prefix = "dry-run auto: " if dry_run else "auto: "
-    state["last_run_summary"] = f"{prefix}{auto_summary}"
-    save_state(state)
+        state["last_run_summary"] = f"{prefix}{auto_summary}"
+        save_state(state)
 
     def _llm_pass():
         nonlocal auto_summary
@@ -1606,29 +1602,30 @@ def run_curator_review(
                 "error": None,
             }
             elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-            state2 = load_state()
-            state2["last_run_duration_seconds"] = elapsed
-            state2["last_run_summary"] = final_summary
-            try:
-                after_report = skill_usage.agent_created_report()
-            except Exception:
-                after_report = []
-            try:
-                report_path = _write_run_report(
-                    started_at=start,
-                    elapsed_seconds=elapsed,
-                    auto_counts=counts,
-                    auto_summary=auto_summary,
-                    before_report=before_report,
-                    before_names=before_names,
-                    after_report=after_report,
-                    llm_meta=llm_meta,
-                )
-                if report_path is not None:
-                    state2["last_report_path"] = str(report_path)
-            except Exception as e:
-                logger.debug("Curator report write failed: %s", e, exc_info=True)
-            save_state(state2)
+            if not dry_run:
+                state2 = load_state()
+                state2["last_run_duration_seconds"] = elapsed
+                state2["last_run_summary"] = final_summary
+                try:
+                    after_report = skill_usage.agent_created_report()
+                except Exception:
+                    after_report = []
+                try:
+                    report_path = _write_run_report(
+                        started_at=start,
+                        elapsed_seconds=elapsed,
+                        auto_counts=counts,
+                        auto_summary=auto_summary,
+                        before_report=before_report,
+                        before_names=before_names,
+                        after_report=after_report,
+                        llm_meta=llm_meta,
+                    )
+                    if report_path is not None:
+                        state2["last_report_path"] = str(report_path)
+                except Exception as e:
+                    logger.debug("Curator report write failed: %s", e, exc_info=True)
+                save_state(state2)
             if on_summary:
                 try:
                     on_summary(f"curator: {final_summary}")
@@ -1707,34 +1704,34 @@ def run_curator_review(
             logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
 
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-        state2 = load_state()
-        state2["last_run_duration_seconds"] = elapsed
-        state2["last_run_summary"] = final_summary
+        if not dry_run:
+            state2 = load_state()
+            state2["last_run_duration_seconds"] = elapsed
+            state2["last_run_summary"] = final_summary
 
-        # Write the per-run report. Runs in a best-effort try so a
-        # reporting bug never breaks the curator itself. Report path is
-        # recorded in state so `hermes curator status` can point at it.
-        try:
-            after_report = skill_usage.agent_created_report()
-        except Exception:
-            after_report = []
-        try:
-            report_path = _write_run_report(
-                started_at=start,
-                elapsed_seconds=elapsed,
-                auto_counts=counts,
-                auto_summary=auto_summary,
-                before_report=before_report,
-                before_names=before_names,
-                after_report=after_report,
-                llm_meta=llm_meta,
-            )
-            if report_path is not None:
-                state2["last_report_path"] = str(report_path)
-        except Exception as e:
-            logger.debug("Curator report write failed: %s", e, exc_info=True)
+            # Write the per-run report only for a real run. Preview mode must
+            # leave both report storage and curator state byte-for-byte intact.
+            try:
+                after_report = skill_usage.agent_created_report()
+            except Exception:
+                after_report = []
+            try:
+                report_path = _write_run_report(
+                    started_at=start,
+                    elapsed_seconds=elapsed,
+                    auto_counts=counts,
+                    auto_summary=auto_summary,
+                    before_report=before_report,
+                    before_names=before_names,
+                    after_report=after_report,
+                    llm_meta=llm_meta,
+                )
+                if report_path is not None:
+                    state2["last_report_path"] = str(report_path)
+            except Exception as e:
+                logger.debug("Curator report write failed: %s", e, exc_info=True)
 
-        save_state(state2)
+            save_state(state2)
 
         if on_summary:
             try:

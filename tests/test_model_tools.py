@@ -520,6 +520,53 @@ class TestDisabledToolsetsPlatformBundle:
             f"Web tools not removed: {present_web - removed}"
         )
 
+    def test_disabling_browser_keeps_web_search(self):
+        """Regression for #64503: disabling `browser` must not strip
+        `web_search` from the tool schema, since `web_search` is also a
+        member of the `web` toolset. Browser used to statically list
+        `web_search`, which caused strict toolset subtraction to silently
+        remove it whenever the browser toolset was disabled — even when
+        the `web` toolset was still enabled with a valid Tavily/EXA key.
+
+        Mock _check_fn_cached so all check_fns return True regardless of
+        env vars — we are testing the toolset subtraction logic, not the
+        check_fn requirements.
+        """
+        from unittest import mock
+        from model_tools import get_tool_definitions
+
+        with mock.patch("tools.registry._check_fn_cached", return_value=True):
+            # Explicit enabled list shape
+            tools_explicit = get_tool_definitions(
+                enabled_toolsets=["web", "terminal"],
+                disabled_toolsets=["browser"],
+                quiet_mode=True,
+            )
+            names_explicit = {t["function"]["name"] for t in tools_explicit}
+            assert "web_search" in names_explicit, (
+                "web_search missing after disabling browser with "
+                "enabled_toolsets=['web','terminal']"
+            )
+
+            # Default config path (enabled_toolsets=None)
+            tools_default = get_tool_definitions(
+                enabled_toolsets=None,
+                disabled_toolsets=["browser"],
+                quiet_mode=True,
+            )
+            names_default = {t["function"]["name"] for t in tools_default}
+            assert "web_search" in names_default, (
+                "web_search missing after disabling browser with "
+                "enabled_toolsets=None — config.yaml path"
+            )
+
+            # Sanity: actual browser-only tools are stripped in both shapes
+            for tools in (tools_explicit, tools_default):
+                names = {t["function"]["name"] for t in tools}
+                assert "browser_navigate" not in names, (
+                    f"browser_navigate still present after disabling browser: {names}"
+                )
+
 
     def test_disabling_bundle_removes_platform_tools_but_keeps_core(self):
         """Disabling hermes-discord (when enabled) removes discord/discord_admin

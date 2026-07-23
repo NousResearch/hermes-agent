@@ -662,7 +662,7 @@ def cronjob(
     prompt: Optional[str] = None,
     schedule: Optional[str] = None,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Union[int, str]] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
     skill: Optional[str] = None,
@@ -942,8 +942,10 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Normalize: treat "forever"/"infinite" / 0 / negative as None (infinite)
+                if isinstance(repeat, str):
+                    repeat = None if repeat.lower() in {"forever", "infinite"} else int(repeat)
+                normalized_repeat = None if repeat is None else (None if repeat <= 0 else repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
@@ -1010,8 +1012,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "description": "Optional human-friendly name"
             },
             "repeat": {
-                "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "anyOf": [
+                    {"type": "integer"},
+                    {"type": "string", "enum": ["forever", "infinite"]}
+                ],
+                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring). Pass an integer for a fixed N-run job, or the string 'forever'/'infinite' to explicitly mark a recurring job as unbounded (equivalent to omitting on a recurring schedule)."
             },
             "deliver": {
                 "type": "string",

@@ -7,6 +7,7 @@ from tools.cronjob_tools import (
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
+    CRONJOB_SCHEMA,
 )
 
 
@@ -285,6 +286,111 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "abc123deadbe"
         assert listing["jobs"][0]["prompt_preview"] == ""
         assert listing["jobs"][0]["schedule"] == "every 60m"
+
+    def test_create_with_repeat_forever_string(self):
+        """``repeat=\"forever\"`` must not throw ``str <= int`` TypeError (#64520)."""
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Repeat forever test",
+                schedule="every 1h",
+                repeat="forever",
+            )
+        )
+        assert created["success"] is True, f"Expected success, got {created}"
+        # Verify internal storage: repeat.times should be None (infinite).
+        from cron.jobs import list_jobs
+        jobs = list_jobs()
+        assert len(jobs) >= 1
+        job = jobs[-1]  # most-recently created
+        assert job["repeat"]["times"] is None, f"Expected None (forever), got {job['repeat']['times']}"
+
+    def test_create_with_repeat_infinite_string(self):
+        """``repeat=\"infinite\"`` is accepted as a synonym for forever."""
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Infinite repeat test",
+                schedule="every 1h",
+                repeat="infinite",
+            )
+        )
+        assert created["success"] is True
+        from cron.jobs import list_jobs
+        jobs = list_jobs()
+        # Find the job we just created (last one with this prompt)
+        job = next(j for j in reversed(jobs) if j.get("prompt") == "Infinite repeat test")
+        assert job["repeat"]["times"] is None
+
+    def test_create_with_repeat_one_string(self):
+        """``repeat=\"1\"`` as a string is coerced to int 1."""
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Single run test",
+                schedule="30m",  # one-shot
+                repeat="1",
+            )
+        )
+        assert created["success"] is True
+        from cron.jobs import list_jobs
+        jobs = list_jobs()
+        job = next(j for j in reversed(jobs) if j.get("prompt") == "Single run test")
+        # For a one-shot schedule, repeat should be 1 (auto-set).
+        assert job["repeat"]["times"] == 1
+
+    def test_update_with_repeat_forever_string(self):
+        """``repeat="forever"`` works on the update path too (#64520 / #7142).
+
+        Per teknium1 review feedback: ensure the update path mirrors the
+        create-path fix — a string directive must not raise a TypeError,
+        and ``"forever"`` must normalize to ``times=None`` (infinite).
+        """
+        created = json.loads(
+            cronjob(action="create", prompt="Repeat update test", schedule="every 1h", repeat=3)
+        )
+        assert created["success"] is True
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, prompt="Repeat update test", repeat="forever")
+        )
+        assert updated["success"] is True, f"update failed: {updated}"
+        from cron.jobs import get_job
+        job = get_job(job_id)
+        assert job["repeat"]["times"] is None, (
+            f"Expected None after update to 'forever', got {job['repeat']['times']}"
+        )
+
+    def test_update_with_repeat_infinite_string(self):
+        """``repeat="infinite"`` is accepted on the update path."""
+        created = json.loads(
+            cronjob(action="create", prompt="Infinite update test", schedule="every 1h", repeat=2)
+        )
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, prompt="Infinite update test", repeat="infinite")
+        )
+        assert updated["success"] is True, f"update failed: {updated}"
+        from cron.jobs import get_job
+        job = get_job(job_id)
+        assert job["repeat"]["times"] is None
+
+    def test_update_with_repeat_numeric_string(self):
+        """``repeat="5"`` is coerced to int 5 on the update path."""
+        created = json.loads(
+            cronjob(action="create", prompt="Num update test", schedule="every 1h", repeat=2)
+        )
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, prompt="Num update test", repeat="5")
+        )
+        assert updated["success"] is True, f"update failed: {updated}"
+        from cron.jobs import get_job
+        job = get_job(job_id)
+        assert job["repeat"]["times"] == 5
 
     def test_pause_and_resume(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
@@ -704,3 +810,31 @@ class TestValidateCronBaseUrl:
 
     def test_base_url_without_provider_rejected(self):
         assert self._v(None, "https://x.example/v1") is not None
+
+
+class TestCronjobSchemaRepeat:
+    """CRONJOB_SCHEMA's repeat field must accept both integer and
+    'forever'/'infinite' strings at the JSON Schema level (#64724)."""
+
+    def _repeat_schema(self):
+        return CRONJOB_SCHEMA["parameters"]["properties"]["repeat"]
+
+    def test_repeat_schema_has_anyOf(self):
+        rs = self._repeat_schema()
+        assert "anyOf" in rs, f"Expected anyOf in repeat schema, got keys: {list(rs.keys())}"
+
+    def test_repeat_schema_accepts_integer(self):
+        rs = self._repeat_schema()
+        int_schema = next(s for s in rs["anyOf"] if s.get("type") == "integer")
+        assert int_schema is not None
+
+    def test_repeat_schema_accepts_forever_string(self):
+        rs = self._repeat_schema()
+        str_schema = next(s for s in rs["anyOf"] if s.get("type") == "string")
+        assert "forever" in str_schema["enum"]
+        assert "infinite" in str_schema["enum"]
+
+    def test_repeat_schema_description_mentions_forever(self):
+        rs = self._repeat_schema()
+        desc = rs.get("description", "")
+        assert "forever" in desc, f"Description should mention forever: {desc}"

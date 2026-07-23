@@ -1073,7 +1073,7 @@ def create_job(
     prompt: Optional[str],
     schedule: str,
     name: Optional[str] = None,
-    repeat: Optional[int] = None,
+    repeat: Optional[Union[int, str]] = None,
     deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
@@ -1137,9 +1137,12 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # Normalize repeat: treat 0, negative, or "forever" as None (infinite)
+    if repeat is not None:
+        if isinstance(repeat, str):
+            repeat = None if repeat.lower() in {"forever", "infinite"} else int(repeat)
+        if repeat is not None and repeat <= 0:
+            repeat = None
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

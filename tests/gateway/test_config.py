@@ -1962,6 +1962,40 @@ class TestWebhookPortBridging:
         wh = config.platforms[Platform.WEBHOOK]
         assert "port" not in wh.extra or wh.extra.get("port") is None
 
+    def test_msgraph_webhook_port_host_secret_bridged_from_toplevel(self, tmp_path, monkeypatch):
+        """msgraph_webhook top-level port/host/secret must be bridged into extra,
+        with an explicit extra: value still winning over the top-level one."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  msgraph_webhook:\n"
+            "    enabled: true\n"
+            "    host: 0.0.0.0\n"
+            "    port: 8651\n"
+            "    secret: toplevel-secret\n"
+            "    extra:\n"
+            "      client_state: my-client-state\n"
+            "      secret: extra-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("MSGRAPH_WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("MSGRAPH_WEBHOOK_PORT", raising=False)
+        monkeypatch.delenv("MSGRAPH_WEBHOOK_CLIENT_STATE", raising=False)
+
+        config = load_gateway_config()
+
+        assert Platform.MSGRAPH_WEBHOOK in config.platforms
+        ms = config.platforms[Platform.MSGRAPH_WEBHOOK]
+        assert ms.enabled is True
+        assert ms.extra.get("port") == 8651
+        assert ms.extra.get("host") == "0.0.0.0"
+        # explicit extra: wins over top-level
+        assert ms.extra.get("secret") == "extra-secret"
+        assert ms.extra.get("client_state") == "my-client-state"
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

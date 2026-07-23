@@ -1,5 +1,6 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 
+import { textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
@@ -182,6 +183,21 @@ export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: str
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const USER_CONTEXT_TAIL_RE = /(?:^|\n)--- (?:Attached Context|Context Warnings) ---[\s\S]*$/i
+const USER_SCREENSHOT_TAIL_RE = /(?:\s*\[screenshot\]\s*)+$/i
+
+/** Reduce local, projected, and persisted forms of one user turn to its visible prompt. */
+export function comparableUserMessageText(text: string): string {
+  return textWithoutEmbeddedImages(text)
+    .replaceAll(String.fromCharCode(13), '')
+    .replace(USER_CONTEXT_TAIL_RE, '')
+    .replace(/\n?\[Image attached(?: at)?:[\s\S]*?\]/gi, '')
+    .replace(/\n?\[IMAGE:[\s\S]*?\]/gi, '')
+    .replace(/\n?@image:[^\s]+/gi, '')
+    .replace(/\n?@file:[^\s]+/gi, '')
+    .replace(USER_SCREENSHOT_TAIL_RE, '')
+    .trim()
+}
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -927,39 +943,33 @@ export function preserveLocalAssistantErrors(
   })
 
   const existingIds = new Set(mergedNextMessages.map(message => message.id))
-  
-  const stripAttachments = (text: string) => text
-    .replace(/\n?\[Image attached(?: at)?:[\s\S]*?\]/gi, '')
-    .replace(/\n?\[IMAGE:[\s\S]*?\]/gi, '')
-    .replace(/\n?@image:[^\s]+/gi, '')
-    .replace(/\n?@file:[^\s]+/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const normalize = (value: string) => comparableUserMessageText(value).replace(/\s+/g, ' ')
 
-  const normalize = (value: string) => stripAttachments(value)
+  const currentUsers = currentMessages
+    .map((message, index) => ({ index, message }))
+    .filter(({ message }) => message.role === 'user' && !message.hidden)
 
-  // Find all local assistant errors that need to be preserved
-  const errorsToPreserve: ChatMessage[] = []
-  
+  const authoritativeUsers = mergedNextMessages.filter(message => message.role === 'user' && !message.hidden)
+
+  const errorsToPreserve: Array<{
+    matchedUserId?: string
+    message: ChatMessage
+    precedingUser: ChatMessage | null
+    userFromTail: number
+  }> = []
+
   for (let index = 0; index < currentMessages.length; index += 1) {
     const message = currentMessages[index]
+
     if (message.role === 'assistant' && message.error && !message.hidden && !existingIds.has(message.id)) {
-      // Find the preceding user message in currentMessages to know where this error belongs
-      let precedingUser: ChatMessage | null = null
-      for (let probe = index - 1; probe >= 0; probe -= 1) {
-        if (!currentMessages[probe].hidden && currentMessages[probe].role === 'user') {
-          precedingUser = currentMessages[probe]
-          break
-        }
-      }
-      
+      const precedingUserOrdinal = currentUsers.findLastIndex(user => user.index < index)
+      const precedingUser = precedingUserOrdinal >= 0 ? currentUsers[precedingUserOrdinal].message : null
+
       errorsToPreserve.push({
-        ...message,
-        pending: false,
-        // Attach a hint about which user message it followed
-        _localPrecedingUserText: precedingUser ? normalize(chatMessageText(precedingUser)) : '',
-        _localPrecedingUserRefs: precedingUser ? (precedingUser.attachmentRefs ?? []).join('\n') : ''
-      } as any)
+        message: { ...message, pending: false },
+        precedingUser,
+        userFromTail: precedingUserOrdinal >= 0 ? currentUsers.length - precedingUserOrdinal - 1 : -1
+      })
     }
   }
 
@@ -967,53 +977,48 @@ export function preserveLocalAssistantErrors(
     return mergedNextMessages
   }
 
+  // Align from the transcript tail, not by the first matching text. A repeated
+  // prompt must not move the newest local error underneath an older equal turn.
+  for (const localError of errorsToPreserve) {
+    if (!localError.precedingUser || localError.userFromTail < 0) {
+      continue
+    }
+
+    const candidate = authoritativeUsers.at(-(localError.userFromTail + 1))
+
+    if (
+      candidate &&
+      normalize(chatMessageText(candidate)) === normalize(chatMessageText(localError.precedingUser)) &&
+      (candidate.attachmentRefs ?? []).join('\n') === (localError.precedingUser.attachmentRefs ?? []).join('\n')
+    ) {
+      localError.matchedUserId = candidate.id
+    }
+  }
+
   const result: ChatMessage[] = []
   const consumedErrors = new Set<string>()
 
-  // Rebuild the array, inserting errors immediately after the matching user message
   for (const message of mergedNextMessages) {
     result.push(message)
 
     if (message.role === 'user' && !message.hidden) {
-      const text = normalize(chatMessageText(message))
-      const refs = (message.attachmentRefs ?? []).join('\n')
-
-      // Find any unconsumed errors that belonged to this user message
-      for (const err of errorsToPreserve) {
-        if (!consumedErrors.has(err.id) && (err as any)._localPrecedingUserText === text && (err as any)._localPrecedingUserRefs === refs) {
-          const cleanErr = { ...err }
-          delete (cleanErr as any)._localPrecedingUserText
-          delete (cleanErr as any)._localPrecedingUserRefs
-          result.push(cleanErr)
-          consumedErrors.add(err.id)
+      for (const localError of errorsToPreserve) {
+        if (!consumedErrors.has(localError.message.id) && localError.matchedUserId === message.id) {
+          result.push(localError.message)
+          consumedErrors.add(localError.message.id)
         }
       }
     }
   }
 
-  // Append any errors that couldn't be matched (along with their user message if it's missing)
-  for (const err of errorsToPreserve) {
-    if (!consumedErrors.has(err.id)) {
-      const text = (err as any)._localPrecedingUserText
-      const refs = (err as any)._localPrecedingUserRefs
-      
-      // If the user message itself is missing from the DB (optimistic and dropped),
-      // we must also restore the user message so the error isn't orphaned.
-      const originalUser = currentMessages.find(m => 
-        m.role === 'user' && 
-        normalize(chatMessageText(m)) === text && 
-        (m.attachmentRefs ?? []).join('\n') === refs
-      )
-      
-      if (originalUser && !existingIds.has(originalUser.id)) {
-        result.push(originalUser)
-        existingIds.add(originalUser.id)
+  for (const localError of errorsToPreserve) {
+    if (!consumedErrors.has(localError.message.id)) {
+      if (localError.precedingUser && !existingIds.has(localError.precedingUser.id)) {
+        result.push(localError.precedingUser)
+        existingIds.add(localError.precedingUser.id)
       }
-      
-      const cleanErr = { ...err }
-      delete (cleanErr as any)._localPrecedingUserText
-      delete (cleanErr as any)._localPrecedingUserRefs
-      result.push(cleanErr)
+
+      result.push(localError.message)
     }
   }
 

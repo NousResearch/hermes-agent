@@ -1,5 +1,11 @@
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  chatMessageText,
+  comparableUserMessageText,
+  textPart
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -176,14 +182,7 @@ export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]):
 }
 
 export function stripAttachmentNotices(text: string): string {
-  const withoutEmbedded = textWithoutEmbeddedImages(text)
-
-  return withoutEmbedded
-    .replace(/\n?\[Image attached(?: at)?:[\s\S]*?\]/gi, '')
-    .replace(/\n?\[IMAGE:[\s\S]*?\]/gi, '')
-    .replace(/\n?@image:[^\s]+/gi, '')
-    .replace(/\n?@file:[^\s]+/gi, '')
-    .trim()
+  return comparableUserMessageText(text)
 }
 
 export function userTextMatches(textA: string, textB: string): boolean {
@@ -234,12 +233,20 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const previousVisibleText = textWithoutEmbeddedImages(previousText)
     let preserved = message
 
-    if (
-      nextText === previousVisibleText ||
-      nextText === previousText.trim() ||
-      userTextMatches(nextText, previousText)
-    ) {
+    const matchingText =
+      nextText === previousVisibleText || nextText === previousText.trim() || userTextMatches(nextText, previousText)
+
+    if (matchingText) {
       preserved = preserveReasoningParts(preserved, previous)
+    }
+
+    const matchingUserTurn =
+      message.role === 'user' &&
+      previous.role === 'user' &&
+      comparableUserMessageText(nextText) === comparableUserMessageText(previousText)
+
+    if (matchingUserTurn && previous.attachmentRefs?.length && !preserved.attachmentRefs?.length) {
+      preserved = { ...preserved, attachmentRefs: previous.attachmentRefs }
     }
 
     const previousImages = embeddedImageUrls(previousText)
@@ -334,13 +341,12 @@ export function preserveLocalPendingTurnMessages(
 }
 
 /**
- * Append the backend-only tail of a live turn to a stored transcript.
+ * Append the missing backend-only tail of a live turn to a stored transcript.
  *
- * Session history is committed only when a turn finishes. During a reconnect,
- * `inflight` is therefore the authority for the currently running user/assistant
- * pair, while `queued` is an accepted next-turn prompt waiting in gateway
- * memory. Stable ids let repeated activate/resume hydration reconcile instead
- * of growing duplicate rows.
+ * The live DB display can already contain the current user and tool rows because
+ * the agent persists incrementally. Avoid projecting that user twice, while
+ * retaining `inflight` for an unpersisted turn/stream and `queued` for the
+ * accepted next-turn prompt that exists only in gateway memory.
  */
 export function appendLiveSessionProjection(
   messages: ChatMessage[],
@@ -357,8 +363,38 @@ export function appendLiveSessionProjection(
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
+  const lastAuthoritativeUserIndex = messages.findLastIndex(message => message.role === 'user' && !message.hidden)
+  const lastAuthoritativeUser = messages[lastAuthoritativeUserIndex]
+  const normalizeAssistant = (value: string) => value.replace(/\s+/g, ' ').trim()
 
-  if (inflightUser) {
+  // Equal user text can be an older completed turn. If that turn has visible
+  // assistant output, treat it as live only when the in-flight snapshot carries
+  // the same prefix; an empty/tool-only tail is safe because it has no settled
+  // answer that could prove the turn already completed.
+  const authoritativeAssistantTail = normalizeAssistant(
+    messages
+      .slice(lastAuthoritativeUserIndex + 1)
+      .filter(message => message.role === 'assistant' && !message.hidden)
+      .map(chatMessageText)
+      .join('')
+  )
+
+  const projectedAssistant = normalizeAssistant(inflightAssistant)
+
+  const assistantTailCanBelongToInflight =
+    !authoritativeAssistantTail ||
+    (projectedAssistant &&
+      (projectedAssistant.startsWith(authoritativeAssistantTail) ||
+        authoritativeAssistantTail.startsWith(projectedAssistant)))
+
+  const inflightUserAlreadyStored = Boolean(
+    inflightUser &&
+    lastAuthoritativeUser &&
+    comparableUserMessageText(chatMessageText(lastAuthoritativeUser)) === comparableUserMessageText(inflightUser) &&
+    assistantTailCanBelongToInflight
+  )
+
+  if (inflightUser && !inflightUserAlreadyStored) {
     projected.push({
       id: `user-inflight-${sessionId}`,
       role: 'user',

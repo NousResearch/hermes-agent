@@ -310,6 +310,41 @@ describe('preserveLocalAssistantErrors', () => {
     expect(merged.map(message => message.id)).toEqual(['stored-user', 'assistant-error-1'])
   })
 
+  it('aligns a local error with an image turn persisted with screenshot placeholders', () => {
+    const caption = 'Switched away and back'
+
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'stored-user',
+        parts: [
+          {
+            text: `${caption}\n\n[Image attached at: C:\\shots\\one.png]\n[screenshot]`,
+            type: 'text'
+          }
+        ],
+        role: 'user'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      {
+        id: 'optimistic-user',
+        parts: [{ text: caption, type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'Provider failed',
+        id: 'assistant-error-1',
+        parts: [],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual(['stored-user', 'assistant-error-1'])
+  })
+
   it('keeps local user when only older history has equivalent text', () => {
     const nextMessages: ChatMessage[] = [
       {

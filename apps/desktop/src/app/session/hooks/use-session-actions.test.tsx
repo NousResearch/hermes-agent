@@ -780,6 +780,55 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('newest prompt')
   })
 
+  it('does not duplicate an in-flight image turn that live history already persisted', async () => {
+    const caption = 'Switched away and back'
+
+    const storedMessages = [
+      { content: 'earlier question', role: 'user', timestamp: 1 },
+      { content: 'earlier answer', role: 'assistant', timestamp: 2 },
+      {
+        content: `${caption}\n\n[Image attached at: C:\\shots\\one.png]\n[screenshot]`,
+        role: 'user',
+        timestamp: 3
+      }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          message_count: storedMessages.length,
+          messages: storedMessages,
+          running: true,
+          inflight: { user: caption, assistant: '', streaming: true },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, state) => (resumedState = state)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    const users = resumedState?.messages.filter(message => message.role === 'user') ?? []
+    expect(users).toHaveLength(2)
+    expect(users.map(message => message.id)).not.toContain('user-inflight-runtime-1')
+  })
+
   it('uses the continuation projection when resume rotates an equal-length stored transcript', async () => {
     const parentMessages = [
       { content: 'question before compression', role: 'user', timestamp: 1 },

@@ -4979,7 +4979,13 @@ class TestThreadReplyHandling:
         })
 
         adapter_with_session_store.handle_message.assert_called_once()
-        assert "555.000" in adapter_with_session_store._mentioned_threads
+        # Workspace-scoped marker (#20583): the event carries team T_TEAM, so
+        # the registered marker is (team_id, ts) — identical thread ts values
+        # in two workspaces must never wake each other's bot.
+        assert (
+            "T_TEAM",
+            "555.000",
+        ) in adapter_with_session_store._mentioned_threads
 
     @pytest.mark.asyncio
     async def test_thread_reply_with_mention_strips_bot_id(
@@ -7715,8 +7721,9 @@ class TestTrackingStructureBounds:
             respond = AsyncMock()  # noqa: F841 — kept for shape clarity
             await adapter._handle_slash_command(command)
         assert len(adapter._slash_command_contexts) <= adapter._SLASH_CTX_MAX
-        # Newest stash survives.
-        assert ("C1", "U9") in adapter._slash_command_contexts
+        # Newest stash survives. Keys are workspace-scoped 3-tuples (#20583)
+        # because the slash payload carries team_id.
+        assert ("T1", "C1", "U9") in adapter._slash_command_contexts
 
     def test_bot_message_ts_active_thread_survives_churn(self, adapter):
         """#51019 regression: an active thread registered early must survive

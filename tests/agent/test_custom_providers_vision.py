@@ -261,3 +261,82 @@ class TestDecideImageInputMode:
         }
         result = decide_image_input_mode("my-provider", "my-model", cfg)
         assert result == "text"
+
+    def test_cli_named_provider_identity_survives_custom_runtime_resolution(self):
+        """The CLI-selected name must drive lookup after runtime canonicalizes it."""
+        from agent.image_routing import decide_image_input_mode
+
+        cfg = {
+            "model": {"provider": "default-proxy"},
+            "custom_providers": [
+                {
+                    "name": "custom",
+                    "models": {"shared-model": {"supports_vision": False}},
+                },
+                {
+                    "name": "default-proxy",
+                    "models": {"shared-model": {"supports_vision": False}},
+                },
+                {
+                    "name": "my-vision-provider",
+                    "models": {"shared-model": {"supports_vision": True}},
+                },
+            ],
+        }
+        assert decide_image_input_mode(
+            "custom",
+            "shared-model",
+            cfg,
+            requested_provider="my-vision-provider",
+        ) == "native"
+
+    def test_cli_named_provider_explicit_false_is_not_shadowed_by_default(self):
+        """A selected false override wins even when the configured default is true."""
+        from agent.image_routing import decide_image_input_mode
+
+        cfg = {
+            "model": {"provider": "default-proxy"},
+            "custom_providers": [
+                {
+                    "name": "default-proxy",
+                    "models": {"shared-model": {"supports_vision": True}},
+                },
+                {
+                    "name": "text-only-provider",
+                    "models": {"shared-model": {"supports_vision": False}},
+                },
+            ],
+        }
+        assert decide_image_input_mode(
+            "custom",
+            "shared-model",
+            cfg,
+            requested_provider="text-only-provider",
+        ) == "text"
+
+    def test_runtime_provider_identity_does_not_leak_to_another_model(self):
+        """Context identity is only evidence for its exact runtime provider/model."""
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from agent.image_routing import decide_image_input_mode
+
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-vision-provider",
+                    "models": {
+                        "selected-model": {"supports_vision": True},
+                        "other-model": {"supports_vision": True},
+                    },
+                }
+            ]
+        }
+        clear_runtime_main()
+        try:
+            set_runtime_main(
+                "custom",
+                "selected-model",
+                requested_provider="my-vision-provider",
+            )
+            assert decide_image_input_mode("custom", "other-model", cfg) == "text"
+        finally:
+            clear_runtime_main()

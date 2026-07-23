@@ -25,6 +25,7 @@ class TestCliTurnRoutePool:
             api_key="sk-test",
             base_url=None,
             provider="openai-codex",
+            requested_provider="my-named-provider",
             api_mode="codex_responses",
             acp_command=None,
             acp_args=[],
@@ -37,6 +38,12 @@ class TestCliTurnRoutePool:
         route = bound("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
+        assert route["runtime"]["requested_provider"] == "my-named-provider"
+        assert "my-named-provider" in route["signature"]
+
+        shell.requested_provider = "other-named-provider"
+        other_route = bound("test message")
+        assert other_route["signature"] != route["signature"]
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +61,7 @@ class TestGatewayTurnRoutePool:
             "api_key": "***",
             "base_url": None,
             "provider": "openai-codex",
+            "requested_provider": "openai-codex",
             "api_mode": "codex_responses",
             "command": None,
             "args": [],
@@ -64,6 +72,7 @@ class TestGatewayTurnRoutePool:
         route = bound("test message", "gpt-5.4", runtime_kwargs)
 
         assert route["runtime"]["credential_pool"] is fake_pool
+        assert route["runtime"]["requested_provider"] == "openai-codex"
 
 
 # ---------------------------------------------------------------------------

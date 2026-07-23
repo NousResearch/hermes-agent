@@ -1178,6 +1178,7 @@ def try_recover_primary_transport(
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent.model = rt["model"]
         agent.provider = rt["provider"]
+        agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -1341,6 +1342,7 @@ def restore_primary_runtime(agent) -> bool:
         # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
+        agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -2005,6 +2007,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         for name in (
             "model",
             "provider",
+            "requested_provider",
             "base_url",
             "api_mode",
             "api_key",
@@ -2033,6 +2036,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
+        agent.requested_provider = new_provider
         # Use the new base_url when provided. When it's empty AND the
         # provider is actually changing, do NOT fall back to the current
         # (old provider's) URL — that silently pairs the new provider label
@@ -2282,6 +2286,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

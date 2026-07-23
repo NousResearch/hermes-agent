@@ -12106,6 +12106,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     (self.provider or "").strip(),
                     (self.model or "").strip(),
                     load_config(),
+                    requested_provider=(self.requested_provider or "").strip(),
                 )
             except Exception as _img_exc:
                 logging.debug("image_routing decision failed, defaulting to text: %s", _img_exc)
@@ -16278,6 +16279,9 @@ def main(
                                 (cli.provider or "").strip(),
                                 (cli.model or "").strip(),
                                 load_config(),
+                                requested_provider=(
+                                    cli.requested_provider or ""
+                                ).strip(),
                             )
                         except Exception:
                             _img_mode = "text"

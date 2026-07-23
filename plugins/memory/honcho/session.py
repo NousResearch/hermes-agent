@@ -437,8 +437,11 @@ class HonchoSessionManager:
         # output is dominated by self-narration/tool-call traces which the
         # Honcho deriver turns into "hermes said X" observations on every
         # turn. Source-side fix is the only durable mitigation.
+        for m in session.messages:
+            if not m.get("_synced") and m.get("role") == "assistant":
+                m["_synced"] = True
+
         new_messages = [m for m in session.messages if not m.get("_synced")]
-        new_messages = [m for m in new_messages if m.get("role") != "assistant"]
         if not new_messages:
             return True
 

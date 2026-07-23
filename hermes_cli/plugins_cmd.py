@@ -1256,11 +1256,11 @@ def _get_current_context_engine() -> str:
 
 def _save_memory_provider(name: str) -> None:
     """Persist memory.provider to config.yaml."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config, save_config, set_active_memory_providers
     config = load_config()
     if "memory" not in config:
         config["memory"] = {}
-    config["memory"]["provider"] = name
+    set_active_memory_providers(config, [name])
     save_config(config)
 
 

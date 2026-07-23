@@ -14188,12 +14188,12 @@ def _try_termux_fast_tui_launch() -> bool:
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
     if sub == "off":
-        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config import load_config, save_config, set_active_memory_providers
 
         config = load_config()
         if not isinstance(config.get("memory"), dict):
             config["memory"] = {}
-        config["memory"]["provider"] = ""
+        set_active_memory_providers(config, [])
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")

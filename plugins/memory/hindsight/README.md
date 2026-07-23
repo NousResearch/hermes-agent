@@ -63,6 +63,15 @@ Config file: `~/.hermes/hindsight/config.json`
 | `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
+| `bank_observations_mission` | — | Rules for consolidating raw facts into observations. Applied via Banks API. |
+| `bank_retain_extraction_mode` | — | Bank extraction mode: `concise`, `verbose`, or `custom`. |
+| `bank_enable_observations` | — | Enable or disable observation consolidation for the bank. |
+| `bank_disposition_skepticism` | — | Bank skepticism disposition (1–5). |
+| `bank_disposition_literalism` | — | Bank literalism disposition (1–5). |
+| `bank_disposition_empathy` | — | Bank empathy disposition (1–5). |
+
+Configured bank guardrails are created/updated before the provider's first
+operation. This also applies to dynamically templated per-user banks.
 
 ### Recall
 
@@ -91,6 +100,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | Key | Default | Description |
 |-----|---------|-------------|
 | `auto_retain` | `true` | Automatically retain conversation turns |
+| `auto_retain_require_user_id` | `false` | Skip auto-retain when the integration has no stable user ID; useful for multi-user gateways and stateless automations. |
 | `retain_async` | `true` | Process retain asynchronously on the Hindsight server |
 | `retain_every_n_turns` | `1` | Retain every N turns (1 = every turn) |
 | `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
@@ -98,6 +108,15 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
+| `retain_roles` | `user,assistant` | Roles included in automatic retention. Accepts a comma-separated string or list. |
+
+Before automatic retention, Hermes strips injected `<memory-context>` blocks
+from both user and assistant text to prevent recalled memory from becoming new
+evidence. Partial batches are flushed on session switch and clean shutdown. The
+queue/sentinel transition is serialized with `sync_turn()`. Ambiguous failed
+append operations are **not** replayed automatically: a timeout can occur after
+the server committed, so blind retry could duplicate content. Failures remain
+observable through the provider's failure count and last-error state.
 
 ### Integration
 

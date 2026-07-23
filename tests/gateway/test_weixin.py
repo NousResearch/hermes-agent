@@ -1061,6 +1061,32 @@ class TestWeixinTextDebounce:
         asyncio.run(_drive())
         assert dispatched == ["one\ntwo\nthree"]
 
+    @pytest.mark.asyncio
+    async def test_active_session_bypasses_platform_batching(self):
+        from gateway.session import build_session_key
+
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 5.0
+
+        event = MessageEvent(
+            text="interrupt now",
+            message_type=MessageType.TEXT,
+            source=adapter.build_source(
+                chat_id="wxid_user1",
+                chat_type="dm",
+                user_id="wxid_user1",
+                user_name="wxid_user1",
+            ),
+        )
+        session_key = build_session_key(event.source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        await adapter._dispatch_text_event(event)
+
+        adapter.handle_message.assert_awaited_once_with(event)
+        assert adapter._pending_text_batches == {}
+
 
 class _StubResponse:
     def __init__(self, *, status=200, body="{}", delay=0.0):

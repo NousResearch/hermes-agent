@@ -5,7 +5,10 @@ the new list-based ``fallback_providers`` config format and chain
 advancement through multiple providers.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
@@ -210,6 +213,34 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
+
+    @pytest.mark.parametrize(
+        "provider",
+        ("copilot-acp", "github-copilot-acp", "copilot-acp-agent"),
+    )
+    def test_copilot_acp_gpt5_fallback_stays_on_chat_completions(self, provider):
+        """The ACP facade exposes ``chat.completions``, not ``responses``.
+
+        GPT-5 model-name routing must not upgrade a copilot-acp fallback to
+        codex_responses, or the next request crashes on ``client.responses``.
+        """
+        agent = _make_agent(
+            fallback_model={"provider": provider, "model": "gpt-5.6-luna"}
+        )
+        fallback_client = SimpleNamespace(
+            api_key="",
+            base_url="acp://copilot",
+            chat=SimpleNamespace(completions=object()),
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fallback_client, "gpt-5.6-luna"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "chat_completions"
+        assert not hasattr(agent.client, "responses")
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

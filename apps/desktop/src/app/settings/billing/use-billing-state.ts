@@ -11,15 +11,22 @@ export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
 export const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
 
-// Billing polls on its own while the page is mounted (react-query only ticks an
-// active observer), so the view stays live without a manual refresh control —
-// matching every other data view in the app. It pauses when the window is
-// backgrounded (refetchIntervalInBackground defaults to false).
+// The billing endpoint is the authoritative source of truth for balance / cap /
+// plan — the inference `x-nous-credits-*` headers are best-effort and can drift
+// out of sync (notably in team/org accounts where another member's spend moves
+// the shared balance without ever touching THIS client's headers). So the page
+// never trusts a cache: `staleTime: 0` + `refetchOnMount: 'always'` force a
+// fresh fetch every time it opens or regains focus, and it keeps polling every
+// 30s while mounted (react-query only ticks an active observer; it pauses when
+// the window is backgrounded — refetchIntervalInBackground defaults to false).
+// A `credits.*` notice crossing additionally invalidates ['billing','state'] to
+// pull the change in immediately rather than waiting for the next poll tick.
 const BILLING_QUERY_OPTIONS = {
   refetchInterval: 30_000,
+  refetchOnMount: 'always',
   refetchOnWindowFocus: true,
   retry: false,
-  staleTime: 30_000
+  staleTime: 0
 } as const
 
 export interface BillingSummaryItemView {

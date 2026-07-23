@@ -250,19 +250,25 @@ def _linux_x11_active_window_id() -> Optional[int]:
 
 
 def _select_capture_target(
-    windows: List[Dict[str, Any]], *, app_requested: bool
+    windows: List[Dict[str, Any]],
+    *,
+    app_requested: bool,
+    exact_target: bool = False,
 ) -> Dict[str, Any]:
     """Select the best window for capture from normalized list_windows output.
 
     Callers pass windows already sorted by ``z_index`` descending (higher =
     frontmost). When ordering is informative, keep that frontmost contract.
-    On Linux/X11, when every on-screen candidate shares the same ``z_index``
-    (tied or unknown), prefer ``_NET_ACTIVE_WINDOW`` over list order (#58026).
+    On Linux/X11, for unqualified default captures only (no app filter and no
+    exact pid/window_id), when every on-screen candidate shares the same
+    ``z_index`` (tied or unknown), prefer ``_NET_ACTIVE_WINDOW`` over list
+    order (#58026). Exact-target captures must not pay for an ``xprop`` probe.
     """
     candidates = [w for w in windows if not w["off_screen"]]
     pool = candidates
     if (
-        not app_requested
+        not exact_target
+        and not app_requested
         and pool
         and sys.platform == "linux"
         and _z_index_uninformative(pool)
@@ -1703,9 +1709,13 @@ class CuaDriverBackend(ComputerUseBackend):
             windows = filtered
 
         # Pick first on-screen window (sorted by z_index / z-order above).
-        # On Linux/X11, tied/unknown z_index may additionally consult
-        # _NET_ACTIVE_WINDOW (#58026).
-        target = _select_capture_target(windows, app_requested=bool(app))
+        # On Linux/X11, unqualified default captures with tied/unknown z_index
+        # may additionally consult _NET_ACTIVE_WINDOW (#58026).
+        target = _select_capture_target(
+            windows,
+            app_requested=bool(app),
+            exact_target=pid is not None or window_id is not None,
+        )
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         # Tokens belong to the prior window snapshot. Disarm them before any

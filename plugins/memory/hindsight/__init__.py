@@ -718,6 +718,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._lifecycle_lock = threading.RLock()
         self._shutdown_requested = threading.Event()
         self._shutting_down = threading.Event()
+        self._shutdown_complete = threading.Event()
         self._atexit_registered = False
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
@@ -1654,11 +1655,13 @@ class HindsightMemoryProvider(MemoryProvider):
                             if self._shutdown_requested.is_set() or self._shutting_down.is_set():
                                 return
 
-                    if self._shutdown_requested.is_set() or self._shutting_down.is_set():
-                        return
-                    client._ensure_started()
+                    # HindsightEmbedded starts lazily on the first proxied API
+                    # operation. Do not call its unbounded _ensure_started()
+                    # from this background thread: shutdown cannot cancel that
+                    # call, so it could otherwise start the daemon after the
+                    # bounded startup-thread join has returned.
                     with open(log_path, "a", encoding="utf-8") as f:
-                        f.write("\n=== Daemon started successfully ===\n")
+                        f.write("\n=== Daemon configuration prepared (lazy startup) ===\n")
                 except Exception as e:
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")
@@ -2221,23 +2224,31 @@ class HindsightMemoryProvider(MemoryProvider):
         # Publish cancellation before waiting for the lifecycle lock so a
         # blocked daemon-start worker can observe it within the bounded join.
         if self._shutting_down.is_set():
+            self._shutdown_complete.wait()
             return
         self._shutdown_requested.set()
         # Serialize the final flush/sentinel boundary with sync_turn(). A turn
         # either queues before this block or observes _shutting_down afterwards;
         # it can never land behind the sentinel.
+        shutdown_owner = False
+        writer = None
+        daemon_start = None
         with self._lifecycle_lock:
-            if self._shutting_down.is_set():
-                return
-            self._enqueue_pending_turn_flush(reason="shutdown")
-            writer = self._writer_thread
-            daemon_start = self._daemon_start_thread
-            self._shutting_down.set()
-            if writer is not None and writer.is_alive():
-                try:
-                    self._retain_queue.put(_WRITER_SENTINEL)
-                except Exception:
-                    pass
+            if not self._shutting_down.is_set():
+                self._enqueue_pending_turn_flush(reason="shutdown")
+                writer = self._writer_thread
+                daemon_start = self._daemon_start_thread
+                self._shutting_down.set()
+                shutdown_owner = True
+                if writer is not None and writer.is_alive():
+                    try:
+                        self._retain_queue.put(_WRITER_SENTINEL)
+                    except Exception:
+                        pass
+
+        if not shutdown_owner:
+            self._shutdown_complete.wait()
+            return
 
         # Drain daemon startup before client cleanup. The startup thread may be
         # inside _get_client(), so closing first would let it publish/use a new
@@ -2305,6 +2316,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # / "Unclosed connector" warnings reported in #11923. The loop
         # runs on a daemon thread and is reclaimed on process exit;
         # per-session cleanup happens via self._client.aclose() above.
+        self._shutdown_complete.set()
 
 
 def register(ctx) -> None:

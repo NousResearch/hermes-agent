@@ -120,8 +120,10 @@ replayed automatically: a timeout can occur after the server committed, so blind
 retry could duplicate content. Failures remain observable through the provider's
 failure count and last-error state. Prefetch results are generation-scoped so a
 timed-out old session cannot repopulate the next session's context. Embedded
-daemon startup observes an early shutdown request before and after blocking
-manager probes, keeping shutdown bounded without a late restart.
+daemon configuration is prepared in the background, but startup stays lazy on
+the first proxied API operation; the provider never launches an unbounded
+`_ensure_started()` call that could complete after bounded shutdown. Concurrent
+shutdown callers share the same completion barrier.
 
 ### Integration
 

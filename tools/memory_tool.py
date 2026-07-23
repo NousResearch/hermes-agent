@@ -709,6 +709,19 @@ class MemoryStore:
         # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
         # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
+        # Detect raw markdown with no § delimiters and at least one markdown
+        # section heading.  Split by ## headings so each section becomes its own
+        # entry, preserving the §-delimited behaviour users expect.
+        if len(entries) == 1 and "§" not in raw and "## " in raw:
+            logger.warning(
+                "Memory file %s contains no § delimiters — "
+                "splitting by markdown section headings (##). "
+                "Add § separators between entries to silence this warning.",
+                path.name,
+            )
+            section = entries[0]
+            parts = re.split(r"(?=^#{1,3} )", section, flags=re.MULTILINE)
+            entries = [p.strip() for p in parts if p.strip()]
         return [e for e in entries if e]
 
     def _detect_external_drift(self, target: str) -> Optional[str]:

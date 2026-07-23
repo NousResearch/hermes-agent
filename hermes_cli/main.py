@@ -6881,8 +6881,9 @@ def _update_via_zip(args):
                     extracted = candidate
                     break
 
-        # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        # Copy updated files over existing installation, preserving the
+        # project's Python env(s), node modules, and local metadata.
+        preserve = {".venv", "venv", "node_modules", ".git", ".env"}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -6928,7 +6929,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_project_venv_dir(create_default=True))}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7721,7 +7722,10 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                uv_env = {
+                    **os.environ,
+                    "VIRTUAL_ENV": str(_project_venv_dir(create_default=True)),
+                }
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -7804,9 +7808,36 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _project_venv_dir(*, create_default: bool = False) -> Path | None:
+    """Resolve the project-local virtualenv directory used by update flows.
+
+    Preference order:
+    1. the active interpreter's env when it is PROJECT_ROOT/{.venv,venv}
+    2. an existing ``.venv`` directory
+    3. an existing ``venv`` directory
+    4. legacy ``PROJECT_ROOT/venv`` when callers need a fallback path
+    """
+    if sys.prefix != sys.base_prefix:
+        try:
+            active_venv = Path(sys.prefix).resolve()
+        except (OSError, ValueError):
+            active_venv = Path(sys.prefix)
+        if active_venv.parent == PROJECT_ROOT and active_venv.name in {".venv", "venv"}:
+            return active_venv
+
+    for name in (".venv", "venv"):
+        candidate = PROJECT_ROOT / name
+        if candidate.is_dir():
+            return candidate
+
+    if create_default:
+        return PROJECT_ROOT / "venv"
+    return None
+
+
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
+    venv_dir = _project_venv_dir()
     if not venv_dir.is_dir():
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
@@ -10707,7 +10738,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {
+                **os.environ,
+                "VIRTUAL_ENV": str(_project_venv_dir(create_default=True)),
+            }
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

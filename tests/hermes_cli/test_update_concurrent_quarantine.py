@@ -119,6 +119,20 @@ def test_detect_concurrent_is_noop_off_windows(_winp, tmp_path):
     assert cli_main._detect_concurrent_hermes_instances(tmp_path) == []
 
 
+def test_venv_scripts_dir_prefers_active_project_dotvenv(monkeypatch, tmp_path):
+    """Update helpers should follow the active project venv, including .venv."""
+    legacy_scripts = tmp_path / "venv" / "bin"
+    legacy_scripts.mkdir(parents=True)
+    active_scripts = tmp_path / ".venv" / "bin"
+    active_scripts.mkdir(parents=True)
+
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(cli_main.sys, "prefix", str(tmp_path / ".venv"))
+    monkeypatch.setattr(cli_main.sys, "base_prefix", "/usr")
+
+    assert cli_main._venv_scripts_dir() == active_scripts
+
+
 # ---------------------------------------------------------------------------
 # Parent-chain exclusion (issue #30768 follow-up — the setuptools .exe
 # launcher on Windows is a separate native process that spawns python.exe;

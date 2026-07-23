@@ -360,4 +360,13 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
       editor.removeChild(last)
     }
   }
+
+  // ContentEditable elements with no children can visually collapse to
+  // near-zero height in some browsers (especially Chromium), causing the
+  // composer to appear as a tiny dot/pixel. Ensure there's always at least
+  // one <br> so the element maintains intrinsic height. The CSS min-height
+  // is a belt; the <br> is suspenders — together they prevent the shrink.
+  if (editor.childNodes.length === 0) {
+    editor.appendChild(document.createElement('br'))
+  }
 }

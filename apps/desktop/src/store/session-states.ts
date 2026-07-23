@@ -45,16 +45,30 @@ import { isSecondaryWindow } from './windows'
 
 export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
-// --- Watchdog: force-clears busy after 8 min of stream silence -------------
-const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
-const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// Stored session ids whose authoritative state is still busy, but whose
+// runtime has produced no state publish for the watchdog window. Silence is
+// not completion: long tool calls can legitimately stay quiet, so this is a
+// presentation hint and never mutates the backend-derived busy state.
+export const $stalledSessionIds = atom<string[]>([])
 
-type WatchdogClearFn = (runtimeId: string) => void
-let watchdogClearFn: WatchdogClearFn | null = null
+export function setSessionStalled(storedSessionId: string | null | undefined, stalled: boolean) {
+  if (!storedSessionId) {
+    return
+  }
 
-export function setWatchdogClearFn(fn: WatchdogClearFn | null) {
-  watchdogClearFn = fn
+  const current = $stalledSessionIds.get()
+  const present = current.includes(storedSessionId)
+
+  if (stalled && !present) {
+    $stalledSessionIds.set([...current, storedSessionId])
+  } else if (!stalled && present) {
+    $stalledSessionIds.set(current.filter(id => id !== storedSessionId))
+  }
 }
+
+// --- Watchdog: marks busy sessions quiet after 8 min of stream silence -----
+export const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function armWatchdog(runtimeId: string) {
   const existing = sessionWatchdogTimers.get(runtimeId)
@@ -67,7 +81,11 @@ function armWatchdog(runtimeId: string) {
     runtimeId,
     setTimeout(() => {
       sessionWatchdogTimers.delete(runtimeId)
-      watchdogClearFn?.(runtimeId)
+      const current = $sessionStates.get()[runtimeId]
+
+      if (current?.busy) {
+        setSessionStalled(current.storedSessionId, true)
+      }
     }, SESSION_WATCHDOG_TIMEOUT_MS)
   )
 }
@@ -125,13 +143,19 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     }
 
     clearSettled(previous.storedSessionId)
+    setSessionStalled(previous.storedSessionId, false)
   }
 
-  // Watchdog: arm on any busy publish, disarm on idle.
+  // Every busy publish is stream activity: clear the quiet hint and restart
+  // the silence window. A real terminal transition clears both the timer and
+  // any hint, but only that authoritative transition clears working/busy.
   if (next.busy) {
+    setSessionStalled(next.storedSessionId, false)
     armWatchdog(runtimeId)
   } else {
     clearWatchdog(runtimeId)
+    setSessionStalled(next.storedSessionId, false)
+    setSessionStalled(previous?.storedSessionId, false)
   }
 
   const storedId = next.storedSessionId
@@ -175,6 +199,7 @@ export function dropSessionState(runtimeId: string) {
   clearWatchdog(runtimeId)
 
   const current = $sessionStates.get()
+  setSessionStalled(current[runtimeId]?.storedSessionId, false)
 
   if (!(runtimeId in current)) {
     return
@@ -196,6 +221,7 @@ export function clearAllSessionStates() {
 
   sessionWatchdogTimers.clear()
   settledExpiry.clear()
+  $stalledSessionIds.set([])
   $sessionStates.set({})
 }
 
@@ -512,6 +538,37 @@ export function openSessionTile(
     patchSessionTile(storedSessionId, { anchor, before: before ?? undefined, dir })
     syncTileStripOrder()
   }
+}
+
+/** ⌘W on the MAIN tab: the next session tab stacked WITH the workspace, to
+ *  shift into main. Walks the workspace group's strip from the workspace tab
+ *  outward (the tab after it first, then wrapping to the ones before), and
+ *  returns the first session tile's stored id. Null when the workspace has no
+ *  session tab stacked beside it (⌘W then stays the no-op it was). */
+export function nextSessionTileForWorkspace(): null | string {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, 'workspace') : null
+
+  if (!group) {
+    return null
+  }
+
+  const tiles = $sessionTiles.get()
+  const idx = group.panes.indexOf('workspace')
+  // After the workspace tab first, then the ones before it (nearest-out).
+  const ordered = [...group.panes.slice(idx + 1), ...group.panes.slice(0, idx).reverse()]
+
+  for (const paneId of ordered) {
+    if (paneId.startsWith(TILE_PANE_PREFIX)) {
+      const storedSessionId = paneId.slice(TILE_PANE_PREFIX.length)
+
+      if (tiles.some(t => t.storedSessionId === storedSessionId)) {
+        return storedSessionId
+      }
+    }
+  }
+
+  return null
 }
 
 /** If a session is already ON SCREEN — an open tile OR the one loaded in main —

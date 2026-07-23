@@ -341,7 +341,10 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     if not model_id or not isinstance(model_id, str):
         return None
     name = model_id.strip().lower()
-    for prefix in ("us.", "eu.", "apac.", "ap.", "global.", "jp."):
+    for prefix in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    ):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
@@ -1709,6 +1712,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._config_context_length = None
         agent.model = fb_model
         agent.provider = fb_provider
+        agent.requested_provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
         if hasattr(agent, "_transport_cache"):

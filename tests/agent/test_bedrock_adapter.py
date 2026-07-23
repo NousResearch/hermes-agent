@@ -388,6 +388,29 @@ class TestNormalizeConverseResponse:
         assert result.usage.completion_tokens == 5
         assert result.usage.total_tokens == 15
 
+    def test_cache_tokens_folded_into_prompt_tokens(self):
+        """Converse's inputTokens excludes cache read/write tokens (unlike
+        OpenAI's prompt_tokens). normalize_converse_response must add them
+        back into prompt_tokens/total_tokens and surface the Anthropic-named
+        fields so normalize_usage() picks them up via its existing fallback."""
+        from agent.bedrock_adapter import normalize_converse_response
+        response = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {
+                "inputTokens": 50,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 900,
+                "cacheWriteInputTokens": 300,
+            },
+        }
+        result = normalize_converse_response(response)
+        assert result.usage.prompt_tokens == 50 + 900 + 300
+        assert result.usage.completion_tokens == 20
+        assert result.usage.total_tokens == 50 + 900 + 300 + 20
+        assert result.usage.cache_read_input_tokens == 900
+        assert result.usage.cache_creation_input_tokens == 300
+
     def test_tool_use_response(self):
         from agent.bedrock_adapter import normalize_converse_response
         response = {
@@ -700,6 +723,45 @@ class TestBuildConverseKwargs:
         )
         assert "toolConfig" not in kwargs
 
+    def test_cache_point_added_for_supported_model(self):
+        """Claude and Nova on the Converse path get cachePoint markers on
+        system, tools, and the message before the newest turn."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        tools = [{"type": "function", "function": {
+            "name": "test", "description": "Test", "parameters": {},
+        }}]
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Reply"},
+            {"role": "user", "content": "Second"},
+        ]
+        kwargs = build_converse_kwargs(
+            model="anthropic.claude-sonnet-4-6-20250514-v1:0",
+            messages=messages,
+            tools=tools,
+        )
+        assert kwargs["system"][-1] == {"cachePoint": {"type": "default"}}
+        assert kwargs["toolConfig"]["tools"][-1] == {"cachePoint": {"type": "default"}}
+        # Second-to-last converse message (the assistant "Reply" turn) carries
+        # the checkpoint; the newest "Second" turn does not.
+        marked = kwargs["messages"][-2]["content"]
+        assert marked[-1] == {"cachePoint": {"type": "default"}}
+        assert kwargs["messages"][-1]["content"][-1] != {"cachePoint": {"type": "default"}}
+
+    def test_no_cache_point_for_unsupported_model(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Reply"},
+            {"role": "user", "content": "Second"},
+        ]
+        kwargs = build_converse_kwargs(model="meta.llama3-70b-instruct-v1:0", messages=messages)
+        assert {"cachePoint": {"type": "default"}} not in kwargs["system"]
+        for m in kwargs["messages"]:
+            assert {"cachePoint": {"type": "default"}} not in m["content"]
+
 
 # ---------------------------------------------------------------------------
 # Model discovery
@@ -963,6 +1025,30 @@ class TestClientCache:
 class TestStreamConverseWithCallbacks:
     """Test real-time streaming with delta callbacks."""
 
+    def test_cache_tokens_folded_into_prompt_tokens(self):
+        """The streaming path must fold cacheRead/WriteInputTokens into
+        prompt_tokens the same way the non-streaming path does (see
+        TestNormalizeConverseResponse.test_cache_tokens_folded_into_prompt_tokens)."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "hi"}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {
+                "inputTokens": 50,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 900,
+                "cacheWriteInputTokens": 300,
+            }}},
+        ]}
+        result = stream_converse_with_callbacks(events)
+        assert result.usage.prompt_tokens == 50 + 900 + 300
+        assert result.usage.total_tokens == 50 + 900 + 300 + 20
+        assert result.usage.cache_read_input_tokens == 900
+        assert result.usage.cache_creation_input_tokens == 300
+
     def test_text_deltas_fire_callback(self):
         from agent.bedrock_adapter import stream_converse_with_callbacks
         deltas = []
@@ -1181,6 +1267,22 @@ class TestBedrockContextLength:
         # Opus 4.6 has 1M context generally available (no beta header required).
         assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 1_000_000
 
+    def test_claude_fable_5(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Fable is a 1M-context model. DEFAULT_CONTEXT_LENGTHS already maps
+        # claude-fable-5 -> 1M, but the Bedrock resolution path short-circuits
+        # to this table before consulting it, so without entries here every
+        # Fable inference profile fell through to
+        # BEDROCK_DEFAULT_CONTEXT_LENGTH (128K).
+        assert get_bedrock_context_length("us.anthropic.claude-fable-5") == 1_000_000
+        assert get_bedrock_context_length("global.anthropic.claude-fable-5") == 1_000_000
+        assert get_bedrock_context_length("anthropic.claude-fable-5-v1:0") == 1_000_000
+
+    def test_claude_opus_4_base_stays_200k(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # The original Opus 4 (no minor version) keeps the 200K window.
+        assert get_bedrock_context_length("anthropic.claude-opus-4-20250514-v1:0") == 200_000
+
     def test_claude_sonnet_versioned(self):
         from agent.bedrock_adapter import get_bedrock_context_length
         # Sonnet 4.6 has 1M context generally available (no beta header required).
@@ -1221,6 +1323,71 @@ class TestBedrockContextLength:
         from agent.bedrock_adapter import get_bedrock_context_length
         # "anthropic.claude-3-5-sonnet" should match before "anthropic.claude-3"
         assert get_bedrock_context_length("anthropic.claude-3-5-sonnet-20240620-v1:0") == 200_000
+
+    def test_no_region_skips_probe_uses_table(self):
+        # Default call (no region) must NOT hit the network — returns the
+        # static table value.  Guards backward compatibility for callers that
+        # still invoke get_bedrock_context_length(model_id) with one arg.
+        from agent.bedrock_adapter import get_bedrock_context_length
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
+            mock_probe.assert_not_called()
+
+
+class TestBedrockContextProbe:
+    """Test the live context-window probe that reads the real window from
+    Bedrock's 'prompt is too long' validation error."""
+
+    def _client_raising(self, message):
+        client = MagicMock()
+        client.converse.side_effect = Exception(message)
+        return client
+
+    def test_probe_parses_real_window_from_error(self):
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        err = (
+            "An error occurred (ValidationException) when calling the Converse "
+            "operation: The model returned the following errors: prompt is too "
+            "long: 5000032 tokens > 1000000 maximum"
+        )
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            assert probe_bedrock_context_length(
+                "eu.anthropic.claude-opus-4-8", "eu-central-1") == 1_000_000
+
+    def test_probe_returns_none_on_unparseable_error(self):
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        err = "An error occurred (AccessDeniedException): not authorized"
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            assert probe_bedrock_context_length(
+                "eu.anthropic.claude-opus-4-8", "eu-central-1") is None
+
+    def test_probe_returns_none_when_client_unavailable(self):
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   side_effect=RuntimeError("boto3 missing")):
+            assert probe_bedrock_context_length("any.model", "eu-central-1") is None
+
+    def test_probe_result_beats_static_table(self):
+        # A successful probe (1M) must override the stale table value (200K
+        # via the 'anthropic.claude-opus-4' substring match).
+        from agent.bedrock_adapter import get_bedrock_context_length
+        err = "prompt is too long: 5000032 tokens > 1000000 maximum"
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            assert get_bedrock_context_length(
+                "eu.anthropic.claude-opus-4-8",
+                region="eu-central-1") == 1_000_000
+
+    def test_probe_failure_falls_back_to_table(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        err = "AccessDeniedException: nope"
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            # opus-4-6 is in the table at 1M; probe fails → table wins.
+            assert get_bedrock_context_length(
+                "anthropic.claude-opus-4-6", region="eu-central-1") == 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -1329,6 +1496,15 @@ class TestIsAnthropicBedrockModel:
     def test_eu_claude(self):
         from agent.bedrock_adapter import is_anthropic_bedrock_model
         assert is_anthropic_bedrock_model("eu.anthropic.claude-sonnet-4-6") is True
+
+    def test_au_inference_profile(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("au.anthropic.claude-haiku-4-5-20251001-v1:0") is True
+        assert is_anthropic_bedrock_model("au.anthropic.claude-sonnet-4-6") is True
+
+    def test_apac_inference_profile(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("apac.anthropic.claude-sonnet-4-6") is True
 
 
 class TestEmptyTextBlockFix:

@@ -433,6 +433,29 @@ def _model_supports_tool_use(model_id: str) -> bool:
     return not any(pattern in model_lower for pattern in _NON_TOOL_CALLING_PATTERNS)
 
 
+# ---------------------------------------------------------------------------
+# Prompt-cache capability detection (Converse API cachePoint)
+# ---------------------------------------------------------------------------
+# Claude on Bedrock already gets prompt caching through the AnthropicBedrock
+# SDK path (see is_anthropic_bedrock_model / runtime_provider.py's dual-path
+# routing) — it never reaches build_converse_kwargs unless bearer-token auth
+# forces the Converse path (#28156). This allowlist covers the Converse API
+# itself: sending an unsupported model a cachePoint block raises a
+# ValidationException, so — like _model_supports_tool_use but inverted —
+# unknown models default to NOT receiving cache markers until confirmed.
+# Ref: https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html
+_CACHE_POINT_PATTERNS = [
+    "anthropic.claude",  # bearer-token fallback path
+    "amazon.nova",
+]
+
+
+def _model_supports_prompt_cache(model_id: str) -> bool:
+    """Return True if the model accepts a Converse API cachePoint block."""
+    model_lower = model_id.lower()
+    return any(pattern in model_lower for pattern in _CACHE_POINT_PATTERNS)
+
+
 def is_anthropic_bedrock_model(model_id: str) -> bool:
     """Return True if the model is an Anthropic Claude model on Bedrock.
 
@@ -448,7 +471,10 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
     """
     model_lower = model_id.lower()
     # Strip regional prefix if present
-    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+    for prefix in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    ):
         if model_lower.startswith(prefix):
             model_lower = model_lower[len(prefix):]
             break
@@ -761,14 +787,22 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
-    # Build usage stats
+    # Build usage stats. Converse's inputTokens excludes cache read/write
+    # tokens (unlike OpenAI's prompt_tokens, which includes them) — restore
+    # the OpenAI-style "total includes cache" convention here so downstream
+    # normalize_usage() can subtract them back out consistently, and surface
+    # the Anthropic-named fields it already falls back to for cache reads.
     usage_data = response.get("usage", {})
+    input_tokens = usage_data.get("inputTokens", 0)
+    cache_read_tokens = usage_data.get("cacheReadInputTokens", 0)
+    cache_write_tokens = usage_data.get("cacheWriteInputTokens", 0)
+    output_tokens = usage_data.get("outputTokens", 0)
     usage = SimpleNamespace(
-        prompt_tokens=usage_data.get("inputTokens", 0),
-        completion_tokens=usage_data.get("outputTokens", 0),
-        total_tokens=(
-            usage_data.get("inputTokens", 0) + usage_data.get("outputTokens", 0)
-        ),
+        prompt_tokens=input_tokens + cache_read_tokens + cache_write_tokens,
+        completion_tokens=output_tokens,
+        total_tokens=input_tokens + cache_read_tokens + cache_write_tokens + output_tokens,
+        cache_read_input_tokens=cache_read_tokens,
+        cache_creation_input_tokens=cache_write_tokens,
     )
 
     finish_reason = _converse_stop_reason_to_openai(stop_reason)
@@ -933,6 +967,8 @@ def stream_converse_with_callbacks(
             usage_data = {
                 "inputTokens": meta_usage.get("inputTokens", 0),
                 "outputTokens": meta_usage.get("outputTokens", 0),
+                "cacheReadInputTokens": meta_usage.get("cacheReadInputTokens", 0),
+                "cacheWriteInputTokens": meta_usage.get("cacheWriteInputTokens", 0),
             }
 
     # Flush remaining text
@@ -946,12 +982,16 @@ def stream_converse_with_callbacks(
         reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
+    input_tokens = usage_data.get("inputTokens", 0)
+    cache_read_tokens = usage_data.get("cacheReadInputTokens", 0)
+    cache_write_tokens = usage_data.get("cacheWriteInputTokens", 0)
+    output_tokens = usage_data.get("outputTokens", 0)
     usage = SimpleNamespace(
-        prompt_tokens=usage_data.get("inputTokens", 0),
-        completion_tokens=usage_data.get("outputTokens", 0),
-        total_tokens=(
-            usage_data.get("inputTokens", 0) + usage_data.get("outputTokens", 0)
-        ),
+        prompt_tokens=input_tokens + cache_read_tokens + cache_write_tokens,
+        completion_tokens=output_tokens,
+        total_tokens=input_tokens + cache_read_tokens + cache_write_tokens + output_tokens,
+        cache_read_input_tokens=cache_read_tokens,
+        cache_creation_input_tokens=cache_write_tokens,
     )
 
     finish_reason = _converse_stop_reason_to_openai(stop_reason)
@@ -990,6 +1030,7 @@ def build_converse_kwargs(
     Converts OpenAI-format inputs to Converse API parameters.
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
+    cache_enabled = _model_supports_prompt_cache(model)
 
     kwargs: Dict[str, Any] = {
         "modelId": model,
@@ -1000,6 +1041,8 @@ def build_converse_kwargs(
     }
 
     if system_prompt:
+        if cache_enabled:
+            system_prompt = system_prompt + [{"cachePoint": {"type": "default"}}]
         kwargs["system"] = system_prompt
 
     from agent.anthropic_adapter import _forbids_sampling_params
@@ -1023,12 +1066,22 @@ def build_converse_kwargs(
             # Strip tools for known non-tool-calling models and warn the user.
             # Ref: PR #7920 feedback from @ptlally, pattern from PR #4346.
             if _model_supports_tool_use(model):
+                if cache_enabled:
+                    converse_tools = converse_tools + [{"cachePoint": {"type": "default"}}]
                 kwargs["toolConfig"] = {"tools": converse_tools}
             else:
                 logger.warning(
                     "Model %s does not support tool calling — tools stripped. "
                     "The agent will operate in text-only mode.", model
                 )
+
+    if cache_enabled and len(converse_messages) >= 2:
+        # Checkpoint everything up to (not including) the newest turn, so the
+        # marker survives unchanged across requests as only the tail grows —
+        # mirroring the Anthropic system_and_3 strategy in prompt_caching.py.
+        content = converse_messages[-2].get("content")
+        if isinstance(content, list) and content:
+            content.append({"cachePoint": {"type": "default"}})
 
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
@@ -1349,12 +1402,16 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # Anthropic Claude models on Bedrock.
     # Context windows per Anthropic's official models comparison
     # (https://platform.claude.com/docs/en/about-claude/models/overview).
-    # Sonnet 5 / Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6 have 1M generally
+    # Fable / Sonnet 5 / Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6 have 1M generally
     # available (no beta header required as of April 2026). Sonnet 4.5 and
     # Sonnet 4 had their `context-1m-2025-08-07` beta retired on
     # April 30, 2026, so they are standard 200K; Haiku 4.5 is 200K.
+    # These 1M entries must match agent/model_metadata.py
+    # DEFAULT_CONTEXT_LENGTHS or the agent compresses context prematurely.
     # Keys are matched by longest-substring, so the versioned 4-6/4-7/4-8
     # entries win over the generic "anthropic.claude-opus-4" fallback.
+    "anthropic.claude-fable-5":      1_000_000,
+    "anthropic.claude-fable":        1_000_000,
     "anthropic.claude-sonnet-5":     1_000_000,
     "anthropic.claude-opus-4-8":     1_000_000,
     "anthropic.claude-opus-4-7":     1_000_000,
@@ -1386,9 +1443,22 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
 # Default for unknown Bedrock models
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000
 
+# Probe tiers (in tokens).  We send a request padded just past each tier and
+# read the real window from Bedrock's length-validation error.  Two reasons
+# this is tiered rather than one giant request:
+#   1. A wildly oversized payload (e.g. 5M tokens) makes Bedrock return an
+#      opaque InternalServerException after retries instead of a clean
+#      ValidationException — so we must stay within a sane overage.
+#   2. Stepping up lets us discover larger windows (2M+) without over-padding
+#      smaller ones.
+# Each tier value is the *padding target*; the error reports the true maximum,
+# which is what we actually return.
+_BEDROCK_PROBE_TIERS = (1_300_000, 2_200_000)
+_WORDS_PER_TOKEN = 0.9  # conservative: ensures the padded prompt clears the tier
 
-def get_bedrock_context_length(model_id: str) -> int:
-    """Look up the context window size for a Bedrock model.
+
+def _static_bedrock_context_length(model_id: str) -> int:
+    """Longest-substring-match lookup against the static fallback table.
 
     Uses substring matching so versioned IDs like
     ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
@@ -1401,3 +1471,103 @@ def get_bedrock_context_length(model_id: str) -> int:
             best_key = key
             best_val = val
     return best_val
+
+
+def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
+    """Discover a Bedrock model's real context window by provoking a length error.
+
+    Bedrock does not expose the context window via any metadata API
+    (``get-foundation-model`` omits it, ``Converse`` metrics omit it,
+    ``CountTokens`` is unsupported on several models).  The only authoritative
+    source is the ``ValidationException`` raised when a prompt exceeds the
+    window:
+
+        "The model returned the following errors: prompt is too long:
+         1300032 tokens > 1000000 maximum"
+
+    Length validation happens *before* inference, so an oversized request is
+    rejected immediately and cheaply — no tokens are generated and no input is
+    actually processed.  We pad a request just past each tier in
+    ``_BEDROCK_PROBE_TIERS`` and parse the reported ``maximum``.  Tiers exist
+    because (a) a *wildly* oversized payload makes Bedrock fail with an opaque
+    InternalServerException instead of a clean length error, and (b) stepping
+    up discovers larger windows without over-padding smaller ones.
+
+    Returns the detected window, or ``None`` if the probe could not run
+    (missing credentials, network error, or no parseable limit) so the caller
+    can fall back to the static table.
+    """
+    try:
+        from agent.model_metadata import parse_context_limit_from_error
+    except ImportError:  # pragma: no cover — same package
+        return None
+
+    try:
+        client = _get_bedrock_runtime_client(region)
+    except Exception as exc:  # boto3 missing / credential resolution failure
+        logger.debug("Bedrock context probe skipped for %s: %s", model_id, exc)
+        return None
+
+    last_error = ""
+    for tier_tokens in _BEDROCK_PROBE_TIERS:
+        pad_words = int(tier_tokens / _WORDS_PER_TOKEN)
+        oversized = "data " * pad_words
+        try:
+            client.converse(
+                modelId=model_id,
+                messages=[{"role": "user", "content": [{"text": oversized}]}],
+                inferenceConfig={"maxTokens": 8},
+            )
+            # Accepted a prompt this large → the window is at least this tier.
+            # Returning the tier as a lower bound is safe and avoids inventing
+            # a number we can't confirm.
+            logger.debug(
+                "Bedrock context probe for %s accepted ~%s-token prompt; "
+                "window is at least that", model_id, f"{tier_tokens:,}",
+            )
+            return tier_tokens
+        except Exception as exc:
+            msg = str(exc)
+            last_error = msg
+            limit = parse_context_limit_from_error(msg)
+            if limit and limit >= 1024:
+                logger.info(
+                    "Probed Bedrock context window for %s: %s tokens",
+                    model_id, f"{limit:,}",
+                )
+                return limit
+            # No parseable limit at this tier (opaque server error, auth,
+            # throttle).  Try the next, smaller-overage strategy is N/A here —
+            # tiers ascend — so just continue; if all fail we return None.
+            continue
+
+    logger.debug(
+        "Bedrock context probe for %s returned no parseable limit: %s",
+        model_id, last_error[:200],
+    )
+    return None
+
+
+def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
+    """Resolve the context window for a Bedrock model.
+
+    Resolution order:
+      1. Live probe against Bedrock (authoritative; cached by the caller).
+      2. Static fallback table (longest-substring match).
+      3. Conservative default.
+
+    The static table is intentionally a *fallback*, not the primary source:
+    AWS ships new model versions (opus-4-7, opus-4-8, ...) faster than the
+    table can track, and a stale entry silently caps the window (e.g. a
+    1M-token Opus pinned to 200K via an ``opus-4`` substring match).  The
+    probe asks Bedrock directly so every model — current or future — gets its
+    real window with no table maintenance.
+
+    ``probe=False`` (or an empty ``region``) skips the network call and uses
+    the static table only — used by pure-offline/display code paths.
+    """
+    if probe and region:
+        probed = probe_bedrock_context_length(model_id, region)
+        if probed:
+            return probed
+    return _static_bedrock_context_length(model_id)

@@ -11,9 +11,13 @@ import {
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
+  getRememberedSessionId,
   mergeSessionPage,
+  rememberedSessionProfile,
+  resolveComposerSessionKey,
   sessionPinId,
   setCurrentCwd,
+  setRememberedSessionId,
   setSelectedStoredSessionId,
   workspaceCwdForNewSession
 } from './session'
@@ -82,6 +86,21 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('resolveComposerSessionKey', () => {
+  it('keeps the lineage root across compression tip rotation', () => {
+    const tipBefore = '20260720_062637_ad96b3'
+    const tipAfter = '20260720_071049_a28905'
+    const sessions = [session({ id: tipAfter, _lineage_root_id: tipBefore })]
+
+    expect(resolveComposerSessionKey(tipBefore, [session({ id: tipBefore })])).toBe(tipBefore)
+    expect(resolveComposerSessionKey(tipAfter, sessions)).toBe(tipBefore)
+  })
+
+  it('falls back to the live id when the tip row is not loaded yet', () => {
+    expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
   })
 })
 
@@ -204,6 +223,15 @@ describe('workspaceCwdForNewSession', () => {
     applyConfiguredDefaultProjectDir('/home/user/configured')
 
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('keeps the configured default separate from a selected workspace', () => {
+    setCurrentCwd('/home/user/repo/.worktrees/feature')
+
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+    expect($currentCwd.get()).toBe('/home/user/repo/.worktrees/feature')
   })
 
   it('starts detached (no inherited cwd) when no default project dir is configured', () => {
@@ -372,5 +400,69 @@ describe('unread finished sessions', () => {
 
     setSelectedStoredSessionId('s1')
     expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+})
+
+describe('remembered session id (per profile)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('scopes the remembered session by profile so one profile cannot read another', () => {
+    setRememberedSessionId('work-session', 'ai-engineer')
+    setRememberedSessionId('personal-session', 'default')
+
+    expect(getRememberedSessionId('ai-engineer')).toBe('work-session')
+    expect(getRememberedSessionId('default')).toBe('personal-session')
+    // A profile with nothing remembered does not inherit another's session.
+    expect(getRememberedSessionId('research')).toBeNull()
+  })
+
+  it('keeps the default profile on the legacy unsuffixed key for back-compat', () => {
+    // An existing install remembered its session under the pre-per-profile key.
+    localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-session')
+
+    expect(getRememberedSessionId('default')).toBe('legacy-session')
+    // Absent/blank profile normalizes to the default key too.
+    expect(getRememberedSessionId(undefined)).toBe('legacy-session')
+    expect(getRememberedSessionId('')).toBe('legacy-session')
+    expect(getRememberedSessionId(null)).toBe('legacy-session')
+  })
+
+  it('clearing one profile leaves the others intact', () => {
+    setRememberedSessionId('work-session', 'ai-engineer')
+    setRememberedSessionId('personal-session', 'default')
+
+    setRememberedSessionId(null, 'ai-engineer')
+
+    expect(getRememberedSessionId('ai-engineer')).toBeNull()
+    expect(getRememberedSessionId('default')).toBe('personal-session')
+  })
+})
+
+describe('rememberedSessionProfile', () => {
+  it('keys by the session row owning profile, not the active one', () => {
+    const sessions = [session({ id: 'stored-1', profile: 'ai-engineer' })]
+
+    expect(rememberedSessionProfile(sessions, 'stored-1', 'default')).toBe('ai-engineer')
+  })
+
+  it('matches on the lineage root so a compressed tip resolves its owner', () => {
+    const sessions = [session({ _lineage_root_id: 'root-1', id: 'tip-2', profile: 'work' })]
+
+    expect(rememberedSessionProfile(sessions, 'root-1', 'default')).toBe('work')
+  })
+
+  it('falls back to the active profile for a session not yet in the list', () => {
+    expect(rememberedSessionProfile([], 'uncached', 'research')).toBe('research')
+  })
+
+  it('normalizes a blank active profile to default', () => {
+    expect(rememberedSessionProfile([], null, '')).toBe('default')
+    expect(rememberedSessionProfile([], null, null)).toBe('default')
   })
 })

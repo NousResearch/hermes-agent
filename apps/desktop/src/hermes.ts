@@ -84,6 +84,36 @@ const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 // agent-turn ceiling (agent.gateway_timeout = 1800s) so the ack timeout only
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
+export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
+export const AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS = 600_000
+const AUDIO_SPEAK_TIMEOUT_MS_PER_CHAR = 35
+
+export function audioSpeakRequestTimeoutMs(text: string): number {
+  const estimated = Math.max(
+    AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
+    Math.ceil(String(text || '').length * AUDIO_SPEAK_TIMEOUT_MS_PER_CHAR)
+  )
+
+  return Math.min(AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS, estimated)
+}
+
+export const AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS = 180_000
+export const AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS = 600_000
+// The transcribe payload is the base64 audio data URL itself, so its string
+// length tracks clip size. ~0.1ms/char keeps short clips at the floor while
+// letting multi-minute recordings scale toward the cap (a base64 char is
+// ~0.75 bytes, so at 128kbps ≈ 21k chars/s of audio this budgets ~2s of
+// timeout per 1s of audio before the cap clamps it).
+const AUDIO_TRANSCRIBE_TIMEOUT_MS_PER_CHAR = 0.1
+
+export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
+  const estimated = Math.max(
+    AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
+    Math.ceil(String(dataUrl || '').length * AUDIO_TRANSCRIBE_TIMEOUT_MS_PER_CHAR)
+  )
+
+  return Math.min(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS, estimated)
+}
 
 export type {
   ActionResponse,
@@ -199,8 +229,10 @@ export function setApiRequestProfile(profile: null | string): void {
   _apiProfile = profile || null
 }
 
-function profileScoped(): { profile?: string } {
-  return _apiProfile ? { profile: _apiProfile } : {}
+function profileScoped(profile?: null | string): { profile?: string } {
+  const selected = profile === undefined ? _apiProfile : profile
+
+  return selected ? { profile: selected } : {}
 }
 
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
@@ -619,9 +651,9 @@ export function getLogs(params: {
   })
 }
 
-export function getHermesConfig(): Promise<HermesConfig> {
+export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/config',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -1346,7 +1378,11 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     body: {
       data_url: dataUrl,
       mime_type: mimeType
-    }
+    },
+    // Transcription blocks until provider STT, file handling, and response
+    // encoding finish. Remote providers and long clips regularly exceed the
+    // default 15s Electron backend timeout.
+    timeoutMs: audioTranscribeRequestTimeoutMs(dataUrl)
   })
 }
 
@@ -1354,7 +1390,11 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text },
+    // TTS blocks until provider synthesis, file read, and base64 encoding
+    // finish. Remote providers and large messages regularly exceed the
+    // default 15s Electron backend timeout.
+    timeoutMs: audioSpeakRequestTimeoutMs(text)
   })
 }
 

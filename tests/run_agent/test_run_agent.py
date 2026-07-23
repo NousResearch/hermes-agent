@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -4046,9 +4047,11 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         from agent.portal_tags import nous_portal_tags
 
-        assert kwargs["extra_body"] == {
-            "tags": nous_portal_tags(session_id=agent.session_id)
-        }
+        expected = {"tags": nous_portal_tags(session_id=agent.session_id)}
+        if agent.session_id:
+            # Top-level sticky-routing key ships whenever a session exists.
+            expected["session_id"] = agent.session_id
+        assert kwargs["extra_body"] == expected
 
     def test_summary_drops_invalid_provider_sort(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
@@ -4848,6 +4851,136 @@ class TestRunConversation:
             "content": "Sure, here's how to do it: first",
         }
 
+    def test_redirect_during_thinking_retries_same_turn_with_context(self, agent):
+        """A corrective follow-up keeps displayed reasoning and does not end the turn."""
+        self._setup_agent(agent)
+        agent.reasoning_callback = lambda _text: None
+        final = _mock_response(content="Using Postgres instead.", finish_reason="stop")
+        requests = []
+        persisted = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            if len(requests) == 1:
+                agent._fire_reasoning_delta("I should implement this with SQLite.")
+                assert agent.redirect("No, use Postgres instead.") is True
+                raise InterruptedError("redirect cancelled the first request")
+            return final
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(
+                agent,
+                "_persist_session",
+                side_effect=lambda messages, *_a, **_k: persisted.append(
+                    [dict(message) for message in messages]
+                ),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Choose a database and implement it.")
+
+        assert result["completed"] is True
+        assert result["interrupted"] is False
+        assert result["final_response"] == "Using Postgres instead."
+        assert len(requests) == 2
+
+        replay = requests[1]["messages"]
+        assert [m["role"] for m in replay[-3:]] == [
+            "user",
+            "assistant",
+            "user",
+        ]
+        checkpoint = replay[-2]["content"]
+        assert "interrupted by a user correction" in checkpoint
+        assert "I should implement this with SQLite." in checkpoint
+        assert replay[-1]["content"] == "No, use Postgres instead."
+        assert agent._pending_redirect is None
+        assert any(
+            snapshot[-1].get("content") == "No, use Postgres instead."
+            and snapshot[-2].get("role") == "assistant"
+            for snapshot in persisted
+            if len(snapshot) >= 2
+        )
+
+    def test_redirect_wins_race_with_response_completion(self, agent):
+        """If the provider returns as redirect lands, discard the stale answer."""
+        self._setup_agent(agent)
+        stale = _mock_response(content="Using SQLite.", finish_reason="stop")
+        corrected = _mock_response(content="Using Postgres.", finish_reason="stop")
+        calls = 0
+
+        def _fake_api_call(_api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                assert agent.redirect("Use Postgres instead.") is True
+                return stale
+            return corrected
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Choose a database.")
+
+        assert calls == 2
+        assert result["final_response"] == "Using Postgres."
+        assert all(
+            message.get("content") != "Using SQLite."
+            for message in result["messages"]
+        )
+
+    def test_redirect_from_input_thread_cancels_live_model_request(self, agent):
+        """Exercise the real cross-thread path used by CLI and gateways."""
+        self._setup_agent(agent)
+        agent.reasoning_callback = lambda _text: None
+        entered = threading.Event()
+        results = {}
+        calls = 0
+        final = _mock_response(content="Corrected answer.", finish_reason="stop")
+
+        def _fake_api_call(_api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                agent._fire_reasoning_delta("Following the original approach.")
+                entered.set()
+                deadline = time.time() + 2
+                while not agent._interrupt_requested and time.time() < deadline:
+                    time.sleep(0.01)
+                raise InterruptedError("request cancelled by redirect")
+            return final
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            worker = threading.Thread(
+                target=lambda: results.update(
+                    result=agent.run_conversation("Take the original approach.")
+                )
+            )
+            worker.start()
+            assert entered.wait(timeout=2)
+            assert agent.redirect("Use the corrected approach.") is True
+            worker.join(timeout=5)
+
+        assert worker.is_alive() is False
+        assert calls == 2
+        assert results["result"]["completed"] is True
+        assert results["result"]["final_response"] == "Corrected answer."
+        checkpoint = results["result"]["messages"][-3]
+        assert "Following the original approach." in checkpoint["content"]
+        assert results["result"]["messages"][-2]["content"] == (
+            "Use the corrected approach."
+        )
+
     def test_interrupt_before_any_stream_keeps_sentinel(self, agent):
         """An interrupt with no streamed text falls back to the metadata sentinel."""
         from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
@@ -4939,6 +5072,142 @@ class TestRunConversation:
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
         assert result["final_response"] == "All done"
+        assert result["completed"] is True
+
+    def test_engine_preflight_fires_below_threshold(self, agent):
+        """Sub-threshold ContextEngine.should_compress_preflight() routes to compress().
+
+        Regression test for #20316: when running below the threshold_tokens
+        cutoff, run_conversation must still consult the engine's
+        should_compress_preflight() hook so engines like hermes-lcm can
+        perform incremental maintenance (e.g. leaf-chunk compaction)
+        without waiting for the 75% context fill threshold.
+        """
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        # Build a conversation history long enough to clear the
+        # protect_first_n + protect_last_n + 1 guard so the preflight
+        # block actually executes.
+        protect_first = agent.context_compressor.protect_first_n
+        protect_last = agent.context_compressor.protect_last_n
+        prefill = []
+        for _i in range((protect_first + protect_last + 4)):
+            prefill.append({"role": "user", "content": f"q{_i}"})
+            prefill.append({"role": "assistant", "content": f"a{_i}"})
+
+        # Force the preflight estimator far below the threshold so the
+        # legacy ``>= threshold_tokens`` branch does NOT fire — only the
+        # new engine-driven elif branch should be exercised.
+        agent.context_compressor.threshold_tokens = 10**9
+
+        ok_resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = ok_resp
+
+        # Engine-style hook: returns True so the elif branch should
+        # invoke _compress_context once for sub-threshold maintenance.
+        with (
+            patch.object(
+                agent.context_compressor,
+                "should_compress_preflight",
+                return_value=True,
+                create=True,
+            ) as mock_preflight,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_preflight.assert_called_once()
+        mock_compress.assert_called_once()
+        assert result["final_response"] == "Done"
+        assert result["completed"] is True
+
+    def test_engine_preflight_skipped_when_returns_false(self, agent):
+        """should_compress_preflight() returning False must NOT invoke compress().
+
+        This guards the no-op default for the built-in ContextCompressor —
+        the elif branch should evaluate the hook but skip compression
+        when the engine reports nothing to do.
+        """
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        protect_first = agent.context_compressor.protect_first_n
+        protect_last = agent.context_compressor.protect_last_n
+        prefill = []
+        for _i in range((protect_first + protect_last + 4)):
+            prefill.append({"role": "user", "content": f"q{_i}"})
+            prefill.append({"role": "assistant", "content": f"a{_i}"})
+
+        agent.context_compressor.threshold_tokens = 10**9
+
+        ok_resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = ok_resp
+
+        with (
+            patch.object(
+                agent.context_compressor,
+                "should_compress_preflight",
+                return_value=False,
+                create=True,
+            ) as mock_preflight,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_preflight.assert_called_once()
+        mock_compress.assert_not_called()
+        assert result["final_response"] == "Done"
+        assert result["completed"] is True
+
+    def test_engine_preflight_exception_does_not_break_turn(self, agent):
+        """An exception in should_compress_preflight() must be swallowed.
+
+        The plugin hook must never abort an otherwise-healthy turn —
+        a buggy engine raising in its preflight estimator should log
+        a debug message and continue without compressing.
+        """
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        protect_first = agent.context_compressor.protect_first_n
+        protect_last = agent.context_compressor.protect_last_n
+        prefill = []
+        for _i in range((protect_first + protect_last + 4)):
+            prefill.append({"role": "user", "content": f"q{_i}"})
+            prefill.append({"role": "assistant", "content": f"a{_i}"})
+
+        agent.context_compressor.threshold_tokens = 10**9
+
+        ok_resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = ok_resp
+
+        with (
+            patch.object(
+                agent.context_compressor,
+                "should_compress_preflight",
+                side_effect=RuntimeError("buggy engine"),
+                create=True,
+            ),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_not_called()
+        assert result["final_response"] == "Done"
         assert result["completed"] is True
 
     def test_glm_prompt_exceeds_max_length_triggers_compression(self, agent):
@@ -5554,6 +5823,82 @@ class TestRunConversation:
         assert result["partial"] is True
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
+
+    def test_truncated_tool_json_after_tool_batch_closes_tool_tail(self, agent):
+        """finish_reason=tool_calls + truncated args after a real tool must close tool→user."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"ok.md","content":"x"}',
+            call_id="c_ok",
+        )
+        good_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[good_tc],
+        )
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c_bad",
+        )
+        bad_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[bad_tc],
+        )
+        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write then truncate")
+
+        assert result.get("partial") is True
+        msgs = result.get("messages") or []
+        assert msgs[-1].get("role") == "assistant"
+        assert "truncated" in (msgs[-1].get("content") or "").lower()
+        assert any(isinstance(m, dict) and m.get("role") == "tool" for m in msgs)
+
+    def test_length_truncated_tool_exhaustion_after_tool_batch_closes_tool_tail(self, agent):
+        """Length-handler truncated-tool exhaustion after a tool batch must close tool→user."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"ok.md","content":"x"}',
+            call_id="c_ok",
+        )
+        good_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[good_tc],
+        )
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c_bad",
+        )
+        bad_resp = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc],
+        )
+        # One successful tool turn, then 4 truncated retries + 5th exhaustion.
+        agent.client.chat.completions.create.side_effect = [
+            good_resp,
+            bad_resp, bad_resp, bad_resp, bad_resp, bad_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write then hit length truncate")
+
+        assert result.get("partial") is True
+        assert "truncated due to output length limit" in (result.get("error") or "")
+        msgs = result.get("messages") or []
+        assert msgs[-1].get("role") == "assistant"
+        assert "truncated" in (msgs[-1].get("content") or "").lower()
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must signal the dispatcher when its
@@ -6280,9 +6625,15 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def entries(self):
+                return []
+
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 assert status_code == 429
                 assert error_context is None
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -6310,7 +6661,7 @@ class TestCredentialPoolRecovery:
         refreshed_entry = SimpleNamespace(label="refreshed-primary", id="abc")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return refreshed_entry
 
         agent._credential_pool = _Pool()
@@ -6328,7 +6679,7 @@ class TestCredentialPoolRecovery:
         """Repeated same-entry auth refreshes must eventually fall through.
 
         A single-entry OAuth pool re-mints a fresh token on every 401, so
-        ``try_refresh_current()`` reports success forever. The cap (#26080)
+        ``try_refresh_matching()`` reports success forever. The cap (#26080)
         must let the third consecutive same-entry refresh fall through
         (return not-recovered) so the fallback chain can activate instead of
         looping on the same dead credential.
@@ -6336,7 +6687,7 @@ class TestCredentialPoolRecovery:
         refreshed_entry = SimpleNamespace(label="primary", id="abc")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return refreshed_entry
 
         agent._credential_pool = _Pool()
@@ -6360,7 +6711,7 @@ class TestCredentialPoolRecovery:
         sequence = [entry_a, entry_a, entry_b, entry_b]
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return sequence.pop(0)
 
         agent._credential_pool = _Pool()
@@ -6382,12 +6733,15 @@ class TestCredentialPoolRecovery:
         next_entry = SimpleNamespace(label="secondary", id="def")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return None  # refresh failed
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 assert status_code == 401
                 assert error_context is None
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -6406,10 +6760,12 @@ class TestCredentialPoolRecovery:
         """401 with failed refresh and no other credentials returns not recovered."""
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return None
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 assert error_context is None
                 return None  # no more credentials
 
@@ -6486,9 +6842,15 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def entries(self):
+                return []
+
+            def mark_exhausted_and_rotate(
+                self, *, status_code, error_context=None, api_key_hint=None
+            ):
                 captured["status_code"] = status_code
                 captured["error_context"] = error_context
+                captured["api_key_hint"] = api_key_hint
                 return next_entry
 
         agent._credential_pool = _Pool()

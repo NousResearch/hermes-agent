@@ -943,10 +943,13 @@ def _normalize_bedrock_model_name(model: str) -> str:
     """Normalize a Bedrock model id to its bare foundation-model form.
 
     Bedrock cross-region inference profiles prefix the foundation model id
-    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``apac.`` / ...),
-    e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
-    bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
-    lookup or every cross-region session prices as unknown.  Also normalizes
+    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``apac.`` / ``au.``
+    / ...), e.g. ``us.anthropic.claude-opus-4-7`` or
+    ``au.anthropic.claude-sonnet-4-5-20250929-v1:0``.  The pricing table is
+    keyed on the bare ``anthropic.claude-*`` id, so the prefix must be
+    stripped before the lookup or every cross-region session prices as
+    unknown.  Note Asia-Pacific uses ``apac.`` (a bare ``ap.`` never matches
+    an ``apac.*`` id) and Australia/New Zealand use ``au.``.  Also normalizes
     dot-notation version numbers (``4.7`` → ``4-7``) and the documented
     trailing date, revision, and profile components (``-20250514-v1:0``).
     """
@@ -955,8 +958,9 @@ def _normalize_bedrock_model_name(model: str) -> str:
         "global.",
         "us.",
         "eu.",
-        "ap.",
         "apac.",
+        "ap.",
+        "au.",
         "jp.",
         "ca.",
         "sa.",

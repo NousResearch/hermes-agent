@@ -49,8 +49,8 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and
-  // $attentionSessionIds (they're computed from it). $unreadFinishedSessionIds
-  // is separate (transient, not computable) so wipe it explicitly.
+  // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
+  // $unreadFinishedSessionIds is separate, so wipe it explicitly.
   clearAllSessionStates()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)

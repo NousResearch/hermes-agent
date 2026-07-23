@@ -7,3 +7,8 @@
 - Send path: `async def send(...)` at adapter.py L2858 resolves thread/channel then posts chunks. Redirect hook goes right after channel resolution (~L2897), before forum handling.
 - Defaults: hermes_cli/config.py ~L2523/2540/2640 have discord default key blocks — add `reply_channel: ""` alongside.
 - Test model: tests/gateway/test_discord_allowed_channels.py exists.
+
+## Implementation
+- adapter.py: added `_discord_reply_channel()` + `_reply_redirect_target(channel)` helpers (near free_response helper) and a redirect hook in `send()` after channel resolution: resolves reply channel, prefixes "[re: #origin]", drops cross-channel reply_to. DMs (no guild), the reply channel itself, and threads under it are exempt; threads under other channels redirect.
+- gateway/config.py: bridge `reply_channel` from discord: config section into adapter extra (Discord only).
+- hermes_cli/config.py: default `discord.reply_channel: ""` documented in defaults block.

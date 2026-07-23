@@ -240,6 +240,19 @@ Registered on the `hermes-discord` platform toolset. Moderation actions require 
 |------|-------------|----------------------|
 | `discord_admin` | Manage a Discord server via the REST API: list guilds/channels/roles, create/edit/delete channels, manage role grants, timeouts, kicks, and bans. | `DISCORD_BOT_TOKEN` + bot permissions |
 
+## `slack_history` toolset
+
+Opt in per Slack platform with `hermes tools`, or add `slack_history` beside
+`hermes-slack` in `platform_toolsets.slack`. The tool runs only inside an
+active conversation delivered directly by the local Slack adapter and reuses
+that profile's live Slack SDK client and proxy configuration. Relay-backed
+Slack turns are unavailable. Each served profile must have exactly one Slack
+workspace token; comma-separated multi-workspace adapters fail closed.
+
+| Tool | Description | Requires |
+|------|-------------|----------|
+| `slack` | Read bounded history from the **active conversation by default**. `fetch_history` reads the channel timeline, `fetch_thread` reads a parent and replies via `conversations.replies` (including from a Slack permalink), and `find_messages` performs a bounded text/domain filter. From a directly delivered 1:1 DM, an explicitly configured profile owner may list and read same-workspace channels the bot belongs to; shared-channel turns and other users' DMs cannot use that exception. Results are marked as untrusted external data. The tool cannot post, react, delete, or otherwise mutate Slack. | A live Slack gateway adapter using a bot token plus the matching history scopes |
+
 ## `spotify` toolset
 
 Registered by the bundled `spotify` plugin. Requires an OAuth token — run `hermes auth spotify` once to authorize.
@@ -265,5 +278,3 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
-

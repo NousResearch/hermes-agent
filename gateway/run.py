@@ -1954,6 +1954,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+    session_routing_source,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.turn_lease import SessionTurnLeaseRegistry
@@ -3150,9 +3151,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
-        # Multi-profile multiplexing: adapters for NON-default profiles live
-        # here, keyed by profile name then Platform. self.adapters stays the
-        # default/active profile's map so the ~93 existing self.adapters[...]
+        # Freeze the profile that owns ``self.adapters`` before any per-turn
+        # HERMES_HOME override can make get_active_profile_name() report a
+        # secondary profile. The launching profile may itself be named; in
+        # that case ``default`` is a secondary map, not an alias for this one.
+        self._primary_profile_name = self._active_profile_name()
+        # Multi-profile multiplexing: adapters for every non-primary profile
+        # live here, keyed by profile name then Platform. self.adapters stays
+        # the launching profile's map so the ~93 existing self.adapters[...]
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
@@ -9517,11 +9523,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
         try:
-            from hermes_cli.profiles import profiles_to_serve, get_active_profile_name
+            from hermes_cli.profiles import profiles_to_serve
         except Exception:
             return 0
 
-        active = get_active_profile_name() or "default"
+        active = self._primary_profile_name
         connected = 0
         # (platform, token-fingerprint) -> profile that claimed it. Detects two
         # profiles trying to poll the same bot credential (impossible to do
@@ -10324,6 +10330,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
+        if is_internal:
+            # Positive Slack-adapter provenance belongs only to the original
+            # inbound turn. Synthetic continuations reuse routing metadata but
+            # must never inherit its history-read capability.
+            source = session_routing_source(source)
+            try:
+                event.source = source
+            except Exception:
+                pass
 
         # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
         # clock for real (user-originated) inbound only. Internal/system events
@@ -12309,7 +12324,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cached_sources = OrderedDict()
             self._session_sources = cached_sources
         try:
-            cached_sources[session_key] = dataclasses.replace(source)
+            cached_sources[session_key] = session_routing_source(source)
         except Exception:
             logger.debug("Failed to cache live session source for %s", session_key, exc_info=True)
             return
@@ -12347,6 +12362,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        if bool(getattr(event, "internal", False)):
+            # Defense in depth for internal callers/tests that enter this
+            # boundary without going through _handle_message first.
+            source = session_routing_source(source)
+            try:
+                event.source = source
+            except Exception:
+                pass
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
@@ -14580,7 +14603,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cont_event = MessageEvent(
                     text=prompt,
                     message_type=MessageType.TEXT,
-                    source=source,
+                    # The goal judge creates a synthetic turn.  Preserve the
+                    # routing identity without carrying direct-adapter trust
+                    # into a message Slack never delivered.
+                    source=session_routing_source(source),
                     message_id=None,
                     channel_prompt=None,
                 )
@@ -16741,6 +16767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
+            scope_id=getattr(context.source, "scope_id", "") or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
@@ -16748,6 +16775,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            direct_slack=bool(
+                getattr(
+                    context.source,
+                    "delivered_via_direct_slack_adapter",
+                    False,
+                )
+            ),
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -17153,8 +17187,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
-                if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                origin = getattr(entry, "origin", None) if entry else None
+                if isinstance(origin, SessionSource):
+                    return session_routing_source(origin)
             except Exception as exc:
                 logger.debug(
                     "Synthetic process-event session-store lookup failed for %s: %s",
@@ -17164,7 +17199,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
-                return cached_source
+                return session_routing_source(cached_source)
 
             _parsed = _parse_session_key(session_key)
             if _parsed:
@@ -22439,7 +22474,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
-                _followup_adapter = self._adapter_for_source(source)
+                _followup_adapter = self._adapter_for_source(next_source)
                 if _followup_adapter:
                     try:
                         await _followup_adapter.send_typing(
@@ -22465,18 +22500,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
-                followup_result = await self._run_agent(
-                    message=next_message,
-                    context_prompt=context_prompt,
-                    history=updated_history,
-                    source=next_source,
-                    session_id=session_id,
+                # Recursive follow-ups share the original asyncio task. Rebind
+                # the complete next-turn identity before executor context is
+                # copied so a queued actor cannot inherit the prior actor's
+                # owner authorization or other session metadata.
+                from gateway.session_context import get_session_env, session_identity_scope
+
+                with session_identity_scope(
+                    platform=next_source.platform.value,
+                    chat_id=next_source.chat_id,
+                    chat_name=next_source.chat_name or "",
+                    user_id=next_source.user_id or "",
+                    user_name=next_source.user_name or "",
+                    thread_id=next_source.thread_id or "",
+                    message_id=next_message_id or "",
                     session_key=next_session_key,
-                    run_generation=run_generation,
-                    _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=next_message_id,
-                    channel_prompt=next_channel_prompt,
-                )
+                    session_id=session_id,
+                    profile=get_session_env("HERMES_SESSION_PROFILE", ""),
+                    scope_id=next_source.scope_id or "",
+                    direct_slack=bool(
+                        next_source.delivered_via_direct_slack_adapter
+                    ),
+                    async_delivery=bool(
+                        getattr(_followup_adapter, "supports_async_delivery", True)
+                    ),
+                ):
+                    followup_result = await self._run_agent(
+                        message=next_message,
+                        context_prompt=context_prompt,
+                        history=updated_history,
+                        source=next_source,
+                        session_id=session_id,
+                        session_key=next_session_key,
+                        run_generation=run_generation,
+                        _interrupt_depth=_interrupt_depth + 1,
+                        event_message_id=next_message_id,
+                        channel_prompt=next_channel_prompt,
+                    )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task

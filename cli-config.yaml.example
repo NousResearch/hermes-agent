@@ -876,6 +876,8 @@ platform_toolsets:
   telegram: [hermes-telegram]
   discord: [hermes-discord]
   whatsapp: [hermes-whatsapp]
+  # Append `slack_history` for bounded, read-only active-channel history by default.
+  # Configured owners may use its cross-channel exception only from a direct 1:1 DM.
   slack: [hermes-slack]
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
@@ -950,6 +952,8 @@ platform_toolsets:
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
+#   slack_history - read-only active Slack history by default; configured-owner
+#                   cross-channel reads require a direct 1:1 DM (Slack-only, opt-in)
 #
 # PRESETS (curated bundles):
 #   hermes-cli       - All of the above except send_message

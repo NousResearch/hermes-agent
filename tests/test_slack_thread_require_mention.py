@@ -5,6 +5,9 @@ from gateway.config import PlatformConfig
 from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
 
 
+CHANNEL_ID = "C12345678"
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -34,7 +37,7 @@ def make_adapter(extra=None):
 def slack_event(text, ts="100.000", thread_ts=None):
     event = {
         "type": "message",
-        "channel": "C123",
+        "channel": CHANNEL_ID,
         "channel_type": "channel",
         "team": "T1",
         "user": "U123",
@@ -73,7 +76,7 @@ def test_thread_require_mention_parses_yaml_and_env(monkeypatch):
 def test_thread_require_mention_allows_top_level_free_response():
     adapter = make_adapter(
         {
-            "allowed_channels": ["C123"],
+            "allowed_channels": [CHANNEL_ID],
             "require_mention": False,
             "thread_require_mention": True,
             "reply_in_thread": True,
@@ -96,7 +99,7 @@ def test_thread_require_mention_allows_top_level_free_response():
 def test_thread_require_mention_blocks_unmentioned_thread_reply():
     adapter = make_adapter(
         {
-            "allowed_channels": ["C123"],
+            "allowed_channels": [CHANNEL_ID],
             "require_mention": False,
             "thread_require_mention": True,
             "reply_in_thread": True,
@@ -121,7 +124,7 @@ def test_thread_require_mention_blocks_unmentioned_thread_reply():
 def test_thread_require_mention_allows_mentioned_thread_reply_without_sticky_thread():
     adapter = make_adapter(
         {
-            "allowed_channels": ["C123"],
+            "allowed_channels": [CHANNEL_ID],
             "require_mention": False,
             "thread_require_mention": True,
             "reply_in_thread": True,

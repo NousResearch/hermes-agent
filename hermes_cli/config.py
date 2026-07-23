@@ -2520,6 +2520,12 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        # Explicit Slack user IDs allowed to use the read-only slack_history
+        # tool from a directly delivered 1:1 DM across same-workspace C.../G...
+        # channels. Empty keeps the active-conversation-only default; shared
+        # channel turns, other users, and all cross-DM reads remain blocked.
+        # This is profile-local and has no environment fallback.
+        "history_cross_channel_user_ids": [],
         # Channel IDs where @mention is ALWAYS required, even when
         # require_mention is false globally (per-channel force-mention override).
         "require_mention_channels": "",

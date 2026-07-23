@@ -304,7 +304,9 @@ def get_tool_definitions(
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
     # check_fn results are TTL-cached one level down, inside
-    # registry.get_definitions. The config-mtime fingerprint below captures
+    # registry.get_definitions. Dynamic service checks can contribute a
+    # profile/lifecycle context fingerprint so this outer cache cannot outlive
+    # selected-profile eligibility. The config-mtime fingerprint below captures
     # user-visible config edits that affect dynamic schemas (execute_code
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
@@ -316,42 +318,82 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
-        cache_key = (
+        sample_availability_contexts_fn = getattr(
+            registry,
+            "sample_check_fn_cache_contexts",
+            None,
+        )
+        availability_context_fn = getattr(
+            registry,
+            "get_check_fn_cache_context_fingerprint",
+            None,
+        )
+
+        def sample_availability_contexts() -> Tuple[
+            tuple,
+            Optional[Dict[Any, object]],
+        ]:
+            if callable(sample_availability_contexts_fn):
+                sampled: Any = sample_availability_contexts_fn()
+                return sampled
+            fingerprint: Any = (
+                availability_context_fn()
+                if callable(availability_context_fn)
+                else ()
+            )
+            return fingerprint if isinstance(fingerprint, tuple) else (), None
+        key_prefix = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+        )
+        key_suffix = (
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
         )
-        cached = _tool_defs_cache.get(cache_key)
-        if cached is not None:
-            # Update _last_resolved_tool_names so downstream callers see
-            # consistent state even on a cache hit.
-            global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
-            # Return a shallow copy of the list but share the dict references —
-            # schemas are treated as read-only by all known callers.
-            return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
-    if quiet_mode:
-        # Cache the freshly-computed list, but hand callers a shallow copy so
-        # downstream mutations (e.g. run_agent appending memory/LCM tool
-        # schemas to self.tools) don't poison the cache. Without this, a
-        # long-lived Gateway process accumulates duplicate tool names across
-        # agent inits and providers that enforce unique tool names
-        # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
-        # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
-        # Bound the cache with LRU eviction so a long-lived Gateway process
-        # doesn't accumulate entries unboundedly across the many distinct
-        # toolset/config fingerprints it sees over its lifetime (#19251).
-        if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
-            _tool_defs_cache.pop(next(iter(_tool_defs_cache)))  # evict oldest
-        _tool_defs_cache[cache_key] = result
-        return list(result)
-    return result
+        for attempt in range(2):
+            availability_before, check_fn_contexts = sample_availability_contexts()
+            cache_key = key_prefix + (availability_before,) + key_suffix
+            cached = _tool_defs_cache.get(cache_key)
+            if cached is not None:
+                availability_after, _ = sample_availability_contexts()
+                if availability_before == availability_after:
+                    # Update _last_resolved_tool_names so downstream callers see
+                    # consistent state even on a cache hit.
+                    global _last_resolved_tool_names
+                    _last_resolved_tool_names = [
+                        tool["function"]["name"] for tool in cached
+                    ]
+                    return list(cached)
+                if attempt == 0:
+                    continue
+
+            result = _compute_tool_definitions(
+                enabled_toolsets,
+                disabled_toolsets,
+                quiet_mode,
+                skip_tool_search_assembly=skip_tool_search_assembly,
+                check_fn_contexts=check_fn_contexts,
+            )
+            availability_after, _ = sample_availability_contexts()
+            if availability_before == availability_after:
+                # Cache only a stable lifecycle snapshot. A transition during
+                # computation retries once; a second race returns uncached.
+                if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
+                    _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
+                _tool_defs_cache[cache_key] = result
+                return list(result)
+            if attempt == 1:
+                return list(result)
+
+    return _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+    )
 
 
 def _compute_tool_definitions(
@@ -359,6 +401,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    check_fn_contexts: Optional[Dict[Any, object]] = None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -442,7 +485,11 @@ def _compute_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(
+        tools_to_include,
+        quiet=quiet_mode,
+        check_fn_contexts=check_fn_contexts,
+    )
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

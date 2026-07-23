@@ -221,6 +221,25 @@ def test_relay_delivery_marker_is_wire_invisible():
     assert SessionSource.from_dict(src.to_dict()).delivered_via_upstream_relay is False
 
 
+def test_direct_slack_delivery_marker_is_wire_invisible():
+    """Only the live local adapter may stamp direct Slack provenance."""
+
+    src = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C12345678",
+        scope_id="T123",
+        delivered_via_direct_slack_adapter=True,
+    )
+
+    payload = src.to_dict()
+
+    assert "delivered_via_direct_slack_adapter" not in payload
+    assert (
+        SessionSource.from_dict(payload).delivered_via_direct_slack_adapter
+        is False
+    )
+
+
 def test_event_from_wire_sets_relay_delivery_marker():
     """The relay transport stamps the marker on every event it rebuilds.
 

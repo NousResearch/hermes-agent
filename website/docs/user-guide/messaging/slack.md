@@ -93,7 +93,7 @@ These are the most commonly missed scopes.
 
 | Scope | Purpose |
 |-------|---------|
-| `groups:read` | List and get info about private channels |
+| `groups:read` | List and get info about private channels; required only for owner-only private-channel discovery |
 | `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the `assistant.threads.setStatus` call fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
 
 ---
@@ -340,6 +340,86 @@ Understanding how Hermes behaves in different contexts:
 :::tip
 In channels, always @mention the bot to start a conversation. Once the bot is active in a thread, you can reply in that thread without mentioning it. Outside of threads, messages without @mention are ignored to prevent noise in busy channels.
 :::
+
+### Reading channel history
+
+Slack history is an explicit, read-only opt-in. Enable **Slack History** for the
+Slack platform with `hermes tools`, or configure it directly:
+
+```yaml
+platform_toolsets:
+  slack: [hermes-slack, slack_history]
+```
+
+When the matching history scopes are granted, the `slack` tool can:
+
+- fetch a bounded page of the active channel with `conversations.history`;
+- fetch a thread parent and replies with `conversations.replies`, either from
+  the active thread or an HTTPS workspace Slack permalink; and
+- perform a bounded text or link-domain filter over recent active-channel
+  history.
+
+This is separate from live event delivery. Event subscriptions let Hermes react to messages as they arrive; the `slack` tool lets the agent look backward in a channel when a task asks for an older link or message.
+
+The tool reuses the current profile's live Slack adapter and SDK client. It
+does not read a process-global token or create a second HTTP transport, so the
+profile and proxy stay consistent with the active conversation. Each adapter
+must own exactly one workspace: comma-separated multi-workspace bot tokens are
+rejected for history reads. Serve one Slack bot token per profile instead.
+
+History responses cap message text per result to keep tool output bounded. URLs are still extracted from the full Slack message text before truncation.
+
+History reads are restricted to the current inbound channel or DM by default. A
+permalink for another channel, an arbitrary channel ID, and another user's DM
+are rejected before Hermes calls Slack unless the owner-only 1:1-DM exception
+below applies. Bot visibility is not treated as user authorization. Retrieved
+message text is also wrapped as untrusted external data so instructions inside
+channel history do not become agent instructions.
+The inbound turn must come directly from the local Slack adapter; Slack turns
+delivered through an upstream relay cannot borrow a local adapter credential.
+
+#### Owner-only cross-channel history
+
+The active-conversation boundary is the default for every Slack user. A profile
+owner can opt in to reading **other same-workspace channels the bot already
+belongs to**, but only while talking to Hermes in a directly delivered 1:1 DM:
+
+```yaml
+slack:
+  history_cross_channel_user_ids:
+    - "U01ABC2DEF3" # Slack Member ID of the profile owner
+```
+
+This setting is profile-local and has no environment fallback. From a 1:1 DM,
+it permits the named owner to use `list_channels` and then read a listed public
+or private channel in that same workspace. Shared channels and threads cannot
+use the exception, because the retrieved content could be exposed to another
+participant. It never permits cross-workspace reads, other-user DMs,
+relayed/synthetic/background turns, writes, reactions, or deletions. An empty,
+missing, or malformed list preserves the strict
+active-conversation-only behavior. The bot must be a member of every listed
+channel; private-channel discovery also requires Slack's `groups:read` scope.
+
+Slack permalinks are parsed locally; Hermes never fetches the permalink URL.
+For a reply permalink, the `thread_ts` query value selects the parent thread.
+
+### Posting a deliberate reply
+
+The model-facing history tool is intentionally read-only. Hermes does not give
+the agent a generic outbound Slack action. Operator- or script-initiated writes
+use the existing [`hermes send`](/guides/pipe-script-output) command outside the
+agent loop. To reply to a known thread explicitly:
+
+```bash
+hermes send --to slack:C0A6KDTQ667:1783909752.038519 "Processed — thank you."
+```
+
+This preserves the project's boundary between model reads and deliberate
+outbound delivery.
+
+### Message deletion limits
+
+The `slack_history` toolset's built-in `slack` tool is read-only. Slack's `chat.delete` API does not let a bot token delete arbitrary user-authored messages; a bot token can delete only messages posted by that same bot. If you approve that a user-posted X URL has been processed, Hermes can record that state or reply/react when configured, but it cannot delete the original user message unless you add a separate Slack user/admin-token path with the permissions Slack requires.
 
 ---
 
@@ -670,6 +750,10 @@ Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
 ## Multi-Workspace Support
 
 Hermes can connect to **multiple Slack workspaces** simultaneously using a single gateway instance. Each workspace is authenticated independently with its own bot user ID.
+
+This gateway feature does not extend to the opt-in `slack_history` toolset's `slack` tool. For
+history reads, serve one workspace token per profile; a comma-separated
+multi-workspace adapter fails closed before calling the Slack API.
 
 ### Configuration
 

@@ -290,6 +290,12 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "slack_history": {
+        "description": "Slack read-only active-conversation history and thread retrieval",
+        "tools": ["slack"],
+        "includes": [],
+    },
+
     "yuanbao": {
         "description": "Yuanbao platform tools - group info, member queries, DM, stickers",
         "tools": [

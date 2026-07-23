@@ -24,6 +24,7 @@ def _bare_runner(multiplex: bool = True):
     runner.adapters = {}
     runner._profile_adapters = {}
     runner.pairing_stores = {}
+    runner._primary_profile_name = "default"
     return runner
 
 
@@ -46,7 +47,7 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
 
     with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
         ("coder", tmp_path / ".hermes" / "profiles" / "coder"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    ]):
         runner._profile_adapters["coder"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 
@@ -74,7 +75,7 @@ def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
 
     with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
         ("ops", tmp_path / ".hermes" / "profiles" / "ops"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    ]):
         runner._profile_adapters["ops"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 

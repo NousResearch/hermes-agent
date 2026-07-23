@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _parse_session_key
 
 
@@ -444,6 +445,100 @@ def test_build_process_event_source_uses_cached_live_source_before_session_key_p
     assert source.thread_id == "42"
     assert source.user_id == "proc_owner"
     assert source.user_name == "alice"
+
+
+def test_synthetic_routing_strips_direct_slack_provenance_from_origin_and_cache(
+    monkeypatch, tmp_path
+):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:slack:channel:C12345678"
+    direct_source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C12345678",
+        chat_type="channel",
+        user_id="U1",
+        scope_id="T1",
+        delivered_via_direct_slack_adapter=True,
+    )
+    runner.session_store._entries[session_key] = SimpleNamespace(origin=direct_source)
+
+    from_origin = runner._build_process_event_source({"session_key": session_key})
+
+    assert direct_source.delivered_via_direct_slack_adapter is True
+    assert from_origin.delivered_via_direct_slack_adapter is False
+
+    runner.session_store._entries.pop(session_key)
+    runner._cache_session_source(session_key, direct_source)
+    assert (
+        runner._get_cached_session_source(session_key).delivered_via_direct_slack_adapter
+        is False
+    )
+
+    from_cache = runner._build_process_event_source({"session_key": session_key})
+
+    assert from_cache.delivered_via_direct_slack_adapter is False
+
+
+@pytest.mark.asyncio
+async def test_internal_agent_boundary_cannot_bind_direct_slack_provenance(
+    monkeypatch, tmp_path
+):
+    from gateway.session import SessionContext, SessionSource
+    from gateway.session_context import direct_slack_session
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    direct_source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C12345678",
+        chat_type="channel",
+        user_id="U1",
+        scope_id="T1",
+        delivered_via_direct_slack_adapter=True,
+    )
+    event = MessageEvent(
+        text="[SYSTEM: synthetic completion]",
+        message_type=MessageType.TEXT,
+        source=direct_source,
+        internal=True,
+    )
+    observed: list[bool] = []
+
+    class BoundaryReached(RuntimeError):
+        pass
+
+    def record_boundary(source):
+        assert source.delivered_via_direct_slack_adapter is False
+        context = SessionContext(
+            source=source,
+            connected_platforms=[],
+            home_channels={},
+            session_key="agent:main:slack:channel:C12345678",
+            session_id="synthetic",
+        )
+        tokens = runner._set_session_env(context)
+        try:
+            observed.append(direct_slack_session())
+        finally:
+            runner._clear_session_env(tokens)
+        raise BoundaryReached
+
+    class FakeAsyncStore:
+        _store = runner.session_store
+
+        async def get_or_create_session(self, source):
+            record_boundary(source)
+
+    runner._async_session_store = FakeAsyncStore()
+    runner.session_store.get_or_create_session = record_boundary
+    monkeypatch.setattr(runner, "_recover_telegram_topic_thread_id", lambda _source: None)
+
+    with pytest.raises(BoundaryReached):
+        await runner._handle_message_with_agent(event, direct_source, "quick", 1)
+
+    assert observed == [False]
+    assert event.source.delivered_via_direct_slack_adapter is False
 
 
 @pytest.mark.asyncio

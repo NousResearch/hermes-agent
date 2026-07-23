@@ -145,24 +145,84 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # as a flake (last-good True is served) rather than a real outage. Kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_CHECK_FN_CACHE_MAX_ENTRIES = 256
+_CHECK_FN_CONTEXT_UNSET = object()
+_check_fn_cache: Dict[tuple[Callable, object], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
-_check_fn_last_good: Dict[Callable, float] = {}
+_check_fn_last_good: Dict[tuple[Callable, object], float] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
-def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls.
+def _check_fn_context(fn: Callable) -> object:
+    """Return a hashable dynamic cache context declared by *fn*, if any.
+
+    Most requirement probes are process-global and need no context. Runtime
+    service checks may attach a zero-argument ``cache_context_fn`` attribute so
+    profile identity and live eligibility become part of both availability
+    caches without changing the public zero-argument ``check_fn`` contract.
+    """
+
+    context_fn = getattr(fn, "cache_context_fn", None)
+    if not callable(context_fn):
+        return None
+    try:
+        context = context_fn()
+    except Exception:
+        return ("context_error",)
+    try:
+        hash(context)
+    except TypeError:
+        return repr(context)
+    return context
+
+
+def _prune_check_fn_caches(now: float) -> None:
+    """Expire old contextual entries and bound both check caches."""
+
+    retention = max(_CHECK_FN_TTL_SECONDS, _CHECK_FN_FAILURE_GRACE_SECONDS)
+    for key, (timestamp, _) in list(_check_fn_cache.items()):
+        if now - timestamp >= retention:
+            _check_fn_cache.pop(key, None)
+            _check_fn_last_good.pop(key, None)
+    for key, timestamp in list(_check_fn_last_good.items()):
+        if now - timestamp >= retention:
+            _check_fn_last_good.pop(key, None)
+
+    if len(_check_fn_cache) > _CHECK_FN_CACHE_MAX_ENTRIES:
+        overflow = len(_check_fn_cache) - _CHECK_FN_CACHE_MAX_ENTRIES
+        oldest = sorted(_check_fn_cache, key=lambda key: _check_fn_cache[key][0])
+        for key in oldest[:overflow]:
+            _check_fn_cache.pop(key, None)
+            _check_fn_last_good.pop(key, None)
+    if len(_check_fn_last_good) > _CHECK_FN_CACHE_MAX_ENTRIES:
+        overflow = len(_check_fn_last_good) - _CHECK_FN_CACHE_MAX_ENTRIES
+        oldest = sorted(
+            _check_fn_last_good,
+            key=lambda key: _check_fn_last_good[key],
+        )
+        for key in oldest[:overflow]:
+            _check_fn_last_good.pop(key, None)
+            _check_fn_cache.pop(key, None)
+
+
+def _check_fn_cached(fn: Callable, context: object = _CHECK_FN_CONTEXT_UNSET) -> bool:
+    """Return a requirement verdict, TTL-cached across calls.
 
     Exceptions are swallowed as False. A transient False/exception within
     ``_CHECK_FN_FAILURE_GRACE_SECONDS`` of the last True is suppressed (the
     last-good True is returned and the failure is NOT cached, so the next call
     re-probes) to keep flaky external checks (Docker daemon busy, socket
-    contention, probe timeout) from silently stripping tools mid-session.
+    contention, probe timeout) from silently stripping tools mid-session. A
+    contextual check may derive its verdict from the exact sampled context via
+    ``check_value_from_context_fn`` so cache identity and value cannot diverge.
     """
     now = time.monotonic()
+    if context is _CHECK_FN_CONTEXT_UNSET:
+        context = _check_fn_context(fn)
+    cache_key = (fn, context)
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        _prune_check_fn_caches(now)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
@@ -170,18 +230,24 @@ def _check_fn_cached(fn: Callable) -> bool:
 
     raised = False
     try:
-        value = bool(fn())
+        value_from_context = getattr(fn, "check_value_from_context_fn", None)
+        value = bool(
+            value_from_context(context)
+            if callable(value_from_context)
+            else fn()
+        )
     except Exception:
         value = False
         raised = True
 
     with _check_fn_cache_lock:
         if value:
-            _check_fn_last_good[fn] = now
-            _check_fn_cache[fn] = (now, True)
+            _check_fn_last_good[cache_key] = now
+            _check_fn_cache[cache_key] = (now, True)
+            _prune_check_fn_caches(now)
             return True
 
-        last_good = _check_fn_last_good.get(fn)
+        last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → treat this failure as a flake. Serve last-good
             # True and do NOT cache the failure, so the next call re-probes
@@ -202,7 +268,8 @@ def _check_fn_cached(fn: Callable) -> bool:
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
-        _check_fn_cache[fn] = (now, False)
+        _check_fn_cache[cache_key] = (now, False)
+        _prune_check_fn_caches(now)
         return False
 
 
@@ -275,6 +342,30 @@ class ToolRegistry:
         """Return a registered tool entry by name, or None."""
         with self._lock:
             return self._tools.get(name)
+
+    def get_check_fn_cache_context_fingerprint(self) -> tuple:
+        """Return dynamic requirement contexts that affect schema availability."""
+
+        fingerprint, _ = self.sample_check_fn_cache_contexts()
+        return fingerprint
+
+    def sample_check_fn_cache_contexts(self) -> tuple[tuple, Dict[Callable, object]]:
+        """Sample dynamic check contexts once for cache identity and evaluation."""
+
+        fingerprint = []
+        contexts: Dict[Callable, object] = {}
+        seen: set[Callable] = set()
+        for entry in self._snapshot_entries():
+            fn = entry.check_fn
+            if fn is None or fn in seen or not callable(
+                getattr(fn, "cache_context_fn", None)
+            ):
+                continue
+            seen.add(fn)
+            context = _check_fn_context(fn)
+            contexts[fn] = context
+            fingerprint.append((entry.name, context))
+        return tuple(fingerprint), contexts
 
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
@@ -527,7 +618,12 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(
+        self,
+        tool_names: Set[str],
+        quiet: bool = False,
+        check_fn_contexts: Optional[Dict[Callable, object]] = None,
+    ) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -550,7 +646,18 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                    context = (
+                        check_fn_contexts.get(
+                            entry.check_fn,
+                            _CHECK_FN_CONTEXT_UNSET,
+                        )
+                        if check_fn_contexts is not None
+                        else _CHECK_FN_CONTEXT_UNSET
+                    )
+                    check_results[entry.check_fn] = _check_fn_cached(
+                        entry.check_fn,
+                        context,
+                    )
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)

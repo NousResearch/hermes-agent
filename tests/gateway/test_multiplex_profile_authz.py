@@ -27,6 +27,7 @@ def _make_multiplex_runner(monkeypatch):
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
+    runner._primary_profile_name = "default"
 
     default_adapter = SimpleNamespace(
         send=AsyncMock(),
@@ -127,6 +128,32 @@ def test_adapter_for_source_resolves_secondary_profile_adapter(monkeypatch):
     ) is default_adapter
 
 
+def test_named_primary_resolves_default_as_secondary_profile(monkeypatch):
+    """`default` is not a synonym for self.adapters when a named profile launched."""
+
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner._primary_profile_name = "coder"
+    primary_adapter = object()
+    default_secondary_adapter = object()
+    runner.adapters = {Platform.SLACK: primary_adapter}
+    runner._profile_adapters = {
+        "default": {Platform.SLACK: default_secondary_adapter},
+    }
+
+    assert runner._authorization_adapter(Platform.SLACK) is primary_adapter
+    assert (
+        runner._authorization_adapter(Platform.SLACK, profile="coder")
+        is primary_adapter
+    )
+    assert (
+        runner._authorization_adapter(Platform.SLACK, profile="default")
+        is default_secondary_adapter
+    )
+
+
 def test_chat_routed_source_keeps_receiving_shared_adapter(monkeypatch):
     """A runtime-only profile route must not discard the shared transport.
 
@@ -199,7 +226,6 @@ def test_adapter_for_direct_source_keeps_native_platform_adapter(monkeypatch):
     )
 
     assert runner._adapter_for_source(source) is slack_adapter
-
 
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""

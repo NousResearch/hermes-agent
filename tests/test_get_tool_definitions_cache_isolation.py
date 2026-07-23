@@ -108,6 +108,106 @@ class TestQuietModeCacheIsolation:
             "Eviction should keep the cache at the cap, not clear it or grow"
         )
 
+    @pytest.mark.parametrize(
+        ("before", "during"),
+        [("eligible", "ineligible"), ("ineligible", "eligible")],
+    )
+    def test_transition_during_computation_is_not_cached_under_stale_context(
+        self,
+        monkeypatch,
+        before,
+        during,
+    ):
+        state = {"context": before, "transition": True}
+        monkeypatch.setattr(
+            model_tools.registry,
+            "sample_check_fn_cache_contexts",
+            lambda: ((state["context"],), {}),
+        )
+
+        def fake_compute(*_args, **_kwargs):
+            if state["transition"]:
+                state["context"] = during
+                state["transition"] = False
+            name = f"tool_{state['context']}"
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": name,
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", fake_compute)
+
+        first = model_tools.get_tool_definitions(quiet_mode=True)
+        assert first[0]["function"]["name"] == f"tool_{during}"
+
+        state["context"] = before
+        second = model_tools.get_tool_definitions(quiet_mode=True)
+        assert second[0]["function"]["name"] == f"tool_{before}"
+
+    @pytest.mark.parametrize("sampled", [True, False])
+    def test_aba_transition_uses_outer_sample_for_inner_verdict(
+        self,
+        monkeypatch,
+        sampled,
+    ):
+        import tools.registry as registry_module
+
+        state = {"value": sampled}
+
+        def check():
+            raise AssertionError("contextual check body must not be re-sampled")
+
+        setattr(check, "cache_context_fn", lambda: state["value"])
+        setattr(check, "check_value_from_context_fn", bool)
+
+        def sample_contexts():
+            context = state["value"]
+            return (("contextual", context),), {check: context}
+
+        monkeypatch.setattr(
+            model_tools.registry,
+            "sample_check_fn_cache_contexts",
+            sample_contexts,
+        )
+
+        def fake_compute(*_args, check_fn_contexts=None, **_kwargs):
+            assert check_fn_contexts is not None
+            state["value"] = not sampled
+            verdict = registry_module._check_fn_cached(
+                check,
+                check_fn_contexts[check],
+            )
+            state["value"] = sampled
+            name = "tool_eligible" if verdict else "tool_ineligible"
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": name,
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", fake_compute)
+        expected = "tool_eligible" if sampled else "tool_ineligible"
+
+        assert (
+            model_tools.get_tool_definitions(quiet_mode=True)[0]["function"]["name"]
+            == expected
+        )
+        assert (
+            model_tools.get_tool_definitions(quiet_mode=True)[0]["function"]["name"]
+            == expected
+        )
+
     def test_non_quiet_mode_does_not_use_cache(self):
         """Sanity: quiet_mode=False (TUI path) skips the cache entirely \u2014
         explains why the bug only hit Gateway."""

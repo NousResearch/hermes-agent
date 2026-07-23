@@ -36,6 +36,7 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -74,6 +75,7 @@ _SESSION_PLATFORM: ContextVar = ContextVar("HERMES_SESSION_PLATFORM", default=_U
 _SESSION_SOURCE: ContextVar = ContextVar("HERMES_SESSION_SOURCE", default=_UNSET)
 _SESSION_CHAT_ID: ContextVar = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
 _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
+_SESSION_SCOPE_ID: ContextVar = ContextVar("HERMES_SESSION_SCOPE_ID", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
@@ -92,6 +94,13 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
+# Positive provenance copied from a wire-invisible SessionSource field. Slack
+# relay/restored/synthetic turns all remain false and cannot borrow a local
+# adapter credential merely by carrying platform="slack".
+_SESSION_DIRECT_SLACK: ContextVar = ContextVar(
+    "direct_slack_session",
+    default=_UNSET,
+)
 
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
@@ -125,6 +134,7 @@ _VAR_MAP = {
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
+    "HERMES_SESSION_SCOPE_ID": _SESSION_SCOPE_ID,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
@@ -169,6 +179,8 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
+    scope_id: str = "",
+    direct_slack: bool = False,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -195,6 +207,7 @@ def set_session_vars(
         _SESSION_SOURCE.set(source),
         _SESSION_CHAT_ID.set(chat_id),
         _SESSION_CHAT_NAME.set(chat_name),
+        _SESSION_SCOPE_ID.set(scope_id),
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
@@ -203,6 +216,7 @@ def set_session_vars(
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
+        _SESSION_DIRECT_SLACK.set(bool(direct_slack)),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
     try:
@@ -230,6 +244,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_SOURCE,
         _SESSION_CHAT_ID,
         _SESSION_CHAT_NAME,
+        _SESSION_SCOPE_ID,
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
@@ -240,6 +255,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PROFILE,
     ):
         var.set("")
+    _SESSION_DIRECT_SLACK.set(False)
     # Reset async-delivery capability to the "never set" sentinel rather than a
     # falsy value: a cleared context should fall back to the default-supported
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
@@ -289,6 +305,7 @@ def reset_session_vars() -> None:
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    _SESSION_DIRECT_SLACK.set(_UNSET)
     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
@@ -325,6 +342,79 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def direct_slack_session() -> bool:
+    """True only for a turn stamped by the live local Slack adapter.
+
+    This positive authorization bit is intentionally private: unlike string
+    session metadata it never falls back to ``os.environ`` and is never
+    exported to tool subprocesses.
+    """
+
+    value = _SESSION_DIRECT_SLACK.get()
+    if value is _UNSET:
+        return False
+    return value is True
+
+
+@contextmanager
+def session_identity_scope(
+    *,
+    platform: str = "",
+    source: str = "",
+    chat_id: str = "",
+    chat_name: str = "",
+    user_id: str = "",
+    user_name: str = "",
+    thread_id: str = "",
+    message_id: str = "",
+    session_key: str = "",
+    session_id: str = "",
+    profile: str = "",
+    scope_id: str = "",
+    direct_slack: bool = False,
+    async_delivery: bool = True,
+):
+    """Temporarily rebind a complete queued-turn identity.
+
+    Queued follow-ups recurse inside the original gateway task. Rebinding only
+    one capability bit leaves the prior actor's user ID and other authorization
+    metadata visible to tools. This token-based scope replaces every
+    security-relevant session value for the recursive turn and restores the
+    outer turn exactly while unwinding.
+    """
+
+    global _session_context_engaged
+    _session_context_engaged = True
+    values = {
+        "HERMES_SESSION_PLATFORM": str(platform or ""),
+        "HERMES_SESSION_SOURCE": str(source or ""),
+        "HERMES_SESSION_CHAT_ID": str(chat_id or ""),
+        "HERMES_SESSION_CHAT_NAME": str(chat_name or ""),
+        "HERMES_SESSION_USER_ID": str(user_id or ""),
+        "HERMES_SESSION_USER_NAME": str(user_name or ""),
+        "HERMES_SESSION_THREAD_ID": str(thread_id or ""),
+        "HERMES_SESSION_MESSAGE_ID": str(message_id or ""),
+        "HERMES_SESSION_KEY": str(session_key or ""),
+        "HERMES_SESSION_ID": str(session_id or ""),
+        "HERMES_SESSION_PROFILE": str(profile or ""),
+        "HERMES_SESSION_SCOPE_ID": str(scope_id or ""),
+    }
+    tokens = [
+        (var, var.set(value))
+        for name, value in values.items()
+        if (var := _VAR_MAP.get(name)) is not None
+    ]
+    direct_token = _SESSION_DIRECT_SLACK.set(bool(direct_slack))
+    async_token = _SESSION_ASYNC_DELIVERY.set(bool(async_delivery))
+    try:
+        yield
+    finally:
+        _SESSION_ASYNC_DELIVERY.reset(async_token)
+        _SESSION_DIRECT_SLACK.reset(direct_token)
+        for var, token in reversed(tokens):
+            var.reset(token)
 
 
 def declare_stateless_channel() -> None:

@@ -3554,6 +3554,15 @@ def run_job(
             )
             if hasattr(agent, "interrupt"):
                 agent.interrupt("Cron job timed out (inactivity)")
+            # Wait for the agent worker thread to finish its cleanup before
+            # letting the finally block close SessionDB (line ~3478). The agent
+            # may still be writing to the session store after interrupt() —
+            # closing the DB out from under a still-active writer corrupts the
+            # session record and raises sqlite3.OperationalError (#65208).
+            try:
+                _cron_future.result(timeout=_POLL_INTERVAL)
+            except (concurrent.futures.TimeoutError, Exception):
+                pass
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "

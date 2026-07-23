@@ -3876,26 +3876,11 @@ def run_conversation(
                     #       context_length = total window (input + output combined).
                     available_out = parse_available_output_tokens_from_error(error_msg)
                     if available_out is not None:
-                        # This is an output-cap error, not input overflow.
-                        # The provider's available_tokens is the authoritative
-                        # cap for the failed request, so keep it as an upper
-                        # bound.  Also estimate the current API request shape
-                        # (system prompt, injected context, tool schemas) because
-                        # Hermes may add API-only content not present in persisted
-                        # messages.  Use the smaller budget and apply a small
-                        # safety margin.  Do not alter context_length.
-                        request_input_estimate = estimate_request_tokens_rough(
-                            api_messages, tools=agent.tools or None,
-                        )
-                        local_available_out = old_ctx - request_input_estimate
-                        if local_available_out > 0:
-                            safe_out = max(1, min(available_out, local_available_out) - 64)
-                        else:
-                            # The rough local estimate can overshoot the real
-                            # request size.  Fall back to the provider-reported
-                            # budget, which is authoritative for the failed
-                            # request.
-                            safe_out = max(1, available_out - 64)
+                        # Error is purely about the output cap being too large.
+                        # Cap output to the available space and retry without
+                        # touching context_length or triggering compression.
+                        safety_margin = 256 * (2 ** compression_attempts)  # exponential to outpace per-retry input drift (~65 tok/retry)
+                        safe_out = max(1, available_out - safety_margin)
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "

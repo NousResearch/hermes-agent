@@ -1262,6 +1262,7 @@ class TestPluginContext:
     def test_register_tool_override_replaces_existing(self, tmp_path, monkeypatch, caplog):
         """override=True lets a plugin replace an existing built-in tool."""
         from tools.registry import registry
+        from hermes_cli.plugins import plugin_content_revision
 
         registry.register(
             name="override_target",
@@ -1290,7 +1291,10 @@ class TestPluginContext:
                     "plugins": {
                         "enabled": ["override_plugin"],
                         "entries": {
-                            "override_plugin": {"allow_tool_override": True}
+                            "override_plugin": {
+                                "allow_tool_override": True,
+                                "allow_tool_override_revision": plugin_content_revision(plugin_dir),
+                            }
                         },
                     }
                 })
@@ -1317,6 +1321,7 @@ class TestPluginContext:
     def test_register_tool_override_on_new_name_is_noop_path(self, tmp_path, monkeypatch):
         """override=True on a brand-new name still registers cleanly (no existing entry to replace)."""
         from tools.registry import registry
+        from hermes_cli.plugins import plugin_content_revision
 
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "new_override_plugin"
@@ -1338,7 +1343,10 @@ class TestPluginContext:
                 "plugins": {
                     "enabled": ["new_override_plugin"],
                     "entries": {
-                        "new_override_plugin": {"allow_tool_override": True}
+                        "new_override_plugin": {
+                            "allow_tool_override": True,
+                            "allow_tool_override_revision": plugin_content_revision(plugin_dir),
+                        }
                     },
                 }
             })
@@ -1351,6 +1359,49 @@ class TestPluginContext:
             assert "brand_new_override_tool" in registry._tools
         finally:
             registry.deregister("brand_new_override_tool")
+
+    def test_tool_override_grant_is_bound_to_reviewed_plugin_revision(
+        self, tmp_path, monkeypatch
+    ):
+        """Changing plugin content invalidates an earlier privileged grant."""
+        from hermes_cli.plugins import (
+            PluginContext,
+            PluginManifest,
+            plugin_content_revision,
+        )
+
+        hermes_home = tmp_path / "hermes_test"
+        plugin_dir = hermes_home / "plugins" / "revision_bound"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("name: revision_bound\n")
+        (plugin_dir / "__init__.py").write_text("def register(ctx):\n    return None\n")
+        approved_revision = plugin_content_revision(plugin_dir)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "plugins": {
+                        "entries": {
+                            "revision_bound": {
+                                "allow_tool_override": True,
+                                "allow_tool_override_revision": approved_revision,
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        manifest = PluginManifest(
+            name="revision_bound",
+            key="revision_bound",
+            source="user",
+            path=str(plugin_dir),
+        )
+        context = PluginContext(manifest, MagicMock())
+
+        assert context._tool_override_allowed("write_file") is True
+        (plugin_dir / "__init__.py").write_text("def register(ctx):\n    ctx.changed = True\n")
+        assert context._tool_override_allowed("write_file") is False
 
     def test_register_tool_override_blocked_without_operator_opt_in(self, tmp_path, monkeypatch):
         """override=True must be rejected when the operator hasn't opted in.

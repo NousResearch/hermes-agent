@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -17,6 +18,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -633,44 +636,359 @@ def cmd_install(
     console.print()
 
 
+def _plugin_update_root() -> Path:
+    """Return the private quarantine root for staged plugin updates."""
+    root = get_hermes_home() / ".plugin-updates"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    return root
+
+
+def _append_plugin_update_audit(action: str, fields: dict[str, Any]) -> None:
+    """Append one best-effort JSON audit event for a plugin update."""
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        **fields,
+    }
+    try:
+        with (_plugin_update_root() / "audit.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as exc:
+        logger.warning("Could not append plugin update audit event: %s", exc)
+
+
+def _git_revision(path: Path) -> str:
+    """Read the exact Git commit checked out at *path*."""
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
+    result = subprocess.run(
+        [git_exe, "rev-parse", "HEAD"],
+        cwd=str(path),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    revision = result.stdout.strip()
+    if result.returncode != 0 or len(revision) != 40:
+        raise PluginOperationError((result.stderr or "Could not read plugin revision.").strip())
+    return revision
+
+
+def _git_changed_files(path: Path, old_revision: str, new_revision: str) -> list[str]:
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        return []
+    result = subprocess.run(
+        [git_exe, "diff", "--name-status", old_revision, new_revision],
+        cwd=str(path),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        return []
+    return [line for line in result.stdout.splitlines() if line.strip()][:200]
+
+
+def _plugin_update_scan(path: Path) -> list[dict[str, Any]]:
+    """Return diagnostic AST findings for changed plugin code review."""
+    try:
+        from tools.skills_ast_audit import ast_scan_path
+
+        return [
+            {"file": file_name, "line": line, "pattern": pattern, "description": description}
+            for file_name, line, pattern, description in ast_scan_path(path)[:100]
+        ]
+    except Exception as exc:
+        logger.warning("Plugin update diagnostic scan failed: %s", exc)
+        return [{"file": "", "line": 0, "pattern": "scan_error", "description": str(exc)}]
+
+
+def _plugin_override_granted(plugin_key: str) -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        entries = ((load_config().get("plugins") or {}).get("entries") or {})
+        return bool((entries.get(plugin_key) or {}).get("allow_tool_override", False))
+    except Exception:
+        return False
+
+
+def _plugin_tree_hash(path: Path) -> str:
+    """Hash the exact staged content, excluding Git/runtime cache internals."""
+    digest = hashlib.sha256()
+    ignored = {".git", "__pycache__", ".venv", "venv", "node_modules"}
+    for file_path in sorted(path.rglob("*")):
+        if any(part in ignored for part in file_path.parts):
+            continue
+        if file_path.is_symlink():
+            relative = file_path.relative_to(path).as_posix()
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0link\0")
+            digest.update(os.readlink(file_path).encode("utf-8", errors="replace"))
+            digest.update(b"\0")
+            continue
+        if not file_path.is_file():
+            continue
+        relative = file_path.relative_to(path).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_path.read_bytes())
+        digest.update(b"\0")
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _stage_plugin_update(name: str, target: Path) -> dict[str, Any]:
+    """Fetch an update into quarantine without changing the live plugin tree."""
+    if not (target / ".git").exists():
+        raise PluginOperationError(
+            f"Plugin '{name}' was not installed from git (no .git directory). Cannot update."
+        )
+
+    old_revision = _git_revision(target)
+    root = _plugin_update_root()
+    work_dir = Path(tempfile.mkdtemp(prefix="stage-", dir=str(root)))
+    candidate = work_dir / "candidate"
+    try:
+        shutil.copytree(target, candidate, symlinks=True)
+        ok, output = _git_pull_plugin_dir(candidate)
+        if not ok:
+            raise PluginOperationError(output)
+        new_revision = _git_revision(candidate)
+        if new_revision == old_revision:
+            shutil.rmtree(work_dir)
+            return {
+                "ok": True,
+                "name": name,
+                "output": output,
+                "unchanged": True,
+                "review_required": False,
+            }
+
+        old_manifest = _read_manifest(target)
+        new_manifest = _read_manifest(candidate)
+        old_name = str(old_manifest.get("name") or target.name)
+        new_name = str(new_manifest.get("name") or target.name)
+        if old_name != new_name:
+            raise PluginOperationError(
+                f"Plugin manifest name changed from '{old_name}' to '{new_name}'; refusing staged update."
+            )
+        manifest_version = new_manifest.get("manifest_version")
+        if manifest_version is not None:
+            try:
+                if int(manifest_version) > _SUPPORTED_MANIFEST_VERSION:
+                    raise PluginOperationError(
+                        f"Plugin '{new_name}' requires unsupported manifest_version {manifest_version}."
+                    )
+            except (TypeError, ValueError):
+                raise PluginOperationError(
+                    f"Plugin '{new_name}' has invalid manifest_version '{manifest_version}'."
+                ) from None
+
+        content_hash = _plugin_tree_hash(candidate)
+        live_hash = _plugin_tree_hash(target)
+        changed_files = _git_changed_files(candidate, old_revision, new_revision)
+        scan_findings = _plugin_update_scan(candidate)
+        canonical_key = _resolve_plugin_key(name) or name
+        enabled = canonical_key in _get_enabled_set() and canonical_key not in _get_disabled_set()
+        override_granted = _plugin_override_granted(canonical_key)
+        token = hashlib.sha256(
+            f"{canonical_key}\0{old_revision}\0{new_revision}\0{content_hash}".encode("utf-8")
+        ).hexdigest()
+        staged_path = root / token
+        metadata_path = root / f"{token}.json"
+        if staged_path.exists():
+            shutil.rmtree(staged_path)
+        candidate.rename(staged_path)
+        shutil.rmtree(work_dir)
+        metadata = {
+            "name": name,
+            "canonical_key": canonical_key,
+            "target": str(target.resolve()),
+            "old_revision": old_revision,
+            "old_hash": live_hash,
+            "candidate_revision": new_revision,
+            "candidate_hash": content_hash,
+            "changed_files": changed_files,
+            "scan_findings": scan_findings,
+            "was_enabled": enabled,
+            "tool_override_was_granted": override_granted,
+        }
+        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+        _append_plugin_update_audit(
+            "STAGED",
+            {"plugin": canonical_key, "from": old_revision, "to": new_revision, "hash": content_hash},
+        )
+        return {
+            "ok": True,
+            "name": name,
+            "output": output,
+            "unchanged": False,
+            "review_required": True,
+            "review_token": token,
+            **{key: metadata[key] for key in (
+                "candidate_revision",
+                "candidate_hash",
+                "changed_files",
+                "scan_findings",
+                "was_enabled",
+                "tool_override_was_granted",
+            )},
+        }
+    except Exception:
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        raise
+
+
+def _activate_staged_plugin_update(
+    name: str,
+    target: Path,
+    review_token: str,
+    *,
+    renew_tool_override: bool,
+) -> dict[str, Any]:
+    """Atomically promote a reviewed staged update into the live plugin path."""
+    if len(review_token) != 64 or any(ch not in "0123456789abcdef" for ch in review_token):
+        raise PluginOperationError("Invalid plugin update review token.")
+    root = _plugin_update_root()
+    staged_path = root / review_token
+    metadata_path = root / f"{review_token}.json"
+    if not staged_path.is_dir() or not metadata_path.is_file():
+        raise PluginOperationError("The staged plugin update no longer exists; review it again.")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("name") != name or metadata.get("target") != str(target.resolve()):
+        raise PluginOperationError("The staged plugin update does not match this plugin.")
+    if (
+        _git_revision(target) != metadata.get("old_revision")
+        or _plugin_tree_hash(target) != metadata.get("old_hash")
+    ):
+        raise PluginOperationError("The live plugin changed after review; review a fresh update.")
+    if _git_revision(staged_path) != metadata.get("candidate_revision"):
+        raise PluginOperationError("The staged plugin revision changed after review.")
+    if _plugin_tree_hash(staged_path) != metadata.get("candidate_hash"):
+        raise PluginOperationError("The staged plugin content changed after review.")
+
+    backup = root / f"backup-{review_token}"
+    if backup.exists():
+        shutil.rmtree(backup)
+    try:
+        target.rename(backup)
+        staged_path.rename(target)
+    except Exception:
+        if not target.exists() and backup.exists():
+            backup.rename(target)
+        raise
+
+    try:
+        from rich.console import Console
+
+        _copy_example_files(target, Console())
+        canonical_key = str(metadata.get("canonical_key") or name)
+        if metadata.get("tool_override_was_granted"):
+            _set_plugin_entry_flag(
+                canonical_key,
+                "allow_tool_override",
+                bool(renew_tool_override),
+            )
+        _append_plugin_update_audit(
+            "ACCEPTED",
+            {
+                "plugin": canonical_key,
+                "from": metadata["old_revision"],
+                "to": metadata["candidate_revision"],
+                "hash": metadata["candidate_hash"],
+                "tool_override_renewed": bool(
+                    metadata.get("tool_override_was_granted") and renew_tool_override
+                ),
+            },
+        )
+    except Exception:
+        if target.exists():
+            shutil.rmtree(target)
+        backup.rename(target)
+        raise
+    else:
+        shutil.rmtree(backup)
+        metadata_path.unlink(missing_ok=True)
+
+    return {
+        "ok": True,
+        "name": name,
+        "unchanged": False,
+        "review_required": False,
+        "accepted": True,
+        "candidate_revision": metadata["candidate_revision"],
+        "enabled_after_update": bool(metadata.get("was_enabled")),
+        "tool_override_renewed": bool(
+            metadata.get("tool_override_was_granted") and renew_tool_override
+        ),
+    }
+
+
 def cmd_update(name: str) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+    """Stage, review, and explicitly accept a Git plugin update."""
     from rich.console import Console
 
     console = Console()
-    plugins_dir = _plugins_dir()
-
     try:
-        target = _require_installed_plugin(name, plugins_dir, console)
-    except ValueError as e:
-        console.print(f"[red]Error:[/red] {e}")
+        target = _require_installed_plugin(name, _plugins_dir(), console)
+        result = _stage_plugin_update(name, target)
+    except (ValueError, PluginOperationError) as exc:
+        console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
 
-    if not (target / ".git").exists():
-        console.print(
-            f"[red]Error:[/red] Plugin '{name}' was not installed from git "
-            f"(no .git directory). Cannot update."
-        )
-        sys.exit(1)
+    if result.get("unchanged"):
+        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date.")
+        return
 
-    console.print(f"[dim]Updating {name}...[/dim]")
+    console.print(f"[yellow]Review required before updating {name}.[/yellow]")
+    console.print(f"  Candidate revision: [bold]{result['candidate_revision']}[/bold]")
+    console.print(f"  Content revision: [dim]{result['candidate_hash']}[/dim]")
+    for changed in result.get("changed_files") or []:
+        console.print(f"  {changed}")
+    findings = result.get("scan_findings") or []
+    if findings:
+        console.print(f"[yellow]Diagnostic scan findings: {len(findings)}[/yellow]")
+        for finding in findings:
+            console.print(
+                f"  {finding['file']}:{finding['line']} {finding['pattern']} — "
+                f"{finding['description']}"
+            )
+    _display_after_install(_plugin_update_root() / result["review_token"], name)
+    try:
+        answer = console.input("Accept and install this reviewed update? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in {"y", "yes"}:
+        console.print("[dim]Update remains quarantined; the live plugin was not changed.[/dim]")
+        return
 
-    ok, output = _git_pull_plugin_dir(target)
-    if not ok:
-        console.print(f"[red]Error:[/red] {output}")
-        sys.exit(1)
-
-    # Copy any new .example files
-    _copy_example_files(target, console)
-
-    out = output.strip()
-    if "Already up to date" in out:
-        console.print(
-            f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
-        )
-    else:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{out}[/dim]")
+    renew_override = False
+    if result.get("tool_override_was_granted"):
+        try:
+            answer = console.input(
+                "Renew permission for this revision to replace built-in tools? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        renew_override = answer in {"y", "yes"}
+    accepted = _activate_staged_plugin_update(
+        name,
+        target,
+        result["review_token"],
+        renew_tool_override=renew_override,
+    )
+    _prompt_plugin_env_vars(_read_manifest(target), console)
+    console.print(
+        f"[green]✓[/green] Plugin [bold]{name}[/bold] updated to "
+        f"[bold]{accepted['candidate_revision']}[/bold]. Restart Hermes to load it."
+    )
 
 
 def cmd_remove(name: str) -> None:
@@ -835,7 +1153,25 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
         entry = {}
         entries[plugin_id] = entry
     entry[key] = bool(value)
+    if key == "allow_tool_override":
+        if value:
+            revision = _installed_plugin_revision(plugin_id)
+            if revision:
+                entry["allow_tool_override_revision"] = revision
+        else:
+            entry.pop("allow_tool_override_revision", None)
     save_config(config)
+
+
+def _installed_plugin_revision(plugin_id: str) -> Optional[str]:
+    """Return the content revision for a discovered plugin key/name."""
+    from hermes_cli.plugins import plugin_content_revision
+
+    for entry in _discover_all_plugins():
+        # entry = (name, version, description, source, dir_path, key)
+        if plugin_id in {entry[0], entry[5]}:
+            return plugin_content_revision(Path(entry[4]))
+    return None
 
 
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
@@ -1935,8 +2271,13 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     return target if target.is_dir() else None
 
 
-def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
-    """``git pull`` inside ``~/.hermes/plugins/<name>``."""
+def dashboard_update_user_plugin(
+    name: str,
+    *,
+    review_token: Optional[str] = None,
+    renew_tool_override: bool = False,
+) -> dict[str, Any]:
+    """Stage an update, or accept an exact revision after dashboard review."""
     target = _user_installed_plugin_dir(name)
     if target is None:
         return {
@@ -1950,15 +2291,17 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
         }
 
-    ok, msg = _git_pull_plugin_dir(target)
-    if not ok:
-        return {"ok": False, "error": msg}
-
-    from rich.console import Console
-
-    _copy_example_files(target, Console())
-    unchanged = "Already up to date" in msg
-    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+    try:
+        if review_token:
+            return _activate_staged_plugin_update(
+                name,
+                target,
+                review_token,
+                renew_tool_override=renew_tool_override,
+            )
+        return _stage_plugin_update(name, target)
+    except (PluginOperationError, OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:

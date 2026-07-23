@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -452,26 +453,82 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
-        from hermes_cli.plugins_cmd import cmd_update
-
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = True
-        mock_target.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=True)
+    @staticmethod
+    def _git(path: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        mock_sanitize.return_value = mock_target
+        return result.stdout.strip()
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="Updated", stderr="")
+    def _git_plugin(self, tmp_path: Path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        plugins_dir = hermes_home / "plugins"
+        remote = tmp_path / "remote"
+        remote.mkdir()
+        self._git(remote, "init", "-b", "main")
+        (remote / "plugin.yaml").write_text("name: review_me\nversion: 1\n")
+        (remote / "__init__.py").write_text("def register(ctx):\n    return None\n")
+        self._git(remote, "add", "plugin.yaml", "__init__.py")
+        self._git(
+            remote,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        )
+        plugins_dir.mkdir(parents=True)
+        subprocess.run(
+            ["git", "clone", str(remote), str(plugins_dir / "review_me")],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        plugin_dir = plugins_dir / "review_me"
+        old_revision = self._git(plugin_dir, "rev-parse", "HEAD")
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "plugins": {
+                        "enabled": ["review_me"],
+                        "disabled": [],
+                        "entries": {
+                            "review_me": {
+                                "allow_tool_override": True,
+                                "allow_tool_override_revision": old_revision,
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        return hermes_home, remote, plugin_dir, old_revision
 
-        cmd_update("test-plugin")
-
-        mock_run.assert_called_once()
+    def _advance_remote(self, remote: Path) -> str:
+        (remote / "__init__.py").write_text(
+            "def register(ctx):\n    ctx.updated = True\n",
+            encoding="utf-8",
+        )
+        self._git(remote, "add", "__init__.py")
+        self._git(
+            remote,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "update",
+        )
+        return self._git(remote, "rev-parse", "HEAD")
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -489,6 +546,59 @@ class TestCmdUpdate:
             cmd_update("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
+    def test_dashboard_update_is_staged_until_exact_revision_is_accepted(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins_cmd as pc
+
+        hermes_home, remote, plugin_dir, old_revision = self._git_plugin(tmp_path, monkeypatch)
+        new_revision = self._advance_remote(remote)
+        staged = pc.dashboard_update_user_plugin("review_me")
+
+        assert staged["ok"] is True
+        assert staged["review_required"] is True
+        assert staged["candidate_revision"] == new_revision
+        assert staged["changed_files"] == ["M\t__init__.py"]
+        assert self._git(plugin_dir, "rev-parse", "HEAD") == old_revision
+        assert "ctx.updated" not in (plugin_dir / "__init__.py").read_text()
+
+        accepted = pc.dashboard_update_user_plugin(
+            "review_me",
+            review_token=staged["review_token"],
+            renew_tool_override=False,
+        )
+
+        assert accepted["accepted"] is True
+        assert accepted["enabled_after_update"] is True
+        assert self._git(plugin_dir, "rev-parse", "HEAD") == new_revision
+        assert "ctx.updated" in (plugin_dir / "__init__.py").read_text()
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        assert cfg["plugins"]["enabled"] == ["review_me"]
+        assert cfg["plugins"]["entries"]["review_me"]["allow_tool_override"] is False
+        assert "allow_tool_override_revision" not in cfg["plugins"]["entries"]["review_me"]
+        audit = (hermes_home / ".plugin-updates" / "audit.jsonl").read_text()
+        assert '"action": "STAGED"' in audit
+        assert '"action": "ACCEPTED"' in audit
+
+    def test_staged_update_rejects_live_tree_changes_after_review(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins_cmd as pc
+
+        _home, remote, plugin_dir, old_revision = self._git_plugin(tmp_path, monkeypatch)
+        self._advance_remote(remote)
+        staged = pc.dashboard_update_user_plugin("review_me")
+        (plugin_dir / "local-note.txt").write_text("changed after review")
+
+        rejected = pc.dashboard_update_user_plugin(
+            "review_me",
+            review_token=staged["review_token"],
+        )
+
+        assert rejected["ok"] is False
+        assert "changed after review" in rejected["error"]
+        assert self._git(plugin_dir, "rev-parse", "HEAD") == old_revision
 
 
 # ── cmd_remove tests ─────────────────────────────────────────────────────────

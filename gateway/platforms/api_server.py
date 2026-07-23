@@ -1827,6 +1827,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        tool_gen_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
     ) -> Any:
@@ -1946,6 +1947,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            tool_gen_callback=tool_gen_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -2925,6 +2927,29 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_tool_gen(tool_name):
+                """Emit ``hermes.tool.progress`` with ``status: preparing``.
+
+                Fires when the model begins generating tool-call arguments —
+                the gap between the last reasoning/content delta and
+                ``status: running`` where a large argument payload (e.g. a
+                45 KB write_file) previously left SSE clients with no
+                signal at all, looking like a hung connection.  No
+                ``toolCallId`` is included: the call id is not knowable
+                until argument generation finishes, so consumers must not
+                correlate this event to a later ``running``/``completed``
+                pair.  Internal tools (``_`` prefix) stay off the wire,
+                matching ``_on_tool_start``.
+                """
+                if not tool_name or tool_name.startswith("_"):
+                    return
+                from agent.display import get_tool_emoji
+                _stream_q.put(("__tool_progress__", {
+                    "tool": tool_name,
+                    "emoji": get_tool_emoji(tool_name),
+                    "status": "preparing",
+                }))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -2942,6 +2967,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                tool_gen_callback=_on_tool_gen,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
@@ -4745,6 +4771,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        tool_gen_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
@@ -4787,6 +4814,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
+                        tool_gen_callback=tool_gen_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
                     )
@@ -5013,6 +5041,24 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        # Surface tool-call argument generation so clients can tell the
+        # difference between "model is writing a large tool payload" and a
+        # stalled run.  Fires before tool.started; carries no call id.
+        def _gen_cb(tool_name: str) -> None:
+            if not tool_name or tool_name.startswith("_"):
+                return
+            if run_id not in self._run_streams:
+                return
+            try:
+                loop.call_soon_threadsafe(_put_event_if_active, {
+                    "event": "tool.generating",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "tool": tool_name,
+                })
+            except Exception:
+                pass
+
         self._set_run_status(
             run_id,
             "queued",
@@ -5048,6 +5094,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_id=session_id,
                         stream_delta_callback=_text_cb,
                         tool_progress_callback=event_cb,
+                        tool_gen_callback=_gen_cb,
                         gateway_session_key=gateway_session_key,
                         route=route,
                     )

@@ -1677,6 +1677,71 @@ class TestChatCompletionsEndpoint:
             assert '"status": "completed"' not in body
 
     @pytest.mark.asyncio
+    async def test_stream_emits_tool_preparing_event(self, adapter):
+        """``tool_gen_callback`` fires → ``status: preparing`` progress event.
+
+        While the model streams tool-call arguments (potentially tens of
+        KB for e.g. write_file), no content delta and no tool lifecycle
+        event is produced; without a ``preparing`` signal SSE clients
+        cannot distinguish generation from a stalled connection.  The
+        event intentionally carries no ``toolCallId`` (unknowable until
+        argument generation completes), and internal tools are filtered.
+        """
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                gen_cb = kwargs.get("tool_gen_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if gen_cb:
+                    gen_cb("_thinking")      # internal — must be filtered
+                    gen_cb("write_file")     # real tool — must surface
+                if ts_cb:
+                    ts_cb("call_write_1", "write_file", {"path": "/tmp/a", "content": "..."})
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "write"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            events = []
+            lines = body.splitlines()
+            for i, line in enumerate(lines):
+                if line.strip() != "event: hermes.tool.progress":
+                    continue
+                for follow in lines[i + 1: i + 4]:
+                    if follow.startswith("data: "):
+                        events.append(_json.loads(follow[len("data: "):]))
+                        break
+
+            preparing = [e for e in events if e.get("status") == "preparing"]
+            assert len(preparing) == 1, f"expected exactly 1 preparing event, got {events}"
+            assert preparing[0]["tool"] == "write_file"
+            assert "emoji" in preparing[0]
+            # No call id exists during argument generation — clients must
+            # not be invited to correlate.
+            assert "toolCallId" not in preparing[0]
+            # Internal tool filtered at the source.
+            assert all(e.get("tool") != "_thinking" for e in events)
+
+    @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

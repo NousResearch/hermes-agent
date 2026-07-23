@@ -109,7 +109,10 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
 **Tool progress in streams**:
-- **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
+- **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text. The payload's `status` field is one of:
+  - `preparing` — the model has started generating tool-call arguments. Large argument payloads (e.g. a multi-KB `write_file`) can stream for tens of seconds; this event lets clients show activity instead of an apparently stalled connection. Fires before `running` and carries no `toolCallId` (the call id is not knowable until argument generation completes), so do not correlate it to the lifecycle pair.
+  - `running` — arguments are complete and the tool is executing; carries `toolCallId` for correlation.
+  - `completed` — the tool finished; carries the matching `toolCallId`.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
 ### POST /v1/responses
@@ -275,6 +278,8 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 ### GET /v1/runs/\{run_id\}/events
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+
+Events are JSON objects on `data:` lines, distinguished by their `event` field: `message.delta` (token text), `reasoning.available`, `tool.generating` (the model has started generating a tool call's arguments — fires before `tool.started` and carries only `tool`, no call id), `tool.started`, `tool.completed`, and `run.completed` / `run.failed` / `run.cancelled`.
 
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is

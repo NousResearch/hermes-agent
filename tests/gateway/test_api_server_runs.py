@@ -325,6 +325,50 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_includes_tool_generating(self, adapter):
+        """tool_gen_callback fires → ``tool.generating`` event on the run stream.
+
+        Large tool-call argument payloads (e.g. a 45 KB write_file) can
+        take tens of seconds to generate; without this event subscribers
+        see no activity between reasoning/message deltas and tool.started
+        and cannot tell generation apart from a stalled run.  Internal
+        tools (``_`` prefix) are filtered.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            captured: dict = {}
+
+            def _fake_create(**kwargs):
+                captured.update(kwargs)
+                mock_agent = MagicMock()
+
+                def _run(user_message=None, conversation_history=None, task_id=None):
+                    cb = captured.get("tool_gen_callback")
+                    if cb:
+                        cb("_thinking")   # internal — must be filtered
+                        cb("write_file")  # real tool — must surface
+                    return {"final_response": "ok"}
+
+                mock_agent.run_conversation.side_effect = _run
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 1
+                mock_agent.session_total_tokens = 2
+                return mock_agent
+
+            with patch.object(adapter, "_create_agent", side_effect=_fake_create):
+                resp = await cli.post("/v1/runs", json={"input": "write"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+            assert '"event": "tool.generating"' in body
+            assert '"tool": "write_file"' in body
+            assert "_thinking" not in body
+
 
 
     @pytest.mark.asyncio

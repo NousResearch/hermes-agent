@@ -35,6 +35,7 @@ from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     conversation_history_after_compression,
+    recover_rotated_compression_session,
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
@@ -351,6 +352,13 @@ def build_turn_context(
     """
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
+
+    # Recover a session rotated by another path before binding log/turn ids or
+    # copying client-supplied history. Everything in this turn must consistently
+    # belong to the canonical child, including observability metadata.
+    recovered_history = recover_rotated_compression_session(agent)
+    if recovered_history is not None:
+        conversation_history = recovered_history
 
     # NOTE: the DB session row is created later, AFTER the system prompt is
     # restored/built (see _ensure_db_session() below the system-prompt block).

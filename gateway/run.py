@@ -22588,7 +22588,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.
                 _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
+                if _sc_msg_id and _sc_msg_id != "__no_edit__":
                     try:
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,

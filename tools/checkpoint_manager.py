@@ -139,6 +139,9 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Chrome / CDP browser profiles (locked files break git add -A on Windows)
+    "chrome_cdp_profile/",
+    "agent-browser-chrome-*/",
 ]
 
 # Git subprocess timeout (seconds).

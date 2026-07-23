@@ -13053,7 +13053,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 "auxiliary.compression model configuration."
                                             )
                                             try:
-                                                _adapter = self.adapters.get(source.platform)
+                                                _adapter = self._adapter_for_source(source)
                                                 if _adapter and source.chat_id:
                                                     await _adapter.send(
                                                         source.chat_id,

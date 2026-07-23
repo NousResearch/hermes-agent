@@ -553,7 +553,7 @@ function CreateProfileDialog({
               autoFocus
               id="new-profile-name"
               onValueChange={setName}
-              placeholder="my-profile"
+              placeholder={p.namePlaceholder}
               sanitize={slug}
               value={name}
             />
@@ -577,7 +577,7 @@ function CreateProfileDialog({
                 <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
                 {profiles.map(profile => (
                   <SelectItem key={profile.name} value={profile.name}>
-                    {profile.name}
+                    {displayEntityName(profile.name, t)}
                   </SelectItem>
                 ))}
               </SelectContent>

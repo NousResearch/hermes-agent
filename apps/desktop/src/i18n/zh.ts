@@ -185,6 +185,9 @@ export const zh: Translations = {
   },
 
   billingPage: {
+    title: '账单',
+    paymentAndCredits: '支付与额度',
+    usage: '用量',
     balance: '余额',
     plan: '套餐',
     autoRefill: '自动充值',
@@ -567,6 +570,7 @@ export const zh: Translations = {
       },
       stt: {
         enabled: '语音转文字',
+        echoTranscripts: '回显转写文本',
         provider: '语音转文字提供方',
         local: {
           model: '本地转写模型',
@@ -757,7 +761,7 @@ export const zh: Translations = {
       lastChecked: age => `上次检查:${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
-      automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
+      automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，可用时会通知你。',
       branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
       never: '从未',
       justNow: '刚刚',
@@ -1024,8 +1028,17 @@ export const zh: Translations = {
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
+      staleAuxPrefix: (count, names) => `${count} 个辅助任务（${names}）仍运行在 `,
+      staleAuxOtherProviders: '其他提供方',
+      staleAuxSuffix: ' 上，而非你的主模型。',
+      pasteKeyPlaceholder: keyEnv => `粘贴 ${keyEnv}`,
+      activate: '激活',
+      activating: '激活中...',
+      setUpProvider: name => `设置 ${name}`,
+      needsApiKeyHint: name => `${name} 需要 API 密钥 — 完成设置后才能选择模型。`,
+      oauthHint: name => `${name} 通过浏览器登录 — Hermes 会为你完成整个流程。`,
       moa: {
-        title: '混合智能体 (MoA)',
+        title: '混合智能体 (MOA)',
         description: '配置以模型形式出现在“混合智能体”提供方下的命名预设。聚合模型是实际应答的模型。',
         presetPlaceholder: '预设',
         setDefault: '设为默认',
@@ -1770,6 +1783,7 @@ export const zh: Translations = {
     deleting: '删除中…',
     createDesc: '配置档案是相互独立的 Hermes 环境：各自拥有独立的配置、技能和 SOUL.md。',
     nameLabel: '名称',
+    namePlaceholder: '例如：my-profile',
     cloneFrom: '克隆来源',
     cloneFromNone: '无（空白）',
     cloneFromDesc: '从选中的来源配置档案复制配置、技能和 SOUL.md。',
@@ -2478,6 +2492,10 @@ export const zh: Translations = {
   onboarding: {
     headerTitle: '开始设置 Hermes Agent',
     headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
+    providerTitles: {
+      anthropic: 'Anthropic API 密钥',
+      'claude-code': 'Anthropic OAuth：需额外用量额度才能使用订阅'
+    },
     preparingInstall: 'Hermes 正在完成安装。首次运行通常不到一分钟。',
     starting: '正在启动 Hermes…',
     lookingUpProviders: '正在查找提供方...',
@@ -2579,7 +2597,8 @@ export const zh: Translations = {
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
       fast: '快速',
-      medium: '中'
+      medium: '中',
+      moaPresets: 'MOA 预设'
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',

@@ -190,6 +190,12 @@ export const ja = defineLocale({
     dismiss: '閉じる'
   },
 
+  billingPage: {
+    title: '請求',
+    paymentAndCredits: '支払いとクレジット',
+    usage: '使用量'
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -451,6 +457,7 @@ export const ja = defineLocale({
       },
       stt: {
         enabled: '音声認識',
+        echoTranscripts: '文字起こしのエコー表示',
         provider: '音声認識プロバイダー',
         local: {
           model: 'ローカル文字起こしモデル',
@@ -845,6 +852,15 @@ export const ja = defineLocale({
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
       providerDefault: '(プロバイダーのデフォルト)',
+      staleAuxPrefix: (count, names) => `${count} 件の補助タスク (${names}) は引き続き `,
+      staleAuxOtherProviders: '他のプロバイダー',
+      staleAuxSuffix: ' で実行されます — メインモデルではありません。',
+      pasteKeyPlaceholder: keyEnv => `${keyEnv} を貼り付け`,
+      activate: '有効化',
+      activating: '有効化中...',
+      setUpProvider: name => `${name} を設定`,
+      needsApiKeyHint: name => `${name} には API キーが必要です — 設定するとモデルを選択できます。`,
+      oauthHint: name => `${name} はブラウザーでサインインします — Hermes がフローを代行します。`,
       moa: {
         title: 'Mixture of Agents',
         description:
@@ -1419,6 +1435,7 @@ export const ja = defineLocale({
     deleting: '削除中...',
     createDesc: 'プロファイルは独立した Hermes 環境です：設定、スキル、SOUL.md が別々になります。',
     nameLabel: '名前',
+    namePlaceholder: '例: my-profile',
     cloneFrom: '複製元',
     cloneFromNone: 'なし（空）',
     cloneFromDesc: '選択したプロファイルから設定、スキル、SOUL.md をコピーします。',
@@ -2018,6 +2035,10 @@ export const ja = defineLocale({
   onboarding: {
     headerTitle: 'Hermes Agent のセットアップをしましょう',
     headerDesc: 'チャットを始めるにはモデルプロバイダーを接続してください。ほとんどのオプションはワンクリックです。',
+    providerTitles: {
+      anthropic: 'Anthropic API キー',
+      'claude-code': 'Anthropic OAuth: サブスクリプション利用には追加使用クレジットが必要'
+    },
     preparingInstall: 'Hermes はインストールを完了中です。初回実行では通常 1 分以内に完了します。',
     starting: 'Hermes を起動中…',
     lookingUpProviders: 'プロバイダーを検索中...',
@@ -2127,7 +2148,8 @@ export const ja = defineLocale({
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
       fast: '高速',
-      medium: '中'
+      medium: '中',
+      moaPresets: 'MOA プリセット'
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

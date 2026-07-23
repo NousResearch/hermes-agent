@@ -8,6 +8,7 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
@@ -60,10 +61,18 @@ export function ModelVisibilityDialog({
     setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
+  // The moa virtual provider row lists preset NAMES, not model ids — show them
+  // verbatim (reserved `default` localized) under the localized MoA heading
+  // instead of prettifying "default" into "Default".
+  const isMoaProvider = (provider: ModelOptionProvider) => (provider.slug || '').toLowerCase() === 'moa'
+
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || `${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`.toLowerCase().includes(q)
+    !q ||
+    `${model} ${provider.name} ${provider.slug} ${displayModelName(model)} ${displayEntityName(model, t)}`
+      .toLowerCase()
+      .includes(q)
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -99,10 +108,12 @@ export function ModelVisibilityDialog({
               return (
                 <div className="py-0.5" key={provider.slug}>
                   <div className="px-3 pb-0.5 pt-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-                    {provider.name}
+                    {isMoaProvider(provider) ? t.settings.model.moa.title : provider.name}
                   </div>
                   {models.map(family => {
-                    const { name, tag } = modelDisplayParts(family.id)
+                    const { name, tag } = isMoaProvider(provider)
+                      ? { name: displayEntityName(family.id, t), tag: '' }
+                      : modelDisplayParts(family.id)
                     const key = modelVisibilityKey(provider.slug, family.id)
 
                     return (

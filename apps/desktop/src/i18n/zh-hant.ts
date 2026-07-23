@@ -184,6 +184,12 @@ export const zhHant = defineLocale({
     dismiss: '忽略'
   },
 
+  billingPage: {
+    title: '帳單',
+    paymentAndCredits: '付款與額度',
+    usage: '用量'
+  },
+
   titlebar: {
     hideSidebar: '隱藏側邊欄',
     showSidebar: '顯示側邊欄',
@@ -440,6 +446,7 @@ export const zhHant = defineLocale({
       },
       stt: {
         enabled: '語音轉文字',
+        echoTranscripts: '回顯轉寫文字',
         provider: '語音轉文字提供方',
         local: {
           model: '本機轉寫模型',
@@ -820,8 +827,17 @@ export const zhHant = defineLocale({
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       providerDefault: '(提供方預設)',
+      staleAuxPrefix: (count, names) => `${count} 個輔助任務（${names}）仍執行於 `,
+      staleAuxOtherProviders: '其他提供方',
+      staleAuxSuffix: ' 上，而非你的主要模型。',
+      pasteKeyPlaceholder: keyEnv => `貼上 ${keyEnv}`,
+      activate: '啟用',
+      activating: '啟用中...',
+      setUpProvider: name => `設定 ${name}`,
+      needsApiKeyHint: name => `${name} 需要 API 金鑰 — 完成設定後才能選擇模型。`,
+      oauthHint: name => `${name} 透過瀏覽器登入 — Hermes 會為你完成整個流程。`,
       moa: {
-        title: '混合智慧體 (MoA)',
+        title: '混合智慧體 (MOA)',
         description: '設定以模型形式出現在「混合智慧體」提供方下的命名預設組。聚合模型是實際應答的模型。',
         presetPlaceholder: '預設組',
         setDefault: '設為預設',
@@ -1369,6 +1385,7 @@ export const zhHant = defineLocale({
     deleting: '刪除中…',
     createDesc: '設定檔是獨立的 Hermes 環境：各自擁有獨立的設定、技能和 SOUL.md。',
     nameLabel: '名稱',
+    namePlaceholder: '例如：my-profile',
     cloneFrom: '複製來源',
     cloneFromNone: '無（空白）',
     cloneFromDesc: '從選取的來源設定檔複製設定、技能和 SOUL.md。',
@@ -1957,6 +1974,10 @@ export const zhHant = defineLocale({
   onboarding: {
     headerTitle: '開始設定 Hermes Agent',
     headerDesc: '連線模型提供方即可開始聊天。大多數選項只需一次點擊。',
+    providerTitles: {
+      anthropic: 'Anthropic API 金鑰',
+      'claude-code': 'Anthropic OAuth：需額外用量額度才能使用訂閱'
+    },
     preparingInstall: 'Hermes 正在完成安裝。首次執行通常不到一分鐘。',
     starting: '正在啟動 Hermes…',
     lookingUpProviders: '正在查詢提供方...',
@@ -2057,7 +2078,8 @@ export const zhHant = defineLocale({
       editModels: '編輯模型…',
       refreshModels: '重新整理模型',
       fast: '快速',
-      medium: '中'
+      medium: '中',
+      moaPresets: 'MOA 預設'
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',

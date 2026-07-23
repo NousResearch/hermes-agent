@@ -162,6 +162,9 @@ interface StaleAuxWarningProps {
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
 function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
+  const { t } = useI18n()
+  const m = t.settings.model
+
   if (!slots.length) {
     return null
   }
@@ -174,11 +177,12 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span className="grow">
-        {slots.length} auxiliary task{slots.length === 1 ? '' : 's'} ({names}) still run on{' '}
-        <span className="font-mono">{allSameProvider ? provider : 'other providers'}</span>, not your main model.
+        {m.staleAuxPrefix(slots.length, names)}
+        <span className="font-mono">{allSameProvider ? provider : m.staleAuxOtherProviders}</span>
+        {m.staleAuxSuffix}
       </span>
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
-        Reset all to main
+        {m.resetAllToMain}
       </Button>
     </div>
   )
@@ -725,6 +729,15 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     }
   }, [mainModel, refresh])
 
+  // The MoA virtual provider surfaces from the backend as "Mixture of Agents";
+  // show the localized label (matching the MoA section heading) while keeping
+  // real vendor names (OpenAI, Gemini, …) untranslated.
+  const providerLabel = useCallback(
+    (provider: ModelOptionProvider) =>
+      (provider.slug || '').toLowerCase() === 'moa' ? m.moa.title : provider.name,
+    [m.moa.title]
+  )
+
   if (loading && !mainModel) {
     return <ModelSettingsSkeleton />
   }
@@ -741,7 +754,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             <SelectContent>
               {mainProviderOptions.map(provider => (
                 <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                  {provider.name}
+                  {providerLabel(provider)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -758,7 +771,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       void activateApiKeyProvider()
                     }
                   }}
-                  placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
+                  placeholder={m.pasteKeyPlaceholder(selectedProviderRow?.key_env ?? 'API key')}
                   type="password"
                   value={apiKeyDraft}
                 />
@@ -768,12 +781,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   size="sm"
                 >
                   {activating && <Loader2 className="size-3.5 animate-spin" />}
-                  {activating ? 'Activating...' : 'Activate'}
+                  {activating ? m.activating : m.activate}
                 </Button>
               </>
             ) : (
               <Button onClick={startProviderSetup} size="sm" variant="textStrong">
-                Set up {selectedProviderRow?.name ?? 'provider'}
+                {m.setUpProvider(selectedProviderRow?.name ?? m.provider)}
               </Button>
             )
           ) : (
@@ -785,7 +798,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 <SelectContent>
                   {withActive(selectedProviderModels, selectedModel).map(model => (
                     <SelectItem key={model} value={model}>
-                      {model}
+                      {displayEntityName(model, t)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -803,9 +816,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         </div>
         {needsSetup && !setupIsApiKey && selectedProviderRow && (
           <p className="mt-2 text-xs text-muted-foreground">
-            {selectedProviderRow?.auth_type === 'api_key'
-              ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
-              : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
+            {selectedProviderRow.auth_type === 'api_key'
+              ? m.needsApiKeyHint(selectedProviderRow.name)
+              : m.oauthHint(selectedProviderRow.name)}
           </p>
         )}
         {config && mainModel && (reasoningSupported || fastSupported) && (
@@ -813,7 +826,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
             {reasoningSupported && (
               <div className="flex items-center gap-2 text-xs">
-                {m.reasoning}
+                <span className="whitespace-nowrap">{m.reasoning}</span>
                 <Select
                   onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
                   value={effortValue}
@@ -833,7 +846,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             )}
             {fastSupported && (
               <label className="flex items-center gap-2 text-xs">
-                {t.shell.modelOptions.fast}
+                <span className="whitespace-nowrap">{t.shell.modelOptions.fast}</span>
                 <Switch
                   checked={fastOn}
                   onCheckedChange={checked => void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')}
@@ -924,7 +937,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                           <SelectContent>
                             {providerOptions.map(provider => (
                               <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                                {provider.name}
+                                {providerLabel(provider)}
                               </SelectItem>
                             ))}
                           </SelectContent>

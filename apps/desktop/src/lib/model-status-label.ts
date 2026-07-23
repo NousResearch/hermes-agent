@@ -99,12 +99,14 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast). */
+/** Status bar trigger label — model name plus the live session state (effort/fast).
+ *  `displayName` overrides the prettified name for ids that aren't real model ids
+ *  (MoA presets are user-chosen names — shown verbatim, `default` localized). */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: { displayName?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
-  const name = displayModelName(model)
+  const name = options?.displayName || displayModelName(model)
 
   if (!model.trim()) {
     return name

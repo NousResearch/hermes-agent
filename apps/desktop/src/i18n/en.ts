@@ -190,6 +190,9 @@ export const en: Translations = {
   },
 
   billingPage: {
+    title: 'Billing',
+    paymentAndCredits: 'Payment & credits',
+    usage: 'Usage',
     balance: 'Balance',
     plan: 'Plan',
     autoRefill: 'Auto-refill',
@@ -803,6 +806,15 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      staleAuxPrefix: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
+      staleAuxOtherProviders: 'other providers',
+      staleAuxSuffix: ', not your main model.',
+      pasteKeyPlaceholder: keyEnv => `Paste ${keyEnv}`,
+      activate: 'Activate',
+      activating: 'Activating...',
+      setUpProvider: name => `Set up ${name}`,
+      needsApiKeyHint: name => `${name} needs an API key — set it up to choose a model.`,
+      oauthHint: name => `${name} signs in through your browser — Hermes runs the flow for you.`,
       moa: {
         title: 'Mixture of Agents',
         description:
@@ -1560,6 +1572,7 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
+    namePlaceholder: 'my-profile',
     cloneFrom: 'Clone from',
     cloneFromNone: 'None (blank)',
     cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
@@ -2167,6 +2180,10 @@ export const en: Translations = {
   onboarding: {
     headerTitle: "Let's get you setup with Hermes Agent",
     headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
+    providerTitles: {
+      anthropic: 'Anthropic API Key',
+      'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription'
+    },
     preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
     starting: 'Starting Hermes…',
     lookingUpProviders: 'Looking up providers...',
@@ -2276,7 +2293,8 @@ export const en: Translations = {
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
       fast: 'Fast',
-      medium: 'Med'
+      medium: 'Med',
+      moaPresets: 'MOA presets'
     },
     modelOptions: {
       noOptions: 'No options for this model',

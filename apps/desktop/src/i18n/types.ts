@@ -233,6 +233,9 @@ export interface Translations {
   }
 
   billingPage: {
+    title: string
+    paymentAndCredits: string
+    usage: string
     balance: string
     plan: string
     autoRefill: string
@@ -697,6 +700,15 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      staleAuxPrefix: (count: number, names: string) => string
+      staleAuxOtherProviders: string
+      staleAuxSuffix: string
+      pasteKeyPlaceholder: (keyEnv: string) => string
+      activate: string
+      activating: string
+      setUpProvider: (name: string) => string
+      needsApiKeyHint: (name: string) => string
+      oauthHint: (name: string) => string
       moa: {
         title: string
         description: string
@@ -1305,6 +1317,7 @@ export interface Translations {
     deleting: string
     createDesc: string
     nameLabel: string
+    namePlaceholder: string
     cloneFrom: string
     cloneFromNone: string
     cloneFromDesc: string
@@ -1797,6 +1810,9 @@ export interface Translations {
   onboarding: {
     headerTitle: string
     headerDesc: string
+    /** Display-title overrides for OAuth providers whose curated titles carry
+     *  translatable copy (brand-only titles stay in PROVIDER_DISPLAY). */
+    providerTitles: Record<string, string>
     preparingInstall: string
     starting: string
     lookingUpProviders: string
@@ -1887,6 +1903,7 @@ export interface Translations {
       refreshModels: string
       fast: string
       medium: string
+      moaPresets: string
     }
     modelOptions: {
       noOptions: string

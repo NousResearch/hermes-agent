@@ -1259,8 +1259,9 @@ class TestLazyMcpInstall:
     def test_feature_registered_in_allowlist(self):
         from tools import lazy_deps
         assert lazy_deps.feature_specs("tool.computer_use") == (
-            "mcp==1.26.0",
-            "starlette==1.0.1",
+            "mcp==1.28.1",
+            "starlette==1.3.1",
+            "pydantic-settings==2.14.2",
         )
 
     def test_start_lazy_installs_mcp(self):

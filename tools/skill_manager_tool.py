@@ -45,6 +45,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
+from tools.skill_runtime_contracts import (
+    SkillRuntimeScanError,
+    blocking_skill_runtime_references,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1105,6 +1109,38 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     unsafe = _validate_delete_target(skill_dir)
     if unsafe:
         return {"success": False, "error": unsafe}
+
+    try:
+        blocking_refs = blocking_skill_runtime_references(
+            name,
+            skill_path=skill_dir,
+            skills_root=skills_root,
+        )
+    except SkillRuntimeScanError as exc:
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' was not deleted because Hermes could not verify "
+                f"its runtime references: {exc}. Fix the scan error and retry."
+            ),
+            "runtime_scan_errors": [exc.to_dict()],
+        }
+    if blocking_refs:
+        ref_dicts = [ref.to_dict() for ref in blocking_refs]
+        locations = "; ".join(
+            f"{ref.path}:{ref.line}" if ref.line else ref.path
+            for ref in blocking_refs[:5]
+        )
+        more = "" if len(blocking_refs) <= 5 else f" (+{len(blocking_refs) - 5} more)"
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is still referenced by runtime entrypoints: "
+                f"{locations}{more}. Update those references or leave a "
+                "compatibility skill before deleting it."
+            ),
+            "runtime_references": ref_dicts,
+        }
 
     # During the curator consolidation pass, a verified consolidation must be
     # RECOVERABLE: archival into ~/.hermes/skills/.archive/ is documented as

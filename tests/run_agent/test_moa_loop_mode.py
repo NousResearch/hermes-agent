@@ -469,6 +469,147 @@ def test_moa_non_copilot_reference_does_not_forward_initiator_header(monkeypatch
     assert calls[0]["extra_headers"] is None
 
 
+@pytest.mark.parametrize(
+    "provider_spelling",
+    ["copilot", "github-copilot", "github", "github-models", "Copilot", "copilot-acp"],
+)
+def test_moa_copilot_alias_spellings_forward_initiator_header(
+    monkeypatch, provider_spelling
+):
+    """Every Copilot alias spelling must trigger the x-initiator header.
+
+    Slot configs spell the provider inconsistently (github, github-copilot,
+    github-models, copilot-acp, mixed case); the header gate goes through the
+    auxiliary client's canonical alias normalization so all of them get the
+    user-turn attribution, not just the literal string "copilot".
+    """
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": provider_spelling,
+            "model": "claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("copilot advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": provider_spelling, "model": "claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "copilot advice"
+    assert calls[0]["extra_headers"] == {"x-initiator": "user"}
+
+
+def test_call_llm_extra_headers_reach_transport_create(monkeypatch):
+    """extra_headers must reach the SDK client's create() kwargs.
+
+    Transport-boundary regression for #60293: mocking call_llm proves nothing
+    about delivery — this asserts the header survives call_llm's request
+    building and lands in the kwargs handed to chat.completions.create().
+    """
+    from types import SimpleNamespace
+
+    from agent import auxiliary_client as ac
+
+    captured = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _response("ok")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions()),
+        base_url="https://api.githubcopilot.com",
+    )
+    monkeypatch.setattr(
+        ac,
+        "_resolve_task_provider_model",
+        lambda *a, **k: (
+            "copilot",
+            "claude-sonnet-4.6",
+            "https://api.githubcopilot.com",
+            "copilot-token",
+            "chat_completions",
+        ),
+    )
+    monkeypatch.setattr(ac, "_get_cached_client", lambda *a, **k: (fake_client, "claude-sonnet-4.6"))
+    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, task, **_kw: resp)
+
+    ac.call_llm(
+        provider="copilot",
+        model="claude-sonnet-4.6",
+        messages=[{"role": "user", "content": "hi"}],
+        extra_headers={"x-initiator": "user"},
+    )
+
+    assert captured.get("extra_headers") == {"x-initiator": "user"}
+    # And it must not leak into unrelated request fields.
+    assert "x-initiator" not in captured.get("extra_body", {}) if captured.get("extra_body") else True
+
+
+def test_retry_same_provider_sync_preserves_extra_headers(monkeypatch):
+    """The same-provider retry rebuild must carry extra_headers through.
+
+    Regression for #60293's follow-up: a credential-refresh/pool-rotation
+    retry rebuilds the request kwargs from scratch — without forwarding
+    extra_headers, the retried Copilot advisor call silently loses its
+    ``x-initiator: user`` attribution and can be rejected.
+    """
+    from types import SimpleNamespace
+
+    from agent import auxiliary_client as ac
+
+    captured = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _response("retried ok")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions()),
+        base_url="https://api.githubcopilot.com",
+    )
+    monkeypatch.setattr(ac, "_get_cached_client", lambda *a, **k: (fake_client, "claude-sonnet-4.6"))
+    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, task, **_kw: resp)
+
+    ac._retry_same_provider_sync(
+        task=None,
+        resolved_provider="copilot",
+        resolved_model="claude-sonnet-4.6",
+        resolved_base_url="https://api.githubcopilot.com",
+        resolved_api_key="copilot-token",
+        resolved_api_mode="chat_completions",
+        main_runtime=None,
+        final_model="claude-sonnet-4.6",
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=None,
+        max_tokens=None,
+        tools=None,
+        effective_timeout=30.0,
+        effective_extra_body={},
+        reasoning_config=None,
+        extra_headers={"x-initiator": "user"},
+    )
+
+    assert captured.get("extra_headers") == {"x-initiator": "user"}
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

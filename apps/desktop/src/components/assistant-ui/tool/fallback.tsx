@@ -378,7 +378,8 @@ function ToolEntry({ part }: ToolEntryProps) {
 
   const showDetail =
     !view.inlineDiff &&
-    ((view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
+    (Boolean(view.stdout || view.stderr) ||
+      (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
       (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
 
   const renderDetailAsCode =
@@ -389,7 +390,15 @@ function ToolEntry({ part }: ToolEntryProps) {
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
   const hasExpandableContent = Boolean(
-    view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
+    view.imageUrl ||
+      view.inlineDiff ||
+      showDetail ||
+      hasSearchHits ||
+      view.stdout ||
+      view.stderr ||
+      view.terminalCommand ||
+      view.terminalExitCode !== undefined ||
+      toolViewMode === 'technical'
   )
 
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
@@ -513,6 +522,9 @@ function ToolEntry({ part }: ToolEntryProps) {
               text={copyAction.text}
             />
           )}
+          {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
+            <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
+          )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
               <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
@@ -612,6 +624,38 @@ function ToolEntry({ part }: ToolEntryProps) {
             </details>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+interface TerminalTranscriptProps {
+  command?: string
+  exitCode?: number
+}
+
+function TerminalTranscript({ command, exitCode }: TerminalTranscriptProps) {
+  if (!command && exitCode === undefined) {
+    return null
+  }
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 rounded-[0.25rem] border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2 py-1.5 font-mono text-[0.7rem] leading-relaxed">
+      {command && (
+        <code className="min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere text-(--ui-text-secondary)">
+          <span aria-hidden className="select-none text-(--ui-accent-secondary)">$ </span>
+          {command}
+        </code>
+      )}
+      {exitCode !== undefined && (
+        <span
+          className={cn(
+            'shrink-0 rounded bg-(--ui-bg-tertiary) px-1 py-px text-[0.6rem] tabular-nums',
+            exitCode === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
+          )}
+        >
+          exit {exitCode}
+        </span>
       )}
     </div>
   )

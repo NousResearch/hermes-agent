@@ -45,6 +45,10 @@ export interface ToolView {
    *  execute_code), the renderer shows it as its own labeled, neutrally
    *  tinted block under stdout — distinct from an error tone. */
   stderr?: string
+  /** Terminal-only command shown as the prompt in the expanded transcript. */
+  terminalCommand?: string
+  /** Terminal-only process exit code, when the backend reported one. */
+  terminalExitCode?: number
   /** When set, the renderer uses stdout+stderr as separate sections and
    *  ignores the merged `detail`. */
   stdout?: string

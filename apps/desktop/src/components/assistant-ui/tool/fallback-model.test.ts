@@ -76,6 +76,20 @@ describe('buildToolView terminal exit-code status', () => {
       'error'
     )
   })
+
+  it('keeps the command and exit code for the terminal transcript', () => {
+    const view = buildToolView(
+      part({
+        args: { command: 'npm run check --workspace=apps/desktop' },
+        result: { exit_code: 0, output: 'done' },
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.terminalCommand).toBe('npm run check --workspace=apps/desktop')
+    expect(view.terminalExitCode).toBe(0)
+  })
 })
 
 describe('buildToolView browser_navigate title', () => {

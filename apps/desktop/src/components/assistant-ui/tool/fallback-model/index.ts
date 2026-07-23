@@ -128,6 +128,14 @@ function readFileDisplayTarget(args: Record<string, unknown>, result: Record<str
   return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
 }
 
+function shellCommand(args: Record<string, unknown>): string {
+  return (
+    firstStringField(args, ['context', 'preview']) ||
+    firstStringField(args, ['command', 'code']) ||
+    contextValue(args)
+  )
+}
+
 const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
   browser_click: {
     icon: 'globe',
@@ -1315,10 +1323,7 @@ function dynamicTitle(
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
-    const command =
-      firstStringField(args, ['context', 'preview']) ||
-      firstStringField(args, ['command', 'code']) ||
-      contextValue(args)
+    const command = shellCommand(args)
 
     if (command) {
       const action =
@@ -1398,6 +1403,8 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   // field — otherwise the merged `detail` already covers it and double-
   // rendering would duplicate output.
   const hasSplitStreams = rendersAnsi && (Boolean(stdout) || Boolean(stderrRaw))
+  const terminalCommand = part.toolName === 'terminal' ? shellCommand(argsRecord) : undefined
+  const terminalExitCode = part.toolName === 'terminal' ? numericField(resultRecord, 'exit_code') : undefined
 
   return {
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
@@ -1411,6 +1418,8 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     rendersAnsi: rendersAnsi || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,
     stderr: hasSplitStreams ? stderrRaw || undefined : undefined,
+    terminalCommand,
+    terminalExitCode,
     stdout: hasSplitStreams ? stdout || undefined : undefined,
     status,
     subtitle,

@@ -410,6 +410,31 @@ class TestCodexBuildKwargs:
         assert preflight["extra_body"]["prompt_cache_key"].startswith("pck_")
         assert len(preflight["extra_body"]["prompt_cache_key"]) <= 64
 
+    def test_preflight_rebounds_codex_cache_headers_after_middleware_mutation(self, transport):
+        raw_session_id = "code-on-the-run-codeontherun-" + "a" * 36
+        built = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id=raw_session_id,
+            is_codex_backend=True,
+        )
+        expected = built["extra_headers"]["session_id"]
+
+        middleware_payload = dict(built)
+        middleware_payload["extra_headers"] = {
+            **built["extra_headers"],
+            "session_id": raw_session_id,
+            "x-client-request-id": raw_session_id,
+            "X-Keep-Me": "preserved",
+        }
+        preflight = transport.preflight_kwargs(middleware_payload)
+
+        assert preflight["extra_headers"]["session_id"] == expected
+        assert preflight["extra_headers"]["x-client-request-id"] == expected
+        assert len(preflight["extra_headers"]["session_id"]) <= 64
+        assert preflight["extra_headers"]["X-Keep-Me"] == "preserved"
+
     def test_codex_backend_no_headers_without_session_id(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
 

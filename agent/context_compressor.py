@@ -4751,9 +4751,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         # single-anchor pipeline — the single-user anchor already ran above,
         # and re-invoking it here could re-trigger the causal-coupling
         # forward push (#22523) after the assistant anchor adjusted the cut.
-        if self.min_tail_user_messages > 1:
+        # getattr-guarded: bare ``ContextCompressor.__new__`` test doubles
+        # (and plugin engines) skip __init__, so the attribute may be absent
+        # (see the compression-path test-double pitfall).
+        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
+        if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(
-                messages, cut_idx, head_end, self.min_tail_user_messages,
+                messages, cut_idx, head_end, _min_tail_users,
             )
 
         # The floor guarantees forward progress — compression must always claim

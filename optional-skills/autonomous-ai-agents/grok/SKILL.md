@@ -108,8 +108,8 @@ For pure automation, headless `-p` is still cleaner than the TUI.
 |------|--------|
 | `-p, --single <PROMPT>` | Send one prompt, run headless, exit |
 | `-m, --model <MODEL>` | Choose a model |
-| `-s, --session-id <ID>` | Create or resume a named headless session |
-| `-r, --resume <ID>` | Resume an existing session |
+| `-s, --session-id <UUID>` | Create a new session with a valid, unused UUID; does not resume |
+| `-r, --resume [<ID>]` | Resume an existing session, or the most recent when omitted |
 | `-c, --continue` | Continue the most recent session in the current directory |
 | `--cwd <PATH>` | Set the working directory |
 | `--output-format <FMT>` | `plain` (default), `json`, or `streaming-json` |
@@ -152,11 +152,11 @@ with `tmux capture-pane`, exactly like the `claude-code` / `codex` skills.
 ### Session Continuation
 
 ```
-# Start a named session
-terminal(command="grok --no-auto-update -s refactor-db -p 'Start refactoring the database layer' --always-approve", workdir="/project", timeout=240)
+# Start a session and capture the returned sessionId
+terminal(command="grok --no-auto-update -p 'Start refactoring the database layer' --always-approve --output-format json", workdir="/project", timeout=240)
 
-# Resume it later
-terminal(command="grok --no-auto-update -r refactor-db -p 'Now add connection pooling' --always-approve", workdir="/project", timeout=180)
+# Resume it later with the UUID returned as sessionId
+terminal(command="grok --no-auto-update -r <SESSION_UUID> -p 'Now add connection pooling' --always-approve", workdir="/project", timeout=180)
 
 # Or continue the most recent session in this directory
 terminal(command="grok --no-auto-update -c -p 'What did you change last time?'", workdir="/project", timeout=60)
@@ -247,17 +247,14 @@ write tools except the session plan file).
 ```toml
 [cli]
 auto_update = false          # skip background update checks persistently
-
-[ui]
-permission_mode = "ask"      # or "always-approve" to skip tool prompts by default
-
-[models]
-default = "grok-build-0.1"
 ```
 
 Put global preferences in `~/.grok/config.toml` (not project-scoped
-`.grok/config.toml`). `permission_mode` supersedes the legacy `approval_mode` /
-`yolo = true` keys.
+`.grok/config.toml`). Avoid pinning the default model unless `grok models`
+confirms that model is available for the authenticated account. For autonomous
+headless runs, use the explicit `--always-approve` flag. Grok reads persistent
+permission modes from `permissions.defaultMode` in global or project-level
+`.claude/settings.json` and `.claude/settings.local.json` files.
 
 ## Pitfalls & Gotchas
 

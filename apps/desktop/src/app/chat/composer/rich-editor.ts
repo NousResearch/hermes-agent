@@ -98,6 +98,35 @@ export function slashChipElement(command: string, kind: SlashChipKind, label?: s
   return chip
 }
 
+/**
+ * Stage a slash command into the composer the way an external surface (the ⌘K
+ * palette) picks it, reusing the same chip primitive the trigger path uses. A
+ * no-arg command commits a `command` pill; an arg-taking command stays as
+ * `/<cmd> ` text so the composer's own trigger re-detection can open its arg
+ * step (mirroring how the popover keeps a bare arg command as plain text until
+ * an arg is picked). Replaces the draft — staging is a deliberate "run this
+ * command" action, and a slash directive is only valid at the input's head.
+ * Returns the resulting plain text so the caller can sync draft state. */
+export function stageSlashCommandIntoEditor(
+  editor: HTMLElement,
+  command: string,
+  { takesArgs }: { takesArgs: boolean }
+): string {
+  const canonical = command.startsWith('/') ? command : `/${command}`
+
+  editor.replaceChildren()
+
+  if (takesArgs) {
+    editor.append(document.createTextNode(`${canonical} `))
+  } else {
+    editor.append(slashChipElement(canonical, 'command'), document.createTextNode(' '))
+  }
+
+  placeCaretEnd(editor)
+
+  return composerPlainText(editor)
+}
+
 function appendTextWithBreaks(target: DocumentFragment | HTMLElement, text: string) {
   const lines = text.split('\n')
 

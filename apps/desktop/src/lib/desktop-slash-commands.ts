@@ -436,6 +436,54 @@ export function desktopSlashCommandTakesArgs(command: string): boolean {
   return resolveDesktopCommand(command)?.args ?? false
 }
 
+/** A chat slash action surfaced in the ⌘K palette's "Chat actions" group. */
+export interface DesktopChatActionCommand {
+  /** Canonical command, leading slash included (e.g. `/compress`). */
+  command: string
+  /** Popover/palette label — the plain-English description of the command. */
+  description: string
+  /** The command has an inline argument step (staging opens the arg popover). */
+  takesArgs: boolean
+}
+
+/**
+ * Data-destructive commands kept OUT of the palette for v1: staging them a
+ * click away from Enter is too sharp an edge. `/reset` is `/new`'s alias, so
+ * excluding it also drops the "reset the conversation" entry from the group.
+ */
+const DESTRUCTIVE_CHAT_ACTIONS: ReadonlySet<string> = new Set(['/clear', '/reset', '/rollback', '/undo'])
+
+/**
+ * The palette-eligible chat slash actions, derived from the ONE spec table.
+ * Eligible = a visible (non-hidden), desktop-runnable local action or inline
+ * `exec` command that carries a description — i.e. the commands a user would
+ * type into the composer. Overlay pickers (`/model`, `/resume`) are excluded
+ * (they open their own surface, not a chip) as are unavailable and destructive
+ * commands. Pure + side-effect-free so the palette group and its tests build
+ * off the same source of truth.
+ */
+export function desktopChatActionCommands(): DesktopChatActionCommand[] {
+  return DESKTOP_COMMAND_SPECS.filter(spec => {
+    if (spec.hidden || !spec.description) {
+      return false
+    }
+
+    if (spec.surface.kind !== 'action' && spec.surface.kind !== 'exec') {
+      return false
+    }
+
+    if (DESTRUCTIVE_CHAT_ACTIONS.has(spec.name)) {
+      return false
+    }
+
+    return !spec.aliases?.some(alias => DESTRUCTIVE_CHAT_ACTIONS.has(alias))
+  }).map(spec => ({
+    command: spec.name,
+    description: spec.description ?? spec.name,
+    takesArgs: spec.args ?? false
+  }))
+}
+
 export function desktopSkinSlashCompletions(
   themes: DesktopThemeCommandOption[],
   activeThemeName: string,

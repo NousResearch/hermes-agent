@@ -1107,6 +1107,8 @@ export const en: Translations = {
     goToSession: 'Go to session',
     branches: 'Branches',
     commands: 'Commands',
+    chatActions: 'Chat actions',
+    chatActionsHint: 'Open a chat first',
     startInBranch: branch => `New conversation in ${branch}`,
     commandCenter: 'Command Center',
     appearance: 'Appearance',

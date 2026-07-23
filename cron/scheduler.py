@@ -47,6 +47,124 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Provider-auth preflight and health-event logging (issue #68775)
+# ---------------------------------------------------------------------------
+# Health events are structured records written to a per-profile JSON file so
+# cron auth failures are discoverable outside the job's own last_status field.
+_CRON_HEALTH_EVENTS_FILE = "cron/.health_events.json"
+_MAX_HEALTH_EVENTS = 100  # keep only the N most recent events
+
+
+def _cron_health_events_path() -> Path:
+    """Return the health events file for the active cron store."""
+    return _get_hermes_home().resolve() / _CRON_HEALTH_EVENTS_FILE
+
+
+def _record_cron_health_event(
+    event_type: str,
+    job_id: str,
+    *,
+    provider: str = "",
+    model: str = "",
+    error: str = "",
+    fallback_used: str = "",
+) -> None:
+    """Persist a structured health event for monitoring surfaces.
+
+    Events are append-mostly: we rewrite the file (bounded to
+    ``_MAX_HEALTH_EVENTS`` entries) so a consumer can read the whole
+    event list in one shot without tailing an append-only log.
+
+    Event types:
+        ``provider_auth_expired`` — primary provider credentials expired
+        ``provider_auth_fallback_exhausted`` — all fallbacks also failed
+        ``provider_auth_fallback_succeeded`` — fallback provider worked
+    """
+    path = _cron_health_events_path()
+    entry = {
+        "type": event_type,
+        "job_id": str(job_id),
+        "provider": provider,
+        "model": model,
+        "error": str(error)[:500],
+        "fallback_used": fallback_used,
+        "timestamp": _hermes_now().isoformat(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing: list[dict] = []
+        if path.exists():
+            try:
+                raw = path.read_text(encoding="utf-8")
+                data = json.loads(raw)
+                existing = data if isinstance(data, list) else data.get("events", [])
+            except (json.JSONDecodeError, OSError):
+                existing = []
+        existing.append(entry)
+        if len(existing) > _MAX_HEALTH_EVENTS:
+            existing = existing[-_MAX_HEALTH_EVENTS:]
+        path.write_text(
+            json.dumps({"events": existing}, indent=2, default=str),
+            encoding="utf-8",
+        )
+        logger.info(
+            "Health event [%s] for job '%s': %s%s",
+            event_type, job_id, error or "ok",
+            f" -> fallback={fallback_used}" if fallback_used else "",
+        )
+    except Exception as exc:
+        logger.debug(
+            "Failed to persist health event for job '%s': %s", job_id, exc,
+        )
+
+
+def _provider_supports_reasoning_effort(model: str) -> bool:
+    """Heuristic: True when the resolved model likely supports reasoning_effort.
+
+    Some models (grok-build, o1-mini, o1-preview) reject ``reasoning_effort``
+    with a 400. This is a best-effort negative list; the caller must still
+    handle a 400 from the provider at runtime via the existing
+    ``_is_unsupported_parameter_error`` retry path.
+    """
+    model_lower = model.strip().lower()
+    no_reasoning_prefixes = (
+        "grok-build",
+        "grok-vision",
+        "o1-mini",
+        "o1-preview",
+        "dall-e",
+        "whisper",
+        "tts",
+    )
+    for prefix in no_reasoning_prefixes:
+        if model_lower.startswith(prefix):
+            return False
+    return True
+
+
+def _strip_unsupported_reasoning_params(
+    reasoning_config: dict | None,
+    model: str,
+) -> dict | None:
+    """Strip ``reasoning_effort`` from the config when the model does not
+    support it, preventing a silent 400 on the first API call when cron
+    falls back to a model that doesn't support the primary model's config.
+    """
+    if not reasoning_config:
+        return reasoning_config
+    if _provider_supports_reasoning_effort(model):
+        return reasoning_config
+    stripped = dict(reasoning_config)
+    for key in ("reasoning_effort", "effort", "reasoningEffort"):
+        stripped.pop(key, None)
+    if stripped != reasoning_config:
+        logger.info(
+            "Stripped reasoning_effort from config for model '%s' "
+            "(model does not support it)", model,
+        )
+    return stripped if stripped else None
+
 
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
@@ -120,7 +238,17 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
 
     # Match authentication/authorization wording at a word boundary and the
     # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
-    # not trip a misleading auth message.
+    # not trip a misleading auth message. Also match provider-specific patterns:
+    #   - "all X connection(s) authentication expired" (Cursor/Omniroute)
+    #   Check more-specific patterns FIRST to avoid the generic "authenticat"
+    #   regex swallowing the cursor "connection(s) authentication expired" message.
+    if re.search(r"connection.*authentication expired|authentication expired.*connection", lower):
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider connection(s) expired — "
+            "please reauthenticate via the dashboard. "
+            "Full details saved in cron output."
+        )
+
     if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
         return (
             f"⚠️ Cron '{job_name}' failed: provider authentication error. "
@@ -3257,6 +3385,16 @@ def run_job(
                 or primary_provider_for_drift
             )
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            # Record health event: primary auth expired — monitoring surfaces
+            # may alert even if a fallback succeeds, because the primary route
+            # is still broken.
+            _record_cron_health_event(
+                "provider_auth_expired",
+                job_id,
+                provider=primary_provider_for_drift or "",
+                model=str(model),
+                error=str(auth_exc)[:500],
+            )
             fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
@@ -3286,10 +3424,27 @@ def run_job(
                         runtime.get("provider"),
                         fb_model,
                     )
+                    # Record health event: fallback succeeded after primary expired
+                    _record_cron_health_event(
+                        "provider_auth_fallback_succeeded",
+                        job_id,
+                        provider=fb_provider,
+                        model=fb_model,
+                        error=str(auth_exc)[:300],
+                        fallback_used=f"{fb_provider}/{fb_model}",
+                    )
                     break
                 except Exception as fb_exc:
                     logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
             if runtime is None:
+                # All fallbacks exhausted — record a health event so monitoring
+                # surfaces can alert on it without waiting for the next tick.
+                _record_cron_health_event(
+                    "provider_auth_fallback_exhausted",
+                    job_id,
+                    provider=primary_provider_for_drift or "",
+                    error=str(auth_exc)[:500],
+                )
                 raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         except Exception as exc:
             message = format_runtime_provider_error(exc)
@@ -3298,6 +3453,12 @@ def run_job(
         reasoning_config = resolve_reasoning_config(
             _cfg if isinstance(_cfg, dict) else {}, str(model)
         )
+        # Pre-strip unsupported reasoning_effort for models that reject it
+        # (e.g. grok-build, o1-mini) — see issue #68775. This prevents the
+        # first API call from returning a 400 and failing the job, especially
+        # on fallback paths where the primary model supported reasoning_effort
+        # but the fallback model does not.
+        reasoning_config = _strip_unsupported_reasoning_params(reasoning_config, model)
 
         # Provider/model-drift fail-closed guard (#44585).
         #

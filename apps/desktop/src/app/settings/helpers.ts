@@ -1,3 +1,4 @@
+import type { Translations } from '@/i18n'
 import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
@@ -11,8 +12,11 @@ export { asText, includesQuery, prettyName } from '@/lib/text'
 export const stripToolsetLabel = (label: string): string =>
   label.replace(/^[\p{Emoji}\p{Extended_Pictographic}\s]+/u, '').trim() || label
 
-export const toolsetDisplayLabel = (toolset: Pick<ToolsetInfo, 'label' | 'name'>): string =>
-  stripToolsetLabel(asText(toolset.label || toolset.name))
+/** Toolset title for display: the localized label (skills.toolsetLabels, keyed
+ *  by toolset id) when the catalog covers it, else the backend's emoji-stripped
+ *  English label. Plugin toolsets simply fall through to their own label. */
+export const toolsetDisplayLabel = (toolset: Pick<ToolsetInfo, 'label' | 'name'>, t?: Translations): string =>
+  t?.skills.toolsetLabels[toolset.name] || stripToolsetLabel(asText(toolset.label || toolset.name))
 
 export const toolNames = (t: ToolsetInfo) => (Array.isArray(t.tools) ? t.tools.map(asText).filter(Boolean) : [])
 

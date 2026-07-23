@@ -615,6 +615,12 @@ export interface Translations {
       failedLoad: string
       empty: string
     }
+    /** Localized copy for env-var credential fields, keyed by the env var name.
+     *  `description` overlays the backend's English description everywhere the
+     *  Keys/Providers surfaces render it; `prompt` overlays the toolset config
+     *  panel's field hint (falls back to `description`). Missing keys keep the
+     *  backend English. */
+    envKeys: Record<string, { description?: string; prompt?: string }>
     mcp: {
       loading: string
       failedLoad: string
@@ -849,6 +855,13 @@ export interface Translations {
       ready: string
       needsSignIn: string
       needsSetup: string
+      /** Localized provider badge tokens (`recommended`, `free`, `local`, …).
+       *  Backend badges are ` · `-joined token lists; unknown tokens render
+       *  as-is, so new backend tokens degrade to English. */
+      badgeTokens: Record<string, string>
+      /** Localized provider tag lines keyed by the backend's exact English
+       *  text — changed/unknown copy falls back to the original. */
+      tagCopy: Record<string, string>
       nousIncluded: string
       nousAuthNeededTitle: string
       nousAuthNeededMessage: (provider: string) => string
@@ -919,6 +932,12 @@ export interface Translations {
     noToolsetsTitle: string
     noToolsetsDesc: string
     noDescription: string
+    /** Localized toolset blurbs keyed by toolset id; missing ids fall back to
+     *  the backend's English description. */
+    toolsetDescriptions: Record<string, string>
+    /** Localized toolset titles keyed by toolset id; missing ids fall back to
+     *  the backend's emoji-stripped English label. */
+    toolsetLabels: Record<string, string>
     configured: string
     needsKeys: string
     visionModelHint: string
@@ -1265,6 +1284,9 @@ export interface Translations {
     failedClear: (key: string) => string
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
     platformIntro: Record<string, string>
+    /** Localized one-line platform blurbs, keyed by platform id; missing ids
+     *  fall back to the backend's English description. */
+    platformDescription: Record<string, string>
   }
 
   profiles: {

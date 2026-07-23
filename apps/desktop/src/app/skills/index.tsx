@@ -20,7 +20,7 @@ import {
   toggleSkill,
   toggleToolset
 } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { compactNumber } from '@/lib/format'
 import { queryClient, writeCache } from '@/lib/query-client'
@@ -142,11 +142,17 @@ function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): Skil
 const toolsetCalls = (toolset: ToolsetInfo, toolCalls: Record<string, number>): number =>
   toolNames(toolset).reduce((sum, name) => sum + (toolCalls[name] ?? 0), 0)
 
+/** Localized toolset blurb (skills.toolsetDescriptions) with the backend's
+ *  English description as the fallback for ids the catalog doesn't cover. */
+const toolsetDescription = (toolset: ToolsetInfo, t: Translations): string =>
+  t.skills.toolsetDescriptions[toolset.name] || asText(toolset.description)
+
 function filteredToolsets(
   toolsets: ToolsetInfo[],
   query: string,
   toolCalls: Record<string, number>,
-  desc: boolean
+  desc: boolean,
+  t: Translations
 ): ToolsetInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
@@ -163,15 +169,16 @@ function filteredToolsets(
 
       return (
         includesQuery(toolset.name, q) ||
-        includesQuery(toolsetDisplayLabel(toolset), q) ||
+        includesQuery(toolsetDisplayLabel(toolset, t), q) ||
         includesQuery(toolset.description, q) ||
+        includesQuery(toolsetDescription(toolset, t), q) ||
         toolNames(toolset).some(name => includesQuery(name, q))
       )
     })
     .sort(
       (a, b) =>
         sign * (toolsetCalls(b, toolCalls) - toolsetCalls(a, toolCalls)) ||
-        toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b))
+        toolsetDisplayLabel(a, t).localeCompare(toolsetDisplayLabel(b, t))
     )
 }
 
@@ -279,8 +286,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   )
 
   const visibleToolsets = useMemo(
-    () => (toolsets ? filteredToolsets(toolsets, query, toolCalls ?? {}, toolsetsSortDesc) : []),
-    [query, toolCalls, toolsets, toolsetsSortDesc]
+    () => (toolsets ? filteredToolsets(toolsets, query, toolCalls ?? {}, toolsetsSortDesc, t) : []),
+    [query, t, toolCalls, toolsets, toolsetsSortDesc]
   )
 
   // Bulk actions ("All" master switch, "Disable unused") and the master-switch
@@ -358,7 +365,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
           current?.map(row => (row.name === toolset.name ? { ...row, enabled: !enabled, available: !enabled } : row)) ??
           current
       )
-      notifyError(err, t.skills.failedToUpdate(toolsetDisplayLabel(toolset)))
+      notifyError(err, t.skills.failedToUpdate(toolsetDisplayLabel(toolset, t)))
     }
   }
 
@@ -633,7 +640,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
             }
           >
             {visibleToolsets.map(toolset => {
-              const label = toolsetDisplayLabel(toolset)
+              const label = toolsetDisplayLabel(toolset, t)
               const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
 
               return (
@@ -653,7 +660,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   }
                   onSelect={() => setSelectedToolset(toolset.name)}
                   onToggle={checked => void handleToggleToolset(toolset, checked)}
-                  subtitle={asText(toolset.description)}
+                  subtitle={toolsetDescription(toolset, t)}
                   title={label}
                   toggleLabel={t.skills.toggleToolset(label)}
                 />
@@ -764,13 +771,13 @@ function ToolsetDetail({
   const { t } = useI18n()
   const navigate = useNavigate()
   const tools = toolNames(toolset)
-  const label = toolsetDisplayLabel(toolset)
+  const label = toolsetDisplayLabel(toolset, t)
 
   return (
     <>
       {/* "Configured" as a resting state is noise — only the warn state earns a pill. */}
       <DetailHeader
-        description={asText(toolset.description) || t.skills.noDescription}
+        description={toolsetDescription(toolset, t) || t.skills.noDescription}
         pills={!toolset.configured && <PanelPill tone="warn">{t.skills.needsKeys}</PanelPill>}
         title={label}
       />

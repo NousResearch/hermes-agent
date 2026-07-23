@@ -720,6 +720,7 @@ export const en: Translations = {
       failedLoad: 'API keys failed to load',
       empty: 'Nothing configured in this category yet.'
     },
+    envKeys: {},
     mcp: {
       loading: 'Loading MCP servers...',
       failedLoad: 'MCP config failed to load',
@@ -985,6 +986,8 @@ export const en: Translations = {
       ready: 'Ready',
       needsSignIn: 'Needs sign-in',
       needsSetup: 'Needs setup',
+      badgeTokens: {},
+      tagCopy: {},
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       nousAuthNeededTitle: 'Sign in to Nous Portal',
       nousAuthNeededMessage: provider => `${provider} is saved but won't activate until you sign in to Nous Portal.`,
@@ -1056,6 +1059,8 @@ export const en: Translations = {
     noToolsetsTitle: 'No toolsets found',
     noToolsetsDesc: 'Try a broader search query.',
     noDescription: 'No description.',
+    toolsetDescriptions: {},
+    toolsetLabels: {},
     configured: 'Configured',
     needsKeys: 'Needs keys',
     visionModelHint:
@@ -1519,7 +1524,8 @@ export const en: Translations = {
         help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
       }
     },
-    platformIntro: {}
+    platformIntro: {},
+    platformDescription: {}
   },
 
   profiles: {

@@ -127,12 +127,26 @@ def _check_disk_usage_warning():
 
         # Get total size of hermes directories
         total_bytes = 0
+        threshold_bytes = DISK_USAGE_WARNING_THRESHOLD_GB * (1024 ** 3)
         import glob
         for path in glob.glob(str(scratch_dir / "hermes-*")):
             for f in Path(path).rglob('*'):
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
+                        # Short-circuit: once the threshold is crossed, stop walking
+                        # remaining files. This intentionally skips stat() and OSError
+                        # logging for files after the threshold, trading visibility for
+                        # I/O savings on large scratch trees.
+                        if total_bytes > threshold_bytes:
+                            total_gb = total_bytes / (1024 ** 3)
+                            logger.warning(
+                                "Disk usage (%.1fGB) exceeds threshold (%.0fGB). "
+                                "Consider running cleanup_all_environments().",
+                                total_gb,
+                                DISK_USAGE_WARNING_THRESHOLD_GB,
+                            )
+                            return True
                     except OSError as e:
                         logger.debug("Could not stat file %s: %s", f, e)
         

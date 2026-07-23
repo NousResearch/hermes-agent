@@ -16,6 +16,11 @@ import sys
 
 __version__ = "0.19.0"
 __release_date__ = "2026.7.20"
+# ``v0.19.0`` will exist for future releases. This is the commit count of the
+# transitional CalVer release tag, used only by immutable Nix builds that do
+# not carry git history. `scripts/release.py` updates it for each new SemVer
+# release tag before the release bump commit is made.
+__release_rev_count__ = 16544
 
 
 def _ensure_utf8():

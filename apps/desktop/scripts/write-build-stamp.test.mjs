@@ -5,6 +5,7 @@ import {
   FALLBACK_BRANCH,
   FALLBACK_COMMIT,
   fromCI,
+  deriveVersionMetadata,
   fromFallback,
   fromLocalGit,
   isFallbackCommit,
@@ -83,4 +84,57 @@ test('resolveStamp falls back when neither CI nor git is available', () => {
     dirty: false,
     source: 'fallback'
   })
+})
+
+test('deriveVersionMetadata prefers a strict SemVer tag over historical CalVer tags', () => {
+  const stamp = deriveVersionMetadata(
+    { commit: 'a'.repeat(40), branch: 'feature', dirty: true, source: 'local' },
+    {
+      readFile: () => '__version__ = "0.20.0"\n__release_date__ = "2026.7.20"\n',
+      execFn: command => {
+        if (command.startsWith('git tag --merged')) return 'v2026.7.20\nv0.19.0\n'
+        if (command === 'git rev-list --count v0.19.0..HEAD') return '7'
+        if (command === 'git rev-list --count v2026.7.20..HEAD') return '20'
+        return null
+      }
+    }
+  )
+
+  assert.deepEqual(stamp, {
+    commit: 'a'.repeat(40), branch: 'feature', dirty: true, source: 'local',
+    baseVersion: '0.19.0', displayVersion: '0.19.0+7', distance: 7
+  })
+})
+
+test('deriveVersionMetadata uses the historical release tag only as a transition fallback', () => {
+  const stamp = deriveVersionMetadata(
+    { commit: 'a'.repeat(40), branch: 'feature', dirty: false, source: 'local' },
+    {
+      readFile: () => '__version__ = "0.19.0"\n__release_date__ = "2026.7.20"\n',
+      execFn: command => command === 'git rev-list --count v2026.7.20..HEAD' ? '3' : ''
+    }
+  )
+
+  assert.equal(stamp.baseVersion, '0.19.0')
+  assert.equal(stamp.displayVersion, '0.19.0+3')
+  assert.equal(stamp.distance, 3)
+})
+
+test('deriveVersionMetadata accepts three-digit SemVer majors but rejects four-digit CalVer years', () => {
+  const stamp = deriveVersionMetadata(
+    { commit: 'a'.repeat(40), branch: 'feature', dirty: false, source: 'local' },
+    {
+      readFile: () => '__version__ = "999.1.2"\n__release_date__ = "2026.7.20"\n',
+      execFn: command => {
+        if (command.startsWith('git tag --merged')) return 'v2026.7.20\nv999.1.2\n'
+        if (command === 'git rev-list --count v999.1.2..HEAD') return '4'
+        if (command === 'git rev-list --count v2026.7.20..HEAD') return '8'
+        return null
+      }
+    }
+  )
+
+  assert.equal(stamp.baseVersion, '999.1.2')
+  assert.equal(stamp.displayVersion, '999.1.2+4')
+  assert.equal(stamp.distance, 4)
 })

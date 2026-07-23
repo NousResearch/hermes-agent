@@ -84,7 +84,7 @@ def test_status_preserves_existing_fields(loopback_client):
     r = loopback_client.get("/api/status")
     body = r.json()
     expected_keys = {
-        "version", "release_date", "hermes_home", "config_path", "env_path",
+        "version", "hermes_home", "config_path", "env_path",
         "config_version", "latest_config_version", "gateway_running",
         "gateway_pid", "gateway_health_url", "gateway_state",
         "gateway_platforms", "gateway_exit_reason", "gateway_updated_at",

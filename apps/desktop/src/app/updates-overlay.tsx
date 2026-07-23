@@ -14,9 +14,10 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
+import { ExternalLink } from '@/lib/external-link'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
@@ -24,6 +25,7 @@ import {
   $backendUpdateApply,
   $backendUpdateChecking,
   $backendUpdateStatus,
+  $desktopVersion,
   $updateApply,
   $updateChecking,
   $updateOverlayOpen,
@@ -52,6 +54,7 @@ export function UpdatesOverlay() {
   const backendStatus = useStore($backendUpdateStatus)
   const backendChecking = useStore($backendUpdateChecking)
   const backendApply = useStore($backendUpdateApply)
+  const desktopVersion = useStore($desktopVersion)
 
   const isBackend = target === 'backend'
   const status = isBackend ? backendStatus : clientStatus
@@ -120,7 +123,9 @@ export function UpdatesOverlay() {
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
         )}
 
-        {phase === 'idle' && (
+        {phase === 'idle' && !isBackend && desktopVersion && status?.supported === false ? (
+          <ManagedInstallDetailsView onDone={() => handleClose(false)} version={desktopVersion} />
+        ) : phase === 'idle' ? (
           <IdleView
             behind={behind}
             checking={checking}
@@ -131,10 +136,47 @@ export function UpdatesOverlay() {
             status={status}
             target={target}
             updateAvailable={updateAvailable}
+            version={desktopVersion}
           />
-        )}
+        ) : null}
       </DialogContent>
     </Dialog>
+  )
+}
+
+function ManagedInstallDetailsView({ onDone, version }: { onDone: () => void; version: DesktopVersionInfo }) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <BrandMark className="size-16" />
+        <DialogTitle className="text-center text-xl">{u.versionDetailsTitle}</DialogTitle>
+        <DialogDescription className="text-center text-sm">{u.versionDetailsBody}</DialogDescription>
+      </div>
+      <VersionDetails version={version} />
+      <Button className="font-medium" onClick={onDone} type="button" variant="text">{u.done}</Button>
+    </div>
+  )
+}
+
+function VersionDetails({ version }: { version: DesktopVersionInfo }) {
+  const { t } = useI18n()
+  const u = t.updates
+  const commitUrl = version.commit ? `https://github.com/NousResearch/hermes-agent/commit/${version.commit}` : null
+
+  return (
+    <dl className="grid gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 text-sm">
+      <div className="flex justify-between gap-4"><dt className="text-muted-foreground">{u.versionDetailsVersion}</dt><dd>v{version.appVersion}</dd></div>
+      {version.baseVersion && <div className="flex justify-between gap-4"><dt className="text-muted-foreground">{u.versionDetailsBaseVersion}</dt><dd>{version.baseVersion}</dd></div>}
+      {version.branch && <div className="flex justify-between gap-4"><dt className="text-muted-foreground">{u.versionDetailsBranch}</dt><dd className="break-all text-right">{version.branch}</dd></div>}
+      {version.commit && <div className="grid gap-1"><dt className="text-muted-foreground">{u.versionDetailsCommit}</dt>
+      {commitUrl ? <ExternalLink className="text-sm" href={commitUrl}>{u.versionDetailsCommit}</ExternalLink> :
+      <dd className="break-all font-mono text-xs">{version.commit}</dd>}
+      </div>}
+      {version.dirty && <div className="text-warning">{u.versionDetailsDirty}</div>}
+    </dl>
   )
 }
 
@@ -147,7 +189,8 @@ function IdleView({
   onRetryCheck,
   status,
   target,
-  updateAvailable
+  updateAvailable,
+  version
 }: {
   behind: number
   checking: boolean
@@ -158,6 +201,7 @@ function IdleView({
   status: DesktopUpdateStatus | null
   target: UpdateTarget
   updateAvailable: boolean
+  version: DesktopVersionInfo | null
 }) {
   const { t } = useI18n()
   const u = t.updates
@@ -185,13 +229,11 @@ function IdleView({
     )
   }
 
+  const details = version ? <VersionDetails version={version} /> : null
+
   if (!status.supported) {
     return (
-      <CenteredStatus
-        body={status.message ?? u.unsupportedMessage}
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title={u.notAvailableTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-7 pr-8"><CenteredStatus body={status.message ?? u.unsupportedMessage} icon={<AlertCircle className="size-6 text-muted-foreground" />} title={u.notAvailableTitle} />{details}</div>
     )
   }
 
@@ -212,11 +254,7 @@ function IdleView({
 
   if (!updateAvailable) {
     return (
-      <CenteredStatus
-        body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
-        icon={<BrandMark className="size-12" />}
-        title={u.allSetTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-7 pr-8"><CenteredStatus body={target === 'backend' ? u.latestBodyBackend : u.latestBody} icon={<BrandMark className="size-12" />} title={u.allSetTitle} />{details}</div>
     )
   }
 
@@ -232,6 +270,7 @@ function IdleView({
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      {details}
       <div className="flex flex-col items-center gap-3 text-center">
         <BrandMark className="size-16" />
 

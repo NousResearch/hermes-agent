@@ -3687,10 +3687,9 @@ def _build_compact_banner() -> str:
         tiny_line = agent_name
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
-        from hermes_cli import __release_date__ as _release_date
         from hermes_cli import __version__ as _version
 
-        version_line = f"Hermes Agent v{_version} ({_release_date})"
+        version_line = f"Hermes Agent v{_version}"
     else:
         version_line = format_banner_version_label()
 

@@ -9,12 +9,18 @@
       ...
     }:
     let
+      sourceInfo = inputs.self.sourceInfo or { };
+      dirtyRevision = inputs.self.dirtyRev or null;
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
-        # Only embed clean revs — dirtyRev doesn't represent any upstream
-        # commit, so comparing it would always claim "update available".
-        rev = inputs.self.rev or null;
+        # dirtyRev is the actual base commit with a ``-dirty`` suffix. Keep
+        # its SHA for provenance but carry the separate dirty bit so update
+        # comparison never mistakes a local tree for a clean upstream commit.
+        rev = inputs.self.rev or (if dirtyRevision != null then builtins.substring 0 40 dirtyRevision else null);
+        revCount = sourceInfo.revCount or null;
+        branch = sourceInfo.ref or null;
+        dirty = dirtyRevision != null;
       };
 
       # All platform-portable optional integrations pre-built.

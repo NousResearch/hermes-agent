@@ -1723,6 +1723,13 @@ export interface Translations {
     tryAgain: string
     notAvailableTitle: string
     unsupportedMessage: string
+    versionDetailsTitle: string
+    versionDetailsBody: string
+    versionDetailsVersion: string
+    versionDetailsBaseVersion: string
+    versionDetailsBranch: string
+    versionDetailsCommit: string
+    versionDetailsDirty: string
     connectionRetry: string
     latestBody: string
     latestBodyBackend: string

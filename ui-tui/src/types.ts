@@ -171,7 +171,6 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
-  release_date?: string
   service_tier?: string
   skills: Record<string, string[]>
   system_prompt?: string
@@ -180,6 +179,12 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+  version_base?: string
+  version_branch?: string
+  version_commit?: string
+  version_distance?: number | null
+  version_dirty?: boolean
+  version_source?: 'build' | 'git' | 'nix' | 'unknown'
 }
 
 export interface Usage {

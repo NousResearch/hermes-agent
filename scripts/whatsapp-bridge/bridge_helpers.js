@@ -483,6 +483,12 @@ export async function extractBridgeEvent({
     quotedText,
     hasQuotedMessage,
     botIds,
+    readReceiptKey: {
+      remoteJid: msg.key.remoteJid || chatId,
+      id: msg.key.id,
+      participant: msg.key.participant || senderId,
+      fromMe: Boolean(msg.key.fromMe),
+    },
     timestamp: msg.messageTimestamp,
   };
 }

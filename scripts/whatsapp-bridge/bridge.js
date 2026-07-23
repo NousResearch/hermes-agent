@@ -654,15 +654,6 @@ async function startSocket() {
         }
       }
 
-      const receiptKeys = inboundReadReceiptKeys({ key: msg.key, enabled: SEND_READ_RECEIPTS });
-      if (receiptKeys.length > 0) {
-        try {
-          await sock.readMessages(receiptKeys);
-        } catch (err) {
-          console.warn('[bridge] failed to send read receipt:', err.message);
-        }
-      }
-
       const messageContent = getMessageContent(msg);
       if (messageContent.pollUpdateMessage) {
         const pollUpdateMessage = messageContent.pollUpdateMessage;
@@ -1055,6 +1046,30 @@ app.post('/typing', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
+  }
+});
+
+// Mark an inbound message as read only after the Python adapter has accepted
+// it through the authoritative DM/group/mention intake policy.
+app.post('/read', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const receiptKeys = inboundReadReceiptKeys({
+    key: req.body?.key,
+    enabled: SEND_READ_RECEIPTS,
+  });
+  if (receiptKeys.length === 0) {
+    return res.json({ success: true, marked: false });
+  }
+
+  try {
+    await sock.readMessages(receiptKeys);
+    return res.json({ success: true, marked: true });
+  } catch (err) {
+    console.warn('[bridge] failed to send read receipt:', err.message);
+    return res.status(500).json({ error: 'Failed to send read receipt' });
   }
 });
 

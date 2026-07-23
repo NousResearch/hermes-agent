@@ -2422,6 +2422,28 @@ DEFAULT_CONFIG = {
         # before the agent sees it.  Lets skill authors reference bundled
         # scripts without the agent having to join paths.
         "template_vars": True,
+        # Auto-load skills based on trigger keywords in user input.
+        # When enabled, skills with triggers: in their frontmatter are
+        # automatically loaded when user input matches those triggers.
+        "auto_load": {
+            "enabled": True,
+            "max_skills": 5,
+        },
+        # Skill dependency resolution — automatically load dependency
+        # skills when a skill with ``dependencies:`` in its frontmatter
+        # is loaded.  Four safeguards prevent resource exhaustion:
+        #   max_depth   — how deep to recurse (1-5, default 3)
+        #   max_skills  — total skills to load (1-20, default 10)
+        #   max_tokens  — rough token budget (1K-50K, default 10K)
+        #   enabled     — set to false to disable entirely
+        # All limits are clamped to their valid ranges at load time.
+        "dependencies": {
+            "enabled": True,
+            "max_depth": 3,
+            "max_skills": 10,
+            "max_tokens": 10000,
+            "lazy_load": True,
+        },
         # Pre-execute inline shell snippets written as !`cmd` in SKILL.md
         # body.  Their stdout is inlined into the skill message before the
         # agent reads it, so skills can inject dynamic context (dates, git

@@ -440,6 +440,20 @@ def get_external_skills_dirs() -> List[Path]:
     called once per skill during banner / tool-registry scans, and YAML
     parsing a non-trivial config dominates ``hermes`` cold-start time
     when the cache is absent.
+
+    Supports both simple list-of-paths and advanced dict format with filtering:
+    
+        # Simple
+        external_dirs:
+          - /path/to/skills
+        
+        # Advanced
+        external_dirs:
+          - path: /path/to/skills
+            include: ["anthropic-*", "mcp-*"]
+            exclude: ["*test*"]
+            category_map:
+              "anthropic-*": "anthropic-tools"
     """
     config_path = get_config_path()
     if not config_path.exists():
@@ -479,6 +493,7 @@ def get_external_skills_dirs() -> List[Path]:
         return []
 
     from hermes_constants import get_hermes_home
+    from agent.skill_external_dirs import parse_external_dir_config, ExternalDirConfig
 
     hermes_home = get_hermes_home()
     local_skills = get_skills_dir().resolve()
@@ -486,11 +501,16 @@ def get_external_skills_dirs() -> List[Path]:
     result = []
 
     for entry in raw_dirs:
-        entry = str(entry).strip()
-        if not entry:
+        # Parse entry into ExternalDirConfig (supports both simple and advanced formats)
+        config = parse_external_dir_config(entry)
+        if config is None:
             continue
+        
+        if not config.enabled:
+            continue
+        
         # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
+        expanded = os.path.expanduser(os.path.expandvars(config.path))
         p = Path(expanded)
         # Resolve relative paths against HERMES_HOME, not cwd
         if not p.is_absolute():

@@ -491,6 +491,41 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["model"] == "primary/model"
 
+    def test_create_agent_forwards_interim_assistant_callback(self, monkeypatch):
+        """Codex ``phase="commentary"`` reaches streaming clients only if the
+        interim callback is wired through to AIAgent. Refs #67580."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openai-codex", "api_mode": "codex_responses"},
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        def _cb(text, *, already_streamed=False):
+            pass
+
+        agent = adapter._create_agent(session_id="api-session", interim_assistant_callback=_cb)
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["interim_assistant_callback"] is _cb
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -2807,6 +2842,81 @@ class TestResponsesStreaming:
                 assert '"call_id": "call_123"' in body
                 assert '"name": "read_file"' in body
                 assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_emits_codex_commentary_as_distinct_item(self, adapter):
+        """Codex ``phase="commentary"`` preambles must reach /v1/responses stream
+        clients as a distinct assistant message output item carrying
+        ``"phase": "commentary"`` — never concatenated into the final answer —
+        and an already-streamed interim must not be re-emitted. Refs #67580.
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            captured_kwargs = {}
+
+            async def _mock_run_agent(**kwargs):
+                captured_kwargs.update(kwargs)
+                interim = kwargs.get("interim_assistant_callback")
+                assert interim is not None
+                interim("Let me check the repo first.")
+                # An interim already delivered through output_text.delta must be
+                # dropped so clients don't render it twice.
+                interim("streamed duplicate", already_streamed=True)
+                text_cb = kwargs.get("stream_delta_callback")
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {"final_response": "Done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read the file", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            # The interim callback is wired through to the agent.
+            assert captured_kwargs.get("interim_assistant_callback") is not None
+
+            # Commentary surfaces as a distinct message item marked phase=commentary.
+            commentary_items = []
+            completed_output = None
+            for line in body.splitlines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    payload = json.loads(line[len("data: "):])
+                except json.JSONDecodeError:
+                    continue
+                item = payload.get("item") if isinstance(payload, dict) else None
+                if (
+                    payload.get("type") == "response.output_item.done"
+                    and isinstance(item, dict)
+                    and item.get("phase") == "commentary"
+                ):
+                    commentary_items.append(item)
+                if payload.get("type") == "response.completed":
+                    completed_output = payload["response"]["output"]
+
+            assert len(commentary_items) == 1, body
+            assert commentary_items[0]["content"][0]["text"] == "Let me check the repo first."
+
+            # An already-streamed interim is not re-emitted.
+            assert "streamed duplicate" not in body
+
+            # Commentary is never concatenated into the final answer item.
+            assert completed_output is not None, body
+            final_msgs = [
+                it for it in completed_output
+                if it.get("type") == "message" and it.get("phase") != "commentary"
+            ]
+            assert final_msgs, completed_output
+            final_text = final_msgs[-1]["content"][0]["text"]
+            assert final_text == "Done."
+            assert "Let me check the repo first." not in final_text
 
     @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):

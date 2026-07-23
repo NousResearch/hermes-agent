@@ -13,6 +13,7 @@ from tools.skills_sync import (
     _write_manifest,
     _discover_bundled_skills,
     _compute_relative_dest,
+    _content_hash,
     _dir_hash,
     sync_skills,
     reset_bundled_skill,
@@ -719,6 +720,281 @@ class TestSyncSkills:
         assert "new-skill" in captured
         assert "hermes skills reset new-skill" in captured
 
+    # ── Optional → bundled migration ───────────────────────────────────────
+    def _seed_optional_install(
+        self, skills_dir, install_path, on_disk_text, *, source="official",
+        recorded_from_text=None,
+    ):
+        """Create an on-disk skill copy plus a matching hub lock entry.
+
+        ``recorded_from_text`` seeds the lock's ``content_hash`` from a
+        *different* directory content than what lands on disk, so tests can
+        model a user who edited the installed copy after installing it.
+        """
+        dest = skills_dir / Path(*install_path.split("/"))
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(on_disk_text)
+
+        if recorded_from_text is None:
+            recorded_hash = _content_hash(dest)
+        else:
+            tmp = skills_dir.parent / "_recorded_probe"
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            tmp.mkdir(parents=True)
+            (tmp / "SKILL.md").write_text(recorded_from_text)
+            recorded_hash = _content_hash(tmp)
+            shutil.rmtree(tmp)
+
+        lock_name = Path(install_path).name
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps({
+            "version": 1,
+            "installed": {
+                lock_name: {
+                    "source": source,
+                    "identifier": f"{source}/{install_path}",
+                    "trust_level": "builtin" if source == "official" else "community",
+                    "scan_verdict": "clean",
+                    "content_hash": recorded_hash,
+                    "install_path": install_path,
+                    "files": ["SKILL.md"],
+                    "metadata": {},
+                    "installed_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            },
+        }, indent=2))
+        return dest
+
+    def test_migrates_unmodified_official_optional_install(self, tmp_path):
+        """An unmodified official optional install is replaced by the bundled
+        version and its stale hub-lock entry is dropped."""
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# MCP-first (optional install)\n",
+        )
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["migrated"] == ["agentmail"]
+        assert "# CLI-first (bundled)" in (dest / "SKILL.md").read_text()
+
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            manifest = _read_manifest()
+        assert manifest["agentmail"] == _dir_hash(bundled / "email" / "agentmail")
+
+        lock = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert "agentmail" not in lock["installed"], (
+            "migrated skill's stale official hub-lock entry must be removed"
+        )
+
+    def test_migration_is_idempotent(self, tmp_path):
+        """A second sync after migration must not re-flag or re-migrate."""
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# MCP-first\n",
+        )
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+            result2 = sync_skills(quiet=True)
+
+        assert result2["migrated"] == []
+        assert result2["user_modified"] == []
+        assert "agentmail" not in result2["copied"]
+
+    def test_does_not_migrate_user_modified_official_optional_install(self, tmp_path):
+        """A user-edited official optional copy is preserved, not migrated."""
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        # On disk differs from what the lock recorded at install time → edited.
+        dest = self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# MY LOCAL EDITS\n",
+            recorded_from_text="---\nname: agentmail\n---\n# MCP-first (pristine)\n",
+        )
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["migrated"] == []
+        assert "# MY LOCAL EDITS" in (dest / "SKILL.md").read_text()
+        lock = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert "agentmail" in lock["installed"], (
+            "user-modified skill keeps its hub-lock ownership"
+        )
+
+    def test_does_not_migrate_non_official_collision(self, tmp_path):
+        """A community/custom hub install at the collision path is not migrated."""
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# community fork\n",
+            source="community",
+        )
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["migrated"] == []
+        assert "# community fork" in (dest / "SKILL.md").read_text()
+
+    def test_failed_migration_preserves_original_and_lock(self, tmp_path):
+        """If replacing the copy fails, the original copy, lock entry, and an
+        un-poisoned manifest all survive for the next sync to retry."""
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# MCP-first\n",
+        )
+
+        original_copytree = shutil.copytree
+
+        def failing_copytree(src, dst, *a, **kw):
+            if "agentmail" in str(src):
+                raise OSError("Simulated disk full")
+            return original_copytree(src, dst, *a, **kw)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("shutil.copytree", side_effect=failing_copytree):
+                result = sync_skills(quiet=True)
+            manifest = _read_manifest()
+
+        assert result["migrated"] == []
+        assert "# MCP-first" in (dest / "SKILL.md").read_text()
+        assert "agentmail" not in manifest, "failed migration must not poison manifest"
+        lock = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert "agentmail" in lock["installed"]
+
+    def test_migration_prints_notice(self, tmp_path, capsys):
+        """Non-quiet sync announces the migration instead of doing it silently."""
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# MCP-first\n",
+        )
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+
+        out = capsys.readouterr().out
+        assert "agentmail" in out
+        assert "migrated" in out.lower()
+
+    def test_migration_lock_removal_survives_backfill_when_optional_still_ships(self, tmp_path):
+        """If the skill still ships in optional-skills/ byte-identical to bundled,
+        backfill re-adds the official lock entry — the reconcile pass must undo it
+        so the skill isn't left double-managed."""
+        bundled = self._setup_bundled(tmp_path)
+        same = "---\nname: agentmail\n---\n# identical in both trees\n"
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(same)
+        # _patches points _get_optional_dir at tmp_path/"optional-skills".
+        optional = tmp_path / "optional-skills" / "email" / "agentmail"
+        optional.mkdir(parents=True)
+        (optional / "SKILL.md").write_text(same)
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        # On-disk installed copy is identical to both bundled and optional.
+        self._seed_optional_install(skills_dir, "email/agentmail", same)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["migrated"] == ["agentmail"]
+        lock = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert "agentmail" not in lock["installed"], (
+            "reconcile must undo backfill's re-add of the migrated skill's "
+            "official lock entry"
+        )
+        assert "agentmail" not in result["optional_provenance_backfilled"], (
+            "a migrated skill must not be reported as backfilled"
+        )
+
+    def test_failed_lock_removal_self_heals_on_next_sync(self, tmp_path):
+        """A hub-lock write failure during migration must not abort the sync,
+        and the idempotent reconcile pass must clean the stale entry next sync."""
+        from utils import atomic_replace as real_atomic_replace
+
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# MCP-first\n",
+        )
+
+        state = {"failed_lock_write": False}
+
+        def flaky_atomic(src, dst):
+            # Fail only the first hub-lock write; let manifest writes and the
+            # retry on the next sync through.
+            if str(dst).endswith("lock.json") and not state["failed_lock_write"]:
+                state["failed_lock_write"] = True
+                raise OSError("simulated disk full")
+            return real_atomic_replace(src, dst)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.atomic_replace", side_effect=flaky_atomic):
+                result1 = sync_skills(quiet=True)  # lock removal fails, no crash
+                lock1 = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+                result2 = sync_skills(quiet=True)  # reconcile retries removal
+
+        assert state["failed_lock_write"], "test did not exercise the lock-write failure"
+        assert result1["migrated"] == ["agentmail"], "sync must complete despite lock-write failure"
+        assert "agentmail" in lock1["installed"], "stale entry lingers after the failed write"
+        assert result2["migrated"] == [], "skill already migrated; branch must not re-fire"
+        lock2 = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert "agentmail" not in lock2["installed"], (
+            "reconcile pass must self-heal the stale official lock entry"
+        )
+
     def test_backfills_official_optional_provenance_for_existing_identical_skill(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
         optional = tmp_path / "optional-skills"
@@ -834,8 +1110,8 @@ class TestSyncSkills:
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
-            "optional_provenance_backfilled": [],
+            "user_modified": [], "migrated": [], "cleaned": [], "suppressed": [],
+            "total_bundled": 0, "optional_provenance_backfilled": [],
         }
 
     def test_failed_copy_does_not_poison_manifest(self, tmp_path):

@@ -479,13 +479,246 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     return backfilled
 
 
+def _read_hub_lock() -> dict:
+    """Read the skills hub ``lock.json``, always returning a dict with an
+    ``installed`` map.
+
+    Missing or unreadable locks are treated as "no hub provenance recorded"
+    (empty ``installed``) so callers never crash on a fresh or corrupt lock.
+    """
+    lock_path = SKILLS_DIR / ".hub" / "lock.json"
+    try:
+        data = json.loads(lock_path.read_text()) if lock_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return {"installed": {}}
+    if not isinstance(data, dict):
+        return {"installed": {}}
+    if not isinstance(data.get("installed"), dict):
+        data["installed"] = {}
+    return data
+
+
+def _official_optional_lock_entry(
+    dest: Path, installed: Optional[Dict[str, dict]] = None
+) -> Optional[Tuple[str, dict]]:
+    """Return ``(lock_name, entry)`` when *dest* is a hub-installed **official**
+    optional skill, matched by the lock's ``install_path``.
+
+    A skill a user installed with ``hermes skills install official/...``
+    records ``source == "official"`` provenance in ``.hub/lock.json``. When
+    that skill later becomes bundled its install path collides with the
+    bundled destination; this lets the sync loop recognize the collision as a
+    migratable official install rather than a user's own skill by the same
+    name.
+
+    Pass *installed* (the ``installed`` map from :func:`_read_hub_lock`) to
+    reuse a single lock read across a whole sync loop instead of re-parsing
+    ``lock.json`` per colliding skill.
+
+    Returns ``None`` when no lock entry occupies the path, or the entry there
+    is not official (a user/community/custom install we must never touch).
+    """
+    if installed is None:
+        installed = _read_hub_lock()["installed"]
+    try:
+        dest_rel = dest.relative_to(SKILLS_DIR).as_posix()
+    except ValueError:
+        return None
+    for lock_name, entry in installed.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("install_path") != dest_rel:
+            continue
+        if entry.get("source") != "official":
+            return None
+        return lock_name, entry
+    return None
+
+
+def _is_unmodified_official_optional(dest: Path, entry: dict) -> bool:
+    """True when *dest* still matches the content hash recorded at install time.
+
+    A mismatch means the user edited the installed official copy after
+    installing it; those edits must survive, so such a skill is NOT
+    auto-migrated to the bundled version.
+    """
+    recorded = entry.get("content_hash")
+    return bool(recorded) and _content_hash(dest) == recorded
+
+
+def _remove_hub_lock_entries(names: List[str]) -> bool:
+    """Drop *names* from the hub lock's ``installed`` map (atomic write).
+
+    Called for skills migrated optional→bundled: the skill is now owned by the
+    bundled manifest, so a stale hub provenance entry would otherwise
+    double-manage it — showing up under ``hermes skills list`` as hub-installed,
+    or being removable via ``hermes skills uninstall`` only to be re-seeded on
+    the next sync.
+
+    Returns ``True`` when the lock was rewritten. A write failure is **logged,
+    not raised**: lock bookkeeping must never abort ``sync_skills`` (which would
+    leave the manifest owning the skill while the stale entry lingers). The
+    idempotent :func:`_reconcile_bundled_hub_lock` pass retries the removal on
+    the next sync, so a transient failure self-heals.
+    """
+    if not names:
+        return False
+    lock_path = SKILLS_DIR / ".hub" / "lock.json"
+    if not lock_path.exists():
+        return False
+    data = _read_hub_lock()
+    installed = data["installed"]
+    changed = False
+    for name in names:
+        if name in installed:
+            del installed[name]
+            changed = True
+    if not changed:
+        return False
+
+    import tempfile
+
+    # Atomic write mirrors _backfill_optional_provenance: a crash mid-write
+    # must not truncate the lock and silently drop every skill's provenance.
+    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(lock_path.parent),
+        prefix=".lock_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, lock_path)
+        return True
+    except OSError as e:
+        # Non-fatal: leave the lock as-is and let the next sync's reconcile
+        # pass retry. Aborting here would strand the manifest/lock in the
+        # half-migrated state this whole design avoids.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        logger.warning(
+            "Could not update hub lock %s; leaving as-is (retried next sync): %s",
+            lock_path, e,
+        )
+        return False
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _replace_skill_dir(dest: Path, skill_src: Path) -> None:
+    """Replace *dest* with a fresh copy of *skill_src*, restoring *dest* on failure.
+
+    Mirrors the backup/restore dance the bundled-update path uses: move the
+    current copy aside, copy the new source in, and on any copy failure put the
+    original back so a user never loses their skill to a half-written replace.
+    Raises ``OSError``/``IOError`` (after restoring *dest*) on failure.
+    """
+    backup = dest.with_suffix(".bak")
+    if backup.exists():
+        _rmtree_writable(backup)
+    shutil.move(str(dest), str(backup))
+    try:
+        shutil.copytree(skill_src, dest)
+    except (OSError, IOError):
+        if backup.exists():
+            if dest.exists():
+                try:
+                    _rmtree_writable(dest)
+                except (OSError, IOError):
+                    logger.warning(
+                        "Could not clear partial copy %s during restore",
+                        dest, exc_info=True,
+                    )
+            if not dest.exists():
+                shutil.move(str(backup), str(dest))
+        raise
+    else:
+        try:
+            _rmtree_writable(backup)
+        except (OSError, IOError):
+            logger.debug("Could not remove backup %s", backup, exc_info=True)
+
+
+def _reconcile_bundled_hub_lock(
+    bundled_skills: List[Tuple[str, Path]],
+    bundled_dir: Path,
+    manifest: Dict[str, str],
+    quiet: bool = False,
+) -> List[str]:
+    """Drop stale ``official`` hub-lock entries for manifest-owned bundled skills.
+
+    A skill promoted optional→bundled is owned by the bundled manifest; any
+    ``source: official`` hub-lock entry still pointing at its install path
+    would double-manage it (``hermes skills uninstall`` could then delete the
+    bundled copy while the manifest reads the now-missing dir as a user
+    deletion and never re-seeds it).
+
+    This runs every sync, unconditionally and idempotently, so it self-heals
+    two cases the per-collision removal in the migration branch cannot:
+
+      * :func:`_backfill_optional_provenance` re-adding the entry in the same
+        sync when the skill still ships in ``optional-skills/`` byte-identical
+        to bundled — run this *after* backfill so the re-add is undone;
+      * a prior sync whose lock removal failed *after* the manifest already
+        recorded ownership (the migration branch never re-fires once the skill
+        is in the manifest, so nothing would otherwise retry the removal).
+
+    Scoped to current bundled skills that the manifest owns: a normal bundled
+    skill never has an official lock entry at its path (it was never an
+    installable optional skill), so only genuinely-migrated skills match.
+
+    Returns the lock names removed.
+    """
+    installed = _read_hub_lock()["installed"]
+    if not installed:
+        return []
+    # Index official entries by install_path for a single-pass match.
+    official_by_path: Dict[str, str] = {}
+    for lock_name, entry in installed.items():
+        if not isinstance(entry, dict) or entry.get("source") != "official":
+            continue
+        install_path = entry.get("install_path")
+        if isinstance(install_path, str) and install_path:
+            official_by_path.setdefault(install_path, lock_name)
+    if not official_by_path:
+        return []
+
+    to_remove: List[str] = []
+    for skill_name, skill_src in bundled_skills:
+        if skill_name not in manifest:
+            continue
+        dest = _compute_relative_dest(skill_src, bundled_dir)
+        try:
+            dest_rel = dest.relative_to(SKILLS_DIR).as_posix()
+        except ValueError:
+            continue
+        lock_name = official_by_path.get(dest_rel)
+        if lock_name is not None:
+            to_remove.append(lock_name)
+
+    if to_remove and _remove_hub_lock_entries(to_remove) and not quiet:
+        for name in sorted(set(to_remove)):
+            print(f"  = {name} (dropped stale official hub-lock entry; now bundled)")
+    return to_remove
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
-                        user_modified (list), cleaned (list), total_bundled (int)
+                        user_modified (list), migrated (list), cleaned (list),
+                        total_bundled (int)
     """
     # Opt-out: a profile (named or the default ~/.hermes) that wrote the
     # .no-bundled-skills marker gets zero bundled-skill seeding. Returning the
@@ -497,7 +730,7 @@ def sync_skills(quiet: bool = False) -> dict:
             print("  (skipped — profile opted out of bundled skills via .no-bundled-skills)")
         return {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "user_modified": [], "migrated": [], "cleaned": [], "total_bundled": 0,
             "optional_provenance_backfilled": [], "skipped_opt_out": True,
         }
 
@@ -505,8 +738,8 @@ def sync_skills(quiet: bool = False) -> dict:
     if not bundled_dir.exists():
         return {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
-            "optional_provenance_backfilled": [],
+            "user_modified": [], "migrated": [], "cleaned": [], "suppressed": [],
+            "total_bundled": 0, "optional_provenance_backfilled": [],
         }
 
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -517,10 +750,16 @@ def sync_skills(quiet: bool = False) -> dict:
     # Index of skills already provided by external_dirs (skip writing them)
     external_index = _build_external_skill_index()
     shadowed_by_external: List[str] = []
+    # Read the hub lock once for the whole loop; migration-collision detection
+    # consults it per colliding skill. Nothing writes the lock during the loop
+    # (removal happens in the reconcile pass after backfill), so a single read
+    # is safe and avoids re-parsing lock.json per skill.
+    hub_installed = _read_hub_lock()["installed"]
 
     copied = []
     updated = []
     user_modified = []
+    migrated: List[str] = []
     suppressed_skipped: List[str] = []
     skipped = 0
 
@@ -584,25 +823,68 @@ def sync_skills(quiet: bool = False) -> dict:
             # ── New skill — never offered before ──
             try:
                 if dest.exists():
-                    # User already has a skill with the same name — don't overwrite.
-                    # Only baseline in the manifest when the on-disk copy is
-                    # byte-identical to bundled (e.g. a reset that re-syncs, or
-                    # a coincidentally identical install); that case is harmless
-                    # to track. If the copy differs (custom skill, hub-installed,
-                    # or user-edited) skip the manifest write: recording
-                    # bundled_hash there would poison update detection by making
-                    # user_hash != origin_hash read as "user-modified" on every
-                    # subsequent sync, permanently blocking bundled updates.
-                    skipped += 1
-                    if _dir_hash(dest) == bundled_hash:
-                        manifest[skill_name] = bundled_hash
-                    elif not quiet:
-                        print(
-                            f"  ⚠ {skill_name}: bundled version shipped but you "
-                            f"already have a local skill by this name — yours "
-                            f"was kept. Run `hermes skills reset {skill_name}` "
-                            f"to replace it with the bundled version."
-                        )
+                    dest_hash = _dir_hash(dest)
+                    lock_match = _official_optional_lock_entry(dest, hub_installed)
+                    if lock_match is not None and _is_unmodified_official_optional(
+                        dest, lock_match[1]
+                    ):
+                        # ── Optional → bundled migration ──
+                        # The user installed this skill's *official optional*
+                        # version via `hermes skills install`; it now ships
+                        # bundled at the same path. Because they never edited
+                        # the installed copy (its content hash still matches the
+                        # value recorded at install time), it is safe to replace
+                        # it with the bundled version and hand ownership to the
+                        # bundled manifest. A user-edited official copy fails the
+                        # hash check above and falls through to the keep-and-warn
+                        # path, preserving their changes. The stale hub-lock entry
+                        # is dropped by _reconcile_bundled_hub_lock after the loop
+                        # (idempotently, so a failed removal self-heals next sync).
+                        migrated_ok = True
+                        if dest_hash != bundled_hash:
+                            try:
+                                _replace_skill_dir(dest, skill_src)
+                            except (OSError, IOError) as e:
+                                migrated_ok = False
+                                if not quiet:
+                                    print(
+                                        f"  ! Failed to migrate {skill_name}: {e}"
+                                    )
+                        if migrated_ok:
+                            manifest[skill_name] = bundled_hash
+                            migrated.append(skill_name)
+                            if not quiet:
+                                print(
+                                    f"  ⇪ {skill_name} (migrated optional "
+                                    f"install → bundled)"
+                                )
+                        else:
+                            # Migration failed: leave dest/lock/manifest
+                            # untouched and count it like the keep path so the
+                            # skill isn't silently dropped from the tally. The
+                            # next sync retries.
+                            skipped += 1
+                    else:
+                        # User already has a skill with the same name — don't
+                        # overwrite. Only baseline in the manifest when the
+                        # on-disk copy is byte-identical to bundled (a reset that
+                        # re-syncs, or a coincidentally identical install); that
+                        # case is harmless to track. If the copy differs (custom
+                        # skill, hub-installed, or user-edited) skip the manifest
+                        # write: recording bundled_hash there would poison update
+                        # detection by making user_hash != origin_hash read as
+                        # "user-modified" on every subsequent sync, permanently
+                        # blocking bundled updates.
+                        skipped += 1
+                        if dest_hash == bundled_hash:
+                            manifest[skill_name] = bundled_hash
+                        elif not quiet:
+                            print(
+                                f"  ⚠ {skill_name}: bundled version shipped but you "
+                                f"already have a local skill by this name — yours "
+                                f"was kept. Run `hermes skills reset {skill_name}` "
+                                f"to replace it with the bundled version."
+                            )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copytree(skill_src, dest)
@@ -640,46 +922,20 @@ def sync_skills(quiet: bool = False) -> dict:
 
             # User copy matches origin — check if bundled has a newer version
             if bundled_hash != origin_hash:
+                # Replace the user's copy with the newer bundled version,
+                # restoring it on failure. Shares the backup/restore helper
+                # with the optional→bundled migration path so the two can't
+                # drift.
                 try:
-                    # Move old copy to a backup so we can restore on failure
-                    backup = dest.with_suffix(".bak")
-                    # A stale backup left by an earlier failure would make
-                    # shutil.move() nest dest *inside* it (or fail outright)
-                    # and would poison the restore path below. The current
-                    # dest is the authoritative copy — clear the leftover.
-                    if backup.exists():
-                        _rmtree_writable(backup)
-                    shutil.move(str(dest), str(backup))
-                    try:
-                        shutil.copytree(skill_src, dest)
-                        manifest[skill_name] = bundled_hash
-                        updated.append(skill_name)
-                        if not quiet:
-                            print(f"  ↑ {skill_name} (updated)")
-                        # Remove backup after successful copy
-                        try:
-                            _rmtree_writable(backup)
-                        except (OSError, IOError):
-                            logger.debug("Could not remove backup %s", backup, exc_info=True)
-                    except (OSError, IOError):
-                        # Restore from backup. A partially-written dest must
-                        # not shadow the user's copy or block the restore —
-                        # clear it first, then move the backup home.
-                        if backup.exists():
-                            if dest.exists():
-                                try:
-                                    _rmtree_writable(dest)
-                                except (OSError, IOError):
-                                    logger.warning(
-                                        "Could not clear partial copy %s during restore",
-                                        dest, exc_info=True,
-                                    )
-                            if not dest.exists():
-                                shutil.move(str(backup), str(dest))
-                        raise
+                    _replace_skill_dir(dest, skill_src)
                 except (OSError, IOError) as e:
                     if not quiet:
                         print(f"  ! Failed to update {skill_name}: {e}")
+                else:
+                    manifest[skill_name] = bundled_hash
+                    updated.append(skill_name)
+                    if not quiet:
+                        print(f"  ↑ {skill_name} (updated)")
             else:
                 skipped += 1  # bundled unchanged, user unchanged
 
@@ -705,12 +961,27 @@ def sync_skills(quiet: bool = False) -> dict:
 
     _write_manifest(manifest)
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)
+    # Reconcile hub-lock provenance AFTER backfill: any skill now owned by the
+    # bundled manifest must not also carry an `official` hub-lock entry. This
+    # both drops migrated skills' stale entries and undoes a backfill re-add for
+    # a skill that still ships byte-identical in optional-skills/. Idempotent, so
+    # a previously-failed removal self-heals here on the next sync.
+    reconciled = _reconcile_bundled_hub_lock(
+        bundled_skills, bundled_dir, manifest, quiet=quiet
+    )
+    if reconciled:
+        reconciled_set = set(reconciled)
+        optional_provenance_backfilled = [
+            name for name in optional_provenance_backfilled
+            if name not in reconciled_set
+        ]
 
     return {
         "copied": copied,
         "updated": updated,
         "skipped": skipped,
         "user_modified": user_modified,
+        "migrated": migrated,
         "cleaned": cleaned,
         "suppressed": suppressed_skipped,
         "total_bundled": len(bundled_skills),
@@ -1174,6 +1445,11 @@ if __name__ == "__main__":
         if len(names) > MAX_SHOW:
             shown += f", +{len(names) - MAX_SHOW} more"
         parts.append(f"{len(names)} user-modified (kept): {shown}")
+    if result.get("migrated"):
+        parts.append(
+            f"{len(result['migrated'])} migrated optional→bundled: "
+            f"{', '.join(result['migrated'])}"
+        )
     if result["cleaned"]:
         parts.append(f"{len(result['cleaned'])} cleaned from manifest")
     if result.get("optional_provenance_backfilled"):

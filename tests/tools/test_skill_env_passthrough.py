@@ -1,12 +1,18 @@
 """Test that skill_view registers required env vars in the passthrough registry."""
 
 import json
+import shutil
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import tools.env_passthrough as _ep_mod
 from tools.env_passthrough import clear_env_passthrough, is_env_passthrough
+
+# Real bundled AgentMail skill — its CLI-first workflow runs `agentmail` through
+# the sandboxed terminal, which strips secrets unless the skill declares them.
+_AGENTMAIL_SKILL_SRC = Path(__file__).resolve().parents[2] / "skills" / "email" / "agentmail"
 
 
 @pytest.fixture(autouse=True)
@@ -131,3 +137,54 @@ class TestSkillViewRegistersPassthrough:
         assert result["success"] is True
         from tools.env_passthrough import get_all_passthrough
         assert len(get_all_passthrough()) == 0
+
+
+class TestAgentMailKeyPassthrough:
+    """The real AgentMail skill must declare AGENTMAIL_API_KEY so a profile-stored
+    key reaches the sandboxed terminal, while staying usable (self-signup) without
+    one."""
+
+    def _install_real_skill(self, tmp_path, monkeypatch):
+        dest = tmp_path / "email" / "agentmail"
+        shutil.copytree(_AGENTMAIL_SKILL_SRC, dest)
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        return dest
+
+    def test_agentmail_api_key_registered_for_sandbox_when_set(self, tmp_path, monkeypatch):
+        """A profile-stored AGENTMAIL_API_KEY must pass through to the terminal
+        sandbox — otherwise the documented CLI workflow fails authentication."""
+        self._install_real_skill(tmp_path, monkeypatch)
+        monkeypatch.setenv("AGENTMAIL_API_KEY", "am_test_key_123")
+
+        with patch("tools.skills_tool._secret_capture_callback", None):
+            from tools.skills_tool import skill_view
+
+            result = json.loads(skill_view(name="agentmail"))
+
+        assert result["success"] is True
+        assert is_env_passthrough("AGENTMAIL_API_KEY"), (
+            "AGENTMAIL_API_KEY was set but not registered for sandbox passthrough — "
+            "the skill's frontmatter must declare it under required_environment_variables"
+        )
+
+    def test_agentmail_key_is_optional_so_self_signup_still_works(self, tmp_path, monkeypatch):
+        """With no key present the skill must NOT be blocked as setup_needed on the
+        key — the CLI self-signup flow obtains one without a pre-provisioned key."""
+        self._install_real_skill(tmp_path, monkeypatch)
+        monkeypatch.delenv("AGENTMAIL_API_KEY", raising=False)
+
+        with patch("tools.skills_tool._secret_capture_callback", None):
+            from tools.skills_tool import skill_view
+
+            result = json.loads(skill_view(name="agentmail"))
+
+        assert result["success"] is True
+        # `optional: true` means a missing key must NOT be reported as a blocking
+        # requirement — that is what keeps the CLI self-signup path viable.
+        assert "AGENTMAIL_API_KEY" not in result["missing_required_environment_variables"], (
+            "AGENTMAIL_API_KEY must be declared optional so a missing key does not "
+            "block the self-signup path"
+        )
+        assert result["setup_needed"] is False, (
+            "an absent optional key must not force the skill into setup_needed"
+        )

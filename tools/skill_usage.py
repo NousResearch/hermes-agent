@@ -12,8 +12,10 @@ Design notes:
   - All counter bumps are best-effort: failures log at DEBUG and return silently.
     A broken sidecar never breaks the underlying tool call.
   - Provenance filter: curator-managed skills are explicitly marked when
-    created through skill_manage. Bundled / hub-installed skills stay
-    off-limits, and manually authored skills are not inferred from location.
+    created through skill_manage. Bundled built-ins also become candidates when
+    ``curator.prune_builtins`` is enabled; hub-installed and external skills
+    stay off-limits, and manually authored skills are not inferred from
+    location.
 
 Lifecycle states:
     active    -> default
@@ -417,7 +419,12 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
 
 
 def is_agent_created(skill_name: str) -> bool:
-    """Whether *skill_name* is neither bundled nor hub-installed."""
+    """Legacy pin/unpin gate: non-bundled, non-hub, non-external names.
+
+    This is broader than curator management. Actual curator candidates are
+    enumerated by ``list_agent_created_skill_names()`` and gated by explicit
+    provenance records plus ``curator.prune_builtins`` for bundled built-ins.
+    """
     off_limits = _read_bundled_manifest_names() | _read_hub_installed_names()
     if skill_name in off_limits:
         return False
@@ -910,9 +917,9 @@ def usage_report() -> List[Dict[str, Any]]:
     """Return usage telemetry for EVERY skill on disk, with provenance.
 
     Unlike ``agent_created_report()`` (which is scoped to curator-managed
-    candidates), this surfaces all skills — bundled built-ins and
-    hub-installed included — so callers can answer "how often is this skill
-    used" independent of whether it's ever curated. Rows carry a
+    candidates), this surfaces all skills — bundled built-ins and hub-installed
+    included — so callers can answer "how often is this skill used" independent
+    of whether it's ever curated. Rows carry a
     ``provenance`` field ('agent' | 'bundled' | 'hub') and ``_persisted``
     (whether a real ``.usage.json`` record backs the row).
     """

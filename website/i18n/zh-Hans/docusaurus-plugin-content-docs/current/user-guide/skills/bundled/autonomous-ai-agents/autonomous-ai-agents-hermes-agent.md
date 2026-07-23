@@ -656,10 +656,10 @@ agent 创建的 skill 的后台维护。跟踪使用情况，将闲置 skill 标
 
 - **CLI：** `hermes curator <verb>` — `status`、`run`、`pause`、`resume`、`pin`、`unpin`、`archive`、`restore`、`prune`、`backup`、`rollback`。
 - **斜杠命令：** `/curator <subcommand>` 与 CLI 对应。
-- **范围：** 仅处理 `created_by: "agent"` 来源的 skill。内置和 hub 安装的 skill 不在范围内。**从不删除** — 最具破坏性的操作是归档。已固定的 skill 不受任何自动转换和任何 LLM 审查的影响。
+- **范围：** 主要触碰带有 `created_by: "agent"` 来源的 skill。未使用的捆绑内置 skill 在 `curator.prune_builtins: true`（默认值）时也可能被归档；内置 skill 只是可归档候选。Hub 安装的 skill 始终不在范围内。**从不删除** — 最具破坏性的操作是归档。已固定的 skill 不受任何自动转换和任何 LLM 审查的影响。
 - **遥测：** `~/.hermes/skills/.usage.json` 中的 sidecar 保存每个 skill 的 `use_count`、`view_count`、`patch_count`、`last_activity_at`、`state`、`pinned`。
 
-配置：`curator.*`（`enabled`、`interval_hours`、`min_idle_hours`、`stale_after_days`、`archive_after_days`、`backup.*`）。
+配置：`curator.*`（`enabled`、`interval_hours`、`min_idle_hours`、`stale_after_days`、`archive_after_days`、`consolidate`、`prune_builtins`、`backup.*`）。
 用户文档：https://hermes-agent.nousresearch.com/docs/user-guide/features/curator
 
 ### Kanban（多 agent 工作队列）

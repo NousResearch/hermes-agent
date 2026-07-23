@@ -1300,6 +1300,29 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("http://example.com") == "http://example.com"
         assert _strip_provider_prefix("https://example.com") == "https://example.com"
 
+    def test_registered_provider_names_and_aliases_are_prefixes(self):
+        """Prefixes auto-extend from registered profiles, like _URL_TO_PROVIDER.
+
+        Bundled plugin providers (and user plugins under
+        $HERMES_HOME/plugins/model-providers/) must strip without a manual
+        entry in the static frozenset.
+        """
+        from providers import list_providers
+
+        from agent.model_metadata import _PROVIDER_PREFIXES
+
+        for profile in list_providers():
+            assert profile.name.lower() in _PROVIDER_PREFIXES, (
+                f"registered provider {profile.name!r} missing from prefixes"
+            )
+            for alias in profile.aliases:
+                assert str(alias).lower() in _PROVIDER_PREFIXES, (
+                    f"alias {alias!r} of {profile.name!r} missing from prefixes"
+                )
+        # And a concrete strip using a bundled provider absent from the
+        # static set (fireworks ships as a plugin only).
+        assert _strip_provider_prefix("fireworks:some/model-v1") == "some/model-v1"
+
     def test_no_colon_returns_unchanged(self):
         assert _strip_provider_prefix("gpt-4o") == "gpt-4o"
         assert _strip_provider_prefix("anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"

@@ -516,6 +516,20 @@ try:
 except Exception:
     pass
 
+# Auto-extend _PROVIDER_PREFIXES the same way, so "provider:model" strings
+# strip correctly for plugin providers (user plugins under
+# $HERMES_HOME/plugins/model-providers/ included) without editing this file.
+# The _OLLAMA_TAG_PATTERN guard in _strip_provider_prefix still protects
+# Ollama-style "model:tag" strings from over-stripping.
+try:
+    _plugin_prefixes: set[str] = set()
+    for _pp in _list_providers():
+        _plugin_prefixes.add(_pp.name.lower())
+        _plugin_prefixes.update(str(_a).lower() for _a in _pp.aliases)
+    _PROVIDER_PREFIXES = frozenset(_PROVIDER_PREFIXES | _plugin_prefixes)
+except Exception:
+    pass
+
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """Infer the models.dev provider name from a base URL.

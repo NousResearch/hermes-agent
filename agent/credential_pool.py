@@ -731,7 +731,7 @@ class CredentialPool:
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Codex device_code pool entry from auth.json if tokens differ.
+        """Sync a Codex pool entry from auth.json if tokens differ.
 
         When a Codex OAuth access token expires (or the ChatGPT account hits
         its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
@@ -743,26 +743,96 @@ class CredentialPool:
         though fresh credentials are sitting on disk — and every request
         fails with "no available entries (all exhausted or empty)".
 
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
+        When the auth.json singleton has no fresher tokens (e.g. for
+        ``manual:device_code`` entries whose singleton may be absent, or
+        when **both** the pool entry and the singleton share the same stale
+        token), falls back to ``~/.codex/auth.json`` — the Codex CLI's
+        continuously-refreshed credential file — so that pool-only credentials
+        self-heal from the host's Codex CLI without manual re-auth.
+
+        Mirrors the Nous/Anthropic resync paths above.  Applies to both
+        ``device_code`` and ``manual:device_code`` entries (issue #63413).
         """
-        if self.provider != "openai-codex" or entry.source != "device_code":
+        if self.provider != "openai-codex" or entry.source not in (
+            "device_code",
+            SOURCE_MANUAL_DEVICE_CODE,
+        ):
             return entry
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
                 state = _load_provider_state(auth_store, "openai-codex")
-            if not isinstance(state, dict):
+            if isinstance(state, dict):
+                tokens = state.get("tokens")
+                if isinstance(tokens, dict):
+                    store_access = tokens.get("access_token", "")
+                    store_refresh = tokens.get("refresh_token", "")
+                    entry_access = entry.access_token or ""
+                    entry_refresh = entry.refresh_token or ""
+                    if store_access and (
+                        store_access != entry_access
+                        or (store_refresh and store_refresh != entry_refresh)
+                    ):
+                        logger.debug(
+                            "Pool entry %s: syncing Codex tokens from auth.json "
+                            "(refreshed by another process)",
+                            entry.id,
+                        )
+                        field_updates: Dict[str, Any] = {
+                            "access_token": store_access,
+                            "refresh_token": store_refresh or entry.refresh_token,
+                            "last_status": None,
+                            "last_status_at": None,
+                            "last_error_code": None,
+                            "last_error_reason": None,
+                            "last_error_message": None,
+                            "last_error_reset_at": None,
+                        }
+                        if state.get("last_refresh"):
+                            field_updates["last_refresh"] = state["last_refresh"]
+                        updated = replace(entry, **field_updates)
+                        self._replace_entry(entry, updated)
+                        self._persist()
+                        return updated
+        except Exception as exc:
+            logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
+        # Fallback: no fresher tokens in the auth.json singleton — try the
+        # Codex CLI's ~/.codex/auth.json.  This is the pool-side equivalent
+        # of ``_refresh_codex_auth_tokens``'s ``_recover_codex_tokens_from_cli``
+        # call, which only runs on the singleton chat path and never reaches
+        # pool-sourced credentials.  Without this fallback, ``manual:device_code``
+        # and even ``device_code`` entries whose singleton is also stale freeze
+        # after refresh_token expiry, despite the Codex CLI having continuously
+        # valid credentials on the same host (issue #63413).
+        return self._sync_codex_entry_from_cli_auth_json(entry)
+
+    def _sync_codex_entry_from_cli_auth_json(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Recover Codex OAuth tokens from ``~/.codex/auth.json`` (Codex CLI).
+
+        When the pool entry's ``refresh_token`` expires (~10 days after a
+        device-code login) but the host's Codex CLI keeps ``~/.codex/auth.json``
+        continuously refreshed, this method adopts the CLI's current token pair
+        into the pool entry.
+
+        This is the pool-side equivalent of
+        ``hermes_cli/auth._recover_codex_tokens_from_cli`` (which only runs on
+        the singleton "chat" path).  Without it, manually-added
+        (``manual:device_code``) pool entries freeze after ``refresh_token``
+        expiry even though valid credentials exist on the same host.
+
+        Mirrors ``_sync_codex_entry_from_auth_store`` but reads from the Codex
+        CLI file instead of the Hermes auth.json singleton.
+        """
+        if self.provider != "openai-codex":
+            return entry
+        try:
+            cli_tokens = auth_mod._import_codex_cli_tokens()
+            if not cli_tokens:
                 return entry
-            tokens = state.get("tokens")
-            if not isinstance(tokens, dict):
-                return entry
-            store_access = tokens.get("access_token", "")
-            store_refresh = tokens.get("refresh_token", "")
-            # Adopt auth.json tokens when either side differs.  Codex refresh
-            # tokens are single-use too, so a fresh refresh_token from
-            # another process means our entry's pair is consumed/stale.
+            store_access = str(cli_tokens.get("access_token", "") or "")
+            store_refresh = str(cli_tokens.get("refresh_token", "") or "")
             entry_access = entry.access_token or ""
             entry_refresh = entry.refresh_token or ""
             if store_access and (
@@ -770,8 +840,7 @@ class CredentialPool:
                 or (store_refresh and store_refresh != entry_refresh)
             ):
                 logger.debug(
-                    "Pool entry %s: syncing Codex tokens from auth.json "
-                    "(refreshed by another process)",
+                    "Pool entry %s: recovering Codex tokens from ~/.codex/auth.json",
                     entry.id,
                 )
                 field_updates: Dict[str, Any] = {
@@ -784,14 +853,14 @@ class CredentialPool:
                     "last_error_message": None,
                     "last_error_reset_at": None,
                 }
-                if state.get("last_refresh"):
-                    field_updates["last_refresh"] = state["last_refresh"]
                 updated = replace(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
+            logger.debug(
+                "Failed to recover Codex tokens from ~/.codex/auth.json: %s", exc
+            )
         return entry
 
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1323,6 +1392,27 @@ class CredentialPool:
                         item for item in self._entries
                         if item.source != "device_code"
                     ]
+                    # For ``manual:device_code`` entries: mark them DEAD instead
+                    # of removing them, since they won't be re-seeded from the
+                    # singleton on ``load_pool()``.  The existing DEAD-manual
+                    # prune logic in ``_available_entries`` will clean them up
+                    # after the 24h quiet window (issue #63413).
+                    updated_entries = []
+                    for item in self._entries:
+                        if item.source == SOURCE_MANUAL_DEVICE_CODE and item.id == entry.id:
+                            dead_entry = replace(
+                                item,
+                                last_status=STATUS_DEAD,
+                                last_status_at=time.time(),
+                                last_error_code=getattr(exc, "status_code", None),
+                                last_error_reason=getattr(exc, "code", "unknown"),
+                                last_error_message=str(exc),
+                            )
+                            updated_entries.append(dead_entry)
+                            removed_ids.append(item.id)
+                        else:
+                            updated_entries.append(item)
+                    self._entries = updated_entries
                     if self._current_id == entry.id:
                         self._current_id = None
                     self._persist(removed_ids=removed_ids)
@@ -1590,9 +1680,10 @@ class CredentialPool:
             # re-authed via `hermes model` / `hermes auth` after a 429/401,
             # leaving fresh tokens on disk while the pool entry is still
             # frozen behind last_error_reset_at (can be hours in the
-            # future for ChatGPT weekly windows).
+            # future for ChatGPT weekly windows).  Covers both ``device_code``
+            # and ``manual:device_code`` entries (issue #63413).
             if (self.provider == "openai-codex"
-                    and entry.source == "device_code"
+                    and entry.source in {"device_code", SOURCE_MANUAL_DEVICE_CODE}
                     and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:

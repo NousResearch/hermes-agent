@@ -22,6 +22,27 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = CopilotACPClient(acp_cwd="/tmp")
 
+    def test_empty_acp_args_are_preserved(self) -> None:
+        client = CopilotACPClient(
+            acp_command="custom-acp",
+            acp_args=[],
+            acp_cwd="/tmp",
+        )
+
+        self.assertEqual(client._acp_args, [])
+
+    def test_omitted_acp_args_still_use_resolved_defaults(self) -> None:
+        with patch(
+            "agent.copilot_acp_client._resolve_args",
+            return_value=["--acp", "--stdio"],
+        ):
+            client = CopilotACPClient(
+                acp_command="custom-acp",
+                acp_cwd="/tmp",
+            )
+
+        self.assertEqual(client._acp_args, ["--acp", "--stdio"])
+
     def test_extracted_tool_calls_match_openai_sdk_shape(self) -> None:
         tool_response = (
             "I'll inspect that.\n"

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+from agent.image_data_url import detect_image_mime, sanitize_image_data_url
 from agent.image_routing import (
     _coerce_capability_bool,
     _coerce_mode,
@@ -394,6 +395,35 @@ def _png_bytes() -> bytes:
     )
 
 
+def _jpeg_bytes() -> bytes:
+    """Return minimal JPEG-like bytes with a valid magic-byte prefix."""
+    return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01" + b"\x00" * 16
+
+
+def test_valid_png_and_jpeg_data_urls_pass_validation():
+    png_url = "data:image/png;base64," + base64.b64encode(
+        _png_bytes()
+    ).decode("ascii")
+    jpeg_url = "data:image/jpeg;base64," + base64.b64encode(
+        _jpeg_bytes()
+    ).decode("ascii")
+
+    assert detect_image_mime(_png_bytes()) == "image/png"
+    assert detect_image_mime(_jpeg_bytes()) == "image/jpeg"
+    assert sanitize_image_data_url(png_url) == (png_url, False)
+    assert sanitize_image_data_url(jpeg_url) == (jpeg_url, False)
+
+
+def test_malformed_jpeg_data_url_is_invalid():
+    bad_bytes = b"\x10JFIF\x00\x01\x01\x01"
+    bad_url = "data:image/jpeg;base64," + base64.b64encode(
+        bad_bytes
+    ).decode("ascii")
+
+    assert bad_url.startswith("data:image/jpeg;base64,EEpGSUY")
+    assert sanitize_image_data_url(bad_url) == (None, True)
+
+
 class TestBuildNativeContentParts:
     def test_text_then_image(self, tmp_path: Path):
         img = tmp_path / "cat.png"
@@ -427,6 +457,14 @@ class TestBuildNativeContentParts:
         assert skipped == [str(tmp_path / "missing.png")]
         # Skipped paths are NOT advertised in the path hints — the model
         # would otherwise be told a non-existent file is attached.
+        assert parts == [{"type": "text", "text": "hi"}]
+
+    def test_invalid_image_file_is_skipped(self, tmp_path: Path):
+        img = tmp_path / "bad.jpg"
+        img.write_bytes(b"\x10JFIF\x00\x01\x01\x01")
+        parts, skipped = build_native_content_parts("hi", [str(img)])
+
+        assert skipped == [str(img)]
         assert parts == [{"type": "text", "text": "hi"}]
 
     def test_path_hint_appended(self, tmp_path: Path):

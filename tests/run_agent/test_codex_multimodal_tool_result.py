@@ -17,6 +17,12 @@ from agent.codex_responses_adapter import (
     _preflight_codex_input_items,
 )
 
+_VALID_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+)
+
 
 def _build_messages_with_multimodal_tool_result():
     return [
@@ -39,7 +45,10 @@ def _build_messages_with_multimodal_tool_result():
             "tool_call_id": "call_abc",
             "content": [
                 {"type": "text", "text": "Image loaded."},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,XYZ"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": _VALID_PNG_DATA_URL},
+                },
             ],
         },
     ]
@@ -69,7 +78,7 @@ class TestMultimodalToolResultConversion:
         out = next(it for it in items if it.get("type") == "function_call_output")
         image_parts = [p for p in out["output"] if p.get("type") == "input_image"]
         assert len(image_parts) == 1
-        assert image_parts[0]["image_url"] == "data:image/png;base64,XYZ"
+        assert image_parts[0]["image_url"] == _VALID_PNG_DATA_URL
 
     def test_string_tool_content_still_string_output(self):
         msgs = [
@@ -106,7 +115,7 @@ class TestPreflightAcceptsArrayOutput:
                 "call_id": "call_abc",
                 "output": [
                     {"type": "input_text", "text": "Image loaded."},
-                    {"type": "input_image", "image_url": "data:image/png;base64,ABC"},
+                    {"type": "input_image", "image_url": _VALID_PNG_DATA_URL},
                 ],
             },
         ]
@@ -115,7 +124,7 @@ class TestPreflightAcceptsArrayOutput:
         assert isinstance(out["output"], list)
         assert len(out["output"]) == 2
         assert out["output"][1]["type"] == "input_image"
-        assert out["output"][1]["image_url"] == "data:image/png;base64,ABC"
+        assert out["output"][1]["image_url"] == _VALID_PNG_DATA_URL
 
     def test_preflight_drops_unknown_part_types(self):
         raw = [
@@ -129,7 +138,7 @@ class TestPreflightAcceptsArrayOutput:
                 "output": [
                     {"type": "input_text", "text": "ok"},
                     {"type": "garbage", "data": "nope"},  # unknown — should be dropped
-                    {"type": "input_image", "image_url": "data:image/png;base64,ZZ"},
+                    {"type": "input_image", "image_url": _VALID_PNG_DATA_URL},
                 ],
             },
         ]

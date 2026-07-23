@@ -684,9 +684,9 @@ def _file_to_data_url(path: Path) -> Optional[str]:
 
     Returns None if the file can't be read OR if the format isn't
     universally supported AND Pillow can't transcode it (Pillow missing,
-    HEIC/AVIF plugin missing, vector format like SVG, corrupt bytes). The
-    caller reports those paths in ``skipped`` and the rest of the turn
-    proceeds.
+    HEIC/AVIF plugin missing, vector format like SVG, corrupt bytes), or if
+    the file does not start with recognized image magic bytes. The caller
+    reports those paths in ``skipped`` and the rest of the turn proceeds.
     """
     try:
         from agent.file_safety import raise_if_read_blocked
@@ -704,7 +704,14 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-    mime = _guess_mime(path, raw=raw)
+    mime = _sniff_mime_from_bytes(raw)
+    if mime is None:
+        logger.warning(
+            "image_routing: skipping invalid image bytes at %s (size=%d)",
+            path,
+            len(raw),
+        )
+        return None
     if mime not in _UNIVERSALLY_SUPPORTED_MIMES:
         transcoded = _transcode_to_png(raw)
         if transcoded is None:

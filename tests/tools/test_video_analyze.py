@@ -4,9 +4,11 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
+    _download_video,
     _video_to_base64_data_url,
     _handle_video_analyze,
     _MAX_VIDEO_BASE64_BYTES,
@@ -95,6 +97,107 @@ class TestVideoToBase64DataUrl:
         result = _video_to_base64_data_url(p)
         # Falls back to video/mp4
         assert result.startswith("data:video/mp4;base64,")
+
+
+# ---------------------------------------------------------------------------
+# _download_video
+# ---------------------------------------------------------------------------
+
+
+class _FakeVideoResponse:
+    def __init__(self, *, chunks, headers=None, url="https://example.com/clip.mp4"):
+        self._chunks = chunks
+        self.headers = headers or {}
+        self.url = url
+        self.is_redirect = False
+        self.next_request = None
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_bytes(self, chunk_size=None):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeVideoStream:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *args):
+        return None
+
+
+class _FakeVideoClient:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    def stream(self, *args, **kwargs):
+        return _FakeVideoStream(self._response)
+
+
+class TestDownloadVideo:
+    def _install_client(self, monkeypatch, response):
+        monkeypatch.setattr("tools.vision_tools.check_website_access", lambda url: None)
+        monkeypatch.setattr(
+            "tools.vision_tools.httpx.AsyncClient",
+            lambda *args, **kwargs: _FakeVideoClient(response),
+        )
+
+    def test_rejects_oversized_content_length(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.vision_tools._MAX_VIDEO_BASE64_BYTES", 8)
+        self._install_client(
+            monkeypatch,
+            _FakeVideoResponse(chunks=[b"ok"], headers={"content-length": "9"}),
+        )
+
+        destination = tmp_path / "clip.mp4"
+        with pytest.raises(ValueError, match="Video too large"):
+            asyncio.get_event_loop().run_until_complete(
+                _download_video("https://example.com/clip.mp4", destination, max_retries=1)
+            )
+
+        assert not destination.exists()
+        assert not list(tmp_path.glob("*.part"))
+
+    def test_rejects_oversized_streamed_body(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.vision_tools._MAX_VIDEO_BASE64_BYTES", 8)
+        self._install_client(
+            monkeypatch,
+            _FakeVideoResponse(chunks=[b"1234", b"56789"]),
+        )
+
+        destination = tmp_path / "clip.mp4"
+        with pytest.raises(ValueError, match="Video too large"):
+            asyncio.get_event_loop().run_until_complete(
+                _download_video("https://example.com/clip.mp4", destination, max_retries=1)
+            )
+
+        assert not destination.exists()
+        assert not list(tmp_path.glob("*.part"))
+
+    def test_writes_streamed_video_chunks(self, tmp_path, monkeypatch):
+        self._install_client(
+            monkeypatch,
+            _FakeVideoResponse(chunks=[b"abc", b"def"]),
+        )
+
+        destination = tmp_path / "clip.mp4"
+        result = asyncio.get_event_loop().run_until_complete(
+            _download_video("https://example.com/clip.mp4", destination, max_retries=1)
+        )
+
+        assert result == destination
+        assert destination.read_bytes() == b"abcdef"
 
 
 # ---------------------------------------------------------------------------

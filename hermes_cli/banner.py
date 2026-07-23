@@ -251,6 +251,27 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _local_head_rev(repo_dir: Path) -> Optional[str]:
+    """Return the local HEAD hash for ``repo_dir``, or None.
+
+    Local-only (no network) so it's cheap enough to run on every cache hit.
+    Used as a cache-busting key: a manual ``git pull`` on a source install
+    moves HEAD but leaves VERSION and the embedded rev unchanged, which would
+    otherwise let a stale "commits behind" count survive the 6h TTL (#40944).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            return (result.stdout or "").strip() or None
+    except Exception:
+        pass
+    return None
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -280,8 +301,19 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check.
+    # Resolve the local git checkout (None for nix/pip/docker installs) and read
+    # its current HEAD up front so it can join the cache key below. This is a
+    # local-only `git rev-parse`, cheap enough to run even on a cache hit.
+    repo_dir = None if embedded_rev else _resolve_repo_dir()
+    local_head = _local_head_rev(repo_dir) if repo_dir is not None else None
+
+    # Read cache — invalidate if the embedded rev, installed version, OR local
+    # HEAD has changed since the last check. The version guard matters for pip
+    # installs, where a `pip install --upgrade` changes VERSION but leaves rev
+    # unchanged (both None) (#34491). The HEAD guard matters for source
+    # installs updated by hand: `git pull` moves HEAD but leaves VERSION and
+    # rev unchanged, so without it the stale "behind" count would survive the
+    # 6h TTL (#40944).
     now = time.time()
     try:
         if cache_file.exists():
@@ -290,6 +322,7 @@ def check_for_updates() -> Optional[int]:
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
+                and cached.get("head") == local_head
             ):
                 return cached.get("behind")
     except Exception:
@@ -297,24 +330,23 @@ def check_for_updates() -> Optional[int]:
 
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
+    elif repo_dir is not None:
+        behind = _check_via_local_git(repo_dir)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            # No git checkout and no embedded revision — can't determine
-            # update status. This is the Docker path (already short-circuited
-            # above) or an unsupported install without a source tree.
-            behind = None
-        else:
-            behind = _check_via_local_git(repo_dir)
+        # No git checkout and no embedded revision — can't determine update
+        # status. This is the Docker path (already short-circuited above) or
+        # an unsupported install without a source tree.
+        behind = None
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({
+                "ts": now,
+                "behind": behind,
+                "rev": embedded_rev,
+                "ver": VERSION,
+                "head": local_head,
+            })
         )
     except Exception:
         pass

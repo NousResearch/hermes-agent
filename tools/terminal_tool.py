@@ -2807,6 +2807,15 @@ def terminal_tool(
             )
 
         # The session key is already computed above the gateway guard.
+        # Clean the interrupt slate for an approved command exactly once, after
+        # approval/workdir preparation but before either foreground or
+        # background dispatch. A stale bit from the approval wait must not
+        # cancel the approved start; a genuine interrupt arriving after this
+        # boundary remains visible to the spawn/start guard and wait loop.
+        if _approved_run:
+            from tools.interrupt import clear_current_thread_interrupt
+
+            clear_current_thread_interrupt()
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
@@ -3065,16 +3074,6 @@ def terminal_tool(
             result = None
             command_cwd = None
 
-            # Clean interrupt slate for an approved command, ONCE before the
-            # retry loop: drop a stale bit that landed on this thread during the
-            # approval-wait so it can't SIGINT the just-approved run.  Do NOT
-            # re-clear inside the loop -- a genuine interrupt arriving during the
-            # backoff sleep between retries must survive and abort the command
-            # (caught by the next attempt's _wait_for_process poll loop -> 130).
-            if _approved_run:
-                from tools.interrupt import clear_current_thread_interrupt
-                clear_current_thread_interrupt()
-
             while retry_count <= max_retries:
                 try:
                     command_cwd = _resolve_command_cwd(
@@ -3147,6 +3146,14 @@ def terminal_tool(
             # output overflowed the capture window (see _wait_for_process).
             spill_total_chars = result.get("output_total_chars")
             spill_file_path = result.get("full_output_path")
+
+            if result.get("_process_start_cancelled"):
+                return json.dumps({
+                    "output": "[Command interrupted]",
+                    "exit_code": 130,
+                    "error": "Command cancelled before process start.",
+                    "status": "cancelled",
+                }, ensure_ascii=False)
 
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)

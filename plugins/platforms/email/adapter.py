@@ -13,6 +13,10 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+
+Behavioral toggles live in config.yaml under ``platforms.email`` (not env):
+    sent_folder         — IMAP folder for sent-mail archival (default: "Sent");
+                          set to empty string "" to disable IMAP APPEND entirely
 """
 
 import asyncio
@@ -24,6 +28,7 @@ import re
 import smtplib
 import socket
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -145,6 +150,65 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
         )
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
+
+def _imap_append_to_sent(
+    *,
+    imap_host: str,
+    imap_port: int,
+    address: str,
+    password: str,
+    sent_folder: str,
+    raw_bytes: bytes,
+) -> None:
+    """IMAP-APPEND a freshly-sent outbound mail to ``sent_folder``.
+
+    No-op when the folder is unset (empty string) or no IMAP host is
+    configured.  Best-effort: failures are logged as warnings and never
+    re-raised — losing the Sent-folder copy must NOT roll back an SMTP send
+    that already succeeded.
+
+    Shared by the live ``EmailAdapter._append_to_sent`` and the
+    out-of-process ``_standalone_send`` so both SMTP paths archive identically.
+    """
+    if not sent_folder or not imap_host:
+        return
+    try:
+        imap = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=30)
+        try:
+            imap.login(address, password)
+            _send_imap_id(imap)
+            # CREATE is idempotent; most servers return NO on "already exists".
+            try:
+                imap.create(sent_folder)
+            except Exception:  # noqa: BLE001 — ignore "already exists" and similar
+                pass
+            # imaplib returns ("NO"/"BAD", ...) on a rejected APPEND WITHOUT
+            # raising — inspect the status tuple explicitly so a silent failure
+            # isn't logged as success.
+            typ, data = imap.append(
+                sent_folder,
+                "(\\Seen)",
+                imaplib.Time2Internaldate(time.time()),
+                raw_bytes,
+            )
+            if typ != "OK":
+                detail = b" ".join(p for p in data if isinstance(p, bytes)).decode(
+                    "utf-8", "replace"
+                )
+                logger.warning(
+                    "[Email] APPEND to %r returned %s: %s",
+                    sent_folder, typ, detail,
+                )
+            else:
+                logger.debug("[Email] APPEND to %r ok", sent_folder)
+        finally:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+    except Exception as e:  # noqa: BLE001 — Sent-folder mirror is best-effort
+        logger.warning("[Email] APPEND to %r failed: %s", sent_folder, e)
 
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
@@ -442,11 +506,14 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
-        # Skip attachments — configured via config.yaml:
+        # Behavioral toggles — configured via config.yaml:
         #   platforms:
         #     email:
         #       skip_attachments: true
+        #       sent_folder: "Sent"   # "" to disable IMAP APPEND entirely
         self._skip_attachments = extra.get("skip_attachments", False)
+        # Empty string is a deliberate opt-out — do NOT collapse with `or`.
+        self._sent_folder = extra.get("sent_folder", "Sent")
 
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
         # before trusting it for authorization. The From: header is
@@ -547,6 +614,22 @@ class EmailAdapter(BasePlatformAdapter):
             # Connection-level failure (may be unreachable IPv6).
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
+
+    def _append_to_sent(self, raw_bytes: bytes) -> None:
+        """IMAP-APPEND a freshly-sent outbound mail to ``self._sent_folder``.
+
+        Thin wrapper over the shared :func:`_imap_append_to_sent` helper so the
+        live adapter and the out-of-process ``_standalone_send`` archive
+        identically.  Best-effort — see the helper for failure semantics.
+        """
+        _imap_append_to_sent(
+            imap_host=self._imap_host,
+            imap_port=self._imap_port,
+            address=self._address,
+            password=self._password,
+            sent_folder=self._sent_folder,
+            raw_bytes=raw_bytes,
+        )
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
@@ -959,6 +1042,7 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.close()
 
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        self._append_to_sent(msg.as_bytes())
         return msg_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -1085,6 +1169,7 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.close()
 
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        self._append_to_sent(msg.as_bytes())
         return msg_id
 
     async def send_document(
@@ -1162,6 +1247,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
+        self._append_to_sent(msg.as_bytes())
         return msg_id
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -1212,6 +1298,17 @@ async def _standalone_send(
     except (ValueError, TypeError):
         smtp_port = 587
 
+    # IMAP Sent-folder archival config (parity with EmailAdapter). The
+    # standalone path only requires SMTP, so IMAP may be unconfigured — the
+    # shared helper no-ops on a missing host or an empty folder.
+    imap_host = extra.get("imap_host") or os.getenv("EMAIL_IMAP_HOST", "")
+    try:
+        imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+    except (ValueError, TypeError):
+        imap_port = 993
+    # Empty string is a deliberate opt-out — do NOT collapse with `or`.
+    sent_folder = extra.get("sent_folder", "Sent")
+
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
@@ -1227,6 +1324,16 @@ async def _standalone_send(
         server.login(address, password)
         server.send_message(msg)
         server.quit()
+        # Best-effort Sent-folder mirror — never fails the (already-completed)
+        # SMTP send. Shares the archival helper with EmailAdapter.
+        _imap_append_to_sent(
+            imap_host=imap_host,
+            imap_port=imap_port,
+            address=address,
+            password=password,
+            sent_folder=sent_folder,
+            raw_bytes=msg.as_bytes(),
+        )
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:

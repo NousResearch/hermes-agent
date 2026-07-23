@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -196,6 +197,74 @@ def test_show_explicit_task_id(worker_env):
     out = kt._handle_show({"task_id": other})
     d = json.loads(out)
     assert d["task"]["id"] == other
+
+
+def test_maybe_auto_subscribe_persists_session_chat_type(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.init_db()
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-dm")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "dm")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "u1")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="auto-subscribe", assignee="worker")
+        assert kt._maybe_auto_subscribe(conn, tid) is True
+        sub = kb.list_notify_subs(conn, tid)[0]
+        assert sub["chat_type"] == "dm"
+        assert sub["platform"] == "telegram"
+        assert sub["chat_id"] == "chat-dm"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("active_profile", ["default", "researcher", "orchestrator"])
+def test_maybe_auto_subscribe_persists_active_profile_when_session_profile_missing(
+    monkeypatch, tmp_path, active_profile
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionContext, SessionSource
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.init_db()
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setattr(GatewayRunner, "_active_profile_name", lambda self: active_profile)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-dm",
+        chat_type="dm",
+        user_id="u1",
+        profile=None,
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    tokens = runner._set_session_env(context)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title=f"auto-subscribe-{active_profile}", assignee="worker")
+        assert kt._maybe_auto_subscribe(conn, tid) is True
+        sub = kb.list_notify_subs(conn, tid)[0]
+        assert sub["notifier_profile"] == active_profile
+    finally:
+        conn.close()
+        runner._clear_session_env(tokens)
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

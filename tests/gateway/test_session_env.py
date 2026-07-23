@@ -169,6 +169,33 @@ def test_set_session_env_handles_missing_optional_fields():
     runner._clear_session_env(tokens)
 
 
+@pytest.mark.parametrize("active_profile", ["default", "researcher", "orchestrator"])
+def test_set_session_env_falls_back_to_active_profile_when_source_profile_missing(
+    monkeypatch, active_profile
+):
+    """A profile-scoped gateway turn must stamp HERMES_SESSION_PROFILE even when
+    the SessionSource has no explicit profile.
+    """
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setattr(GatewayRunner, "_active_profile_name", lambda self: active_profile)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_name="Group",
+        chat_type="dm",
+        thread_id=None,
+        profile=None,
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_PROFILE") == active_profile
+    finally:
+        runner._clear_session_env(tokens)
+
+
 # ---------------------------------------------------------------------------
 # SESSION_KEY contextvars tests
 # ---------------------------------------------------------------------------

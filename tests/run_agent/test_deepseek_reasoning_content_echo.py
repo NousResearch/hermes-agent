@@ -180,6 +180,64 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert "reasoning_content" not in api_msg
 
+    def test_local_qwen_strips_historical_reasoning_replay(self) -> None:
+        """Local Qwen thinking may store reasoning for audit/UI, but must not
+        replay historical scratchpad fields into every next request.
+
+        The provider does not require DeepSeek/Kimi-style echo-back. Replaying
+        reasoning_details/codex items silently bloats long local sessions.
+        """
+        agent = _make_agent(
+            provider="custom",
+            model="mlx-community/Qwen3.6-35B-A3B-4bit-DWQ",
+            base_url="http://127.0.0.1:10240/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "visible answer",
+            "reasoning": "long prior scratchpad",
+            "reasoning_content": "long provider scratchpad",
+            "reasoning_details": [{"type": "reasoning.summary", "summary": "hidden"}],
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "blob"}],
+            "codex_message_items": [{"type": "message", "id": "msg_1"}],
+        }
+        api_msg = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg["content"] == "visible answer"
+        for key in (
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "codex_reasoning_items",
+            "codex_message_items",
+        ):
+            assert key not in api_msg
+
+    def test_codex_responses_preserves_native_replay_items(self) -> None:
+        """Codex Responses owns a bounded encrypted-item replay contract."""
+        agent = _make_agent(provider="openai-codex", model="gpt-5.4")
+        agent.api_mode = "codex_responses"
+        source = {
+            "role": "assistant",
+            "content": "visible answer",
+            "reasoning": "local scratchpad",
+            "reasoning_content": "chat-completions scratchpad",
+            "reasoning_details": [{"type": "reasoning.summary", "summary": "hidden"}],
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "blob"}],
+            "codex_message_items": [{"type": "message", "id": "msg_1"}],
+        }
+        api_msg = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert "reasoning" not in api_msg
+        assert "reasoning_content" not in api_msg
+        assert "reasoning_details" not in api_msg
+        assert api_msg["codex_reasoning_items"] == source["codex_reasoning_items"]
+        assert api_msg["codex_message_items"] == source["codex_message_items"]
+
     def test_deepseek_reasoning_field_promoted(self) -> None:
         """When only 'reasoning' is set, it gets promoted to reasoning_content."""
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")

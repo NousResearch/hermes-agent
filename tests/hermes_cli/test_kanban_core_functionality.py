@@ -1943,9 +1943,8 @@ def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
 # Integration hardening (Apr 2026 audit fixes)
 # -------------------------------------------------------------------------
 
-def test_archive_of_running_task_closes_run(kanban_home):
-    """Archiving a claimed task must close the in-flight run with
-    outcome='reclaimed', not orphan it."""
+def test_archive_of_running_task_refuses_without_terminating_worker(kanban_home):
+    """Archive is data lifecycle, not cancellation; live claims fail closed."""
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
@@ -1954,15 +1953,158 @@ def test_archive_of_running_task_closes_run(kanban_home):
         assert run.ended_at is None
         open_run_id = run.id
 
-        assert kb.archive_task(conn, tid) is True
+        assert kb.archive_task(conn, tid) is False
 
         task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == open_run_id
+        assert task.claim_lock is not None
+        assert kb.get_run(conn, open_run_id).ended_at is None
+    finally:
+        conn.close()
+
+
+def test_cancel_running_task_terminates_then_archives_with_explicit_outcome(
+    kanban_home, monkeypatch,
+):
+    import signal
+
+    conn = kb.connect()
+    alive = {"value": True}
+    signals = []
+
+    def fake_signal(pid, sig):
+        signals.append((pid, sig))
+        if sig == signal.SIGTERM:
+            alive["value"] = False
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: alive["value"])
+    try:
+        tid = kb.create_task(conn, title="cancel me", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 4242)
+        run_id = kb.latest_run(conn, tid).id
+
+        result = kb.cancel_task(
+            conn, tid, reason="owner cancelled", signal_fn=fake_signal,
+        )
+
+        assert result.ok is True
+        assert result.outcome == "cancelled"
+        assert result.task_id == tid
+        assert result.idempotent is False
+        assert result.termination["terminated"] is True
+        assert signals == [(4242, signal.SIGTERM)]
+        task = kb.get_task(conn, tid)
         assert task.status == "archived"
-        assert task.current_run_id is None
-        # The previously-active run must now be closed.
-        closed = kb.get_run(conn, open_run_id)
-        assert closed.ended_at is not None
-        assert closed.outcome == "reclaimed"
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+        run = kb.get_run(conn, run_id)
+        assert run.ended_at is not None
+        assert run.outcome == "cancelled"
+        events = kb.list_events(conn, tid)
+        cancelled = [event for event in events if event.kind == "cancelled"]
+        assert len(cancelled) == 1
+        assert cancelled[0].payload["reason"] == "owner cancelled"
+
+        repeated = kb.cancel_task(conn, tid, reason="repeat", signal_fn=fake_signal)
+        assert repeated.ok is True
+        assert repeated.outcome == "cancelled"
+        assert repeated.idempotent is True
+        events = kb.list_events(conn, tid)
+        assert len([event for event in events if event.kind == "cancelled"]) == 1
+    finally:
+        conn.close()
+
+
+def test_cancel_live_worker_failure_keeps_claim_and_prevents_redispatch(
+    kanban_home, monkeypatch,
+):
+    conn = kb.connect()
+    signals = []
+
+    def surviving_signal(pid, sig):
+        signals.append((pid, sig))
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(kb.time, "sleep", lambda _seconds: None)
+    try:
+        tid = kb.create_task(conn, title="still alive", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 4343)
+        before = kb.get_task(conn, tid)
+        run_id = kb.latest_run(conn, tid).id
+
+        result = kb.cancel_task(
+            conn, tid, reason="owner cancelled", signal_fn=surviving_signal,
+        )
+
+        assert result.ok is False
+        assert result.outcome == "termination_failed"
+        assert result.termination["termination_attempted"] is True
+        assert result.termination["terminated"] is False
+        after = kb.get_task(conn, tid)
+        assert after.status == "running"
+        assert after.claim_lock == before.claim_lock
+        assert after.worker_pid == 4343
+        assert after.current_run_id == run_id
+        assert kb.get_run(conn, run_id).ended_at is None
+        assert any(event.kind == "cancel_failed" for event in kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+
+def test_cancel_unclaimed_task_archives_without_signalling(kanban_home):
+    conn = kb.connect()
+    signalled = []
+    try:
+        tid = kb.create_task(conn, title="not started", assignee="worker")
+        result = kb.cancel_task(
+            conn, tid, reason="no longer needed",
+            signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+        )
+        assert result.ok is True
+        assert result.outcome == "cancelled"
+        assert result.termination["termination_attempted"] is False
+        assert signalled == []
+        assert kb.get_task(conn, tid).status == "archived"
+    finally:
+        conn.close()
+
+
+def test_cancel_compare_and_swap_does_not_clobber_new_claim(
+    kanban_home, monkeypatch,
+):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="claim changes", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 4444)
+
+        def terminate_then_reclaim(_pid, _lock, signal_fn=None):
+            conn.execute(
+                "UPDATE tasks SET claim_lock = ?, worker_pid = ? WHERE id = ?",
+                ("new-owner:claim", 5555, tid),
+            )
+            conn.commit()
+            return {
+                "prev_pid": 4444,
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": True,
+                "sigkill": False,
+            }
+
+        monkeypatch.setattr(kb, "_terminate_reclaimed_worker", terminate_then_reclaim)
+        result = kb.cancel_task(conn, tid, reason="owner cancelled")
+
+        assert result.ok is False
+        assert result.outcome == "race_lost"
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.claim_lock == "new-owner:claim"
+        assert task.worker_pid == 5555
+        assert task.current_run_id is not None
     finally:
         conn.close()
 
@@ -2522,7 +2664,7 @@ def test_pid_alive_detects_zombie(kanban_home):
         time.sleep(0.3)
         # Verify /proc reports zombie state so the test is actually
         # exercising the zombie path and not some other liveness failure
-        with open(f"/proc/{pid}/status") as f:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as f:
             state_line = next(
                 (l for l in f if l.startswith("State:")), ""
             )

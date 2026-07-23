@@ -54,6 +54,33 @@ def _create_completed_subscription(summary="done once"):
         conn.close()
 
 
+def test_kanban_notifier_delivers_cancelled_outcome_and_unsubscribes(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "cancelled.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="cancel me", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        assert kb.cancel_task(conn, tid, reason="owner cancelled").ok
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert tid in adapter.sent[0]["text"]
+    assert "cancelled" in adapter.sent[0]["text"].lower()
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, task_id=tid) == []
+    finally:
+        conn.close()
+
+
 def _unseen_terminal_events(tid):
     conn = kb.connect()
     try:

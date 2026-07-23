@@ -20,6 +20,7 @@ import {
   SidebarWorkspaceGroup,
   type SidebarWorkspaceTree
 } from './projects'
+import { ReorderZoneList } from './reorder-zone-list'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionRow } from './session-row'
@@ -130,6 +131,10 @@ interface SidebarSessionsSectionProps {
   // The flat session list is the only hand-reorderable surface (grouped/project
   // views sort deterministically), so it owns the one ReorderableList.
   onReorderSessions?: (ids: string[]) => void
+  // When true, reorder via the shared pointer session-drag (drop within the
+  // bar reorders; drop on chat links) instead of the dnd-kit grab handle. Set
+  // for the Pinned list. Pairs with `onReorderSessions` for the commit.
+  reorderViaDrag?: boolean
   // Drag-to-reorder for the project overview list (top-level projects).
   onReorderProjects?: (ids: string[]) => void
   // Rendered atop the entered-project body (a "back to overview" row).
@@ -176,6 +181,7 @@ export function SidebarSessionsSection({
   collapsible = true,
   sortable = false,
   onReorderSessions,
+  reorderViaDrag = false,
   onReorderProjects,
   projectBackRow,
   dndSensors,
@@ -331,6 +337,20 @@ export function SidebarSessionsSection({
       ) : (
         virtual
       )
+  } else if (reorderViaDrag && onReorderSessions) {
+    // Pointer-drag reorder (Pinned): no dnd-kit handle — the row body is already
+    // a session-drag source, and that drag reorders when dropped within the bar.
+    // Rows render as plain (non-sortable) rows; ReorderZoneList registers the
+    // drop zone and paints the insertion line.
+    inner = (
+      <ReorderZoneList
+        items={displayEntries.map(({ branchStem, session }) => ({
+          id: session.id,
+          node: renderRow(session, false, branchStem)
+        }))}
+        onReorder={onReorderSessions}
+      />
+    )
   } else if (sessionsDraggable && onReorderSessions) {
     inner = (
       <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>

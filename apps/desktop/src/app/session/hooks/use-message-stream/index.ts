@@ -55,6 +55,13 @@ interface QueuedStreamDeltas {
   reasoning: string
 }
 
+// Date.now() alone can collide when an interim seal and the next segment's
+// first delta land in the same millisecond — the new segment would then find
+// the sealed bubble by id and append into it instead of starting fresh.
+let streamMessageSeq = 0
+
+const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
+
 export function useMessageStream({
   activeGatewayProfile = 'default',
   activeSessionIdRef,
@@ -91,7 +98,7 @@ export function useMessageStream({
             return state
           }
 
-          const streamId = state.streamId ?? `assistant-stream-${Date.now()}`
+          const streamId = state.streamId ?? nextStreamMessageId('assistant-stream')
           const groupId = state.pendingBranchGroup ?? undefined
           const prev = state.messages
           let nextMessages: ChatMessage[]
@@ -397,19 +404,21 @@ export function useMessageStream({
         let nextMessages = state.messages
 
         if (streamId && nextMessages.some(m => m.id === streamId)) {
-          // Finalize the existing streaming bubble in place
+          // Seal the streaming bubble in place, marked interim so it renders
+          // without an action footer (see ChatMessage.interim).
           nextMessages = nextMessages.map(m =>
-            m.id === streamId ? { ...m, parts: replaceTextPart(m.parts), pending: false } : m
+            m.id === streamId ? { ...m, parts: replaceTextPart(m.parts), pending: false, interim: true } : m
           )
         } else {
           // No streaming bubble — create a standalone interim message
           nextMessages = [
             ...nextMessages,
             {
-              id: `assistant-interim-${Date.now()}`,
+              id: nextStreamMessageId('assistant-interim'),
               role: 'assistant' as const,
               parts: [assistantTextPart(authoritativeText)],
               pending: false,
+              interim: true,
               branchGroupId: state.pendingBranchGroup ?? undefined
             }
           ]
@@ -459,19 +468,15 @@ export function useMessageStream({
           return mergeFinalAssistantText(parts, visibleFinalText)
         }
 
-        const completeMessage = (message: ChatMessage): ChatMessage =>
-          completionError
-            ? {
-                ...message,
-                error: completionError,
-                parts: message.parts.filter(part => part.type !== 'text'),
-                pending: false
-              }
-            : {
-                ...message,
-                parts: replaceTextPart(message.parts),
-                pending: false
-              }
+        // Settling the final response onto a bubble makes it the turn's real
+        // reply — clear `interim` so it regains the action footer.
+        const completeMessage = (message: ChatMessage): ChatMessage => {
+          const settled = { ...message, pending: false, interim: false }
+
+          return completionError
+            ? { ...settled, error: completionError, parts: message.parts.filter(part => part.type !== 'text') }
+            : { ...settled, parts: replaceTextPart(message.parts) }
+        }
 
         const newAssistantFromCompletion = (): ChatMessage => ({
           id: `assistant-${Date.now()}`,

@@ -424,6 +424,15 @@ compression:
   #   "claude-sonnet": 0.35
   #   "gpt-5": 0.30
 
+  # Optional absolute token cap for the compression trigger (default: null = disabled).
+  # When set, compression fires at the LOWER of the ratio-based threshold and this
+  # absolute token count — first-fires-wins. It never fires later than this count
+  # regardless of which model is active (useful when switching between models with
+  # very different context windows). Clamped to the model's context length at
+  # apply-time, so a cap above the window is a no-op (ratio-based threshold wins).
+  # Survives model switches and fallback activations.
+  # threshold_tokens: 200000
+
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true
@@ -464,6 +473,16 @@ compression:
   # Default 3 preserves the system prompt plus the first three non-system
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
+
+  # Idle compaction (default: 0 = disabled). When > 0, a session that resumes
+  # after at least this many seconds of inactivity compacts its accumulated
+  # history up front, before the first reply, so a long-lived thread you come
+  # back to later doesn't re-read its full stale context on every turn.
+  # Time-based, so it complements (does not replace) the size-based `threshold`
+  # above. It is skipped when the context is already small (at or below the
+  # post-compression target = threshold × target_ratio), so it never wastes a
+  # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
+  idle_compact_after_seconds: 0
 
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).

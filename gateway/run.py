@@ -79,8 +79,23 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
+    # #69332 reworded the auto-lower notice to "Auto-lowered this session's
+    # threshold to N tokens" — keep both generations covered.
+    r"|auto-lowered\s+(?:this\s+)?session'?s?\s+threshold"
+    r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
+    r"|skipping\s+concurrent\s+compression"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
+    r"|pre[- ]api\s+compression"
+    # Buffered attempt/overflow retry chatter replayed through _emit_status
+    # when a turn exhausts retries. The ", retrying"/"— compressing" anchors
+    # keep manual /compress feedback ("Compressed: 30 → 12 messages") and
+    # failure notices out of the match.
+    r"|context\s+too\s+large\s+\(~[\d,]+\s+tokens\)\s+[—-]+\s+compressing"
+    r"|compressed\s+\d[\d,]*\s+(?:→|->)\s+\d[\d,]*\s+messages,\s+retrying"
+    r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
+    r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -1503,6 +1518,14 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     agent_cfg = cfg.get("agent", {})
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+    # config-authoritative knobs for the session-search index (config.yaml
+    # sessions.* wins over stale env; env stays the cross-process carrier).
+    sessions_cfg = cfg.get("sessions", {})
+    if isinstance(sessions_cfg, dict):
+        if "cjk_fts" in sessions_cfg:
+            os.environ["HERMES_CJK_FTS"] = str(sessions_cfg["cjk_fts"])
+        if "search_slow_ms" in sessions_cfg:
+            os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_cfg["search_slow_ms"])
 
 
 def _current_max_iterations() -> int:
@@ -1784,6 +1807,16 @@ if _config_path.exists():
             if "gateway_auto_continue_freshness" in _agent_cfg:
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
+                )
+        # config-authoritative knobs for the session-search index; same
+        # bridge semantics as the agent settings above.
+        _sessions_cfg = _cfg.get("sessions", {})
+        if _sessions_cfg and isinstance(_sessions_cfg, dict):
+            if "cjk_fts" in _sessions_cfg:
+                os.environ["HERMES_CJK_FTS"] = str(_sessions_cfg["cjk_fts"])
+            if "search_slow_ms" in _sessions_cfg:
+                os.environ["HERMES_SEARCH_SLOW_MS"] = str(
+                    _sessions_cfg["search_slow_ms"]
                 )
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
@@ -6048,10 +6081,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             effective_mode = "queue"
         steered = False
+        redirected = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
+                and event.message_type == MessageType.TEXT
+                and not event.media_urls
+                and not event.media_types
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
@@ -6065,6 +6102,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
+        elif (
+            effective_mode == "interrupt"
+            and event.message_type == MessageType.TEXT
+            and not event.media_urls
+            and not event.media_types
+            and running_agent is not None
+            and running_agent is not _AGENT_PENDING_SENTINEL
+            and getattr(running_agent, "_supports_active_turn_redirect", False) is True
+            and hasattr(running_agent, "redirect")
+        ):
+            try:
+                redirected = bool(running_agent.redirect((event.text or "").strip()))
+            except Exception as exc:
+                logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
+                redirected = False
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -6081,16 +6133,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
-        if not steered:
+        if not steered and not redirected:
             self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
+        is_redirect_mode = effective_mode == "interrupt" and redirected
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit
         # at the next check point.
-        if effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        if (
+            effective_mode == "interrupt"
+            and not redirected
+            and running_agent
+            and running_agent is not _AGENT_PENDING_SENTINEL
+        ):
             try:
                 _interrupt_text = event.text
                 _media_urls = getattr(event, "media_urls", None) or []
@@ -6192,6 +6250,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
             )
+        elif is_redirect_mode:
+            message = (
+                f"↪ Redirected current run{status_detail}. "
+                f"I'll adjust using your correction."
+            )
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and
@@ -6233,6 +6296,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hint_mode = "steer"
                 elif is_queue_mode:
                     _hint_mode = "queue"
+                elif is_redirect_mode:
+                    _hint_mode = "redirect"
                 else:
                     _hint_mode = "interrupt"
                 message = (
@@ -11049,6 +11114,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         reply_to_is_own_message=event.reply_to_is_own_message,
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
+                        channel_context=event.channel_context,
                         internal=event.internal,
                         timestamp=event.timestamp,
                     )
@@ -11078,6 +11144,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            channel_context=event.channel_context,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -11100,6 +11167,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_context=event.channel_context,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -11288,7 +11356,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # is empty, the agent lacks steer(), or steer() rejects.
                 steer_text = (event.text or "").strip()
                 steered = False
-                if steer_text and hasattr(running_agent, "steer"):
+                if (
+                    event.message_type == MessageType.TEXT
+                    and not event.media_urls
+                    and not event.media_types
+                    and steer_text
+                    and hasattr(running_agent, "steer")
+                ):
                     try:
                         steered = bool(running_agent.steer(steer_text))
                     except Exception as exc:
@@ -11332,6 +11406,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
+            # Text-only corrections redirect the live turn (preserving
+            # displayed context) when the runtime supports it; media/voice and
+            # older runtimes fall back to the proven interrupt path below.
+            if (
+                event.message_type == MessageType.TEXT
+                and not event.media_urls
+                and not event.media_types
+                and getattr(running_agent, "_supports_active_turn_redirect", False)
+                is True
+                and hasattr(running_agent, "redirect")
+            ):
+                try:
+                    if running_agent.redirect((event.text or "").strip()):
+                        logger.debug("PRIORITY redirect for session %s", _quick_key)
+                        return None
+                except Exception as exc:
+                    logger.warning(
+                        "PRIORITY redirect failed for session %s: %s",
+                        _quick_key,
+                        exc,
+                    )
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
@@ -18087,6 +18182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "enabled"),
         ("compression", "threshold"),
         ("compression", "model_thresholds"),
+        ("compression", "threshold_tokens"),
         ("compression", "codex_gpt55_autoraise"),
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),

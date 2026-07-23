@@ -327,6 +327,40 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
+
+  it('drops stale optimistic history after compression and keeps only the live tail', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'first turn that survived compression'),
+      msg('stored-assistant', 'assistant', 'latest authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-old-2', 'user', 'compressed-away prompt two'),
+      msg('assistant-old-2', 'assistant', 'compressed-away reply two'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache).map(message => message.id)).toEqual(
+      ['stored-user', 'stored-assistant', 'user-inflight']
+    )
+  })
+
+  it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'the one genuinely in-flight prompt'),
+      msg('stored-assistant', 'assistant', 'its authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
+  })
 })
 
 describe('appendLiveSessionProjection', () => {
@@ -350,6 +384,32 @@ describe('appendLiveSessionProjection', () => {
       'current prompt',
       'partial answer',
       'newest prompt'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {
+    const stored = [
+      msg('stored-user-1', 'user', 'canceled prompt one'),
+      msg('stored-user-2', 'user', 'canceled prompt two'),
+      msg('stored-user-3', 'user', 'current running prompt')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'user', 'user', 'assistant'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'canceled prompt one',
+      'canceled prompt two',
+      'current running prompt',
+      'partial answer'
     ])
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
   })

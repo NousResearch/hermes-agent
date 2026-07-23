@@ -11,6 +11,7 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { $compactionActive } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
@@ -104,6 +105,7 @@ export function ChatBar({
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
+  const compacting = useStore($compactionActive)
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
@@ -227,20 +229,27 @@ export function ChatBar({
   const { compactPill, stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
-  const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
-  const canSteer = busy && !!onSteer && attachments.length === 0 && isSteerableText
+  const canSteer = busy && !compacting && !!onSteer && attachments.length === 0 && isSteerableText
+
+  // While busy: text redirects the live turn (Cursor-style stop-and-correct),
+  // attachments queue for the next turn, an empty composer stops.
+  const busyAction: 'steer' | 'queue' | 'stop' = canSteer
+    ? 'steer'
+    : compacting || hasComposerPayload
+      ? 'queue'
+      : 'stop'
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
-  const { steerDraft, submitDraft } = useComposerSubmit({
+  const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
     busy,
-    canSteer,
+    compacting,
     clearDraft,
     disabled,
     draftRef,
@@ -721,7 +730,6 @@ export function ChatBar({
       autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
-      canSteer={canSteer}
       canSubmit={canSubmit}
       compactModelPill={poppedOut || compactPill}
       conversation={{
@@ -737,7 +745,7 @@ export function ChatBar({
       disabled={disabled}
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
-      onSteer={steerDraft}
+      onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}

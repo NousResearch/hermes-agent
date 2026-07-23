@@ -1,4 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
+import type { BillingBlock } from '@hermes/shared'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
@@ -17,6 +18,10 @@ export type ChatMessage = {
   error?: string
   branchGroupId?: string
   hidden?: boolean
+  /** Sealed mid-turn commentary (`message.interim`) — rendered without the
+   *  action footer so only the turn's final reply carries copy/refresh, and
+   *  the live view matches rehydration (which merges the turn into one bubble). */
+  interim?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
 }
@@ -76,6 +81,8 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
+  pane?: string
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
@@ -90,6 +97,10 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // Structured billing wall forwarded on message.complete when a turn fails
+  // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).
+  billing?: BillingBlock
+  failure_reason?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

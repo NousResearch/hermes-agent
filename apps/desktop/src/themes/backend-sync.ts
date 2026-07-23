@@ -29,10 +29,13 @@ export const $backendThemes = atom<Record<string, DesktopTheme>>({})
 /** One-shot skin name the ThemeProvider should switch to (it clears this). */
 export const $pendingSkinApply = atom<string | null>(null)
 
-// The last skin name we drove onto the desktop. Guards two things: re-applying
-// the same skin every post-turn poll, and snapping back after a manual switch —
-// only a CHANGE from this value applies. `default` is the "no opinion" sentinel.
-let lastSynced: string | null = null
+// Last skin name synced from the backend + whether it was ever APPLIED (vs
+// merely seeded at connect). Once applied, only a name change applies again —
+// no re-apply on repeat events, no snap-back after a manual desktop switch.
+// A `skin.changed` matching a seed-only baseline still applies: the seed
+// records without painting, so if the activation event was missed (backend
+// restart / disconnected), an explicit re-affirm must repaint, not no-op.
+let lastSynced: { applied: boolean; name: string } | null = null
 
 /** Test-only: reset the module's apply guard + registry between cases. */
 export function __resetBackendSkinSync(): void {
@@ -75,14 +78,17 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
   }
 
   if (!apply) {
-    // Connect-time seed: record the baseline so a later poll is a no-op.
-    lastSynced = name
+    // Connect-time seed: record without painting. A reconnect re-seed keeps an
+    // earlier real apply's flag so repeat events can't override a manual switch.
+    if (lastSynced?.name !== name || !lastSynced.applied) {
+      lastSynced = { applied: false, name }
+    }
 
     return
   }
 
-  if (name !== lastSynced) {
-    lastSynced = name
+  if (name !== lastSynced?.name || !lastSynced.applied) {
+    lastSynced = { applied: true, name }
     $pendingSkinApply.set(name)
   }
 }

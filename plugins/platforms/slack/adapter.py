@@ -17,7 +17,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Any, Tuple, List
+from typing import Callable, Dict, Optional, Any, Tuple, List
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -63,6 +63,36 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 
 logger = logging.getLogger(__name__)
+
+_SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+
+
+async def _read_error_text_limited(
+    response: Any,
+    *,
+    limit: int = _SLACK_ERROR_BODY_LIMIT_BYTES,
+) -> str:
+    content = getattr(response, "content", None)
+    read = getattr(content, "read", None)
+    if callable(read):
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit:
+            size = min(4096, limit + 1 - total)
+            chunk = await read(size)
+            if not chunk:
+                break
+            data = bytes(chunk)
+            chunks.append(data)
+            total += len(data)
+        if total > limit:
+            release = getattr(response, "release", None)
+            if callable(release):
+                release()
+        return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
+
+    text = await response.text()
+    return str(text)[:limit]
 
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
@@ -179,6 +209,23 @@ def _slack_mention_detection_text(event: dict) -> str:
     if not extra:
         return flat
     return (flat.strip() + "\n" + " ".join(extra)).strip()
+
+
+def _rewrite_known_bang_command(text: str) -> str:
+    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
+    if not text.startswith("!"):
+        return text
+
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+
+        first_token = text[1:].split(maxsplit=1)[0]
+        cmd_name = first_token.split("@", 1)[0].lower()
+        if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+            return "/" + text[1:]
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return text
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:
@@ -675,11 +722,18 @@ class SlackAdapter(BasePlatformAdapter):
         # so a multi-workspace Socket Mode process never reuses another
         # tenant's display name.
         self._user_name_cache: Dict[Tuple[str, str], str] = {}
+        self._USER_NAME_CACHE_MAX = 5000
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
-        self._channel_team: Dict[str, str] = {}  # channel_id → team_id
+        # channel_id → team_id. Grows with every channel AND every DM the bot
+        # sees (DM channel IDs are per-user), so it must be bounded on busy
+        # multi-workspace installs. Eviction is safe: entries are re-learned
+        # from the next event on that channel, and _get_client falls back to
+        # the primary client meanwhile.
+        self._channel_team: Dict[str, str] = {}
+        self._CHANNEL_TEAM_MAX = 10000
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events (#4777). The TTL must outlast Slack's
         # worst-case reconnect-redelivery gap, not just a few seconds — the
@@ -688,18 +742,21 @@ class SlackAdapter(BasePlatformAdapter):
         # is safe.
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # Track pending approval message_ts → resolved flag to prevent
-        # double-clicks on approval buttons.
+        # double-clicks on approval buttons. Bounded: an approval prompt the
+        # user never clicks would otherwise leak its entry forever.
         self._approval_resolved: Dict[str, bool] = {}
+        self._APPROVAL_RESOLVED_MAX = 1000
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[str, bool] = {}
+        self._CLARIFY_RESOLVED_MAX = 1000
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
-        self._bot_message_ts: set = set()
+        self._bot_message_ts: set[str] = set()
         self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
-        self._mentioned_threads: set = set()
+        self._mentioned_threads: set[str] = set()
         self._MENTIONED_THREADS_MAX = 5000
         # Assistant thread metadata keyed by (team_id, channel_id, thread_ts).
         # Slack's AI Assistant lifecycle events can arrive before/alongside
@@ -715,6 +772,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        self._THREAD_CACHE_MAX = 2500
         # Persistent sessions survive gateway restarts, but messages that
         # arrived while the gateway was DOWN never reached the session.
         # Track which threads have been rehydration-checked this process so
@@ -724,10 +782,17 @@ class SlackAdapter(BasePlatformAdapter):
         self._thread_rehydration_checked: set = set()
         self._THREAD_REHYDRATION_CHECKED_MAX = 5000
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
+        # Entries are normally removed when the reaction completes, but an
+        # exception between add and finalize would leak them — keep it bounded.
         self._reacting_message_ids: set = set()
+        self._REACTING_MESSAGE_IDS_MAX = 5000
         # Track active Assistant statuses by (team_id, channel_id, thread_ts)
         # so cleanup cannot clear an overlapping Slack Connect workspace.
+        # Entries are popped when the status clears, but statuses abandoned
+        # by an error path would accumulate — bound with oldest-thread-first
+        # eviction (key[2] is the thread ts).
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+        self._ACTIVE_STATUS_THREADS_MAX = 1000
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
         self._titled_assistant_threads: set = set()
@@ -779,6 +844,86 @@ class SlackAdapter(BasePlatformAdapter):
                 if inspect.isawaitable(result):
                     await result
                 break
+
+    @staticmethod
+    def _slack_timestamp_sort_key(ts: str) -> Tuple[int, int, str]:
+        """Return a chronological, deterministic sort key for Slack timestamps."""
+        seconds, _, fraction = str(ts).partition(".")
+        try:
+            seconds_int = int(seconds)
+        except ValueError:
+            seconds_int = 0
+        try:
+            fraction_int = int((fraction + "000000")[:6] or "0")
+        except ValueError:
+            fraction_int = 0
+        return seconds_int, fraction_int, str(ts)
+
+    @classmethod
+    def _discard_oldest_slack_timestamps(
+        cls, timestamps: set[str], count: int
+    ) -> None:
+        """Discard the oldest Slack timestamps from a bounded tracking set."""
+        if count <= 0:
+            return
+        for old_ts in sorted(timestamps, key=cls._slack_timestamp_sort_key)[:count]:
+            timestamps.discard(old_ts)
+
+    def _trim_bot_message_timestamps(self) -> None:
+        if len(self._bot_message_ts) <= self._BOT_TS_MAX:
+            return
+        excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+        self._discard_oldest_slack_timestamps(self._bot_message_ts, excess)
+
+    def _trim_mentioned_threads(self) -> None:
+        if len(self._mentioned_threads) <= self._MENTIONED_THREADS_MAX:
+            return
+        self._discard_oldest_slack_timestamps(
+            self._mentioned_threads, self._MENTIONED_THREADS_MAX // 2
+        )
+
+    @staticmethod
+    def _trim_oldest_dict_entries(mapping: Dict[Any, Any], max_size: int) -> None:
+        """Evict the oldest-inserted entries once *mapping* exceeds *max_size*.
+
+        Python dicts preserve insertion order, so ``list(mapping)[:excess]``
+        is genuinely oldest-first (unlike sets, whose iteration order is
+        arbitrary — see #51019). Evicts down to half the cap so eviction
+        runs amortized-once per max_size//2 writes, matching the sibling
+        tracking structures.
+        """
+        if len(mapping) <= max_size:
+            return
+        excess = len(mapping) - max_size // 2
+        for old_key in list(mapping)[:excess]:
+            del mapping[old_key]
+
+    @classmethod
+    def _discard_oldest_by_thread_ts(
+        cls, entries: set, count: int, ts_getter: Callable[[Any], str]
+    ) -> None:
+        """Discard the *count* entries with the oldest embedded Slack ts.
+
+        For bounded tracking sets whose members are keys CONTAINING a Slack
+        timestamp (tuples or colon-joined strings) rather than bare ts
+        values. Sets iterate in arbitrary order, so a plain
+        ``list(entries)[:count]`` can evict the most ACTIVE entry (#51019);
+        sort chronologically by the embedded thread ts instead.
+        """
+        if count <= 0:
+            return
+        oldest = sorted(
+            entries, key=lambda e: cls._slack_timestamp_sort_key(ts_getter(e))
+        )[:count]
+        for entry in oldest:
+            entries.discard(entry)
+
+    def _remember_channel_team(self, channel_id: str, team_id: str) -> None:
+        """Record which workspace owns *channel_id*, bounded oldest-first."""
+        if not channel_id or not team_id:
+            return
+        self._channel_team[str(channel_id)] = str(team_id)
+        self._trim_oldest_dict_entries(self._channel_team, self._CHANNEL_TEAM_MAX)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1088,6 +1233,8 @@ class SlackAdapter(BasePlatformAdapter):
     _SLASH_CTX_TTL = 120.0  # seconds — response_url is valid for 30 min;
     # we use a much shorter TTL to avoid routing unrelated messages
     # as ephemeral if the command handler was slow or dropped.
+    _SLASH_CTX_MAX = 1000  # hard cap: TTL cleanup only runs on lookup, so
+    # contexts whose replies never arrive would otherwise accumulate.
 
     def _pop_slash_context(
         self,
@@ -1100,9 +1247,9 @@ class SlackAdapter(BasePlatformAdapter):
         Uses the ``_slash_user_id`` ContextVar (set in ``_handle_slash_command``)
         to match the exact ``(channel_id, user_id)`` key.  This prevents a
         concurrent slash command from a different user on the same channel from
-        stealing another user's ephemeral context.  Falls back to a
-        channel-only scan when the ContextVar is unset (e.g. send() called
-        from a non-slash code path — should not match anything).
+        stealing another user's ephemeral context. When the ContextVar is
+        unset (e.g. send() called from a non-slash code path), do not match
+        anything — otherwise normal sends can steal a pending slash reply.
         """
         now = time.monotonic()
         # Clean up stale entries on every lookup — dict is small.
@@ -1119,16 +1266,7 @@ class SlackAdapter(BasePlatformAdapter):
         if uid:
             return self._slash_command_contexts.pop((chat_id, uid), None)
 
-        # Fallback: channel-only scan (only reachable when ContextVar is
-        # unset, i.e. send() called outside a slash-command async context).
-        match_key = None
-        for key in list(self._slash_command_contexts):
-            if key[0] == chat_id:
-                match_key = key
-                break
-        if match_key is None:
-            return None
-        return self._slash_command_contexts.pop(match_key)
+        return None
 
     async def _send_slash_ephemeral(
         self,
@@ -1142,44 +1280,116 @@ class SlackAdapter(BasePlatformAdapter):
         lets us swap the "Running /cmd…" placeholder with the real reply,
         and the message stays ephemeral ("Only visible to you").
 
-        Falls back to a simple ``True`` SendResult if the POST fails —
-        the user already saw the initial ack, so a delivery failure here
-        is non-critical.
+        Long replies are chunked: the first chunk replaces the ack, the
+        rest are posted as additional ephemeral messages.  Slack allows at
+        most 5 POSTs to a response_url, so anything beyond that is closed
+        with an explicit truncation notice instead of being silently
+        dropped (#19688).
+
+        Returns ``success=False`` on delivery failure so the caller
+        (``send()``) can fall back to normal channel delivery — the reply
+        must never be silently dropped just because the ephemeral swap
+        failed (#19688).
         """
         formatted = self.format_message(content)
         # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
-        # response_url replaces a single ephemeral ack, so multi-chunk isn't
-        # possible.  Long responses are rare for command replies.
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        text = chunks[0] if chunks else formatted
-        payload = {
-            "response_type": "ephemeral",
-            "replace_original": True,
-            "text": text,
-        }
+        if not chunks:
+            chunks = [formatted]
+        # Slack allows at most 5 POSTs per response_url. Reserve the flow:
+        # 1 replace + up to 4 follow-ups; announce anything left over.
+        _MAX_RESPONSE_URL_POSTS = 5
+        if len(chunks) > _MAX_RESPONSE_URL_POSTS:
+            dropped = len(chunks) - _MAX_RESPONSE_URL_POSTS
+            chunks = chunks[:_MAX_RESPONSE_URL_POSTS]
+            chunks[-1] = (
+                chunks[-1].rstrip()
+                + f"\n\n_[Reply truncated: {dropped} more part(s) exceeded "
+                "Slack's ephemeral reply limit.]_"
+            )
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
-                async with session.post(
-                    ctx["response_url"],
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        return SendResult(success=True, message_id=None)
-                    body = await resp.text()
-                    logger.warning(
-                        "[Slack] response_url POST returned %s: %s",
-                        resp.status,
-                        body[:200],
-                    )
+                for idx, chunk in enumerate(chunks):
+                    payload = {
+                        "response_type": "ephemeral",
+                        # Only the first chunk replaces the "Running /cmd…"
+                        # ack; the rest append as new ephemeral messages.
+                        "replace_original": idx == 0,
+                        "text": chunk,
+                    }
+                    async with session.post(
+                        ctx["response_url"],
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status != 200:
+                            body = await _read_error_text_limited(resp)
+                            logger.warning(
+                                "[Slack] response_url POST returned %s: %s",
+                                resp.status,
+                                body[:200],
+                            )
+                            return SendResult(
+                                success=False,
+                                error=f"response_url POST returned {resp.status}",
+                            )
+            return SendResult(success=True, message_id=None)
         except Exception as e:
             logger.warning(
                 "[Slack] response_url POST failed: %s",
                 e,
             )
-        # Non-fatal — the user saw the initial ack already.
-        return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error=str(e))
+
+    async def _post_ephemeral_fallback(
+        self,
+        chat_id: str,
+        ctx: Dict[str, Any],
+        content: str,
+    ) -> "SendResult":
+        """Deliver a slash reply via ``chat.postEphemeral``.
+
+        Fallback for when the ``response_url`` POST fails (#19688).
+        ``chat.postEphemeral`` is an independent Web API path that keeps the
+        reply private to the invoking user — unlike a public channel post,
+        which must never happen for a reply the user expects to be ephemeral.
+
+        Unlike response_url, this cannot ``replace_original``, so the
+        "Running /cmd…" ack stays; the reply arrives as new ephemeral
+        message(s) below it. Chunked like normal sends; no 5-POST cap
+        applies to postEphemeral.
+        """
+        user_id = ctx.get("user_id", "")
+        if not user_id:
+            return SendResult(
+                success=False,
+                error="no user_id in slash context for postEphemeral",
+            )
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if not chunks:
+            chunks = [formatted]
+        try:
+            client = self._get_client(chat_id)
+            for chunk in chunks:
+                result = await client.chat_postEphemeral(
+                    channel=chat_id,
+                    user=user_id,
+                    text=chunk,
+                )
+                if not (isinstance(result, dict) and result.get("ok")):
+                    err = (
+                        result.get("error", "unknown_error")
+                        if isinstance(result, dict)
+                        else "unexpected_response"
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"chat.postEphemeral failed: {err}",
+                    )
+            return SendResult(success=True, message_id=None)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
 
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
         """Nudge existing installs to reinstall when group-DM scopes are absent.
@@ -1787,10 +1997,41 @@ class SlackAdapter(BasePlatformAdapter):
             # the actual command reply ephemerally instead of posting publicly.
             slash_ctx = self._pop_slash_context(chat_id)
             if slash_ctx:
-                return await self._send_slash_ephemeral(
+                ephemeral_result = await self._send_slash_ephemeral(
                     slash_ctx,
                     content,
                 )
+                if ephemeral_result.success:
+                    return ephemeral_result
+                # response_url delivery failed (#19688): fall back to
+                # chat.postEphemeral — an independent API path that keeps
+                # the reply private ("Only visible to you"). We do NOT fall
+                # back to a public channel post: a slash reply the user
+                # expects to be ephemeral must never surface to the whole
+                # channel just because a delivery path failed.
+                logger.warning(
+                    "[Slack] response_url slash reply failed (%s); retrying "
+                    "via chat.postEphemeral",
+                    ephemeral_result.error,
+                )
+                fallback_result = await self._post_ephemeral_fallback(
+                    chat_id,
+                    slash_ctx,
+                    content,
+                )
+                if fallback_result.success:
+                    return fallback_result
+                # Both ephemeral paths failed — surface the failure instead
+                # of leaking the reply publicly. The user still has the
+                # "Running /cmd…" ack; the error is logged and returned so
+                # the gateway can react (retry surfacing happens upstream).
+                logger.error(
+                    "[Slack] Ephemeral slash reply failed on both "
+                    "response_url and chat.postEphemeral (%s); dropping "
+                    "rather than posting publicly",
+                    fallback_result.error,
+                )
+                return fallback_result
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
@@ -1861,10 +2102,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # Also register the thread root so replies-to-my-replies work
                 if thread_ts:
                     self._bot_message_ts.add(thread_ts)
-                if len(self._bot_message_ts) > self._BOT_TS_MAX:
-                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-                    for old_ts in list(self._bot_message_ts)[:excess]:
-                        self._bot_message_ts.discard(old_ts)
+                self._trim_bot_message_timestamps()
 
             return SendResult(
                 success=True,
@@ -1876,7 +2114,23 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
             logger.error("[Slack] Send error: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            _retryable = self._is_retryable_upload_error(e)
+            _retry_after = None
+            if _retryable:
+                _resp = getattr(e, "response", None)
+                if _resp is not None:
+                    try:
+                        _ra = getattr(_resp, "headers", {}).get("Retry-After")
+                        if _ra is not None:
+                            _retry_after = float(_ra)
+                    except (TypeError, ValueError, AttributeError):
+                        pass
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=_retryable,
+                retry_after=_retry_after,
+            )
 
     async def send_private_notice(
         self,
@@ -2012,6 +2266,19 @@ class SlackAdapter(BasePlatformAdapter):
                 "thread_ts": str(thread_ts),
                 "team_id": str(team_id) if team_id else "",
             }
+            if len(self._active_status_threads) > self._ACTIVE_STATUS_THREADS_MAX:
+                # Evict abandoned statuses oldest-thread-first (key[2] is the
+                # thread ts) so an eviction never clears the newest status.
+                excess = (
+                    len(self._active_status_threads)
+                    - self._ACTIVE_STATUS_THREADS_MAX // 2
+                )
+                oldest = sorted(
+                    self._active_status_threads,
+                    key=lambda k: self._slack_timestamp_sort_key(k[2]),
+                )[:excess]
+                for old_key in oldest:
+                    self._active_status_threads.pop(old_key, None)
         try:
             _status = (
                 getattr(self, "_status_text", {}).get(str(chat_id))
@@ -2388,10 +2655,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return
         self._bot_message_ts.add(thread_ts)
-        if len(self._bot_message_ts) > self._BOT_TS_MAX:
-            excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-            for old_ts in list(self._bot_message_ts)[:excess]:
-                self._bot_message_ts.discard(old_ts)
+        self._trim_bot_message_timestamps()
 
     def _is_retryable_upload_error(self, exc: Exception) -> bool:
         """Best-effort detection for transient Slack upload failures."""
@@ -2732,12 +2996,16 @@ class SlackAdapter(BasePlatformAdapter):
                 or user.get("name")
                 or user_id
             )
-            self._user_name_cache[cache_key] = name
-            return name
         except Exception as e:
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
-            self._user_name_cache[cache_key] = user_id
-            return user_id
+            name = user_id
+
+        self._user_name_cache[cache_key] = name
+        if len(self._user_name_cache) > self._USER_NAME_CACHE_MAX:
+            excess = len(self._user_name_cache) - self._USER_NAME_CACHE_MAX // 2
+            for old_key in list(self._user_name_cache)[:excess]:
+                del self._user_name_cache[old_key]
+        return name
 
     async def _humanize_user_mentions(
         self, text: str, chat_id: str = "", team_id: str = ""
@@ -3247,7 +3515,7 @@ class SlackAdapter(BasePlatformAdapter):
                 del self._assistant_threads[old_key]
 
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
     def _lookup_assistant_thread_metadata(
         self,
@@ -3393,8 +3661,11 @@ class SlackAdapter(BasePlatformAdapter):
                 len(self._titled_assistant_threads)
                 - self._TITLED_ASSISTANT_THREADS_MAX // 2
             )
-            for old_key in list(self._titled_assistant_threads)[:excess]:
-                self._titled_assistant_threads.discard(old_key)
+            # Keys are (team_id, channel_id, thread_ts) — evict the oldest
+            # threads first so recently titled threads keep their guard.
+            self._discard_oldest_by_thread_ts(
+                self._titled_assistant_threads, excess, lambda e: e[2]
+            )
 
     def _seed_assistant_thread_session(self, metadata: Dict[str, str]) -> None:
         """Prime the session store so assistant threads get stable user scoping."""
@@ -3511,7 +3782,7 @@ class SlackAdapter(BasePlatformAdapter):
         context_channel_id = self._context_channel_id(context)
 
         if team_id and channel_id:
-            self._channel_team[str(channel_id)] = str(team_id)
+            self._remember_channel_team(channel_id, team_id)
 
         metadata = {
             "channel_id": str(channel_id) if channel_id else "",
@@ -3615,12 +3886,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return
         self._mentioned_threads.add(thread_ts)
-        if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
-            to_remove = list(self._mentioned_threads)[
-                : self._MENTIONED_THREADS_MAX // 2
-            ]
-            for t in to_remove:
-                self._mentioned_threads.discard(t)
+        self._trim_mentioned_threads()
 
     async def _bot_authored_thread_root(
         self, channel_id: str, thread_ts: str, team_id: str = ""
@@ -3682,6 +3948,7 @@ class SlackAdapter(BasePlatformAdapter):
         user_id: str,
         is_thread_reply: bool,
         team_id: str = "",
+        chat_type: str = "group",
     ) -> bool:
         """Return True if the bot should wake on an un-mentioned message.
 
@@ -3708,6 +3975,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=event_thread_ts,
             user_id=user_id,
             team_id=team_id,
+            chat_type=chat_type,
         ):
             return True
         # 4th check: bot-initiated thread via direct chat.postMessage.
@@ -3788,23 +4056,11 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
-        if original_text.startswith("!"):
-            try:
-                from hermes_cli.commands import is_gateway_known_command
+        command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
+        if command_probe_text != original_text.lstrip():
+            original_text = command_probe_text
 
-                first_token = original_text[1:].split(maxsplit=1)[0]
-                # Strip "@suffix" the same way get_command() does, so
-                # forms like ``!stop@hermes`` still resolve.
-                cmd_name = first_token.split("@", 1)[0].lower()
-                if (
-                    cmd_name
-                    and "/" not in cmd_name
-                    and is_gateway_known_command(cmd_name)
-                ):
-                    original_text = "/" + original_text[1:]
-            except Exception:  # pragma: no cover - defensive
-                pass
-
+        is_command_text = command_probe_text.startswith("/")
         text = original_text
 
         # Extract quoted/forwarded content from Slack blocks.
@@ -3812,8 +4068,16 @@ class SlackAdapter(BasePlatformAdapter):
         # array as ``rich_text_quote`` elements, which are NOT reflected in
         # the plain ``text`` field.  Merge block text so the agent sees the
         # full message content.
+        #
+        # Skip blocks extraction for command messages (slash/bang commands).
+        # Slack's rich_text blocks mirror the plain text of the message; after
+        # a ``!cmd`` → ``/cmd`` rewrite the mirrored ``!cmd`` form is no longer
+        # a substring of the rewritten text, so a naive dedupe check would
+        # re-append the same visible message as bogus command arguments
+        # (e.g. ``/model qwen --provider X`` grows a duplicate line and the
+        # model name appears to contain spaces).
         blocks = event.get("blocks")
-        if blocks:
+        if blocks and not is_command_text:
             blocks_text = _extract_text_from_slack_blocks(blocks)
             if blocks_text:
                 # Only append if the blocks contain text not already present
@@ -3916,7 +4180,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
         # Determine if this is a DM or channel message
         channel_type = event.get("channel_type", "")
@@ -4017,12 +4281,31 @@ class SlackAdapter(BasePlatformAdapter):
                     user_id=user_id,
                     team_id=team_id,
                     is_thread_reply=is_thread_reply,
+                    chat_type="dm" if is_dm else "group",
                 ):
                     return
 
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Re-run command normalization against the canonical Slack text,
+            # not the block-augmented agent text. Otherwise quoted/forwarded
+            # rich-text payload can become accidental command arguments.
+            # Handles both ``@bot !cmd`` (bang hidden behind the mention when
+            # the first probe ran) and ``@bot /cmd`` (typed slash addressed
+            # at the bot).
+            mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
+            if mention_stripped.startswith("/"):
+                command_text = mention_stripped
+            else:
+                command_text = _rewrite_known_bang_command(mention_stripped)
+            if command_text.startswith("/"):
+                original_text = command_text
+                text = command_text
+                # Refresh command classification: the command token was
+                # hidden behind the leading mention on the first probe.
+                command_probe_text = command_text
+                is_command_text = True
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
@@ -4054,6 +4337,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=event_thread_ts,
             user_id=user_id,
             team_id=team_id,
+            chat_type="dm" if is_dm else "group",
         )
         if is_thread_reply and not has_active_thread_session:
             thread_context = await self._fetch_thread_context(
@@ -4163,8 +4447,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Determine message type
         msg_type = MessageType.TEXT
-        if (original_text or "").startswith("/"):
+        if is_command_text:
             msg_type = MessageType.COMMAND
+
+        # Commands typed as Slack text messages often intentionally carry a
+        # leading space (`` /stop``) so Slack itself does not intercept the
+        # slash. Once classified as a command, pass only the command text into
+        # the gateway dispatcher; do not prepend fetched thread context or
+        # block/attachment rendering before the leading slash.
 
         # Handle file attachments
         media_urls = []
@@ -4419,6 +4709,16 @@ class SlackAdapter(BasePlatformAdapter):
             else:
                 msg_type = MessageType.DOCUMENT
 
+        # Every enrichment path above (blocks, unfurls, attachment notices,
+        # text-file injection, thread history) is deliberately allowed for
+        # normal messages. Commands are restored from canonical authored
+        # input only: the gateway parser requires the command token at
+        # character zero, and enrichment must never mutate a command's
+        # arguments.
+        if is_command_text:
+            text = command_probe_text
+            msg_type = MessageType.COMMAND
+
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(
             user_id, chat_id=channel_id, team_id=team_id
@@ -4514,7 +4814,7 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         msg_event = MessageEvent(
-            text=text,
+            text=(command_probe_text if is_command_text else text),
             message_type=msg_type,
             source=source,
             raw_message=event,
@@ -4540,6 +4840,13 @@ class SlackAdapter(BasePlatformAdapter):
         _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
+            if len(self._reacting_message_ids) > self._REACTING_MESSAGE_IDS_MAX:
+                # Entries are bare Slack message ts values — evict oldest first.
+                self._discard_oldest_slack_timestamps(
+                    self._reacting_message_ids,
+                    len(self._reacting_message_ids)
+                    - self._REACTING_MESSAGE_IDS_MAX // 2,
+                )
 
         # App-context is per-turn, user-controlled Slack UI state. Surface it
         # with the inbound user message rather than storing it on SessionSource:
@@ -4547,7 +4854,11 @@ class SlackAdapter(BasePlatformAdapter):
         # the user switches views and would let stale context bleed into later
         # turns. The agent receives an inert label, never a fetched channel body.
         context_channel_id = agent_context.get("context_channel_id", "")
-        if context_channel_id and context_channel_id != channel_id:
+        if (
+            context_channel_id
+            and context_channel_id != channel_id
+            and msg_event.message_type != MessageType.COMMAND
+        ):
             msg_event.text = (
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}"
@@ -4648,6 +4959,9 @@ class SlackAdapter(BasePlatformAdapter):
             msg_ts = result.get("ts", "")
             if msg_ts:
                 self._approval_resolved[msg_ts] = False
+                self._trim_oldest_dict_entries(
+                    self._approval_resolved, self._APPROVAL_RESOLVED_MAX
+                )
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
@@ -4825,6 +5139,9 @@ class SlackAdapter(BasePlatformAdapter):
                 # Mark unresolved so the action handler's atomic-pop guard can
                 # reject double-clicks (mirrors _approval_resolved).
                 self._clarify_resolved[msg_ts] = False
+                self._trim_oldest_dict_entries(
+                    self._clarify_resolved, self._CLARIFY_RESOLVED_MAX
+                )
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
@@ -5468,6 +5785,14 @@ class SlackAdapter(BasePlatformAdapter):
                 parent_user_id=parent_user_id,
                 messages=list(messages),
             )
+            if len(self._thread_context_cache) > self._THREAD_CACHE_MAX:
+                stale_keys = [
+                    k
+                    for k, v in self._thread_context_cache.items()
+                    if now - v.fetched_at >= self._THREAD_CACHE_TTL
+                ]
+                for k in stale_keys:
+                    del self._thread_context_cache[k]
             if after_ts:
                 delta, _ = await self._format_thread_context(
                     messages,
@@ -5690,52 +6015,82 @@ class SlackAdapter(BasePlatformAdapter):
         message).
         """
         slash_name = (command.get("command") or "").lstrip("/").strip()
-        text = command.get("text", "").strip()
+        raw_text = str(command.get("text") or "")
+        text = raw_text
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
         if slash_name in {"hermes", ""}:
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
+            legacy_text = raw_text.strip()
             from hermes_cli.commands import slack_subcommand_map
 
             subcommand_map = slack_subcommand_map()
             subcommand_map["compact"] = "/compress"
             # Guard against whitespace-only text where ``text`` is truthy but
             # ``text.split()`` returns ``[]`` (e.g. user sends ``/hermes   ``).
-            parts = text.split() if text else []
+            parts = legacy_text.split() if legacy_text else []
             first_word = parts[0] if parts else ""
             if first_word in subcommand_map:
-                rest = text[len(first_word) :].strip()
+                rest = legacy_text[len(first_word) :].strip()
                 text = (
                     f"{subcommand_map[first_word]} {rest}".strip()
                     if rest
                     else subcommand_map[first_word]
                 )
-            elif text:
-                pass  # Treat as a regular question
+            elif legacy_text:
+                text = legacy_text  # Treat as a regular question
             else:
                 text = "/help"
         else:
             # Native slash — /<slash_name> [args].  Route directly through the
-            # gateway command dispatcher by prepending the slash.
-            text = f"/{slash_name} {text}".strip()
+            # gateway command dispatcher by prepending the slash.  Only the
+            # command delimiter is nonsemantic: preserve Slack's raw argument
+            # payload, including meaningful internal/trailing spacing.
+            text = f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"
 
         # Slack slash commands can originate from DMs or shared channels.
         # Preserve DM semantics only for DM channel IDs; shared channels must
         # keep group semantics so different users do not collide into one
         # session key.
+        #
+        # If Slack includes thread context in the slash payload, preserve it so
+        # session-scoped commands like `/model <name>` affect exactly the same
+        # Slack thread/session that normal messages in that thread use. Without
+        # this, `/model` from a thread is keyed only by channel+user, so the
+        # next threaded message misses the override and appears to require
+        # --global.  Slack's native slash-command payloads vary by surface, so
+        # accept a few known shapes (top-level and nested, preferring a real
+        # parent-thread anchor over a fallback message timestamp) and otherwise
+        # leave thread_id unset; users can always use the message-based
+        # ``!model ...`` thread command path, which carries event.thread_ts.
+        thread_id = None
+        _thread_candidates = [command]
+        for _nested_key in ("message", "container"):
+            _nested = command.get(_nested_key)
+            if isinstance(_nested, dict):
+                _thread_candidates.append(_nested)
+        for _ts_key in ("thread_ts", "message_ts"):
+            for _payload in _thread_candidates:
+                _value = _payload.get(_ts_key)
+                if _value:
+                    thread_id = str(_value)
+                    break
+            if thread_id:
+                break
         is_dm = str(channel_id).startswith("D")
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            thread_id=thread_id,
             scope_id=team_id or None,
         )
 
@@ -5758,8 +6113,32 @@ class SlackAdapter(BasePlatformAdapter):
         if response_url and user_id and channel_id and text.startswith("/"):
             self._slash_command_contexts[(channel_id, user_id)] = {
                 "response_url": response_url,
+                # Kept for the chat.postEphemeral fallback when response_url
+                # delivery fails — postEphemeral needs an explicit user.
+                "user_id": user_id,
                 "ts": time.monotonic(),
             }
+            if len(self._slash_command_contexts) > self._SLASH_CTX_MAX:
+                # TTL cleanup normally runs on lookup, but contexts stashed
+                # for replies that never happen (agent error, ephemeral-only
+                # command) are never looked up — purge expired entries, then
+                # fall back to oldest-stash-first eviction if still over cap.
+                now_ts = time.monotonic()
+                for stale_key in [
+                    k
+                    for k, v in self._slash_command_contexts.items()
+                    if now_ts - v["ts"] > self._SLASH_CTX_TTL
+                ]:
+                    del self._slash_command_contexts[stale_key]
+                if len(self._slash_command_contexts) > self._SLASH_CTX_MAX:
+                    excess = (
+                        len(self._slash_command_contexts) - self._SLASH_CTX_MAX // 2
+                    )
+                    for old_key in sorted(
+                        self._slash_command_contexts,
+                        key=lambda k: self._slash_command_contexts[k]["ts"],
+                    )[:excess]:
+                        del self._slash_command_contexts[old_key]
 
         # Set the ContextVar so send() can match the correct stashed
         # response_url even when multiple users slash concurrently.
@@ -5775,6 +6154,8 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         user_id: str,
         team_id: str = "",
+        *,
+        chat_type: str = "group",
     ) -> Optional[str]:
         """Build the backing session key for a Slack thread.
 
@@ -5782,6 +6163,14 @@ class SlackAdapter(BasePlatformAdapter):
         construction — avoids the bug where manual key building didn't
         respect ``thread_sessions_per_user`` and ``group_sessions_per_user``
         settings correctly.
+
+        Args:
+            chat_type: The session chat type — ``"dm"`` for IM/MPIM
+                conversations, ``"group"`` for channels.  Must come from
+                the event-derived ``channel_type`` (``"im"``/``"mpim"``
+                → ``"dm"``) rather than being inferred from the channel
+                ID prefix, because MPIM IDs start with ``"G"``, not
+                ``"D"``.
         """
         session_store = getattr(self, "_session_store", None)
         if not session_store:
@@ -5792,7 +6181,7 @@ class SlackAdapter(BasePlatformAdapter):
             source = SessionSource(
                 platform=Platform.SLACK,
                 chat_id=channel_id,
-                chat_type="group",
+                chat_type=chat_type,
                 user_id=user_id,
                 thread_id=thread_ts,
                 scope_id=team_id or None,
@@ -5859,8 +6248,15 @@ class SlackAdapter(BasePlatformAdapter):
                 len(self._thread_rehydration_checked)
                 - self._THREAD_REHYDRATION_CHECKED_MAX // 2
             )
-            for old_key in list(self._thread_rehydration_checked)[:excess]:
-                self._thread_rehydration_checked.discard(old_key)
+            # Keys are "team:channel:thread_ts[:user]" — evict the oldest
+            # threads first. Evicting an ACTIVE thread's key would re-run its
+            # rehydration check and re-inject the missed delta (#51019-style
+            # arbitrary eviction), so never pop in set order.
+            self._discard_oldest_by_thread_ts(
+                self._thread_rehydration_checked,
+                excess,
+                lambda e: e.split(":")[2] if e.count(":") >= 2 else "",
+            )
 
     def _get_thread_watermark(
         self,
@@ -5928,11 +6324,21 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         user_id: str,
         team_id: str = "",
+        *,
+        chat_type: str = "group",
     ) -> bool:
         """Check if there's an active session for a thread.
 
         Used to determine if thread replies without @mentions should be
         processed (they should if there's an active session).
+
+        Args:
+            chat_type: The session chat type — ``"dm"`` for IM/MPIM
+                conversations, ``"group"`` for channels.  Must come from
+                the event-derived ``channel_type`` (``"im"``/``"mpim"``
+                → ``"dm"``) rather than being inferred from the channel
+                ID prefix, because MPIM IDs start with ``"G"``, not
+                ``"D"``.
         """
         session_store = getattr(self, "_session_store", None)
         if not session_store:
@@ -5944,14 +6350,14 @@ class SlackAdapter(BasePlatformAdapter):
             source = SessionSource(
                 platform=Platform.SLACK,
                 chat_id=channel_id,
-                chat_type="group",
+                chat_type=chat_type,
                 user_id=user_id,
                 thread_id=thread_ts,
                 scope_id=team_id or None,
             )
 
             session_key = self._build_thread_session_key(
-                channel_id, thread_ts, user_id, team_id=team_id
+                channel_id, thread_ts, user_id, team_id=team_id, chat_type=chat_type
             )
             if not session_key:
                 return False
@@ -6224,6 +6630,60 @@ class SlackAdapter(BasePlatformAdapter):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+# Cache for Slack user ID -> DM conversation ID resolution in the standalone
+# send path.  Keyed by "{token}:{user_id}" to support multi-workspace setups.
+_slack_dm_cache: Dict[str, str] = {}
+
+
+async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
+    """Resolve a Slack user ID (U.../W...) to a DM conversation ID (D...).
+
+    ``chat.postMessage`` and ``files_upload_v2`` require a conversation ID; a
+    DM must be opened first via ``conversations.open``.  Results are cached
+    per (token, user_id) pair to avoid redundant API calls.  Returns None if
+    resolution fails (missing ``im:write`` scope, unknown user, etc.).
+    """
+    cache_key = f"{token}:{user_id}"
+    if cache_key in _slack_dm_cache:
+        return _slack_dm_cache[cache_key]
+
+    try:
+        import aiohttp
+    except ImportError:
+        return None
+    try:
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        url = "https://slack.com/api/conversations.open"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15), **_sess_kw
+        ) as session:
+            payload = {"users": user_id}
+            async with session.post(
+                url, headers=headers, json=payload, **_req_kw
+            ) as resp:
+                data = await resp.json()
+                if data.get("ok") and data.get("channel", {}).get("id"):
+                    channel_id = data["channel"]["id"]
+                    _slack_dm_cache[cache_key] = channel_id
+                    return channel_id
+                logger.warning(
+                    "[Slack] conversations.open failed for %s: %s",
+                    user_id,
+                    data.get("error", "unknown"),
+                )
+                return None
+    except Exception as e:
+        logger.warning("[Slack] conversations.open exception for %s: %s", user_id, e)
+        return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -6248,6 +6708,22 @@ async def _standalone_send(
     if not token:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
 
+    # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare
+    # user IDs (U.../W...) — resolve to a DM conversation ID (D...) first via
+    # conversations.open so `deliver=slack:U…` cron jobs reach the user's DM
+    # instead of failing with channel_not_found (#17444).
+    chat_id = str(chat_id or "")
+    if chat_id[:1] in ("U", "W"):
+        resolved = await _resolve_slack_user_dm(token, chat_id)
+        if resolved is None:
+            return {
+                "error": (
+                    f"Slack user ID resolution failed for {chat_id} "
+                    "(conversations.open — check the bot's im:write scope)"
+                )
+            }
+        chat_id = resolved
+
     formatted = message
     if message:
         try:
@@ -6258,6 +6734,58 @@ async def _standalone_send(
                 "Failed to apply Slack mrkdwn formatting in _standalone_send",
                 exc_info=True,
             )
+
+    # Out-of-process cron runs have no live SlackAdapter.  Upload MEDIA files
+    # here so the standalone path has feature parity with the live adapter
+    # instead of silently succeeding with text only.  This runs BEFORE the
+    # empty-text skip: a media delivery with a blank caption must still
+    # upload the files.
+    if media_files:
+        if not check_slack_requirements():
+            return {"error": "Slack send failed: slack-sdk is not installed"}
+
+        paths = []
+        for media in media_files:
+            path = media[0] if isinstance(media, (tuple, list)) else media
+            path = str(path)
+            if not os.path.isfile(path):
+                return {"error": f"Slack media file not found: {os.path.basename(path)}"}
+            paths.append(path)
+
+        try:
+            client = AsyncWebClient(token=token)  # pyright: ignore[reportCallIssue]
+            _apply_slack_proxy(client, resolve_proxy_url())
+            upload_result = None
+            for start in range(0, len(paths), 10):
+                batch = paths[start : start + 10]
+                kwargs = {
+                    "channel": chat_id,
+                    "initial_comment": formatted if start == 0 else "",
+                    "thread_ts": thread_id,
+                }
+                if len(batch) == 1:
+                    kwargs.update(
+                        file=batch[0],
+                        filename=os.path.basename(batch[0]),
+                    )
+                else:
+                    kwargs["file_uploads"] = [
+                        {"file": path, "filename": os.path.basename(path)}
+                        for path in batch
+                    ]
+                upload_result = await client.files_upload_v2(**kwargs)
+            return {
+                "success": True,
+                "platform": "slack",
+                "chat_id": chat_id,
+                "message_id": (
+                    upload_result.get("ts")
+                    if upload_result is not None and hasattr(upload_result, "get")
+                    else None
+                ),
+            }
+        except Exception as e:
+            return {"error": f"Slack media upload failed: {e}"}
 
     if not formatted or not formatted.strip():
         logger.debug("[Slack] _standalone_send: skipping empty/whitespace message")
@@ -6273,7 +6801,7 @@ async def _standalone_send(
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
 
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
@@ -6484,7 +7012,7 @@ def register(ctx) -> None:
         check_fn=check_slack_requirements,
         is_connected=_is_connected,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
-        install_hint="pip install 'hermes-agent[slack]'",
+        install_hint="Run `hermes setup` to install Slack support.",
         # Interactive setup wizard — replaces hermes_cli/setup.py::_setup_slack
         # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.
         setup_fn=interactive_setup,

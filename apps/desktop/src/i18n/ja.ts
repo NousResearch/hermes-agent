@@ -178,6 +178,15 @@ export const ja = defineLocale({
       `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
   },
 
+  billingBlock: {
+    titleNous: 'Nous クレジットが不足しています',
+    titleProvider: provider => `クレジット不足 — ${provider}`,
+    fallbackMessage: 'アカウントのクレジットが不足しています。続行するにはクレジットを追加してください。',
+    openBilling: '請求を開く',
+    addCredits: 'クレジットを追加',
+    dismiss: '閉じる'
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -1057,6 +1066,7 @@ export const ja = defineLocale({
     ageSeconds: seconds => `${seconds}秒前`,
     ageMinutes: minutes => `${minutes}分前`,
     ageHours: hours => `${hours}時間前`,
+    ageDays: days => `${days}日前`,
     durationSeconds: seconds => `${seconds}秒`,
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
     tokens: value => `${value} トーク`
@@ -2073,7 +2083,8 @@ export const ja = defineLocale({
     proNeedsSubscription: 'Pro モデルには有料の Nous サブスクリプションが必要です。',
     free: '無料',
     freeTier: '無料プラン',
-    priceTitle: '100 万トークンあたりの入力/出力価格'
+    priceTitle: '100 万トークンあたりの入力/出力価格',
+    wasPrice: '旧価格'
   },
 
   modelVisibility: {
@@ -2351,6 +2362,7 @@ export const ja = defineLocale({
     closeOthers: '他を閉じる',
     closeToRight: '右側を閉じる',
     closeAll: 'すべて閉じる',
+    newSessionTab: '新しいセッションタブ',
     split: dir => `${dir}に分割`,
     move: dir => `${dir}へ移動`,
     dirUp: '上',
@@ -2443,7 +2455,10 @@ export const ja = defineLocale({
       placeholder: '回答を入力…',
       skip: 'スキップ',
       skipped: 'スキップ済み',
-      continueLabel: '続行'
+      continueLabel: '続行',
+      lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
+      lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
+      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
     },
     tool: {
       code: 'コード',

@@ -1,3 +1,4 @@
+import type { BillingBlock } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -15,6 +16,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -22,6 +24,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -55,6 +58,50 @@ import type { RpcEvent } from '@/types/hermes'
 import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
+
+function firstBillingLine(text: string): string {
+  return (text || '').split('\n')[0]?.trim() ?? ''
+}
+
+/**
+ * A turn failed on a billing wall (out of credits / payment required). The
+ * gateway forwards the structured descriptor built by `agent/billing_links.py`;
+ * we cache it per-session (drives the in-chat banner) AND raise one sticky,
+ * billing-specific toast — never the generic "Hermes error" — with a smart CTA
+ * (Nous → in-app Settings → Billing, other providers → their billing page).
+ */
+function surfaceBillingBlock(sessionId: string, raw: unknown): void {
+  if (!raw || typeof raw !== 'object') {
+    return
+  }
+
+  const block = raw as BillingBlock
+
+  if (typeof block.provider !== 'string') {
+    return
+  }
+
+  setBillingBlock(sessionId, block)
+
+  const ctaCopy = {
+    addCredits: translateNow('billingBlock.addCredits'),
+    openBilling: translateNow('billingBlock.openBilling')
+  }
+
+  notify({
+    // Collapse repeat walls from the same provider into one toast.
+    id: `billing-block:${block.provider}`,
+    kind: 'warning',
+    icon: 'credit-card',
+    title: block.is_nous
+      ? translateNow('billingBlock.titleNous')
+      : translateNow('billingBlock.titleProvider', block.provider_label),
+    message: firstBillingLine(block.message) || translateNow('billingBlock.fallbackMessage'),
+    // Sticky: a credit wall blocks every turn until resolved.
+    durationMs: 0,
+    action: { label: billingCtaLabel(block, ctaCopy), onClick: () => runBillingRecovery(block) }
+  })
+}
 
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
@@ -389,6 +436,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
+        // A fresh turn on this session optimistically clears its billing wall;
+        // if credits are still exhausted the next failure re-raises it.
+        clearBillingBlock(sessionId)
 
         if (isActiveEvent) {
           triggerHaptic('streamStart')
@@ -511,6 +561,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText, payload?.response_previewed)
+
+        // Structured billing wall forwarded by the gateway (out of credits /
+        // payment required) — cache it + raise a billing-specific toast.
+        if (payload?.billing) {
+          surfaceBillingBlock(sessionId, payload.billing)
+        }
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -750,10 +806,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'pane.reveal') {
+        // Agent revealed a pane via the desktop-gated focus_pane tool, in
+        // response to an explicit user request. Active session only — a
+        // background turn must never move the user's focus (desktop AGENTS.md:
+        // offer, don't hijack).
+        if (isActiveEvent) {
+          revealDesktopPane(payload?.pane ?? '')
+        }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'compacted') {
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.

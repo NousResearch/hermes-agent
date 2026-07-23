@@ -721,6 +721,8 @@ def init_agent(
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
+    agent._model_request_active = threading.Event()
+    agent._supports_active_turn_redirect = True
 
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
@@ -731,6 +733,13 @@ def init_agent(
     # existing tool message rather than inserting a new user turn).
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
+
+    # Active-turn redirect mechanism. A regular follow-up sent while the model
+    # is generating is different from a hard /stop: preserve the valid turn
+    # prefix, cancel only the in-flight model request, and rebuild its tail with
+    # the correction. The loop drains this slot at a role-safe boundary.
+    agent._pending_redirect: Optional[str] = None
+    agent._pending_redirect_lock = threading.Lock()
 
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
@@ -897,6 +906,12 @@ def init_agent(
     agent._stream_writer_token = 0
     agent._stream_writer_tls = threading.local()
     agent._stream_writer_dropped = 0
+
+    # Displayed reasoning text streamed during the current model response,
+    # captured only when a surface consumed it via a reasoning callback. Used
+    # by active-turn redirect to checkpoint what the user actually saw without
+    # ever persisting hidden provider reasoning.
+    agent._current_streamed_reasoning_text = ""
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
@@ -1840,6 +1855,18 @@ def init_agent(
         }
     else:
         compression_model_thresholds = {}
+    # Absolute token cap: when set, compression triggers at the lower of
+    # the ratio-based threshold and this absolute count. Clamped to the
+    # model's context length at apply-time so a cap above the window is
+    # a no-op (ratio-based threshold wins).
+    compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
+    if compression_threshold_tokens is not None:
+        try:
+            compression_threshold_tokens = int(compression_threshold_tokens)
+            if compression_threshold_tokens <= 0:
+                compression_threshold_tokens = None
+        except (TypeError, ValueError):
+            compression_threshold_tokens = None
     # In-place compaction: when True, compress_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no
     # parent_session_id chain, no `name #N` renumber). See #38763 and
@@ -1858,6 +1885,12 @@ def init_agent(
             codex_app_server_auto_compaction,
         )
         codex_app_server_auto_compaction = "native"
+    # Opt-in idle compaction: compact a session up front when it resumes after
+    # this many seconds of inactivity (0 = disabled). Time-based, so it
+    # complements the size-based threshold above. Consumed by build_turn_context().
+    compression_idle_compact_after_seconds = max(
+        0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -2272,6 +2305,7 @@ def init_agent(
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
             model_thresholds=compression_model_thresholds,
+            threshold_tokens_cap=compression_threshold_tokens,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -2283,6 +2317,9 @@ def init_agent(
     agent.compression_in_place = compression_in_place
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.max_compression_attempts = compression_max_attempts
+    agent.compression_idle_compact_after_seconds = (
+        compression_idle_compact_after_seconds
+    )
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
@@ -2483,7 +2520,11 @@ def init_agent(
             _active_threshold_pct = getattr(
                 agent.context_compressor, "threshold_percent", compression_threshold
             )
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            _cap_note = ""
+            _cap = getattr(agent.context_compressor, "threshold_tokens_cap", None)
+            if _cap and _cap > 0:
+                _cap_note = f" (capped at {_cap:,} tokens)"
+            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # Notice with the exact opt-back-out command. Printed inline at startup

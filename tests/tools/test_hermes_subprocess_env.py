@@ -100,6 +100,35 @@ class TestInheritCredentials:
     def test_pythonutf8_set_when_inheriting(self):
         assert _build(inherit_credentials=True).get("PYTHONUTF8") == "1"
 
+    def test_tool_and_messaging_secrets_stripped_when_inheriting(self):
+        """Provider inheritance must not hand unrelated Hermes secrets to child CLIs.
+
+        Codex/Copilot subprocesses may need LLM provider credentials, but they
+        do not need platform bot credentials, webhook/API-server bearer keys,
+        browser backend keys, or service-account JSON paths used by gateway
+        adapters. Those are non-provider Hermes secrets and must stay Tier-1.
+        """
+        non_provider_secrets = {
+            "MATRIX_ACCESS_TOKEN": "matrix-token",
+            "TEAMS_CLIENT_SECRET": "teams-secret",
+            "WEBHOOK_SECRET": "webhook-secret",
+            "API_SERVER_KEY": "api-server-key",
+            "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON": "/home/user/google-chat-sa.json",
+            "BROWSERBASE_API_KEY": "browserbase-key",
+            "FIRECRAWL_API_KEY": "firecrawl-key",
+        }
+        result = _build(
+            {**_PROVIDER_SAMPLE, **non_provider_secrets},
+            inherit_credentials=True,
+        )
+
+        for var in non_provider_secrets:
+            assert var not in result, (
+                f"{var} must be stripped even with inherit_credentials=True"
+            )
+        for var, val in _PROVIDER_SAMPLE.items():
+            assert result.get(var) == val
+
 
 class TestTierInvariants:
     def test_tier1_always_stripped_both_paths(self):

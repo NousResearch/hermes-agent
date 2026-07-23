@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
+import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -35,6 +36,32 @@ describe('applyRuntimeInfo approval mode', () => {
 
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
+  })
+})
+
+const initialOnboardingState = $desktopOnboarding.get()
+
+describe('applyRuntimeInfo credential warnings', () => {
+  beforeEach(() => {
+    $desktopOnboarding.set({ ...initialOnboardingState, reason: null, requested: false })
+  })
+
+  afterEach(() => {
+    $desktopOnboarding.set(initialOnboardingState)
+  })
+
+  it('requests setup for the exact empty-key warning returned by the server', () => {
+    const warning = "No API key configured for provider 'openrouter'. First message will fail."
+
+    applyRuntimeInfo({ credential_warning: warning })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: warning, requested: true })
+  })
+
+  it('ignores an auxiliary-provider warning', () => {
+    applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
   })
 })
 
@@ -327,6 +354,92 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
+
+  it('drops stale optimistic history after compression and keeps only the live tail', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'first turn that survived compression'),
+      msg('stored-assistant', 'assistant', 'latest authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-old-2', 'user', 'compressed-away prompt two'),
+      msg('assistant-old-2', 'assistant', 'compressed-away reply two'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache).map(message => message.id)).toEqual(
+      ['stored-user', 'stored-assistant', 'user-inflight']
+    )
+  })
+
+  it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'the one genuinely in-flight prompt'),
+      msg('stored-assistant', 'assistant', 'its authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
+  })
+
+  // #67603: the gateway persists model-switch / personality notices as role=user
+  // ([System: …], tui_gateway/server.py). A single trailing marker is already
+  // handled by the latestAuthoritativeUser guard above, but TWO switches around
+  // one turn put a marker BEFORE the committed prompt (shifting its ordinal) and
+  // another AFTER it (so the prompt is no longer the last user row, so the text
+  // guard can't rescue it). Naive ordinal pairing then pairs the optimistic row
+  // against a marker, treats it as uncommitted, and re-appends it — the
+  // duplicated user bubble stacked at the bottom of the chat.
+  it('does not duplicate the optimistic prompt when markers bracket it (two model switches)', () => {
+    const marker = (name: string) => `[System: The active model for this chat has changed to ${name}.]`
+
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'second question')
+    ]
+
+    const next = [
+      msg('s1-user', 'user', 'first'),
+      msg('s2-assistant', 'assistant', 'first answer'),
+      msg('s3-marker', 'user', marker('k2')),
+      msg('s4-user', 'user', 'second question'),
+      msg('s5-assistant', 'assistant', 'second answer'),
+      msg('s6-marker', 'user', marker('k3'))
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic turn when a marker is present', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question')
+    ]
+
+    // The marker is persisted but the new prompt has not committed yet — the
+    // optimistic row must survive (marker exclusion must not over-correct).
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-marker-stored', 'user', '[System: The active model for this chat has changed to k3.]')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-marker-stored',
+      'user-optimistic'
+    ])
+  })
 })
 
 describe('appendLiveSessionProjection', () => {
@@ -350,6 +463,32 @@ describe('appendLiveSessionProjection', () => {
       'current prompt',
       'partial answer',
       'newest prompt'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {
+    const stored = [
+      msg('stored-user-1', 'user', 'canceled prompt one'),
+      msg('stored-user-2', 'user', 'canceled prompt two'),
+      msg('stored-user-3', 'user', 'current running prompt')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'user', 'user', 'assistant'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'canceled prompt one',
+      'canceled prompt two',
+      'current running prompt',
+      'partial answer'
     ])
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
   })

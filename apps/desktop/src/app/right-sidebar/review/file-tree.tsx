@@ -19,7 +19,7 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $renamingPath, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
-import { $sidebarWorkspaceCollapsedIds, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
+import { $sidebarWorkspaceNodeOpen, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
 import {
@@ -198,9 +198,9 @@ function ReviewDirRow({
   motion: boolean
   node: ReviewTreeNode
 }) {
-  const collapsed = useStore($sidebarWorkspaceCollapsedIds)
+  const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const id = `review:${node.id}`
-  const open = !collapsed.includes(id)
+  const open = nodeOpen[id] ?? true
   const toggle = () => toggleWorkspaceNodeCollapsed(id)
 
   return (

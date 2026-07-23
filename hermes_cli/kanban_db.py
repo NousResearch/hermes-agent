@@ -881,6 +881,13 @@ class Task:
     # the defaults; empty list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    # Provider that ``model_override`` belongs to. When set, the dispatcher
+    # passes ``--provider <name>`` alongside ``-m <model>`` so the worker
+    # resolves the model against the right backend instead of the profile's
+    # configured provider. NULL = worker profile's provider resolves the
+    # model (pre-existing behaviour). Solves the "model from provider A,
+    # profile configured for provider B" mismatch class.
+    provider_override: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -979,6 +986,11 @@ class Task:
             ),
             skills=skills_value,
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
+            provider_override=(
+                row["provider_override"]
+                if "provider_override" in keys and row["provider_override"]
+                else None
+            ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
@@ -1142,6 +1154,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to the worker, overriding the profile's default model. NULL = use
     -- the profile default.
     model_override       TEXT,
+    -- Provider the model override belongs to. When set (alongside
+    -- model_override), the dispatcher passes --provider <name> so the
+    -- worker resolves the model against the right backend instead of the
+    -- profile's configured provider. NULL = profile provider.
+    provider_override    TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -2282,6 +2299,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
 
+    if "provider_override" not in cols:
+        # Provider the model_override belongs to. NULL = worker profile's
+        # provider resolves the model (the behaviour existing rows had).
+        _add_column_if_missing(
+            conn, "tasks", "provider_override", "provider_override TEXT"
+        )
+
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
         # default) = classic single-shot worker, preserving the behaviour
@@ -2736,6 +2760,8 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    model_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
@@ -2765,7 +2791,16 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``model_override`` / ``provider_override`` pin the worker to a specific
+    model (and optionally its provider) without touching the profile's
+    config — passed to the worker as ``-m <model> [--provider <name>]``.
+    ``provider_override`` requires ``model_override``.
     """
+    model_override = (model_override or "").strip() or None
+    provider_override = (provider_override or "").strip() or None
+    if provider_override and not model_override:
+        raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -2970,8 +3005,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, model_override, provider_override,
+                        goal_mode, goal_max_turns, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2991,6 +3027,8 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        model_override,
+                        provider_override,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
@@ -3013,6 +3051,8 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "model_override": model_override,
+                        "provider_override": provider_override,
                     },
                 )
             return task_id
@@ -3138,6 +3178,51 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
+        return True
+
+
+def set_model_override(
+    conn: sqlite3.Connection,
+    task_id: str,
+    model: Optional[str],
+    provider: Optional[str] = None,
+) -> bool:
+    """Set (or clear) the per-task model/provider override.
+
+    ``model=None`` (or empty) clears BOTH overrides — the worker falls back
+    to its profile's configured model. ``provider`` without ``model`` is
+    rejected: a bare provider switch has no defined meaning for the worker
+    spawn (``--provider`` alone would re-resolve the profile's model name
+    against a different backend, which is exactly the mismatch class this
+    feature exists to kill).
+
+    Allowed on any non-archived task, including ``running`` ones — the
+    override only takes effect on the NEXT dispatch, so setting it on a
+    running task that's about to be reclaimed/retried is the primary
+    rate-limit-recovery flow. Returns True on success.
+    """
+    model = (model or "").strip() or None
+    provider = (provider or "").strip() or None
+    if provider and not model:
+        raise ValueError("provider_override requires a model_override")
+    if not model:
+        provider = None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] == "archived":
+            raise RuntimeError(f"cannot set model override on archived task {task_id}")
+        conn.execute(
+            "UPDATE tasks SET model_override = ?, provider_override = ? WHERE id = ?",
+            (model, provider, task_id),
+        )
+        _append_event(
+            conn, task_id, "model_override_set",
+            {"model": model, "provider": provider},
+        )
         return True
 
 
@@ -8642,6 +8727,12 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
+        # Pin the provider too when the override names one, so the worker
+        # resolves the model against the intended backend instead of the
+        # profile's configured provider (mixing model X with provider Y is
+        # the classic mis-set that stalls a board).
+        if task.provider_override:
+            cmd.extend(["--provider", task.provider_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])

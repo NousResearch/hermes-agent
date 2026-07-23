@@ -13190,6 +13190,28 @@ def cmd_dashboard(args):
             exc_info=True,
         )
 
+    # Register declarative shell hooks from config.yaml (#69825).  ``serve``
+    # (the desktop app's chat backend) and ``dashboard`` are not in
+    # ``_AGENT_COMMANDS``, so ``_prepare_agent_startup()`` never wires shell
+    # hooks for this process — configured hooks passed ``hermes hooks
+    # doctor`` yet silently never fired in desktop-app chats.  Mirror the
+    # gateway's call site (gateway/run.py): pass ``accept_hooks=False`` and
+    # let ``register_from_config`` resolve consent from ``--accept-hooks``-less
+    # channels itself (HERMES_ACCEPT_HOOKS env var, ``hooks_auto_accept`` in
+    # config.yaml, or the interactive TTY prompt when one exists).  Runs
+    # after ``discover_plugins()`` because registration attaches to the
+    # plugin manager.  Failures must never block server startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at dashboard/serve startup",
+            exc_info=True,
+        )
+
     from hermes_cli.web_server import start_server
 
     # Interactive auth setup: if this bind will engage the auth gate but no

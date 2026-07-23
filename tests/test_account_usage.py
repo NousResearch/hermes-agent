@@ -201,3 +201,38 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_supermemory_uses_billing_usage_endpoint(monkeypatch):
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "sm-test")
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _Client(
+            {
+                "features": {
+                    "usd_credits": {
+                        "usage": 44.25,
+                        "included_usage": 55,
+                        "balance": 10.75,
+                        "next_reset_at": 1785391522227,
+                    }
+                },
+                "periodStart": "2026-06-30T06:05:22.227Z",
+                "periodEnd": "2026-07-30T06:05:22.227Z",
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("supermemory")
+
+    assert snapshot is not None
+    assert snapshot.provider == "supermemory"
+    assert snapshot.windows == (
+        AccountUsageWindow(
+            label="Supermemory credits",
+            used_percent=80.45454545454545,
+            reset_at=datetime.fromtimestamp(1785391522227 / 1000, tz=timezone.utc),
+            detail="$10.75 of $55.00 remaining",
+        ),
+    )
+    assert "Supermemory credits used: $44.25 of $55.00" in snapshot.details

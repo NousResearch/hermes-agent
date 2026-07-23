@@ -258,10 +258,14 @@ def get_last_init_error() -> Optional[str]:
     return _last_init_error
 
 
-# Distinctive opening shared by both background-review harness prompts
-# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
+# Distinctive openings used by current and legacy background-review harness
+# prompts in agent/background_review.py. Keep the legacy forms so polluted
+# sessions written by older builds remain recoverable.
 # Matched case-sensitively against the leading content of a user/system message.
 _REVIEW_HARNESS_PREFIXES = (
+    "Review the conversation above for a small number of stable facts worth",
+    "Review the conversation above for a durable procedural lesson",
+    "Review the conversation above and classify each durable candidate before",
     "Review the conversation above and update the skill library",
     "Review the conversation above and consider saving to memory",
 )

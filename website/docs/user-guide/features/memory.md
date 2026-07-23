@@ -79,23 +79,38 @@ If the substring matches multiple entries, an error is returned asking for a mor
 
 ### `memory` — Agent's Personal Notes
 
-For information the agent needs to remember about the environment, workflows, and lessons learned:
+For a small number of stable facts that are useful across projects and costly
+to rediscover:
 
-- Environment facts (OS, tools, project structure)
-- Project conventions and configuration
-- Tool quirks and workarounds discovered
-- Completed task diary entries
-- Skills and techniques that worked
+- Stable environment facts (OS, installed tools, shell)
+- Cross-project conventions
+- Non-secret integration identifiers and durable machine-specific facts
 
 ### `user` — User Profile
 
-For information about the user's identity, preferences, and communication style:
+For stable information about the user's identity and global preferences:
 
 - Name, role, timezone
 - Communication preferences (concise vs detailed, format preferences)
 - Pet peeves and things to avoid
-- Workflow habits
 - Technical skill level
+
+## Information routing: choose one primary home
+
+MEMORY.md and USER.md are injected into every prompt. Before saving something,
+route it to the narrowest durable home instead of duplicating it:
+
+| Information | Primary home |
+|-------------|--------------|
+| Stable identity and global communication preferences | **USER.md** |
+| Stable environment facts and cross-project conventions | **MEMORY.md** |
+| Reusable procedures, corrections, and verified workarounds | **Skills** |
+| Mutable plans, decisions, task progress, and artifact IDs | **Project state/docs** |
+| Completed work, dated outcomes, and conversational context | **Session search** |
+
+Routine successful turns usually need no memory or skill write. Project state
+should remain with the project, and session history already preserves what was
+said and completed.
 
 ## What to Save vs Skip
 
@@ -105,9 +120,8 @@ The agent saves automatically — you don't need to ask. It saves when it learns
 
 - **User preferences:** "I prefer TypeScript over JavaScript" → save to `user`
 - **Environment facts:** "This server runs Debian 12 with PostgreSQL 16" → save to `memory`
-- **Corrections:** "Don't use `sudo` for Docker commands, user is in docker group" → save to `memory`
-- **Conventions:** "Project uses tabs, 120-char line width, Google-style docstrings" → save to `memory`
-- **Completed work:** "Migrated database from MySQL to PostgreSQL on 2026-01-15" → save to `memory`
+- **Environment facts:** "User is in the Docker group" → save to `memory`
+- **Cross-project conventions:** "All repositories use signed commits" → save to `memory`
 - **Explicit requests:** "Remember that my API key rotation happens monthly" → save to `memory`
 
 ### Skip These
@@ -116,6 +130,9 @@ The agent saves automatically — you don't need to ask. It saves when it learns
 - **Easily re-discovered facts:** "Python 3.12 supports f-string nesting" — can web search this
 - **Raw data dumps:** Large code blocks, log files, data tables — too big for memory
 - **Session-specific ephemera:** Temporary file paths, one-off debugging context
+- **Completed work and dated outcomes:** Already available through session search
+- **Mutable project state:** Keep it in the project's own state or documentation
+- **Procedures and workarounds:** Put reusable steps in a skill
 - **Information already in context files:** SOUL.md and AGENTS.md content
 
 ## Capacity Management
@@ -146,28 +163,29 @@ The agent should then:
 3. Use `replace` to merge related entries into shorter versions
 4. Then `add` the new entry
 
-**Best practice:** When memory is above 80% capacity (visible in the system prompt header), consolidate entries before adding new ones. For example, merge three separate "project uses X" entries into one comprehensive project description entry.
+**Best practice:** Keep each store below 70% capacity so there is headroom for a
+new high-value fact and for atomic replacement. Above 70%, consolidate or remove
+stale entries before adding more.
 
 ### Practical Examples of Good Memory Entries
 
 **Compact, information-dense entries work best:**
 
 ```
-# Good: Packs multiple related facts
-User runs macOS 14 Sonoma, uses Homebrew, has Docker Desktop and Podman. Shell: zsh with oh-my-zsh. Editor: VS Code with Vim keybindings.
+# Good: Packs stable environment facts
+User runs macOS 14 Sonoma and uses Homebrew. Shell is zsh; editor is VS Code.
 
-# Good: Specific, actionable convention
-Project ~/code/api uses Go 1.22, sqlc for DB queries, chi router. Run tests with 'make test'. CI via GitHub Actions.
+# Good: Stable cross-project convention
+All repositories use signed commits and keep secrets in the system keychain.
 
-# Good: Lesson learned with context
-The staging server (10.0.1.50) needs SSH port 2222, not 22. Key is at ~/.ssh/staging_ed25519.
+# Bad: Mutable project state belongs in project docs
+The API migration is 80% complete and PR #123 is waiting for review.
 
 # Bad: Too vague
 User has a project.
 
-# Bad: Too verbose
-On January 5th, 2026, the user asked me to look at their project which is
-located at ~/code/api. I discovered it uses Go version 1.22 and...
+# Bad: Completed-work diary belongs in session history
+On January 5th, 2026, I migrated the database and opened three pull requests.
 ```
 
 ## Duplicate Prevention

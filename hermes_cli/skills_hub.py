@@ -502,7 +502,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "",
+               reinstall_existing: bool = False) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -511,6 +512,9 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
     (so pair it with ``name_override`` when installing from a URL that has
     no frontmatter).
+
+    ``reinstall_existing`` lets update flows replace an already installed
+    skill without also treating the scan as a forced install.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -620,7 +624,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     existing = lock.get_installed(bundle.name)
     if existing:
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not force:
+        if not (force or reinstall_existing):
             c.print("Use --force to reinstall.\n")
             return
 
@@ -1054,13 +1058,33 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         c.print("[dim]No updates available.[/]\n")
         return
 
+    updated_count = 0
+    blocked_updates = []
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
         c.print(f"[bold]Updating:[/] {entry['name']}")
-        do_install(entry["identifier"], category=category, force=True, console=c)
+        do_install(
+            entry["identifier"],
+            category=category,
+            force=False,
+            console=c,
+            skip_confirm=True,
+            reinstall_existing=True,
+        )
 
-    c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
+        expected_hash = entry.get("latest_hash")
+        refreshed = lock.get_installed(entry["name"]) or {}
+        if expected_hash and refreshed.get("content_hash") != expected_hash:
+            blocked_updates.append(entry["name"])
+        else:
+            updated_count += 1
+
+    if updated_count:
+        c.print(f"[bold green]Updated {updated_count} skill(s).[/]")
+    if blocked_updates:
+        c.print(f"[bold yellow]Skipped {len(blocked_updates)} blocked update(s):[/] {', '.join(blocked_updates)}")
+    c.print()
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,

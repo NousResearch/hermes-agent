@@ -594,6 +594,85 @@ function Resolve-AvailablePythonVersion {
     return $null
 }
 
+function Test-SqliteWalResetVulnerable {
+    param([Parameter(Mandatory = $true)][string]$PythonPath)
+
+    # Keep this version matrix in sync with
+    # hermes_state.is_sqlite_wal_reset_vulnerable. Exit 42 is reserved for a
+    # successful probe that found the bug; any other non-zero result is an
+    # unknown probe failure and must not be mistaken for "vulnerable".
+    $probe = @'
+import sqlite3
+v = sqlite3.sqlite_version_info
+vulnerable = (
+    v >= (3, 7, 0)
+    and v < (3, 51, 3)
+    and not ((3, 50, 7) <= v < (3, 51, 0))
+    and not ((3, 44, 6) <= v < (3, 45, 0))
+)
+raise SystemExit(42 if vulnerable else 0)
+'@
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $PythonPath -c $probe 2>$null | Out-Null
+        $probeExitCode = $LASTEXITCODE
+    } catch {
+        $probeExitCode = -1
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    return $probeExitCode -eq 42
+}
+
+function Resolve-FixedSqlitePythonPath {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    try {
+        $pythonPath = & $UvCmd python find $Version 2>$null
+    } catch {
+        return $null
+    }
+    if (-not $pythonPath) { return $null }
+    if (-not (Test-SqliteWalResetVulnerable -PythonPath $pythonPath)) {
+        return $pythonPath
+    }
+
+    $sqliteVersion = & $pythonPath -c "import sqlite3; print(sqlite3.sqlite_version)" 2>$null
+    if (-not $sqliteVersion) { $sqliteVersion = "unknown" }
+    Write-Warn "SQLite $sqliteVersion has the WAL-reset bug; refreshing managed Python..."
+
+    # uv freezes its python-build-standalone download catalog per uv release.
+    # CPython 3.11.15 exists in both the vulnerable and fixed catalogs, so a
+    # normal patch-version upgrade is a no-op. Refresh uv and force a reinstall.
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd self update } | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Could not update managed uv; trying the available Python catalog"
+    }
+
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd python install $Version --reinstall } | Out-Host
+    $installExitCode = $LASTEXITCODE
+    if ($installExitCode -eq 0) {
+        try {
+            $candidatePath = & $UvCmd python find $Version --managed-python 2>$null
+        } catch {
+            $candidatePath = $null
+        }
+        if (
+            $candidatePath -and
+            -not (Test-SqliteWalResetVulnerable -PythonPath $candidatePath)
+        ) {
+            $candidateSqlite = & $candidatePath -c "import sqlite3; print(sqlite3.sqlite_version)" 2>$null
+            if (-not $candidateSqlite) { $candidateSqlite = "unknown" }
+            Write-Success "Managed Python now links fixed SQLite $candidateSqlite"
+            return $candidatePath
+        }
+    }
+
+    Write-Warn "Could not provision a fixed SQLite runtime; DELETE-mode protection remains active"
+    return $pythonPath
+}
+
 function Test-Python {
     Write-Info "Checking Python $PythonVersion..."
     
@@ -601,6 +680,7 @@ function Test-Python {
     try {
         $pythonPath = & $UvCmd python find $PythonVersion 2>$null
         if ($pythonPath) {
+            $pythonPath = Resolve-FixedSqlitePythonPath -Version $PythonVersion
             $ver = & $pythonPath --version 2>$null
             Write-Success "Python found: $ver"
             return $true
@@ -632,6 +712,7 @@ function Test-Python {
         # since uv may return non-zero due to "already installed" etc.)
         $pythonPath = & $UvCmd python find $PythonVersion 2>$null
         if ($pythonPath) {
+            $pythonPath = Resolve-FixedSqlitePythonPath -Version $PythonVersion
             $ver = & $pythonPath --version 2>$null
             Write-Success "Python installed: $ver"
             return $true
@@ -654,6 +735,7 @@ function Test-Python {
         try {
             $pythonPath = & $UvCmd python find $fallbackVer 2>$null
             if ($pythonPath) {
+                $pythonPath = Resolve-FixedSqlitePythonPath -Version $fallbackVer
                 $ver = & $pythonPath --version 2>$null
                 Write-Success "Found fallback: $ver"
                 $script:PythonVersion = $fallbackVer
@@ -1940,12 +2022,18 @@ function Install-Venv {
     Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
         Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
     }
-    
-    # uv creates the venv and pins the Python version in one step.  uv emits
+
+    # Retry the SQLite runtime refresh after the process sweep above. A running
+    # Windows gateway can lock the managed Python DLL during the earlier
+    # prerequisite stage; at this point those holders are stopped.
+    $venvPythonRequest = Resolve-FixedSqlitePythonPath -Version $PythonVersion
+    if (-not $venvPythonRequest) { $venvPythonRequest = $PythonVersion }
+
+    # uv creates the venv and pins the verified interpreter in one step. uv emits
     # normal progress such as "Using CPython ..." on stderr; under Windows
     # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
     # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $venvPythonRequest }
     # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
     # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
     # `venv` stage can't falsely report success (and Invoke-Stage can't emit

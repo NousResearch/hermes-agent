@@ -15,6 +15,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -156,11 +157,20 @@ def ensure_uv():
 
 
 def update_managed_uv() -> Optional[str]:
-    """Run ``uv self update`` on the managed uv binary.
+    """Update managed uv and replace Python builds with vulnerable SQLite.
 
     Call this during ``hermes update`` so the managed copy stays current.
-    Returns the managed path on success, ``None`` if uv isn't available or
-    the self-update fails (non-fatal — the old version still works).
+    Returns the managed path when uv is available, or ``None`` when it is not.
+    Self-update and runtime-migration failures are non-fatal.
+
+    Updating uv matters independently of the Python patch version: uv freezes
+    its python-build-standalone download catalog per release.  CPython 3.11.15
+    appears in both the old and fixed catalogs, so ``uv python upgrade`` sees
+    no patch-version change and leaves SQLite 3.50.4 in place.  A reinstall
+    through current uv replaces that build with one linked against fixed
+    SQLite.  Keep this migration here (rather than only in ``main.py``) because
+    ``hermes update`` imports this module *after* pulling new code; installs
+    updating across the fix boundary therefore migrate on their first update.
     """
     existing = resolve_uv()
     if not existing:
@@ -184,7 +194,129 @@ def update_managed_uv() -> Optional[str]:
     else:
         # Non-fatal — old uv still works fine.
         logger.debug("uv self update failed (rc=%d): %s", result.returncode, result.stderr)
+
+    # Best-effort for the same reason as uv's self-update: the WAL safety gate
+    # in hermes_state keeps vulnerable installs usable in DELETE mode when the
+    # network is unavailable or a running Windows interpreter prevents an
+    # in-place runtime replacement.  A successful refresh takes effect for the
+    # next Python process; this already-running updater may retain its old
+    # sqlite3 module until it exits.
+    upgrade_vulnerable_sqlite_runtime(existing)
     return existing
+
+
+_SQLITE_WAL_RESET_VULNERABLE_EXIT = 42
+_SQLITE_WAL_RESET_PROBE = (
+    "import sqlite3\n"
+    "v = sqlite3.sqlite_version_info\n"
+    "vulnerable = (\n"
+    "    v >= (3, 7, 0)\n"
+    "    and v < (3, 51, 3)\n"
+    "    and not ((3, 50, 7) <= v < (3, 51, 0))\n"
+    "    and not ((3, 44, 6) <= v < (3, 45, 0))\n"
+    ")\n"
+    "print(sqlite3.sqlite_version)\n"
+    f"raise SystemExit({_SQLITE_WAL_RESET_VULNERABLE_EXIT} if vulnerable else 0)\n"
+)
+
+
+def _probe_sqlite_runtime(python_executable: str) -> tuple[Optional[bool], str]:
+    """Return ``(is_vulnerable, version)`` for an interpreter subprocess.
+
+    ``None`` means the interpreter could not be probed.  A subprocess is
+    required after a managed-Python reinstall because the current updater has
+    already loaded its old sqlite3 extension and cannot observe the replacement
+    in-process.
+    """
+    try:
+        result = subprocess.run(
+            [python_executable, "-c", _SQLITE_WAL_RESET_PROBE],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("SQLite runtime probe failed for %s: %s", python_executable, exc)
+        return None, ""
+
+    version = (result.stdout or "").strip().splitlines()
+    version_text = version[-1] if version else ""
+    if result.returncode == 0:
+        return False, version_text
+    if result.returncode == _SQLITE_WAL_RESET_VULNERABLE_EXIT:
+        return True, version_text
+
+    logger.debug(
+        "SQLite runtime probe failed for %s (rc=%d): %s",
+        python_executable,
+        result.returncode,
+        (result.stderr or "").strip(),
+    )
+    return None, version_text
+
+
+def upgrade_vulnerable_sqlite_runtime(
+    uv_bin: str,
+    *,
+    python_version: str = "3.11",
+    python_executable: Optional[str] = None,
+) -> bool:
+    """Reinstall managed Python when its linked SQLite has the WAL-reset bug.
+
+    Returns ``True`` when the active interpreter was already safe or a new
+    process through the same interpreter now sees a fixed SQLite build.
+    Returns ``False`` on a non-fatal migration failure.  On Windows a running
+    venv may lock the base runtime; in that case the normal installer retries
+    after stopping Hermes processes and rebuilding the venv.
+    """
+    active_python = python_executable or sys.executable
+    vulnerable, sqlite_version = _probe_sqlite_runtime(active_python)
+    if vulnerable is False:
+        return True
+    if vulnerable is None:
+        return False
+
+    version_label = sqlite_version or "unknown"
+    print(
+        f"  ⚠ SQLite {version_label} has the WAL-reset bug; "
+        "refreshing managed Python..."
+    )
+    try:
+        result = subprocess.run(
+            [str(uv_bin), "python", "install", python_version, "--reinstall"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        logger.debug("Managed Python refresh could not start: %s", exc)
+        print(
+            "  ⚠ Could not replace the vulnerable Python runtime automatically. "
+            "Close Hermes processes and re-run the installer."
+        )
+        return False
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        if detail:
+            logger.debug("Managed Python refresh failed: %s", detail[-1])
+        print(
+            "  ⚠ Could not replace the vulnerable Python runtime automatically. "
+            "Close Hermes processes and re-run the installer."
+        )
+        return False
+
+    vulnerable_after, sqlite_after = _probe_sqlite_runtime(active_python)
+    if vulnerable_after is False:
+        print(f"  ✓ Managed Python now links fixed SQLite {sqlite_after}")
+        return True
+
+    after_label = sqlite_after or "unknown"
+    print(
+        f"  ⚠ This venv still links vulnerable SQLite {after_label}. "
+        "Close Hermes processes and re-run the installer to rebuild it."
+    )
+    return False
 
 
 # ---------------------------------------------------------------------------

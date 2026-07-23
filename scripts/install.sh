@@ -602,6 +602,63 @@ install_uv() {
     fi
 }
 
+sqlite_wal_reset_vulnerable() {
+    local python_path="$1"
+    local probe_rc
+
+    if "$python_path" -c '
+import sqlite3
+v = sqlite3.sqlite_version_info
+vulnerable = (
+    v >= (3, 7, 0)
+    and v < (3, 51, 3)
+    and not ((3, 50, 7) <= v < (3, 51, 0))
+    and not ((3, 44, 6) <= v < (3, 45, 0))
+)
+raise SystemExit(42 if vulnerable else 0)
+' >/dev/null 2>&1; then
+        return 1
+    else
+        probe_rc=$?
+    fi
+
+    [ "$probe_rc" -eq 42 ]
+}
+
+ensure_fixed_sqlite_python() {
+    # uv freezes its python-build-standalone download catalog per uv release.
+    # CPython 3.11.15 exists in both the vulnerable and fixed catalogs, so a
+    # normal patch-version upgrade is a no-op.  Refresh uv, force a reinstall,
+    # and pin venv creation to the verified managed interpreter.
+    local original_path="$PYTHON_PATH"
+    local sqlite_version candidate_path candidate_sqlite
+
+    if ! sqlite_wal_reset_vulnerable "$PYTHON_PATH"; then
+        return 0
+    fi
+
+    sqlite_version="$("$PYTHON_PATH" -c 'import sqlite3; print(sqlite3.sqlite_version)' 2>/dev/null || echo unknown)"
+    log_warn "SQLite $sqlite_version has the WAL-reset bug; refreshing managed Python..."
+
+    if ! "$UV_CMD" self update; then
+        log_warn "Could not update managed uv; trying the available Python catalog"
+    fi
+
+    if "$UV_CMD" python install "$PYTHON_VERSION" --reinstall; then
+        candidate_path="$("$UV_CMD" python find "$PYTHON_VERSION" --managed-python 2>/dev/null || true)"
+        if [ -n "$candidate_path" ] && ! sqlite_wal_reset_vulnerable "$candidate_path"; then
+            PYTHON_PATH="$candidate_path"
+            candidate_sqlite="$("$PYTHON_PATH" -c 'import sqlite3; print(sqlite3.sqlite_version)' 2>/dev/null || echo unknown)"
+            log_success "Managed Python now links fixed SQLite $candidate_sqlite"
+            return 0
+        fi
+    fi
+
+    PYTHON_PATH="$original_path"
+    log_warn "Could not provision a fixed SQLite runtime; DELETE-mode protection remains active"
+    return 0
+}
+
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
@@ -629,6 +686,7 @@ check_python() {
     if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
+        ensure_fixed_sqlite_python
         return 0
     fi
 
@@ -638,6 +696,7 @@ check_python() {
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
+        ensure_fixed_sqlite_python
     else
         log_error "Failed to install Python $PYTHON_VERSION"
         log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
@@ -1345,8 +1404,10 @@ setup_venv() {
         rm -rf venv
     fi
 
-    # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    # Pin to the exact interpreter check_python verified.  A bare "3.11"
+    # request can rediscover a vulnerable system Python even after uv installed
+    # a fixed managed build with the same CPython patch version.
+    "$UV_CMD" venv venv --python "$PYTHON_PATH"
 
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the

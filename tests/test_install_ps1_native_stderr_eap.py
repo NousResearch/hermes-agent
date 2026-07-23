@@ -49,7 +49,7 @@ def test_repository_stage_relieves_eap_for_ssh_and_https_git_clone() -> None:
 
 def test_uv_venv_and_dependency_installs_relax_eap() -> None:
     text = _install_ps1()
-    _assert_relaxed_call(text, r"& \$UvCmd venv venv --python \$PythonVersion")
+    _assert_relaxed_call(text, r"& \$UvCmd venv venv --python \$venvPythonRequest")
     _assert_relaxed_call(text, r"& \$UvCmd sync --extra all --locked")
     _assert_relaxed_call(text, r"& \$UvCmd pip install -e \$tier\.Spec")
 
@@ -67,7 +67,7 @@ def test_uv_venv_failure_is_not_swallowed_after_eap_relax() -> None:
     # The uv-venv invocation, then an exit-code capture, then a throw — all
     # within a small window after the relaxed call.
     guard = re.search(
-        r"& \$UvCmd venv venv --python \$PythonVersion[\s\S]{0,400}?"
+        r"& \$UvCmd venv venv --python \$venvPythonRequest[\s\S]{0,400}?"
         r"\$LASTEXITCODE[\s\S]{0,200}?"
         r"-ne 0[\s\S]{0,200}?throw",
         text,

@@ -148,6 +148,14 @@ export function patchSpectrumTs(root = scriptDir()) {
         !original.includes("const rebuildFromAppleMessage = async")) {
       continue;
     }
+    // spectrum-ts >= 8 already preserves ordered mixed text + attachment
+    // payloads via buildUnwrappedContentMessage()/toOrderedParts(). The old
+    // patch anchors only match the pre-refactor mapper; treat the newer mapper
+    // as already fixed rather than failing Photon startup.
+    if (original.includes("const buildUnwrappedContentMessage = async") &&
+        original.includes("const parts = toOrderedParts(message.content.text, attachments);")) {
+      return { patched: false, file, reason: "upstream preserves mixed attachments" };
+    }
     let patched = original;
     patched = patchRebuild(patched);
     patched = patchInbound(patched);

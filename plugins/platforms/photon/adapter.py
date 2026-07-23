@@ -337,6 +337,12 @@ class PhotonAdapter(BasePlatformAdapter):
         # react action default to "the message that triggered me" without
         # requiring the model to thread message ids through tool calls.
         self._last_inbound_by_chat: Dict[str, str] = {}
+        # Text preview for messages we sent, keyed by platform message id.
+        # Spectrum/iMessage sometimes emits reply targets as stubs: the target
+        # id is present but target.content is custom/empty, so the sidecar can't
+        # hydrate `reply_to_text`. Persisting send-time text lets replies still
+        # carry useful context when the target object comes through blank.
+        self._sent_message_text: Dict[str, str] = {}
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
 
@@ -704,6 +710,25 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
+        reply_to_message_id = None
+        reply_to_text = None
+        reply_to_is_own_message = False
+
+        if ctype == "reply":
+            reply_to_message_id = content.get("targetMessageId") or None
+            reply_to_text = content.get("targetText") or None
+            target_direction = content.get("targetDirection")
+            if target_direction == "outbound":
+                reply_to_is_own_message = True
+            elif target_direction == "inbound":
+                reply_to_is_own_message = False
+            if not reply_to_text and reply_to_message_id:
+                reply_to_text = self._lookup_sent_message_text(
+                    space_id, reply_to_message_id
+                )
+            content = content.get("content") or {}
+            ctype = content.get("type")
+
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
             # addressed to the bot (feishu precedent: synthetic text event).
@@ -819,6 +844,9 @@ class PhotonAdapter(BasePlatformAdapter):
             message_type=mtype,
             source=source,
             message_id=event.get("messageId"),
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own_message,
             raw_message=event,
             timestamp=timestamp,
             media_urls=media_urls,
@@ -1228,6 +1256,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
     _SENT_IDS_MAX = 1000
     _LAST_INBOUND_CHATS_MAX = 200
+    _SENT_TEXT_MAX = 1000
+    _SENT_TEXT_CHARS = 2000
 
     def _record_sent_message(self, message_id: Optional[str]) -> None:
         if not message_id:
@@ -1239,6 +1269,56 @@ class PhotonAdapter(BasePlatformAdapter):
         if len(sent) > self._SENT_IDS_MAX:
             for old in list(sent.keys())[: len(sent) - self._SENT_IDS_MAX]:
                 del sent[old]
+
+    def _record_sent_message_text(
+        self, chat_id: Optional[str], message_id: Optional[str], text: Optional[str]
+    ) -> None:
+        if not chat_id or not message_id or not text:
+            return
+        preview = text[: self._SENT_TEXT_CHARS]
+        cache = self._sent_message_text
+        if message_id in cache:
+            del cache[message_id]  # refresh insertion order
+        cache[message_id] = preview
+        if len(cache) > self._SENT_TEXT_MAX:
+            for old in list(cache.keys())[: len(cache) - self._SENT_TEXT_MAX]:
+                del cache[old]
+
+        # Shared durable index already used by Telegram/WhatsApp for reply
+        # hydration. It is best-effort and swallows errors, so send delivery
+        # never depends on this cache write succeeding.
+        try:
+            from gateway import rich_sent_store
+
+            rich_sent_store.record(chat_id, message_id, preview)
+            normalized = self._normalize_chat_key(str(chat_id))
+            if normalized != str(chat_id):
+                rich_sent_store.record(normalized, message_id, preview)
+        except Exception:
+            pass
+
+    def _lookup_sent_message_text(
+        self, chat_id: Optional[str], message_id: Optional[str]
+    ) -> Optional[str]:
+        if not message_id:
+            return None
+        text = self._sent_message_text.get(message_id)
+        if text:
+            return text
+        if not chat_id:
+            return None
+        try:
+            from gateway import rich_sent_store
+
+            text = rich_sent_store.lookup(chat_id, message_id)
+            if text:
+                return text
+            normalized = self._normalize_chat_key(str(chat_id))
+            if normalized != str(chat_id):
+                return rich_sent_store.lookup(normalized, message_id)
+        except Exception:
+            return None
+        return None
 
     # A DM space is addressable two ways — the chat GUID (`any;-;+1555...`)
     # that inbound events carry, and the bare E.164 phone that home-channel
@@ -1502,6 +1582,7 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
+        self._record_sent_message_text(space_id, data.get("messageId"), text)
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_send_attachment(

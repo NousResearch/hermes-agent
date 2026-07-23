@@ -16,6 +16,7 @@ describe('MarkdownTextContent remote images', () => {
 
     throw new Error(`unexpected path ${path}`)
   })
+
   let originalDesktop: typeof window.hermesDesktop
 
   beforeEach(() => {

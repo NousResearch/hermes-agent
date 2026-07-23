@@ -130,9 +130,7 @@ function readFileDisplayTarget(args: Record<string, unknown>, result: Record<str
 
 function shellCommand(args: Record<string, unknown>): string {
   return (
-    firstStringField(args, ['context', 'preview']) ||
-    firstStringField(args, ['command', 'code']) ||
-    contextValue(args)
+    firstStringField(args, ['context', 'preview']) || firstStringField(args, ['command', 'code']) || contextValue(args)
   )
 }
 
@@ -1389,8 +1387,11 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
 
   const searchHits =
     part.toolName === 'web_search' && status !== 'error' ? extractSearchResults(part.result) : undefined
+
   const searchQuery =
-    part.toolName === 'web_search' ? firstStringField(argsRecord, ['search_term', 'query']) || contextValue(argsRecord) : ''
+    part.toolName === 'web_search'
+      ? firstStringField(argsRecord, ['search_term', 'query']) || contextValue(argsRecord)
+      : ''
 
   const resultCount = status === 'error' ? null : toolResultCount(part, argsRecord, resultRecord)
 

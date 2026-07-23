@@ -86,6 +86,15 @@ class CLIAgentSetupMixin:
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
+        requested_provider = str(runtime.get("requested_provider") or "").strip().lower()
+        # Named custom runtimes use the canonical "custom" transport, but the
+        # namespaced identity is still needed for per-provider model metadata.
+        # Keep it on the live agent just as an in-session /model switch does.
+        effective_provider = (
+            requested_provider
+            if resolved_provider == "custom" and requested_provider.startswith("custom:")
+            else resolved_provider
+        )
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
@@ -121,12 +130,12 @@ class CLIAgentSetupMixin:
 
         credentials_changed = api_key != self.api_key or base_url != self.base_url
         routing_changed = (
-            resolved_provider != self.provider
+            effective_provider != self.provider
             or resolved_api_mode != self.api_mode
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
         )
-        self.provider = resolved_provider
+        self.provider = effective_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args

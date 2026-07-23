@@ -402,6 +402,31 @@ def _lookup_supports_vision(
     if caps is not None:
         return bool(caps.supports_vision)
 
+    # Nous is a multi-vendor aggregator and therefore has no single
+    # models.dev provider catalog. Its model IDs are vendor-qualified (for
+    # example ``openai/gpt-5.6-sol``), so resolve capability metadata against
+    # that underlying vendor only after the runtime-route lookup misses.
+    # Keep this narrow to Nous: interpreting arbitrary slash-containing model
+    # IDs as provider routes would incorrectly enable native images for custom
+    # endpoints whose model names merely contain a namespace.
+    if (provider or "").strip().lower() == "nous" and "/" in (model or ""):
+        vendor, vendor_model = model.split("/", 1)
+        vendor = vendor.strip().lower()
+        vendor_model = vendor_model.strip()
+        if vendor and vendor_model:
+            try:
+                caps = get_model_capabilities(vendor, vendor_model)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(
+                    "image_routing: vendor caps lookup failed for nous:%s via %s:%s — %s",
+                    model,
+                    vendor,
+                    vendor_model,
+                    exc,
+                )
+            if caps is not None:
+                return bool(caps.supports_vision)
+
     base_url = _resolve_inference_base_url(cfg, provider)
     if not base_url and (provider or "").strip().lower() == "ollama":
         base_url = "http://localhost:11434/v1"

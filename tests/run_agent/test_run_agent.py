@@ -2545,7 +2545,7 @@ class TestHandleMaxIterations:
             outcome="success",
         )
 
-    def test_api_failure_returns_error(self, agent):
+    def test_api_failure_returns_safe_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
@@ -2553,7 +2553,8 @@ class TestHandleMaxIterations:
             result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
         assert "error" in result.lower()
-        assert "API down" in result
+        assert "work completed before the limit remains" in result.lower()
+        assert "API down" not in result
         complete_logical.assert_called_once()
         assert complete_logical.call_args.kwargs == {"outcome": "failed"}
 

@@ -473,6 +473,7 @@ class RelayTurnContext:
         default=None,
         repr=False,
     )
+    _active_registered: bool = field(default=False, repr=False)
     closed: bool = False
 
 
@@ -491,6 +492,8 @@ class RelaySessionCoordinator:
             str,
             Callable[[RelayRuntime, dict[str, Any]], None],
         ] = {}
+        self._active_turns_lock = threading.RLock()
+        self._active_turns: dict[tuple[str, str], set[int]] = {}
 
     def register_session_initializer(
         self,
@@ -602,6 +605,10 @@ class RelaySessionCoordinator:
             except Exception:
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
         turn._token = _CURRENT_TURN.set(turn)
+        key = (lease.profile_key, lease.session_id)
+        with self._active_turns_lock:
+            self._active_turns.setdefault(key, set()).add(id(turn))
+            turn._active_registered = True
         return turn
 
     def end_turn(
@@ -636,7 +643,30 @@ class RelaySessionCoordinator:
                                 "Hermes Relay turn finalization failed", exc_info=True
                             )
             finally:
+                self._unregister_active_turn(turn)
                 self._reset_turn_context(turn)
+
+    def has_active_turn(self, *, profile_key: str, session_id: str) -> bool:
+        """Return whether a turn is still running for one profile/session."""
+        key = (profile_key, session_id)
+        with self._active_turns_lock:
+            return bool(self._active_turns.get(key))
+
+    def _unregister_active_turn(self, turn: RelayTurnContext) -> None:
+        if not turn._active_registered:
+            return
+        key = (turn.lease.profile_key, turn.lease.session_id)
+        with self._active_turns_lock:
+            active = self._active_turns.get(key)
+            if active is not None:
+                active.discard(id(turn))
+                if not active:
+                    self._active_turns.pop(key, None)
+            turn._active_registered = False
+
+    def _reset_active_turns_for_tests(self) -> None:
+        with self._active_turns_lock:
+            self._active_turns.clear()
 
     def finish_logical_calls(
         self,
@@ -913,4 +943,5 @@ def _session_id(event: dict[str, Any]) -> str:
 
 def _reset_for_tests() -> None:
     """Reset all profile-scoped Relay hosts for isolated tests."""
+    SESSION_COORDINATOR._reset_active_turns_for_tests()
     HOST_REGISTRY.shutdown_all()

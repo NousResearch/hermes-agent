@@ -1535,6 +1535,54 @@ def test_concurrent_subagents_inherit_parent_turn_and_close_independently(
     )
 
 
+def test_coordinator_tracks_active_turns_across_threads(direct_runtime):
+    del direct_runtime
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
+        platform="subagent",
+    )
+
+    assert not coordinator.has_active_turn(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
+    )
+
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="child-turn",
+        task_id="child-task",
+    )
+
+    observed = []
+    thread = threading.Thread(
+        target=lambda: observed.append(
+            coordinator.has_active_turn(
+                profile_key=profile_key,
+                session_id="cross-thread-child",
+            )
+        )
+    )
+    thread.start()
+    thread.join(timeout=5)
+
+    assert observed == [True]
+
+    coordinator.end_turn(turn, outcome="success")
+
+    assert not coordinator.has_active_turn(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
+    )
+    coordinator.release_conversation(lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="cross-thread-child",
+    )
+
+
 def test_core_runtime_ignores_self_parenting_subagent_event(direct_runtime):
     runtime = relay_runtime.get_runtime()
     assert runtime is not None

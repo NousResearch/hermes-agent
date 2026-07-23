@@ -2411,8 +2411,10 @@ def _run_single_child(
 
             runtime = relay_runtime.get_runtime(create=False)
             child_session_id = str(getattr(child, "session_id", "") or "")
-            pending_turn = getattr(child, "_relay_pending_turn_id", None)
-            child_turn_is_active = isinstance(pending_turn, str) and bool(pending_turn)
+            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id=child_session_id,
+            )
             if runtime is not None and child_session_id and not child_turn_is_active:
                 runtime.unregister_subagent({"child_session_id": child_session_id})
         except Exception:

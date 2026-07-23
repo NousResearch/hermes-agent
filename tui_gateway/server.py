@@ -896,6 +896,15 @@ def _close_sessions_for_transport(
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
             session["transport"] = _detached_ws_transport
+            # Release the active-session lease immediately so it doesn't stay
+            # in the cross-process registry during the orphan-reap grace window.
+            # The orphan reaper will finalize the session later via
+            # _close_session_by_id → _teardown_session → _finalize_session,
+            # where _release_active_session_slot is already idempotent (the
+            # second call is a no-op).  Without this, detached-but-not-yet-
+            # reaped sessions hold leases that accumulate on every "New Chat"
+            # and can block new sessions at max_concurrent_sessions.  (#68920)
+            _release_active_session_slot(session)
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)

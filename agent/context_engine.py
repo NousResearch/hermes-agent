@@ -157,6 +157,7 @@ class ContextEngine(ABC):
         of silently skipping compression. Added for the silent-overflow
         warning fix (#62625) so plugin engines don't raise AttributeError.
         """
+        return self.should_compress(prompt_tokens), None
 
     @abstractmethod
     def compress(

@@ -952,7 +952,11 @@ class TestListAndFork:
         with patch.object(agent.session_manager, "list_sessions", return_value=[]) as mock_list:
             await agent.list_sessions(cwd="/mnt/e/Projects/AI/browser-link-3")
 
-        mock_list.assert_called_once_with(cwd="/mnt/e/Projects/AI/browser-link-3")
+        mock_list.assert_called_once_with(
+            cwd="/mnt/e/Projects/AI/browser-link-3",
+            include_archived=False,
+            archived_only=False,
+        )
 
     @pytest.mark.asyncio
     async def test_list_sessions_pagination_first_page(self, agent):
@@ -1004,6 +1008,99 @@ class TestListAndFork:
 
         assert resp.sessions == []
         assert resp.next_cursor is None
+
+    @pytest.mark.asyncio
+    async def test_router_set_archived_delegates_and_returns_ok(self, agent):
+        router = build_agent_router(agent)
+        with patch.object(
+            agent.session_manager, "set_session_archived", return_value=True
+        ) as mock_set:
+            result = await router(
+                "_setArchived",
+                {"sessionId": "s1", "archived": True},
+                False,
+            )
+        assert result == {"ok": True}
+        mock_set.assert_called_once_with("s1", True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"sessionId": "s1", "archived": "false"},
+            {"sessionId": 1, "archived": True},
+            {"sessionId": "", "archived": True},
+            {"sessionId": "s1"},
+        ],
+    )
+    async def test_router_set_archived_rejects_invalid_params(self, agent, params):
+        router = build_agent_router(agent)
+
+        with pytest.raises(acp.RequestError) as exc_info:
+            await router("_setArchived", params, False)
+
+        assert exc_info.value.code == -32602
+
+    @pytest.mark.asyncio
+    async def test_ext_method_unknown_raises_method_not_found(self, agent):
+        from acp import RequestError
+        with pytest.raises(RequestError):
+            await agent.ext_method("nope", {})
+
+    @pytest.mark.asyncio
+    async def test_router_list_sessions_forwards_hermes_meta_and_stamps_response(self, agent):
+        router = build_agent_router(agent)
+        with patch.object(
+            agent.session_manager, "list_sessions",
+            return_value=[{
+                "session_id": "s1", "cwd": "/tmp", "title": "T",
+                "updated_at": 1.0, "archived": True,
+            }],
+        ) as mock_list:
+            resp = await router(
+                "session/list",
+                {
+                    "cwd": "/tmp",
+                    "_meta": {
+                        "hermes": {
+                            "archivedOnly": True,
+                            "includeArchived": False,
+                        }
+                    },
+                },
+                False,
+            )
+        _, kwargs = mock_list.call_args
+        assert kwargs.get("archived_only") is True
+        assert kwargs.get("include_archived") is False
+        s = resp.sessions[0]
+        assert (s.field_meta or {}).get("hermes", {}).get("archived") is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "hermes_meta",
+        [
+            {"archivedOnly": "false"},
+            {"includeArchived": 1},
+            "archivedOnly",
+            None,
+        ],
+    )
+    async def test_router_list_sessions_rejects_invalid_hermes_meta(
+        self,
+        agent,
+        hermes_meta,
+    ):
+        router = build_agent_router(agent)
+
+        with pytest.raises(acp.RequestError) as exc_info:
+            await router(
+                "session/list",
+                {"_meta": {"hermes": hermes_meta}},
+                False,
+            )
+
+        assert exc_info.value.code == -32602
 
 # ---------------------------------------------------------------------------
 # session configuration / model routing

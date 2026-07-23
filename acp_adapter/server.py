@@ -16,6 +16,7 @@ from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
 
 import acp
+from acp import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -1305,6 +1306,21 @@ class HermesACPAgent(acp.Agent):
             modes=self._session_modes(state) if state is not None else None,
         )
 
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle Hermes ACP extension methods (client sends `_<method>`)."""
+        if method == "setArchived":
+            session_id = params.get("sessionId")
+            archived = params.get("archived")
+            if (
+                not isinstance(session_id, str)
+                or not session_id.strip()
+                or not isinstance(archived, bool)
+            ):
+                raise RequestError.invalid_params({"method": "_setArchived"})
+            ok = self.session_manager.set_session_archived(session_id, archived)
+            return {"ok": bool(ok)}
+        raise RequestError.method_not_found(f"_{method}")
+
     async def list_sessions(
         self,
         cursor: str | None = None,
@@ -1319,7 +1335,19 @@ class HermesACPAgent(acp.Agent):
         Server-side page size is capped at ``_LIST_SESSIONS_PAGE_SIZE``; when more
         results remain, ``next_cursor`` is set to the last returned ``session_id``.
         """
-        infos = self.session_manager.list_sessions(cwd=cwd)
+        hermes = kwargs.get("hermes", {})
+        if not isinstance(hermes, dict) or any(
+            key in hermes and not isinstance(hermes[key], bool)
+            for key in ("archivedOnly", "includeArchived")
+        ):
+            raise RequestError.invalid_params({"field": "_meta.hermes"})
+        archived_only = hermes.get("archivedOnly", False)
+        include_archived = hermes.get("includeArchived", False)
+        infos = self.session_manager.list_sessions(
+            cwd=cwd,
+            include_archived=include_archived,
+            archived_only=archived_only,
+        )
 
         if cursor:
             for idx, s in enumerate(infos):
@@ -1338,12 +1366,14 @@ class HermesACPAgent(acp.Agent):
             updated_at = s.get("updated_at")
             if updated_at is not None and not isinstance(updated_at, str):
                 updated_at = str(updated_at)
+            field_meta = {"hermes": {"archived": True}} if s.get("archived") else None
             sessions.append(
                 SessionInfo(
                     session_id=s["session_id"],
                     cwd=s["cwd"],
                     title=s.get("title"),
                     updated_at=updated_at,
+                    field_meta=field_meta,
                 )
             )
 

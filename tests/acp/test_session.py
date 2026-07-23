@@ -763,3 +763,77 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+
+# ---------------------------------------------------------------------------
+# archived support
+# ---------------------------------------------------------------------------
+
+
+def _mgr_with_db(rows, archived_ok=True):
+    mgr = SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))
+    db = MagicMock(name="db")
+    db.list_sessions_rich.return_value = rows
+    db.set_session_archived.return_value = archived_ok
+    mgr._get_db = lambda: db  # type: ignore[method-assign]
+    return mgr, db
+
+
+def test_list_sessions_forwards_archived_filter_and_maps_archived_field():
+    rows = [{
+        "id": "s1", "cwd": ".", "model": "m", "message_count": 3,
+        "title": "T", "last_active": 1.0, "started_at": 0.0, "archived": 1,
+    }]
+    mgr, db = _mgr_with_db(rows)
+    out = mgr.list_sessions(archived_only=True)
+    # Let the DB filter before applying LIMIT to DB-only rows.
+    _, kwargs = db.list_sessions_rich.call_args
+    assert kwargs.get("archived_only") is True
+    # archived surfaced as a bool on the result dict
+    assert out and out[0]["archived"] is True
+
+
+def test_live_session_outside_filtered_db_page_reads_archive_state():
+    mgr, db = _mgr_with_db([])
+    state = SessionState(
+        session_id="live-archived",
+        agent=MagicMock(name="MockAIAgent"),
+        cwd="/work",
+        model="m",
+        history=[{"role": "user", "content": "archive me"}],
+    )
+    mgr._sessions[state.session_id] = state
+    db.get_session.return_value = {"id": state.session_id, "archived": 1}
+
+    assert mgr.list_sessions() == []
+    db.get_session.assert_called_once_with(state.session_id)
+
+
+def test_live_archived_session_obeys_all_list_filters(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    mgr = SessionManager(
+        agent_factory=lambda: SimpleNamespace(model="m"),
+        db=db,
+    )
+    state = mgr.create_session(cwd="/work")
+    state.history = [{"role": "user", "content": "archive me"}]
+    mgr.save_session(state.session_id)
+
+    assert [row["session_id"] for row in mgr.list_sessions()] == [state.session_id]
+    assert mgr.list_sessions(archived_only=True) == []
+
+    assert mgr.set_session_archived(state.session_id, True) is True
+
+    assert mgr.list_sessions() == []
+    archived = mgr.list_sessions(archived_only=True)
+    included = mgr.list_sessions(include_archived=True)
+    assert [row["session_id"] for row in archived] == [state.session_id]
+    assert [row["session_id"] for row in included] == [state.session_id]
+    assert archived[0]["archived"] is True
+    assert included[0]["archived"] is True
+
+
+def test_set_session_archived_delegates_to_db():
+    mgr, db = _mgr_with_db([], archived_ok=True)
+    assert mgr.set_session_archived("s1", True) is True
+    db.set_session_archived.assert_called_once_with("s1", True)

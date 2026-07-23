@@ -735,3 +735,53 @@ async def test_cron_profile_validation_errors(isolated_profiles):
     with pytest.raises(HTTPException) as missing:
         await web_server.list_cron_jobs(profile="missing_profile")
     assert missing.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_without_profile_uses_backend_own_profile(
+    isolated_profiles, monkeypatch
+):
+    """A pool backend scoped to a named profile must not default creates to
+    ``~/.hermes`` when the request carries no explicit ``profile`` (the
+    Desktop app's pre-profileScoped clients sent none)."""
+    from hermes_cli import web_server
+
+    monkeypatch.setenv(
+        "HERMES_HOME", str(isolated_profiles["worker_alpha"])
+    )
+
+    job = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            prompt="runs in my own profile",
+            schedule="every 1h",
+            name="own-profile-job",
+        ),
+        profile=None,
+    )
+
+    assert job["profile"] == "worker_alpha"
+    assert (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
+    assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_without_profile_defaults_when_unscoped(
+    isolated_profiles, monkeypatch
+):
+    """HERMES_HOME at the default home (or unrecognized) keeps the legacy
+    ``default`` fallback."""
+    from hermes_cli import web_server
+
+    monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["default"]))
+
+    job = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            prompt="runs in default",
+            schedule="every 1h",
+            name="default-job",
+        ),
+        profile=None,
+    )
+
+    assert job["profile"] == "default"
+    assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()

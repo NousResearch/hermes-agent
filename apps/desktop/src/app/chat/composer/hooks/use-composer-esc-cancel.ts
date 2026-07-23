@@ -2,10 +2,15 @@ import { useEffect, useRef } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
 
+import { type ComposerTarget, getActiveComposer } from '../focus'
+
 interface UseComposerEscCancelOptions {
   awaitingInput: boolean
   busy: boolean
   onCancel: () => unknown
+  /** This composer's focus-bus key. With N composers mounted (main + tiles),
+   *  only the active one's Esc cancels — otherwise every busy tile stops. */
+  target: ComposerTarget
 }
 
 /**
@@ -15,7 +20,7 @@ interface UseComposerEscCancelOptions {
  * the window listener registered exactly once while still reading fresh
  * busy/awaitingInput/onCancel each press.
  */
-export function useComposerEscCancel({ awaitingInput, busy, onCancel }: UseComposerEscCancelOptions) {
+export function useComposerEscCancel({ awaitingInput, busy, onCancel, target }: UseComposerEscCancelOptions) {
   // Intentional only: we bail if (a) the composer/another field already handled
   // Esc (defaultPrevented), (b) focus is in any input/textarea/contenteditable
   // (you're typing, not stopping), or (c) a dialog/popover is open — Esc must
@@ -27,6 +32,12 @@ export function useComposerEscCancel({ awaitingInput, busy, onCancel }: UseCompo
     // prompt, which owns Esc (or is meant to persist) — never cancel the stream
     // out from under it.
     if (event.key !== 'Escape' || event.defaultPrevented || !busy || awaitingInput) {
+      return
+    }
+
+    // Only the focused composer cancels — otherwise every mounted busy tile
+    // stops at once (and the winner would be mount-order arbitrary).
+    if (getActiveComposer() !== target) {
       return
     }
 

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
@@ -16,15 +16,21 @@ import { cn } from '@/lib/utils'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $projectTree, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
   $connection,
   $currentCwd,
   $currentUsage,
+  $selectedStoredSessionId,
+  $sessions,
   $sessionStartedAt,
   $turnStartedAt,
+  sessionMatchesStoredId,
+  setCurrentUsage
 } from '@/store/session'
+import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
 import {
@@ -35,10 +41,12 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
-import type { StatusResponse } from '@/types/hermes'
+import type { StatusResponse, UsageStats } from '@/types/hermes'
 
-import { CRON_ROUTE } from '../../routes'
+import { CRON_ROUTE, SETTINGS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
+
+const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
 
 function workspaceLabel(cwd: string): string {
   const normalized = cwd.replace(/[\\/]+$/, '')
@@ -80,15 +88,21 @@ export function useStatusbarItems({
   const { t } = useI18n()
   const copy = t.shell.statusbar
   const fileMenu = t.fileMenu
-  const activeSessionId = useStore($activeSessionId)
+  const primaryActiveSessionId = useStore($activeSessionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const terminalTakeover = useStore($terminalTakeover)
-  const busy = useStore($busy)
+  const primaryBusy = useStore($busy)
   const currentCwd = useStore($currentCwd)
-  const currentUsage = useStore($currentUsage)
+  // Derive the workspace's project name from the already-cached project tree
+  // (backend truth via projects.*), so the status item labels by project without
+  // a second per-session copy of the same fact. Re-derives whenever the cwd or
+  // the tree changes; null (no named project) falls back to the cwd leaf below.
+  const projectTree = useStore($projectTree)
+  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+  const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
-  const sessionStartedAt = useStore($sessionStartedAt)
-  const turnStartedAt = useStore($turnStartedAt)
+  const primarySessionStartedAt = useStore($sessionStartedAt)
+  const primaryTurnStartedAt = useStore($turnStartedAt)
   const subagentsBySession = useStore($subagentsBySession)
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
@@ -97,10 +111,49 @@ export function useStatusbarItems({
   const desktopVersion = useStore($desktopVersion)
   const connection = useStore($connection)
 
+  // The FOCUSED session (interacted tile, else the primary — the same
+  // derivation the titlebar title follows): every session-scoped readout
+  // below (context count, timers, busy pulse) tracks it, so clicking into a
+  // tile makes the statusbar describe THAT session.
+  const focusedStoredSessionId = useStore($focusedStoredSessionId)
+  const focusedRuntimeId = useStore($focusedRuntimeId)
+  const focusedState = useStore($focusedSessionState)
+  const sessions = useStore($sessions)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
+
+  const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
+  const busy = primaryFocused ? primaryBusy : Boolean(focusedState?.busy)
+
+  // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
+  // a fresh `{...}` each render would bust the usage-label memos below.
+  const currentUsage = primaryFocused ? primaryUsage : (focusedState?.usage ?? EMPTY_USAGE)
+
+  const turnStartedAt = primaryFocused ? primaryTurnStartedAt : (focusedState?.turnStartedAt ?? null)
+
+  // A tile's session-start comes from its stored row (the cache only knows
+  // runtime state); seconds → ms.
+  const focusedRow = focusedStoredSessionId
+    ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
+    : null
+
+  const sessionStartedAt = primaryFocused
+    ? primarySessionStartedAt
+    : focusedRow?.started_at
+      ? focusedRow.started_at * 1000
+      : null
+
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
-  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
 
+  const publishContextUsage = useCallback(
+    (snapshot: Pick<UsageStats, 'context_max' | 'context_percent' | 'context_used'>) => {
+      setCurrentUsage(current => ({ ...current, ...snapshot }))
+    },
+    []
+  )
+
+  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
 
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
@@ -245,8 +298,38 @@ export function useStatusbarItems({
     copy
   ])
 
+  const connectionItem = useMemo<StatusbarItem | null>(() => {
+    if (connection?.mode !== 'remote' || !connection.remoteHost) {
+      return null
+    }
+
+    const ssh = connection.remoteKind === 'ssh'
+    const cloud = connection.remoteKind === 'cloud'
+
+    return {
+      className: cn(
+        'px-2 -ml-1 font-medium',
+        ssh ? 'bg-primary text-primary-foreground' : 'bg-accent text-accent-foreground'
+      ),
+      icon: <Terminal className="size-3" />,
+      id: 'connection',
+      label: ssh
+        ? copy.connectionSsh(connection.remoteHost)
+        : cloud
+          ? copy.connectionCloud(connection.remoteHost)
+          : copy.connectionRemote(connection.remoteHost),
+      title: ssh
+        ? copy.connectionSshTooltip(connection.remoteHost)
+        : cloud
+          ? copy.connectionCloudTooltip(connection.remoteHost)
+          : copy.connectionRemoteTooltip(connection.remoteHost),
+      to: `${SETTINGS_ROUTE}?tab=gateway`
+    }
+  }, [connection?.mode, connection?.remoteHost, connection?.remoteKind, copy])
+
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
+      ...(connectionItem ? [connectionItem] : []),
       {
         className: `w-7 justify-center px-0${commandCenterOpen ? ' bg-accent/55 text-foreground' : ''}`,
         icon: <Command className="size-3.5" />,
@@ -276,7 +359,10 @@ export function useStatusbarItems({
         hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        label: currentCwd ? workspaceLabel(currentCwd) : undefined,
+        // Prefer the named project; fall back to the cwd leaf. The full cwd is
+        // always in the tooltip (`title` below), so hovering reveals where the
+        // session actually sits — the worktree/subfolder, not just the project.
+        label: projectName || (currentCwd ? workspaceLabel(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
               {
@@ -339,6 +425,7 @@ export function useStatusbarItems({
     [
       agentsOpen,
       commandCenterOpen,
+      connectionItem,
       copy,
       currentCwd,
       fileMenu.copyPath,
@@ -351,6 +438,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      projectName,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter
@@ -376,7 +464,12 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
+          <ContextUsagePanel
+            currentUsage={currentUsage}
+            onUsageSnapshot={publishContextUsage}
+            requestGateway={requestGateway}
+            sessionId={activeSessionId}
+          />
         ),
         title: copy.openContextUsage,
         variant: 'menu'
@@ -391,9 +484,10 @@ export function useStatusbarItems({
       },
       {
         ...approvalModeItem,
-        hidden: gatewayState !== 'open',
+        hidden: gatewayState !== 'open'
       },
       {
+        actionId: 'view.showTerminal',
         className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
@@ -416,11 +510,12 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       currentUsage,
+      publishContextUsage,
       requestGateway,
       sessionStartedAt,
       gatewayState,
       terminalTakeover,
-      turnStartedAt,
+      turnStartedAt
     ]
   )
 

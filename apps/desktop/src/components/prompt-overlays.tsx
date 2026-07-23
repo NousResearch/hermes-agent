@@ -1,7 +1,7 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PendingApprovalFallback } from '@/components/assistant-ui/tool/approval'
 import { Button } from '@/components/ui/button'
@@ -20,7 +20,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
+import { clearSecretRequest, clearSudoRequest, sessionSecretRequest, sessionSudoRequest } from '@/store/prompts'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. Dangerous-command / execute_code approval
@@ -35,10 +35,11 @@ import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } fr
 // fire a second `*.respond` alongside onOpenChange (double-send) or block the
 // backdrop-dismiss path.
 
-function SudoDialog() {
+function SudoDialog({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
   const copy = t.prompts
-  const request = useStore($sudoRequest)
+  const $request = useMemo(() => sessionSudoRequest(sessionId), [sessionId])
+  const request = useStore($request)
   const gateway = useStore($gateway)
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -137,10 +138,11 @@ function SudoDialog() {
   )
 }
 
-function SecretDialog() {
+function SecretDialog({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
   const copy = t.prompts
-  const request = useStore($secretRequest)
+  const $request = useMemo(() => sessionSecretRequest(sessionId), [sessionId])
+  const request = useStore($request)
   const gateway = useStore($gateway)
   const [value, setValue] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -237,12 +239,15 @@ function SecretDialog() {
   )
 }
 
-export function PromptOverlays() {
+/** Mid-turn prompt surfaces for ONE session. Mounted by both the primary chat
+ *  and each tile with its own session id, so a background/tiled session's
+ *  blocking prompt renders instead of silently stalling. */
+export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
   return (
     <>
       <PendingApprovalFallback />
-      <SudoDialog />
-      <SecretDialog />
+      <SudoDialog sessionId={sessionId} />
+      <SecretDialog sessionId={sessionId} />
     </>
   )
 }

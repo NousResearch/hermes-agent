@@ -101,6 +101,56 @@ All actions accept optional `capture_after=True` to get a follow-up
 screenshot in the same tool call. All actions that target an element
 accept `modifiers=[…]` for held keys.
 
+The input actions (`click`, `double_click`, `right_click`, `middle_click`,
+`drag`, `scroll`, `type`, `key`) also accept `delivery_mode` and
+`bring_to_front` — see "The verify → escalate ladder" below.
+
+## The verify → escalate ladder (background-first)
+
+cua-driver delivers input in the **background** by default (no focus steal),
+but that is the first rung, not the only one. Every input action returns a
+structured verdict; read it and climb only when the driver tells you to.
+
+Returned fields (present when the driver supports them):
+- `effect`: `"confirmed"` (driver read the result back — done), `"unverifiable"`
+  (delivered, but confirm it yourself by re-capturing), or `"suspected_noop"`
+  (ran but almost certainly did nothing).
+- `escalation`: `{recommended: "px" | "foreground" | "page", reason}` — present
+  only when there's a next rung to try.
+- `code`: a structured refusal like `"background_unavailable"` or
+  `"foreground_unsupported"`.
+- `verified`: `true` only on AX read-back.
+
+Walk it in order:
+
+1. **Element, background (default).** `click(element=N)`. If `effect:"confirmed"`,
+   you're done.
+2. **Pixel, background.** On `escalation.recommended == "px"` (or a `degraded`
+   capture with an empty element list), click by `coordinate=[x,y]` read off the
+   screenshot instead of `element`.
+3. **Foreground.** On `escalation.recommended == "foreground"`,
+   `code:"background_unavailable"`, or a pixel click that still didn't land,
+   re-issue the SAME action with `delivery_mode="foreground"`. This briefly
+   raises the window and restores focus after; pair with `bring_to_front=True`
+   for a short sequence to avoid per-call flashes. It needs its own approval
+   (it's a visible focus change) and is only appropriate when the user isn't
+   actively working. Classic cases: Electron/Chromium consent dialogs (e.g.
+   tldraw offline's "Run Script"), DirectInput games, raw-input canvases.
+
+```
+computer_use(action="click", element=7)
+# → {effect: "suspected_noop", escalation: {recommended: "foreground", ...}}
+computer_use(action="click", element=7, delivery_mode="foreground")
+# → {effect: "unverifiable", path: "x11_pixel_fg"}   then re-capture to confirm
+```
+
+**Escalate to foreground as a REACTION to a returned signal, never as a
+prediction** from the app being Electron/Chromium/GTK. Different controls in
+the same app behave differently. Do NOT silently retry the same rung, and do
+NOT conclude "cua-driver can't drive this app" — climb the ladder. If
+`delivery_mode="foreground"` returns `code:"foreground_unsupported"`, the
+driver is too old; tell the user to update cua-driver.
+
 ### Key shortcuts vary per platform
 
 Use the host's idiomatic modifier:
@@ -205,7 +255,7 @@ in your conversation context.
 | `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
 | Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
 | Element index stale ("Element N not in cache") | SOM indices are only valid until the next `capture`. Re-capture before clicking. The wrapper carries opaque `element_token`s for stale-detection; you'll see an explicit error rather than a wrong click |
-| Click had no effect | Re-capture and verify. A modal that wasn't visible before may be blocking input. Dismiss it (usually `escape` or click its close button) before retrying |
+| Click had no effect | Read the structured verdict, don't just recapture. `effect:"unverifiable"` → re-capture and confirm yourself. `effect:"suspected_noop"` / `code:"background_unavailable"` / `escalation.recommended` → climb the ladder: try `coordinate=[x,y]` (px), then `delivery_mode="foreground"`. A modal (e.g. an Electron consent dialog) may be blocking input — foreground delivery is how you dismiss it. Don't conclude the app is undrivable |
 | Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |

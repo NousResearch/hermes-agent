@@ -25,13 +25,12 @@ mutation.
 from __future__ import annotations
 
 import os
-import subprocess
 import threading
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
-from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli._subprocess_compat import bounded_git_probe
 
 _GIT_TIMEOUT = 1.5
 _WARM_WORKERS = 8
@@ -44,25 +43,16 @@ _NEG_TTL = 30.0
 
 
 def run_git(cwd: str, *args: str) -> str:
-    """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure."""
+    """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure.
+
+    Uses the shared :func:`bounded_git_probe` so the post-kill cleanup is bounded
+    on Windows — a plain ``subprocess.run(timeout=...)`` here deadlocked Desktop
+    session readiness when a killed git left a suspended descendant holding the
+    pipe handles (issue #68609).
+    """
     if not cwd:
         return ""
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
-    try:
-        result = subprocess.run(
-            ["git", "-C", cwd, *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_GIT_TIMEOUT,
-            check=False,
-            stdin=subprocess.DEVNULL,
-            **_popen_kwargs,
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
-    except Exception:
-        return ""
+    return bounded_git_probe(["git", "-C", cwd, *args], timeout=_GIT_TIMEOUT)
 
 
 def branch(cwd: str) -> str:

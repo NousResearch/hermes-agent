@@ -6,7 +6,9 @@
   "scripts": {
     "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
     "check": "npm run typecheck",
-    "typecheck": "tsc -b . --noEmit"
+    "typecheck": "tsc -b . --noEmit",
+    "lint": "echo 'ok!'",
+    "fix": "echo 'nothing to fix'"
   },
   "sideEffects": true,
   "main": "./index.js",

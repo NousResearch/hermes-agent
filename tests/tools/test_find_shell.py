@@ -143,6 +143,62 @@ class TestFindBashSkipsBrokenCustomPath:
         assert _find_bash() == str(portable)
 
 
+class TestGitBashExternalProgramProbe:
+    """The Windows health check must exercise MSYS child-process creation."""
+
+    def test_probe_runs_external_msys_programs(self, monkeypatch):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
+        assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+    def test_aslr_failure_surfaces_targeted_windows_command(
+        self, tmp_path, monkeypatch
+    ):
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
+        portable.parent.mkdir(parents=True)
+        portable.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", "")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "empty-program-files"))
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        monkeypatch.setattr(local_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
+
+        def failed_probe(path: str) -> bool:
+            local_mod._bash_probe_details_cache[path] = (
+                "dofork: child -1 - forked process died unexpectedly"
+            )
+            return False
+
+        monkeypatch.setattr(local_mod, "_bash_starts", failed_probe)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            local_mod._find_bash()
+        message = str(exc_info.value)
+        assert "Mandatory ASLR" in message
+        assert "Reinstalling Git will not change" in message
+        assert "Set-ProcessMitigation" in message
+        assert str(tmp_path / "hermes" / "git") in message
+
+
 @pytest.mark.skipif(
     not os.path.isfile("/bin/bash") or sys.platform != "darwin",
     reason="reproduces the macOS system-bash-3.2 login-shell swallow",

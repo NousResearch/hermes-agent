@@ -57,7 +57,15 @@ class CLIAgentSetupMixin:
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        from hermes_cli.fallback_config import resolve_entry_api_key
+
+                        _fb_kwargs = {"requested": _fb_provider}
+                        if _fb.get("base_url"):
+                            _fb_kwargs["explicit_base_url"] = _fb["base_url"]
+                        _fb_api_key = resolve_entry_api_key(_fb)
+                        if _fb_api_key:
+                            _fb_kwargs["explicit_api_key"] = _fb_api_key
+                        runtime = resolve_runtime_provider(**_fb_kwargs)
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,
@@ -185,6 +193,9 @@ class CLIAgentSetupMixin:
             "api_key": self.api_key,
             "base_url": self.base_url,
             "provider": self.provider,
+            "requested_provider": getattr(
+                self, "requested_provider", self.provider
+            ),
             "api_mode": self.api_mode,
             "command": self.acp_command,
             "args": list(self.acp_args or []),
@@ -196,6 +207,7 @@ class CLIAgentSetupMixin:
             "signature": (
                 self.model,
                 runtime["provider"],
+                runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
                 runtime["command"],
@@ -286,7 +298,9 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
-            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            restored = self._session_db.get_messages_as_conversation(
+                self.session_id, repair_alternation=True
+            )
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored
@@ -334,6 +348,9 @@ class CLIAgentSetupMixin:
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
+                "requested_provider": getattr(
+                    self, "requested_provider", self.provider
+                ),
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
@@ -345,6 +362,7 @@ class CLIAgentSetupMixin:
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
+                requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
@@ -419,6 +437,7 @@ class CLIAgentSetupMixin:
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
+                runtime.get("requested_provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
                 runtime.get("command"),
@@ -484,7 +503,9 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
-        restored = self._session_db.get_messages_as_conversation(self.session_id)
+        restored = self._session_db.get_messages_as_conversation(
+            self.session_id, repair_alternation=True
+        )
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
@@ -530,6 +551,7 @@ class CLIAgentSetupMixin:
         an indicator for earlier hidden messages.
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
+        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         if not self.conversation_history:
             return
 
@@ -570,13 +592,18 @@ class CLIAgentSetupMixin:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
+                # Stored history is untrusted for display: strip escape
+                # sequences/control chars so replaying a message can't
+                # clear the screen, retitle the window, or restyle the
+                # recap panel (see tools/ansi_strip.sanitize_display_text).
+                text = _sanitize_display_text(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
-                text = _strip_reasoning_tags(text)
+                text = _sanitize_display_text(_strip_reasoning_tags(text))
                 parts = []
                 full_parts = []  # un-truncated version
                 if text:

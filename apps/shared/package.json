@@ -4,14 +4,25 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./billing": "./src/billing-types.ts",
+    "./billing-policy": "./src/billing-policy.ts",
+    "./charge-settlement": "./src/charge-settlement.ts",
+    "./skin": "./src/skin.ts"
   },
   "types": "./src/index.ts",
   "scripts": {
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "fix": "npm run lint:fix",
     "typecheck": "tsc -p . --noEmit",
     "check": "npm run typecheck"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "@eslint/js": "^9.39.4",
+    "eslint": "^9.39.4",
+    "globals": "^17.4.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.56.1"
   }
 }

@@ -387,6 +387,24 @@ def _format_execute_code_result(result: Optional[str]) -> Optional[str]:
     error = str(data.get("error") or "")
     exit_code = data.get("exit_code")
     parts = [f"Exit code: {exit_code}" if exit_code is not None else "Execution complete"]
+    if data.get("stdout_truncated"):
+        total = data.get("stdout_bytes_total")
+        captured = data.get("stdout_bytes_captured")
+        omitted = data.get("stdout_bytes_omitted")
+        if all(isinstance(v, int) for v in (captured, total, omitted)):
+            parts.extend([
+                "",
+                (
+                    "Output truncated: "
+                    f"captured {captured:,} of {total:,} bytes "
+                    f"({omitted:,} omitted)."
+                ),
+            ])
+        else:
+            parts.extend(["", "Output truncated."])
+    warning = str(data.get("warning") or "").strip()
+    if warning:
+        parts.extend(["", "Warning:", warning])
     if output:
         parts.extend(["", "Output:", output])
     if error:

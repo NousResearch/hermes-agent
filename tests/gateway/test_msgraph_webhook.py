@@ -316,8 +316,30 @@ class TestMSGraphNotifications:
 
         assert calls, "hmac.compare_digest was never called; clientState check is not timing-safe"
         provided, expected = calls[0]
-        assert provided == "expected-client-state"
-        assert expected == "expected-client-state"
+        assert provided == b"expected-client-state"
+        assert expected == b"expected-client-state"
+
+    @pytest.mark.anyio
+    async def test_non_ascii_client_state_rejected_without_raising(self):
+        """A non-ASCII clientState (attacker-controlled request body) must be
+        rejected with 403, not crash the handler: hmac.compare_digest raises
+        TypeError on a str containing non-ASCII characters."""
+        adapter = _make_adapter()
+        payload = {
+            "value": [
+                {
+                    "id": "notif-nonascii",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-x",
+                    "clientState": "ské-not-the-secret",
+                }
+            ]
+        }
+        response = await adapter._handle_notification(
+            _FakeRequest(json_payload=payload)
+        )
+        assert response.status == 403
 
     @pytest.mark.anyio
     async def test_duplicate_notification_deduped(self):

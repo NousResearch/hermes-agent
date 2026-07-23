@@ -41,6 +41,7 @@ Environment variables:
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
     MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
     MATRIX_ALLOW_PUBLIC_ROOMS   Allow Matrix tools to create public rooms (default: false)
+    MATRIX_MAX_MESSAGE_LENGTH   Outbound message chunk size in characters (default: 16000)
     MATRIX_APPROVAL_REQUIRE_SENDER
                               Require reaction controls to come from the original requester
                               when requester metadata is available (default: true)
@@ -337,9 +338,54 @@ class _MatrixModelPickerPrompt:
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
 
 
-# Matrix message size limit (4000 chars practical, spec has no hard limit
-# but clients render poorly above this).
-MAX_MESSAGE_LENGTH = 4000
+@dataclass
+class _MatrixChoicePickerPrompt:
+    """Tracks a pending Matrix reaction-based choice picker (/reasoning, /fast)."""
+
+    chat_id: str
+    message_id: str
+    session_key: str
+    choices: dict[str, str]  # emoji -> value
+    on_choice_selected: Any
+    requester_user_id: str | None = None
+    expires_at: float | None = None
+    resolved: bool = False
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
+
+
+# Matrix message size limit. The spec allows large events (~65 KB), but very
+# large bodies can render poorly in some clients. The previous 4,000-char
+# default was overly conservative and split Markdown tables mid-row (#53026).
+DEFAULT_MAX_MESSAGE_LENGTH = 16000
+MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
+
+
+def _resolve_max_message_length(config) -> int:
+    """Resolve outbound chunk size from config, env, or plugin registry."""
+    extra = getattr(config, "extra", {}) or {}
+    raw = extra.get("max_message_length")
+    if raw is None:
+        raw = os.getenv("MATRIX_MAX_MESSAGE_LENGTH")
+    if raw is None:
+        try:
+            from gateway.platform_registry import platform_registry
+
+            entry = platform_registry.get("matrix")
+            if entry and entry.max_message_length:
+                raw = entry.max_message_length
+        except Exception:
+            pass
+    if raw is None:
+        return DEFAULT_MAX_MESSAGE_LENGTH
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_MESSAGE_LENGTH
+    return max(500, min(value, MATRIX_MAX_MESSAGE_LENGTH_CEILING))
+
+
+# Back-compat alias for callers/tests that import the module constant.
+MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
 
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
@@ -384,6 +430,14 @@ _MATRIX_MODEL_PICKER_REACTIONS = (
     "8\ufe0f\u20e3",
     "9\ufe0f\u20e3",
     "\U0001f51f",
+)
+
+# Choice pickers (/reasoning, /fast) can need more than 10 slots
+# (8 effort levels + none + reset/show/hide = 12), so extend the keycap
+# set with lettered squares.
+_MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + (
+    "\U0001f170\ufe0f",  # 🅰️
+    "\U0001f171\ufe0f",  # 🅱️
 )
 
 _MATRIX_CAPABILITIES: Dict[str, str] = {
@@ -776,20 +830,27 @@ class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
-    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
 
     # Matrix clients commonly reserve typed "/" for client-local commands;
     # the adapter accepts "!command" as the alias that always reaches Hermes
     # (see _normalize_matrix_bang_command), so instruction text shows "!".
     typed_command_prefix = "!"
 
-    # Threshold for detecting Matrix client-side message splits.
-    # When a chunk is near the ~4000-char practical limit, a continuation
-    # is almost certain.
-    _SPLIT_THRESHOLD = 3900
+    # Class-level defaults so partially-constructed instances (tests build
+    # adapters via object.__new__ without __init__) keep working; __init__
+    # overrides both from _resolve_max_message_length().
+    max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
+    _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
+
+        self.max_message_length = _resolve_max_message_length(config)
+        # Mirror other platform adapters for tests/tooling that read MAX_MESSAGE_LENGTH.
+        self.MAX_MESSAGE_LENGTH = self.max_message_length
+        # When a chunk is near the outbound limit, a continuation is almost certain.
+        self._split_threshold = max(100, self.max_message_length - 100)
 
         self._homeserver: str = (
             config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")
@@ -935,6 +996,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Matrix reaction-based dangerous command approvals.
         self._approval_reaction_map = {
             "✅": "once",
+            "🌀": "session",
             "♾️": "always",
             "♾": "always",
             "\u267e\ufe0f": "always",
@@ -954,6 +1016,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except ValueError:
             self._approval_timeout_seconds = 300
         self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerPrompt] = {}
+        self._choice_picker_prompts_by_event: Dict[str, _MatrixChoicePickerPrompt] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
@@ -1588,7 +1651,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=True)
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
+        chunks = self.truncate_message(formatted, self.max_message_length)
 
         last_event_id = None
         for i, chunk in enumerate(chunks):
@@ -2001,6 +2064,7 @@ class MatrixAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
@@ -2013,17 +2077,24 @@ class MatrixAdapter(BasePlatformAdapter):
         if smart_denied:
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
         else:
-            scope_choices = "Reply `!approve session` to approve this pattern for the session, "
+            scope_choices = ""
+            if allow_session:
+                scope_choices += "Reply `!approve session` to approve this pattern for the session, "
             if allow_permanent:
                 scope_choices += "`!approve always` to approve permanently, "
+        reaction_legend_parts = ["✅ = approve once"]
+        if allow_session:
+            reaction_legend_parts.append("🌀 = approve for this session")
+            if allow_permanent:
+                reaction_legend_parts.append("♾️ = approve always")
+        reaction_legend_parts.append("❎ = deny")
         text = (
             "⚠️ **Dangerous command requires approval**\n"
             f"```\n{cmd_preview}\n```\n"
             f"Reason: {description}\n\n"
             f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
-            "✅ = approve\n"
-            "❎ = deny"
+            + "\n".join(reaction_legend_parts)
         )
 
         result = await self.send(chat_id, text, metadata=metadata)
@@ -2043,7 +2114,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
-        reactions = ("✅", "❌") if smart_denied or not allow_permanent else ("✅", "♾️", "❌")
+        if not allow_session:
+            reactions = ("✅", "❌")
+        elif not allow_permanent:
+            reactions = ("✅", "🌀", "❌")
+        else:
+            reactions = ("✅", "🌀", "♾️", "❌")
         for emoji in reactions:
             try:
                 reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)
@@ -2133,6 +2209,66 @@ class MatrixAdapter(BasePlatformAdapter):
                     prompt.bot_reaction_events[emoji] = str(reaction_event_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to add model picker reaction %s: %s", emoji, exc)
+
+        return result
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Matrix reaction-based choice picker (/reasoning, /fast).
+
+        Generic single-level companion to ``send_model_picker``. Each choice
+        dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        emoji_choices: dict[str, str] = {}
+        lines = [title, ""]
+        for i, choice in enumerate(choices):
+            if i >= len(_MATRIX_CHOICE_PICKER_REACTIONS):
+                break
+            emoji = _MATRIX_CHOICE_PICKER_REACTIONS[i]
+            value = str(choice.get("value") or "")
+            label = str(choice.get("label") or value)
+            if choice.get("is_current"):
+                label = f"{label} ← current"
+            emoji_choices[emoji] = value
+            lines.append(f"{emoji} {label}")
+
+        if not emoji_choices:
+            return SendResult(success=False, error="No choices")
+
+        lines.append("")
+        lines.append("React to choose.")
+        result = await self.send(chat_id, "\n".join(lines), metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        prompt = _MatrixChoicePickerPrompt(
+            chat_id=chat_id,
+            message_id=result.message_id,
+            session_key=session_key,
+            choices=emoji_choices,
+            on_choice_selected=on_choice_selected,
+            requester_user_id=str((metadata or {}).get("requester_user_id") or "") or None,
+            expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+        )
+        self._choice_picker_prompts_by_event[result.message_id] = prompt
+
+        for emoji in emoji_choices:
+            try:
+                reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
+                if reaction_event_id:
+                    prompt.bot_reaction_events[emoji] = str(reaction_event_id)
+            except Exception as exc:
+                logger.debug("Matrix: failed to add choice picker reaction %s: %s", emoji, exc)
 
         return result
 
@@ -3328,6 +3464,40 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                 return
 
+            choice_prompt = self._choice_picker_prompts_by_event.get(reacts_to)
+            if choice_prompt and not choice_prompt.resolved:
+                if room_id != choice_prompt.chat_id:
+                    return
+                if self._matrix_prompt_expired(choice_prompt):
+                    self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                    return
+                if not await self._validate_matrix_prompt_reactor(
+                    room_id, reacts_to, sender, choice_prompt, "choice picker"
+                ):
+                    return
+                value = choice_prompt.choices.get(key)
+                if value is None:
+                    await self._send_invalid_reaction_feedback(
+                        room_id,
+                        reacts_to,
+                        "That reaction is not one of the available choices.",
+                    )
+                    return
+                choice_prompt.resolved = True
+                self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                try:
+                    confirmation = await choice_prompt.on_choice_selected(room_id, value)
+                    if confirmation:
+                        await self.send(room_id, confirmation, reply_to=reacts_to)
+                except Exception as exc:
+                    logger.error("Failed to apply choice from Matrix reaction: %s", exc)
+                    await self.send(
+                        room_id,
+                        f"Failed to apply selection: {exc}",
+                        reply_to=reacts_to,
+                    )
+                return
+
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
@@ -3455,6 +3625,7 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get(
                 "thread_sessions_per_user", False
             ),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -3488,7 +3659,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
+            if last_len >= self._split_threshold:
                 delay = self._text_batch_split_delay_seconds
             else:
                 delay = self._text_batch_delay_seconds
@@ -4571,6 +4742,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
     if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+    if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
+        os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
     return None
 
 
@@ -4616,7 +4789,7 @@ def register(ctx) -> None:
         allow_all_env="MATRIX_ALLOW_ALL_USERS",
         cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send,
-        max_message_length=4000,
+        max_message_length=DEFAULT_MAX_MESSAGE_LENGTH,
         emoji="🔐",
         allow_update_command=True,
     )

@@ -1,8 +1,7 @@
 'use client'
 
-import { type SmoothOptions, TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
+import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
 import {
-  parseMarkdownIntoBlocks,
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
   type SyntaxHighlighterProps,
@@ -17,17 +16,18 @@ import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlig
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
-  filePathFromMediaPath,
-  gatewayMediaDataUrl,
+  isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  mediaStreamUrl
+  mediaStreamUrl,
+  resolveMediaDisplaySrc
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
@@ -59,65 +59,14 @@ function preprocessWithTailRepair(text: string): string {
   }
 }
 
-// Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
-// `marked` lex of the entire message, ~1.6ms per 28KB) inside a useMemo keyed
-// on the text — but the same text is re-lexed every time a message REMOUNTS
-// (virtualizer scroll, session switch). A small module-level
-// LRU keyed by the exact source string removes all of those repeat parses
-// with zero correctness risk (same input → same output). Streaming tail
-// growth misses the cache by design (every flush is a new string) — that
-// single lex is the irreducible cost.
-const BLOCK_CACHE_MAX = 64
-const BLOCK_CACHE_MIN_LENGTH = 1024
-const blockCache = new Map<string, string[]>()
-
-function parseMarkdownIntoBlocksCached(markdown: string): string[] {
-  if (markdown.length < BLOCK_CACHE_MIN_LENGTH) {
-    return parseMarkdownIntoBlocks(markdown)
-  }
-
-  const hit = blockCache.get(markdown)
-
-  if (hit) {
-    // Refresh recency (Map iteration order is insertion order).
-    blockCache.delete(markdown)
-    blockCache.set(markdown, hit)
-
-    return hit
-  }
-
-  const blocks = parseMarkdownIntoBlocks(markdown)
-  blockCache.set(markdown, blocks)
-
-  if (blockCache.size > BLOCK_CACHE_MAX) {
-    blockCache.delete(blockCache.keys().next().value as string)
-  }
-
-  return blocks
-}
-
 async function mediaSrc(path: string): Promise<string> {
-  if (/^(?:https?|data):/i.test(path)) {
-    return path
-  }
-
   // Stream audio/video through the custom protocol: data URLs are capped and
   // load the whole file into memory, which broke playback for larger videos.
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
     return mediaStreamUrl(path)
   }
 
-  // Remote gateway: the image lives on the gateway machine, so read it over the
-  // authenticated API rather than this machine's disk.
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
-  }
-
-  if (!window.hermesDesktop?.readFileDataUrl) {
-    return mediaExternalUrl(path)
-  }
-
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  return resolveMediaDisplaySrc(path)
 }
 
 function useOpenMediaFile(path: string) {
@@ -323,6 +272,65 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 }
 
 function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+  const rawSrc = typeof src === 'string' ? src : ''
+  const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
+  const [failed, setFailed] = useState(false)
+  const { open, openFailed } = useOpenMediaFile(rawSrc)
+  const name = mediaName(rawSrc || String(alt || 'image'))
+
+  useEffect(() => {
+    let cancelled = false
+
+    setFailed(false)
+    setResolvedSrc(rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : '')
+
+    if (!rawSrc || isInlineMediaSrc(rawSrc)) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    void resolveMediaDisplaySrc(rawSrc)
+      .then(value => {
+        if (!cancelled) {
+          setResolvedSrc(value)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFailed(true)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [rawSrc])
+
+  if (!rawSrc) {
+    return null
+  }
+
+  if (failed) {
+    return (
+      <span className="my-2 block text-sm text-muted-foreground">
+        Couldn&apos;t load {name}.{' '}
+        <button
+          className="bg-transparent font-medium text-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+          onClick={open}
+          type="button"
+        >
+          Open image
+        </button>
+        {openFailed && <OpenMediaFailedNote name={name} />}
+      </span>
+    )
+  }
+
+  if (!resolvedSrc) {
+    return <span className="my-2 block text-sm text-muted-foreground">Loading {name}...</span>
+  }
+
   return (
     <ZoomableImage
       alt={alt}
@@ -332,7 +340,7 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
       )}
       containerClassName="my-2 block w-fit max-w-full"
       slot="aui_markdown-image"
-      src={src}
+      src={resolvedSrc}
       {...props}
     />
   )
@@ -342,7 +350,6 @@ interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
-  smooth?: boolean | SmoothOptions
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -391,7 +398,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
-function MarkdownTextSurface({ containerClassName, containerProps, defer, smooth }: MarkdownTextSurfaceProps) {
+function MarkdownTextSurface({ containerClassName, containerProps, defer }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
@@ -531,15 +538,8 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer, smooth
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}
       preprocess={preprocessWithTailRepair}
-      smooth={smooth}
     />
   )
-}
-
-const SMOOTH_OPTIONS: SmoothOptions = {
-  drainMs: 500,
-  maxCharsPerFrame: 30,
-  minCommitMs: 33
 }
 
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
@@ -548,12 +548,15 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
-  // Same path as the assistant answer. A reasoning-only smoothing wrapper used
-  // to sit here but stalled its char-reveal at empty (the part stays running
-  // the whole message), blanking the Thinking widget.
+  // No `smooth` on purpose — same as the assistant answer. `TextMessagePartProvider`
+  // mints a fresh part object on every `text` change, and useSmooth resets its
+  // reveal to empty whenever the part identity changes, so a smoothed reasoning
+  // stream re-types from the first character on every delta (the flash). Token-
+  // streaming reasoners (R1/Qwen/GLM/Claude thinking) hit it hardest; GPT-5's
+  // coarse summary updates too rarely to notice. Plain append matches the answer.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <MarkdownTextSurface defer smooth={SMOOTH_OPTIONS} {...surfaceProps} />
+      <MarkdownTextSurface defer {...surfaceProps} />
     </TextMessagePartProvider>
   )
 }

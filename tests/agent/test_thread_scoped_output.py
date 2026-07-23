@@ -60,8 +60,9 @@ def test_concurrent_thread_keeps_output_during_silence_window():
         t2 = threading.Thread(target=loud_worker)
         t1.start()
         t2.start()
-        t1.join(timeout=3.0)
-        t2.join(timeout=3.0)
+        t1.join(timeout=15.0)
+        t2.join(timeout=15.0)
+        assert not t1.is_alive() and not t2.is_alive(), "worker threads didn't finish"
 
     captured = _run_with_real_stream(body)
     assert "SILENCED" not in captured
@@ -139,7 +140,8 @@ def test_many_concurrent_silenced_and_loud_threads():
             t.start()
         start.set()
         for t in threads:
-            t.join(timeout=3.0)
+            t.join(timeout=15.0)
+        assert not any(t.is_alive() for t in threads), "straggler thread would truncate captured output"
 
     captured = _run_with_real_stream(body)
     for i in range(5):

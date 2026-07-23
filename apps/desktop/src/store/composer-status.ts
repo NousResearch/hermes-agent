@@ -1,11 +1,13 @@
 import { atom, computed } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { stableArray } from '@/lib/stable-array'
 import type { TodoItem, TodoStatus } from '@/lib/todos'
 
 import { $gateway } from './gateway'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
+import { $sessionStates } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
 
@@ -34,6 +36,34 @@ export interface ComposerStatusItem {
 // Writable source for background work, synced from the gateway's process
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
+
+// Stored session ids that have at least one RUNNING background process. The
+// sidebar row reads this for a pulsing gray dot — distinct from the accent
+// pulse of an active LLM turn — so the user can tell at a glance "this session
+// has something chugging along in the background" even when the turn is idle.
+//
+// $backgroundStatusBySession is keyed by RUNTIME session id (gateway events
+// and process.list both speak that); the sidebar row knows only the STORED id.
+// $sessionStates bridges the two: runtime id → state.storedSessionId.
+// Perf: recomputes on every $sessionStates change (message deltas, tens/sec),
+// but the background-running set rarely moves. `stableArray` keeps the prior
+// reference when unchanged so rows reading this don't re-render per token.
+let backgroundRunningIds: readonly string[] = []
+export const $backgroundRunningSessionIds = computed([$backgroundStatusBySession, $sessionStates], (bg, states) => {
+  const ids = new Set<string>()
+
+  for (const [runtimeId, items] of Object.entries(bg)) {
+    if (items.some(i => i.state === 'running')) {
+      const storedId = states[runtimeId]?.storedSessionId
+
+      if (storedId) {
+        ids.add(storedId)
+      }
+    }
+  }
+
+  return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
+})
 
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.

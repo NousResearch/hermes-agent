@@ -47,3 +47,15 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_CALLBACK_HOST
+    description: "Bind host for the interactive-button callback server (default 127.0.0.1)."
+    prompt: "Callback server host"
+    password: false
+  - name: MATTERMOST_CALLBACK_PORT
+    description: "Bind port for the interactive-button callback server (default 18065)."
+    prompt: "Callback server port"
+    password: false
+  - name: MATTERMOST_CALLBACK_URL
+    description: "External URL Mattermost POSTs button clicks to (cross-host setups). Defaults to http://<host>:<port>/hermes-callback."
+    prompt: "External callback URL"
+    password: false

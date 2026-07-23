@@ -14,10 +14,12 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -121,6 +123,32 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Interactive-button callback server (plugin-owned aiohttp, Teams pattern).
+        self._callback_host = (
+            config.extra.get("callback_host")
+            or os.getenv("MATTERMOST_CALLBACK_HOST")
+            or "127.0.0.1"
+        )
+        try:
+            self._callback_port = int(
+                config.extra.get("callback_port")
+                or os.getenv("MATTERMOST_CALLBACK_PORT")
+                or 18065
+            )
+        except (TypeError, ValueError):
+            self._callback_port = 18065
+        self._callback_url = (
+            config.extra.get("callback_url")
+            or os.getenv("MATTERMOST_CALLBACK_URL", "")
+            or ""
+        ).strip()
+
+        self._runner: Any = None  # aiohttp.web.AppRunner
+        # Pending interactive prompts: opaque id -> payload dict.
+        # OrderedDict so we can evict the oldest entry when the cap is reached
+        # (never-clicked prompts from a long-lived gateway would otherwise leak).
+        self._pending_actions: collections.OrderedDict = collections.OrderedDict()
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -315,6 +343,31 @@ class MattermostAdapter(BasePlatformAdapter):
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
+
+        # Start plugin-owned callback server for interactive buttons (best-effort).
+        try:
+            from aiohttp import web
+            app = web.Application()
+            app.router.add_post("/hermes-callback", self._handle_callback)
+            app.router.add_get("/health", lambda _req: web.Response(text="ok"))
+            self._runner = web.AppRunner(app)
+            await self._runner.setup()
+            site = web.TCPSite(self._runner, self._callback_host, self._callback_port)
+            await site.start()
+            logger.info(
+                "Mattermost: interactive-button callback server on %s:%d (url=%s)",
+                self._callback_host,
+                self._callback_port,
+                self._effective_callback_url(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Mattermost: could not start callback server (%s); "
+                "interactive buttons disabled, falling back to text prompts.",
+                exc,
+            )
+            self._runner = None
+
         return True
 
     async def disconnect(self) -> None:
@@ -337,6 +390,13 @@ class MattermostAdapter(BasePlatformAdapter):
 
         if self._session and not self._session.closed:
             await self._session.close()
+
+        if self._runner is not None:
+            try:
+                await self._runner.cleanup()
+            except Exception:
+                pass
+            self._runner = None
 
         logger.info("Mattermost: disconnected")
 
@@ -706,6 +766,451 @@ class MattermostAdapter(BasePlatformAdapter):
                     chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
                 await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+
+    # ------------------------------------------------------------------
+    # Interactive buttons (plugin-owned callback server)
+    # ------------------------------------------------------------------
+
+    def _buttons_enabled(self) -> bool:
+        """Interactive buttons require a reachable callback server."""
+        return self._runner is not None
+
+    def _effective_callback_url(self) -> str:
+        if self._callback_url:
+            return self._callback_url
+        return f"http://{self._callback_host}:{self._callback_port}/hermes-callback"
+
+    def _make_button(
+        self,
+        button_id: str,
+        label: str,
+        action_id: str,
+        context: Dict[str, Any],
+        style: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One Mattermost interactive button.
+
+        button_id MUST be bare alphanumeric (no '_' or '-') — mattermost/mattermost#25747.
+        Uses MM fields name/integration.url/integration.context (NOT Slack text/value).
+        """
+        btn: Dict[str, Any] = {
+            "id": button_id,
+            "type": "button",
+            "name": label,
+            "integration": {
+                "url": self._effective_callback_url(),
+                "context": {"action_id": action_id, **context},
+            },
+        }
+        if style:
+            btn["style"] = style
+        return btn
+
+    # Maximum number of pending prompt entries kept in memory.  Entries are
+    # evicted oldest-first so a long-lived gateway cannot leak unboundedly when
+    # users ignore prompts.
+    _MAX_PENDING = 500
+
+    def _pop_action(self, action_id: str) -> Optional[Dict[str, Any]]:
+        """Atomic pop — also the double-click guard."""
+        return self._pending_actions.pop(action_id, None)
+
+    async def _post_prompt(
+        self,
+        chat_id: str,
+        *,
+        message: str,
+        text: str,
+        action_id: str,
+        actions: List[Dict[str, Any]],
+        pending: Dict[str, Any],
+        log_label: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post an interactive-button attachment and register the pending action.
+
+        Callers pre-generate ``action_id`` (so buttons can embed it), build
+        their ``actions`` list, then delegate here.  ``pending`` is stored in
+        ``_pending_actions`` only after the post is confirmed live, so a failed
+        post cannot leave a dangling registry entry.
+
+        When ``reply_mode`` is ``"thread"`` and ``metadata`` carries a
+        ``thread_id`` or ``root_id``, the prompt is posted inside the thread so
+        users see the approval request in context rather than as a separate
+        channel-level message.
+        """
+        if not self._buttons_enabled():
+            return SendResult(success=False, error="Mattermost callback server not running")
+        # Prompt text can echo back user- or agent-influenced content (a
+        # command, a clarify question) that may contain "@channel"/"@all" --
+        # disable mentions so posting an approval prompt can't mass-ping.
+        payload: Dict[str, Any] = _with_mentions_disabled({
+            "channel_id": chat_id,
+            "message": message,
+            "props": {"attachments": [{
+                "fallback": message,
+                "callback_id": "hermes_callback",
+                "text": text,
+                "actions": actions,
+            }]},
+        })
+        root_id = await self._thread_root_for_send(None, metadata)
+        if root_id:
+            payload["root_id"] = root_id
+        try:
+            resp = await self._api_post("posts", payload)
+            post_id = resp.get("id", "") if isinstance(resp, dict) else ""
+            if not post_id:
+                return SendResult(
+                    success=False,
+                    error="Mattermost API returned no post_id",
+                    raw_response=resp,
+                )
+            # Evict oldest entry when the cap is reached before inserting.
+            while len(self._pending_actions) >= self._MAX_PENDING:
+                self._pending_actions.popitem(last=False)
+            self._pending_actions[action_id] = pending
+            return SendResult(success=True, message_id=post_id, raw_response=resp)
+        except Exception as exc:
+            logger.error("[Mattermost] %s failed: %s", log_label, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def _handle_callback(self, request: Any) -> Any:
+        """Handle a Mattermost interactive-button click POST."""
+        from aiohttp import web
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"ephemeral_text": "Malformed payload."}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"ephemeral_text": "Malformed payload."}, status=400)
+
+        user_id = body.get("user_id", "")
+        context = body.get("context") or {}
+        action_id = context.get("action_id", "")
+
+        # Authorization — reuse MATTERMOST_ALLOWED_USERS (check BEFORE popping).
+        allowed_csv = os.getenv("MATTERMOST_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed = {u.strip() for u in allowed_csv.split(",") if u.strip()}
+            if "*" not in allowed and user_id not in allowed:
+                logger.warning(
+                    "Mattermost: unauthorized callback click by user_id=%s", user_id,
+                )
+                return web.json_response(
+                    {"ephemeral_text": "You are not allowed to perform this action."},
+                    status=403,
+                )
+
+        payload = self._pop_action(action_id)
+        if payload is None:
+            return web.json_response(
+                {"ephemeral_text": "This prompt has already been resolved or expired."}
+            )
+
+        kind = payload.get("kind", "")
+        try:
+            if kind == "approval":
+                update_msg = await self._resolve_approval(payload, context, user_id)
+            elif kind == "slash":
+                update_msg = await self._resolve_slash(payload, context, user_id)
+            elif kind == "update":
+                update_msg = await self._resolve_update(payload, context, user_id)
+            elif kind == "clarify":
+                update_msg = await self._resolve_clarify(payload, context, user_id)
+            else:
+                return web.json_response({"ephemeral_text": "Unknown action."}, status=400)
+        except Exception as exc:
+            logger.error(
+                "Mattermost: callback resolution failed (kind=%s): %s",
+                kind, exc, exc_info=True,
+            )
+            # Re-register so the user can retry after a transient failure.
+            # The pop above already prevents true double-resolution: a concurrent
+            # click during the await window returns "already resolved", and only
+            # this exception path re-inserts, so the guard stays intact.
+            self._pending_actions[action_id] = payload
+            return web.json_response(
+                {"ephemeral_text": "Hermes could not process this action."},
+                status=500,
+            )
+
+        return web.json_response({
+            "update": {"message": update_msg, "props": {}},
+            "ephemeral_text": "Recorded.",
+        })
+
+    async def _resolve_approval(
+        self, payload: Dict[str, Any], context: Dict[str, Any], user_id: str,
+    ) -> str:
+        choice = context.get("choice", "")
+        if choice not in {"once", "session", "always", "deny"}:
+            raise ValueError(f"invalid approval choice: {choice!r}")
+
+        session_key = payload["session_key"]
+        approval_id = payload.get("approval_id")
+        if approval_id:
+            # Bind the click to the exact entry it was rendered for -- never
+            # fall back to session-FIFO, which could resolve a different,
+            # newer pending approval in the same session (#29373 review).
+            from tools.approval import resolve_gateway_approval_by_id
+            count = resolve_gateway_approval_by_id(session_key, approval_id, choice)
+        else:
+            # Pre-existing pending prompts from before this adapter started
+            # stamping approval_id have no id to bind to -- fall back to the
+            # legacy session-FIFO resolve so in-flight prompts still work
+            # across a gateway restart.
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice, resolve_all=False)
+
+        if not count:
+            return "\u231b Approval expired — command was not run (already timed out or resolved elsewhere)"
+
+        user = await self._lookup_username(user_id)
+        return {
+            "once": f"\u2705 Approved once by {user}",
+            "session": f"\u2705 Approved for session by {user}",
+            "always": f"\u2705 Approved permanently by {user}",
+            "deny": f"\u274c Denied by {user}",
+        }[choice]
+
+    async def _resolve_slash(
+        self, payload: Dict[str, Any], context: Dict[str, Any], user_id: str,
+    ) -> str:
+        choice = context.get("choice", "")
+        if choice not in {"once", "always", "cancel"}:
+            raise ValueError(f"invalid slash choice: {choice!r}")
+        from tools import slash_confirm as _sc
+        follow_up = await _sc.resolve(
+            payload["session_key"], payload["confirm_id"], choice,
+        )
+        if follow_up:
+            channel_id = payload.get("channel_id", "")
+            if channel_id:
+                try:
+                    await self._api_post(
+                        "posts",
+                        _with_mentions_disabled({"channel_id": channel_id, "message": follow_up}),
+                    )
+                except Exception as exc:
+                    logger.debug("Mattermost: slash follow-up post failed: %s", exc)
+        return {
+            "once": "\u2705 Approved once",
+            "always": "\u2705 Always approved",
+            "cancel": "\u274c Cancelled",
+        }[choice]
+
+    async def _resolve_update(
+        self, payload: Dict[str, Any], context: Dict[str, Any], user_id: str,
+    ) -> str:
+        answer = context.get("choice", "")
+        if answer not in {"y", "n"}:
+            raise ValueError(f"invalid update answer: {answer!r}")
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / ".update_response"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(answer)
+        tmp.replace(path)
+        return "\u2705 Yes" if answer == "y" else "\u274c No"
+
+    async def _resolve_clarify(
+        self, payload: Dict[str, Any], context: Dict[str, Any], user_id: str,
+    ) -> str:
+        idx = context.get("choice_index", None)
+        clarify_id = payload["clarify_id"]
+        if idx == -1:
+            from tools.clarify_gateway import mark_awaiting_text
+            mark_awaiting_text(clarify_id)
+            return "\u270f\ufe0f Awaiting your typed answer..."
+        choices = payload.get("choices") or []
+        if not isinstance(idx, int) or not (0 <= idx < len(choices)):
+            raise ValueError(f"invalid clarify index: {idx!r}")
+        choice_text = choices[idx]
+        from tools.clarify_gateway import resolve_gateway_clarify
+        resolve_gateway_clarify(clarify_id, choice_text)
+        return f"\u2705 Answered: {choice_text}"
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+        approval_id: Optional[str] = None,
+    ) -> SendResult:
+        """Render a Mattermost interactive-message exec approval prompt.
+
+        Mirrors Discord/Slack: a smart-denied prompt (or one where the caller
+        disallows session-scoped approval) hides Allow Session and Always
+        Allow, leaving only Allow Once / Deny; otherwise Always Allow is
+        hidden only when the caller disallows permanent approval.
+        """
+        action_id = secrets.token_urlsafe(16)
+        cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+        actions = [
+            self._make_button("approveonce", "Allow Once", action_id, {"choice": "once"}, style="primary"),
+        ]
+        if smart_denied or not allow_session:
+            pass  # Allow Session and Always Allow both hidden below.
+        else:
+            actions.append(
+                self._make_button("approvesession", "Allow Session", action_id, {"choice": "session"})
+            )
+            if allow_permanent:
+                actions.append(
+                    self._make_button("approvealways", "Always Allow", action_id, {"choice": "always"})
+                )
+        actions.append(self._make_button("deny", "Deny", action_id, {"choice": "deny"}, style="danger"))
+
+        text = f"```\n{cmd_preview}\n```\nReason: {description}"
+        if smart_denied:
+            text = "**Smart DENY:** owner override applies to this one operation only.\n\n" + text
+
+        return await self._post_prompt(
+            chat_id, message="\u26a0\ufe0f Command approval required",
+            text=text,
+            action_id=action_id, actions=actions,
+            pending={
+                "kind": "approval",
+                "session_key": session_key,
+                "approval_id": approval_id,
+            },
+            log_label="send_exec_approval",
+            metadata=metadata,
+        )
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a Mattermost slash-command confirmation prompt."""
+        action_id = secrets.token_urlsafe(16)
+        body = message if len(message) <= 3800 else message[:3800] + "..."
+        actions = [
+            self._make_button("approveonce", "Approve Once", action_id, {"choice": "once"}, style="primary"),
+            self._make_button("approvealways", "Always Approve", action_id, {"choice": "always"}),
+            self._make_button("cancel", "Cancel", action_id, {"choice": "cancel"}, style="danger"),
+        ]
+        return await self._post_prompt(
+            chat_id, message=title or "Confirm",
+            text=f"**{title}**\n{body}" if title else body,
+            action_id=action_id, actions=actions,
+            pending={"kind": "slash", "session_key": session_key, "confirm_id": confirm_id, "channel_id": chat_id},
+            log_label="send_slash_confirm",
+            metadata=metadata,
+        )
+
+    async def send_update_prompt(
+        self,
+        chat_id: str,
+        prompt: str,
+        default: str = "",
+        session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a Mattermost update Yes/No prompt."""
+        action_id = secrets.token_urlsafe(16)
+        hint = f" (default: {default})" if default else ""
+        actions = [
+            self._make_button("updateyes", "Yes", action_id, {"choice": "y"}, style="primary"),
+            self._make_button("updateno", "No", action_id, {"choice": "n"}, style="danger"),
+        ]
+        return await self._post_prompt(
+            chat_id, message="\u2695 Update needs your input",
+            text=f"{prompt}{hint}",
+            action_id=action_id, actions=actions,
+            pending={"kind": "update"},
+            log_label="send_update_prompt",
+            metadata=metadata,
+        )
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a Mattermost clarify prompt with choice buttons.
+
+        Mattermost's attachment action rendering degrades past ~10 buttons;
+        cap choices at 10 so the UI stays readable.  Open-ended questions
+        (no choices) fall back to a plain text post.
+
+        Button labels are short numeric indices ("1", "2", ...) rather than
+        the choice text itself -- Mattermost attachment button labels get
+        cut off past a few dozen characters, which made long options
+        unreadable. The full, untruncated option text is instead listed in
+        the post body (matching Telegram's pattern) so nothing is lost.
+        """
+        # Cap at 10: Mattermost attachment actions render poorly beyond that.
+        clean_choices = [
+            str(c).strip() for c in (choices or []) if c is not None and str(c).strip()
+        ][:10]
+
+        if not clean_choices:
+            # Open-ended: post plain text; the gateway text-intercept captures
+            # the user's reply and resolves the clarify automatically.
+            try:
+                open_payload: Dict[str, Any] = _with_mentions_disabled({
+                    "channel_id": chat_id,
+                    "message": f"\u2753 {question}\n\nReply in this channel with your answer.",
+                })
+                root_id = await self._thread_root_for_send(None, metadata)
+                if root_id:
+                    open_payload["root_id"] = root_id
+                resp = await self._api_post("posts", open_payload)
+                post_id = resp.get("id", "") if isinstance(resp, dict) else ""
+                if not post_id:
+                    return SendResult(success=False, error="Mattermost API returned no post_id")
+                return SendResult(success=True, message_id=post_id, raw_response=resp)
+            except Exception as exc:
+                logger.error("[Mattermost] send_clarify failed: %s", exc, exc_info=True)
+                return SendResult(success=False, error=str(exc))
+
+        option_lines = "\n".join(
+            f"{i + 1}. {choice}" for i, choice in enumerate(clean_choices)
+        )
+        text = f"{question}\n\n{option_lines}"
+
+        action_id = secrets.token_urlsafe(16)
+        actions = [
+            self._make_button(f"clarify{i}", str(i + 1), action_id, {"choice_index": i})
+            for i, choice in enumerate(clean_choices)
+        ]
+        actions.append(
+            self._make_button(
+                "clarifyother", "\u270f\ufe0f Other (type answer)", action_id, {"choice_index": -1}
+            )
+        )
+        return await self._post_prompt(
+            chat_id, message="\u2753 Hermes needs your input",
+            text=text,
+            action_id=action_id, actions=actions,
+            pending={"kind": "clarify", "clarify_id": clarify_id, "choices": clean_choices},
+            log_label="send_clarify",
+            metadata=metadata,
+        )
+
+    async def _lookup_username(self, user_id: str) -> str:
+        """Return the Mattermost username for a user_id, or user_id on failure."""
+        try:
+            data = await self._api_get(f"users/{user_id}")
+            return data.get("username", user_id) or user_id
+        except Exception:
+            return user_id
 
     # ------------------------------------------------------------------
     # WebSocket

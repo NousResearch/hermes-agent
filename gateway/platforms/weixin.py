@@ -1754,8 +1754,14 @@ class WeixinAdapter(BasePlatformAdapter):
         last_error: Optional[Exception] = None
         retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
-            if self._rate_limit_cooldown_remaining() > 0:
-                raise self._rate_limit_error()
+            remaining = self._rate_limit_cooldown_remaining()
+            if remaining > 0:
+                logger.info(
+                    "[%s] rate-limit cooldown active; waiting %.1fs before retry",
+                    self.name, remaining,
+                )
+                await asyncio.sleep(remaining)
+                # Cooldown expired — continue to the API call below
             try:
                 resp = await _send_message(
                     self._send_session,

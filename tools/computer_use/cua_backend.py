@@ -1969,14 +1969,11 @@ class CuaDriverBackend(ComputerUseBackend):
         if not self._session.supports_capability(
             "input.delivery_mode", tool=action
         ):
-            return ActionResult(
-                ok=False, action=action, code="foreground_unsupported",
-                delivery_mode="foreground",
-                message=(
-                    "This cua-driver build does not support foreground "
-                    "delivery (no `input.delivery_mode` capability). Update "
-                    "cua-driver to escalate to the foreground rung."
-                ),
+            logger.warning(
+                "cua-driver does not advertise `input.delivery_mode` capability "
+                "for %s, but attempting foreground delivery anyway. "
+                "Update cua-driver to register this capability.",
+                action,
             )
         args["delivery_mode"] = "foreground"
         if bring_to_front:

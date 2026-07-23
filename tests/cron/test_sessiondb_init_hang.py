@@ -15,71 +15,96 @@ timeout (HERMES_CRON_SESSION_DB_TIMEOUT, default 10s) so a hang there can
 never again wedge the job past that bound, and — end to end — that the
 dispatch guard is released and the job becomes dispatchable again afterward.
 
-Note: each test releases its ``never_set`` event in a ``finally`` before
-returning. concurrent.futures.thread registers an atexit hook that joins
-EVERY worker thread ever created by ANY ThreadPoolExecutor in the process
-regardless of ``shutdown(wait=False)`` — an event left permanently unset
-would hang the whole test process at interpreter exit, not just this test.
+Assertions capture the timeout passed to ``Future.result(timeout=...)`` (and
+optionally force an immediate ``TimeoutError``) — no wall-clock waits, so the
+suite stays free of timing flakes under parallel load.
 """
 
-import threading
-import time
+import concurrent.futures
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from cron.scheduler import run_job
 
+# Hold the real class: patching cron.scheduler.concurrent.futures.ThreadPoolExecutor
+# also replaces concurrent.futures.ThreadPoolExecutor (same module object).
+_REAL_TPE = concurrent.futures.ThreadPoolExecutor
 
-def _hanging_session_db(never_set: threading.Event):
-    """Stand-in for hermes_state.SessionDB() that blocks until released —
-    like the real incident's wedged sqlite3.connect, but bounded so the test
-    process can still exit cleanly once the assertions are done."""
-    never_set.wait(timeout=30)
-    return MagicMock()
+_RUNTIME = {
+    "api_key": "test-key",
+    "base_url": "https://example.invalid/v1",
+    "provider": "openrouter",
+    "api_mode": "chat_completions",
+}
+
+
+def _session_db_executor(timeouts: list, *, instant_timeout: bool = True):
+    """Wrap ``ThreadPoolExecutor`` so SessionDB's ``result(timeout=...)`` is observable.
+
+    ``run_job`` is the only caller that passes a timeout to ``Future.result`` on
+    this path (``submit(SessionDB).result(timeout=...)``). Other pools used by
+    ``tick`` / the agent inactivity watchdog call ``result()`` with no timeout
+    and are left alone. When ``instant_timeout`` is True, the timed wait raises
+    immediately instead of sleeping — the production hang path without a clock.
+    """
+
+    def factory(max_workers=1, *args, **kwargs):
+        real = _REAL_TPE(max_workers=max_workers)
+        orig_submit = real.submit
+
+        def submit(fn, *a, **k):
+            fut = orig_submit(fn, *a, **k)
+            orig_result = fut.result
+
+            def result(*ra, **rk):
+                timeout = ra[0] if ra else rk.get("timeout")
+                if timeout is not None:
+                    timeouts.append(timeout)
+                    if instant_timeout:
+                        raise concurrent.futures.TimeoutError()
+                return orig_result(*ra, **rk)
+
+            fut.result = result
+            return fut
+
+        real.submit = submit
+        return real
+
+    return factory
 
 
 class TestSessionDbInitTimeout:
     def test_run_job_does_not_hang_when_sessiondb_init_wedges(self, tmp_path, monkeypatch):
-        """run_job returns promptly even if SessionDB() never returns."""
+        """run_job proceeds without a session store when SessionDB init times out."""
         monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0.2")
-        never_set = threading.Event()
         job = {"id": "wedged-sessiondb", "name": "test", "prompt": "hello"}
+        timeouts: list = []
 
-        try:
-            with patch("cron.scheduler._hermes_home", tmp_path), \
-                 patch("cron.scheduler._resolve_origin", return_value=None), \
-                 patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-                 patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", side_effect=lambda: _hanging_session_db(never_set)), \
-                 patch(
-                     "hermes_cli.runtime_provider.resolve_runtime_provider",
-                     return_value={
-                         "api_key": "test-key",
-                         "base_url": "https://example.invalid/v1",
-                         "provider": "openrouter",
-                         "api_mode": "chat_completions",
-                     },
-                 ), \
-                 patch("run_agent.AIAgent") as mock_agent_cls:
-                mock_agent = MagicMock()
-                mock_agent.run_conversation.return_value = {"final_response": "ok"}
-                mock_agent_cls.return_value = mock_agent
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB"), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value=_RUNTIME,
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch(
+                 "cron.scheduler.concurrent.futures.ThreadPoolExecutor",
+                 side_effect=_session_db_executor(timeouts),
+             ):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
 
-                start = time.monotonic()
-                success, output, final_response, error = run_job(job)
-                elapsed = time.monotonic() - start
-        finally:
-            never_set.set()
+            success, output, final_response, error = run_job(job)
 
-        # Bounded by the 0.2s timeout, not by the hang (which never resolves
-        # on its own within the test).
-        assert elapsed < 5.0
-        # The run still completes successfully without a session store.
+        # Env-resolved bound was passed to Future.result — not the 10s default,
+        # and not an unbounded call.
+        assert timeouts == [0.2]
         assert success is True
         assert final_response == "ok"
-        kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["session_db"] is None
+        assert mock_agent_cls.call_args.kwargs["session_db"] is None
 
     def test_invalid_timeout_env_falls_back_to_default(self, tmp_path, monkeypatch, caplog):
         """A malformed HERMES_CRON_SESSION_DB_TIMEOUT logs a warning and still
@@ -87,6 +112,7 @@ class TestSessionDbInitTimeout:
         monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "not-a-number")
         fake_db = MagicMock()
         job = {"id": "bad-timeout-env", "name": "test", "prompt": "hello"}
+        timeouts: list = []
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -95,14 +121,13 @@ class TestSessionDbInitTimeout:
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
-                 return_value={
-                     "api_key": "test-key",
-                     "base_url": "https://example.invalid/v1",
-                     "provider": "openrouter",
-                     "api_mode": "chat_completions",
-                 },
+                 return_value=_RUNTIME,
              ), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch(
+                 "cron.scheduler.concurrent.futures.ThreadPoolExecutor",
+                 side_effect=_session_db_executor(timeouts, instant_timeout=False),
+             ):
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -110,12 +135,10 @@ class TestSessionDbInitTimeout:
             with caplog.at_level("WARNING"):
                 success, output, final_response, error = run_job(job)
 
+        # Invalid env → fall back to default 10s bound (still passed to result).
+        assert timeouts == [10.0]
         assert success is True
-        kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["session_db"] is fake_db  # default 10s was plenty for a MagicMock
-        # The malformed env var must produce a warning so the misconfiguration
-        # is observable — otherwise it silently falls back and operators can't
-        # diagnose why their custom timeout isn't taking effect.
+        assert mock_agent_cls.call_args.kwargs["session_db"] is fake_db
         assert any(
             "HERMES_CRON_SESSION_DB_TIMEOUT" in rec.message
             for rec in caplog.records
@@ -131,37 +154,31 @@ class TestSessionDbInitTimeout:
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"cron": {"session_db_timeout_seconds": 0.2}})
         )
-        never_set = threading.Event()
         job = {"id": "config-timeout", "name": "test", "prompt": "hello"}
+        timeouts: list = []
 
-        try:
-            with patch("cron.scheduler._hermes_home", tmp_path), \
-                 patch("cron.scheduler._resolve_origin", return_value=None), \
-                 patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-                 patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", side_effect=lambda: _hanging_session_db(never_set)), \
-                 patch(
-                     "hermes_cli.runtime_provider.resolve_runtime_provider",
-                     return_value={
-                         "api_key": "test-key",
-                         "base_url": "https://example.invalid/v1",
-                         "provider": "openrouter",
-                         "api_mode": "chat_completions",
-                     },
-                 ), \
-                 patch("run_agent.AIAgent") as mock_agent_cls:
-                mock_agent = MagicMock()
-                mock_agent.run_conversation.return_value = {"final_response": "ok"}
-                mock_agent_cls.return_value = mock_agent
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB"), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value=_RUNTIME,
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch(
+                 "cron.scheduler.concurrent.futures.ThreadPoolExecutor",
+                 side_effect=_session_db_executor(timeouts),
+             ):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
 
-                start = time.monotonic()
-                success, output, final_response, error = run_job(job)
-                elapsed = time.monotonic() - start
-        finally:
-            never_set.set()
+            success, output, final_response, error = run_job(job)
 
-        # Config value 0.2s bounds the hang, not the 10s default.
-        assert elapsed < 5.0
+        # Config value was passed through — not the 10s default.
+        assert timeouts == [0.2]
         assert success is True
         assert mock_agent_cls.call_args.kwargs["session_db"] is None
 
@@ -178,7 +195,6 @@ class TestDispatchGuardReleasedAfterHang:
         sched._parallel_pool_max_workers = None
         sched._running_job_ids.clear()
 
-        never_set = threading.Event()
         job = {
             "id": "guard-sessiondb-hang",
             "name": "guard-sessiondb-hang",
@@ -188,23 +204,23 @@ class TestDispatchGuardReleasedAfterHang:
             "next_run_at": "2020-01-01T00:00:00",
             "deliver": "local",
         }
+        timeouts: list = []
 
         try:
             with patch("cron.scheduler._hermes_home", tmp_path), \
                  patch("cron.scheduler._resolve_origin", return_value=None), \
                  patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", side_effect=lambda: _hanging_session_db(never_set)), \
+                 patch("hermes_state.SessionDB"), \
                  patch(
                      "hermes_cli.runtime_provider.resolve_runtime_provider",
-                     return_value={
-                         "api_key": "test-key",
-                         "base_url": "https://example.invalid/v1",
-                         "provider": "openrouter",
-                         "api_mode": "chat_completions",
-                     },
+                     return_value=_RUNTIME,
                  ), \
                  patch("run_agent.AIAgent") as mock_agent_cls, \
+                 patch(
+                     "cron.scheduler.concurrent.futures.ThreadPoolExecutor",
+                     side_effect=_session_db_executor(timeouts),
+                 ), \
                  patch.object(sched, "get_due_jobs", return_value=[job]), \
                  patch.object(sched, "advance_next_run"), \
                  patch.object(sched, "save_job_output", return_value="/tmp/out"), \
@@ -216,6 +232,7 @@ class TestDispatchGuardReleasedAfterHang:
 
                 n = sched.tick(verbose=False)  # sync=True by default: waits for the job
                 assert n == 1
+                assert timeouts == [0.2]
 
                 # Without the fix this would still contain the job ID forever.
                 assert "guard-sessiondb-hang" not in sched.get_running_job_ids()
@@ -226,6 +243,5 @@ class TestDispatchGuardReleasedAfterHang:
                 n2 = sched.tick(verbose=False)
                 assert n2 == 1
         finally:
-            never_set.set()
             sched._running_job_ids.discard("guard-sessiondb-hang")
             sched._shutdown_parallel_pool()

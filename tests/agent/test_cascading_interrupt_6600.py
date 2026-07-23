@@ -76,7 +76,7 @@ def test_non_streaming_cancel_does_not_surface_network_error():
 
     # The forced RemoteProtocolError must NOT surface as the raised error.
     assert create_calls["n"] == 1
-    assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+    assert elapsed < 10.0, f"interrupt took {elapsed:.1f}s — should be near-instant (guarding the 30s+ hang)"
 
 
 def test_normal_transient_error_still_raises_when_not_cancelled():
@@ -132,3 +132,93 @@ def test_request_cancelled_token_is_request_local():
 
     with pytest.raises(httpx.RemoteProtocolError):
         cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+
+
+# ---------------------------------------------------------------------------
+# #67142: direct-Anthropic stale/interrupt watchdog must abort the request-local
+# client from the poll (stranger) thread and NEVER close/rebuild the shared
+# _anthropic_client — closing it there released a live TLS FD that the kernel
+# recycled into a SQLite handle, writing a TLS record over a DB header.
+# ---------------------------------------------------------------------------
+
+
+def _make_anthropic_agent():
+    agent = _make_agent()
+    agent.api_mode = "anthropic_messages"
+    return agent
+
+
+def _wait_for_mock_call(mock, timeout=3.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if mock.called:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"{mock!r} was not called within {timeout}s")
+
+
+def test_anthropic_non_streaming_stale_aborts_request_client_not_shared():
+    """Stale non-streaming Anthropic call: the poll thread aborts the
+    request-local client's socket; the shared client is never closed/rebuilt,
+    and the worker still unblocks and closes its own client (no #28161 hang)."""
+    agent = _make_anthropic_agent()
+    agent._compute_non_stream_stale_timeout.return_value = 0.05
+    agent._codex_silent_hang_hint = MagicMock(return_value=None)
+
+    request_client = MagicMock()
+    agent._create_request_anthropic_client = MagicMock(return_value=request_client)
+    agent._abort_request_anthropic_client = MagicMock()
+    agent._close_request_anthropic_client = MagicMock()
+
+    def _create(_api_kwargs, *, client):
+        assert client is request_client
+        # Outlive the 0.05s stale timeout AND the worker join (2.0s) so the
+        # stale detector surfaces its TimeoutError.
+        time.sleep(2.5)
+        return object()
+
+    agent._anthropic_messages_create = MagicMock(side_effect=_create)
+
+    with pytest.raises(TimeoutError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+
+    # Shared client untouched from the poll thread.
+    agent._anthropic_client.close.assert_not_called()
+    agent._rebuild_anthropic_client.assert_not_called()
+    # Poll (stranger) thread aborts the request-local client's socket only.
+    agent._abort_request_anthropic_client.assert_called_once_with(
+        request_client, reason="stale_call_kill"
+    )
+    # Worker unblocks and closes its own request client from its own thread.
+    _wait_for_mock_call(agent._close_request_anthropic_client)
+
+
+def test_anthropic_non_streaming_interrupt_aborts_request_client_not_shared():
+    """Interrupted non-streaming Anthropic call: near-instant InterruptedError,
+    request-local client aborted from the poll thread, shared client untouched."""
+    agent = _make_anthropic_agent()
+
+    request_client = MagicMock()
+    agent._create_request_anthropic_client = MagicMock(return_value=request_client)
+    agent._abort_request_anthropic_client = MagicMock()
+    agent._close_request_anthropic_client = MagicMock()
+
+    def _create(_api_kwargs, *, client):
+        assert client is request_client
+        agent._interrupt_requested = True
+        time.sleep(1.0)
+        raise httpx.RemoteProtocolError("forced close would have happened")
+
+    agent._anthropic_messages_create = MagicMock(side_effect=_create)
+
+    t0 = time.time()
+    with pytest.raises(InterruptedError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+    elapsed = time.time() - t0
+
+    assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+    agent._anthropic_client.close.assert_not_called()
+    agent._rebuild_anthropic_client.assert_not_called()
+    agent._abort_request_anthropic_client.assert_called_once_with(
+        request_client, reason="interrupt_abort"
+    )

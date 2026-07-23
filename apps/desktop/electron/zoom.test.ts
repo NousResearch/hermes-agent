@@ -5,18 +5,19 @@
  */
 
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
-import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+
+import { test, vi } from 'vitest'
 
 import {
+  applyZoomLevel,
   clampZoomLevel,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
-  ZOOM_REASSERT_WINDOW_EVENTS,
+  ZOOM_RESIZE_REASSERT_DELAY_MS,
   ZOOM_STORAGE_KEY,
-  zoomLevelToPercent
+  zoomLevelToPercent,
+  zoomReassertWindowEvents,
+  zoomWiringForWindowKind
 } from './zoom'
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
@@ -64,34 +65,86 @@ test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1_000_000), 9)
 })
 
-test('installZoomReassertOnWindowEvents wires show and restore', () => {
+test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-display moves on macOS and Windows', () => {
   const handlers = new Map()
+
   const win = {
     isDestroyed: () => false,
     on(event, listener) {
       handlers.set(event, listener)
     }
   }
-  let calls = 0
-  installZoomReassertOnWindowEvents(win, () => {
-    calls += 1
-  })
 
-  assert.deepEqual([...handlers.keys()], [...ZOOM_REASSERT_WINDOW_EVENTS])
+  let calls = 0
+  installZoomReassertOnWindowEvents(
+    win,
+    () => {
+      calls += 1
+    },
+    'win32'
+  )
+
+  assert.deepEqual([...handlers.keys()], zoomReassertWindowEvents('win32'))
   handlers.get('show')()
   handlers.get('restore')()
-  assert.equal(calls, 2)
+  handlers.get('resized')()
+  handlers.get('moved')()
+  assert.equal(calls, 4)
+})
+
+test('installZoomReassertOnWindowEvents debounces Linux resize and move events at the trailing edge', () => {
+  vi.useFakeTimers()
+
+  try {
+    const handlers = new Map()
+    let destroyed = false
+
+    const win = {
+      isDestroyed: () => destroyed,
+      on(event, listener) {
+        handlers.set(event, listener)
+      }
+    }
+
+    let calls = 0
+
+    installZoomReassertOnWindowEvents(
+      win,
+      () => {
+        calls += 1
+      },
+      'linux'
+    )
+
+    assert.deepEqual([...handlers.keys()], zoomReassertWindowEvents('linux'))
+    handlers.get('resize')()
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    handlers.get('move')()
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 0)
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 1)
+
+    handlers.get('resize')()
+    destroyed = true
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS)
+    assert.equal(calls, 1)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   const handlers = new Map()
   let destroyed = false
+
   const win = {
     isDestroyed: () => destroyed,
     on(event, listener) {
       handlers.set(event, listener)
     }
   }
+
   let calls = 0
   installZoomReassertOnWindowEvents(win, () => {
     calls += 1
@@ -101,25 +154,56 @@ test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   assert.equal(calls, 0)
 })
 
-// Source assertion (see windows-child-process.test.ts for the established
-// pattern): wireCommonWindowHandlers lives in the electron main entry with heavy
-// Electron deps, so we assert the wiring contract against source rather than
-// booting a BrowserWindow. Locks in that the pet overlay opts OUT of global UI
-// zoom while chat windows keep it — the whole reason this fix is scoped.
-test('pet overlay opts out of global UI zoom; chat windows keep it', () => {
-  const electronDir = path.dirname(fileURLToPath(import.meta.url))
-  const source = fs.readFileSync(path.join(electronDir, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+// Zoom-wiring contract: chat windows keep global UI zoom, the pet overlay
+// opts out. Tested via the extracted config — no source-text regex.
+test('chat windows opt into zoom', () => {
+  assert.deepEqual(zoomWiringForWindowKind('chat'), { zoom: true })
+})
 
-  // The shared helper gates all zoom wiring behind an opt-out flag.
-  assert.match(source, /function wireCommonWindowHandlers\(win, \{ zoom = true \}/)
+test('pet overlay opts out of zoom', () => {
+  assert.deepEqual(zoomWiringForWindowKind('petOverlay'), { zoom: false })
+})
 
-  // The pet overlay window is the only caller that disables zoom.
-  assert.match(source, /wireCommonWindowHandlers\(win, \{ zoom: false \}\)/)
+test('unknown window kinds default to chat (zoom enabled)', () => {
+  assert.deepEqual(zoomWiringForWindowKind('unknown'), { zoom: true })
+  assert.deepEqual(zoomWiringForWindowKind(undefined), { zoom: true })
+})
 
-  // Zoom restore now flows through the shared helper, so createWindow must not
-  // reassert it directly (that would double-fire and drift from session windows).
-  const finishLoad = source.indexOf("mainWindow.webContents.once('did-finish-load'")
-  assert.notEqual(finishLoad, -1, 'missing mainWindow did-finish-load handler')
-  const snippet = source.slice(finishLoad, finishLoad + 300)
-  assert.doesNotMatch(snippet, /restorePersistedZoomLevel\(mainWindow\)/)
+// The UI Scale settings control drifts out of sync after a restart when zoom
+// is applied to the window but the renderer is never told: its $zoomPercent
+// store (see store/zoom.ts) only updates from zoom.get() (once, on load) and
+// 'hermes:zoom:changed' events. applyZoomLevel is the single funnel every zoom
+// path (user set, restore-on-load, lifecycle re-assert) shares, so applying a
+// level always notifies — the regression can't come back by forgetting a send.
+function fakeWebContents() {
+  const calls: Array<[string, ...unknown[]]> = []
+
+  return {
+    calls,
+    setZoomLevel: (level: number) => calls.push(['setZoomLevel', level]),
+    send: (channel: string, payload: unknown) => calls.push(['send', channel, payload])
+  }
+}
+
+test('applyZoomLevel applies the level then notifies the renderer', () => {
+  const wc = fakeWebContents()
+  const applied = applyZoomLevel(wc, 3)
+
+  assert.equal(applied, 3)
+  assert.deepEqual(wc.calls, [
+    ['setZoomLevel', 3],
+    ['send', 'hermes:zoom:changed', { level: 3, percent: zoomLevelToPercent(3) }]
+  ])
+})
+
+test('applyZoomLevel clamps garbage before applying and notifying', () => {
+  const wc = fakeWebContents()
+  const applied = applyZoomLevel(wc, 999)
+  const clamped = clampZoomLevel(999)
+
+  assert.equal(applied, clamped)
+  assert.deepEqual(wc.calls, [
+    ['setZoomLevel', clamped],
+    ['send', 'hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) }]
+  ])
 })

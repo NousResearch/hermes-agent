@@ -50,7 +50,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
@@ -205,6 +205,8 @@ DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
+# Base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
+DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -351,7 +353,12 @@ def _load_tts_config() -> Dict[str, Any]:
 
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
-    """Get the configured TTS provider name."""
+    """Get the explicitly configured TTS provider or the free default.
+
+    Inference credentials do not imply consent to paid speech generation.
+    Users opt into cloud TTS by setting ``tts.provider`` (normally through
+    ``hermes tools``); otherwise the historical Edge backend remains active.
+    """
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
@@ -397,6 +404,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "deepinfra",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1009,36 +1017,92 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     return output_path
 
 
+def _tts_response_format_from_path(output_path: str) -> str:
+    """Pick an OpenAI-compatible TTS response format from the output extension."""
+    if output_path.endswith(".ogg"):
+        return "opus"
+    if output_path.endswith(".wav"):
+        return "wav"
+    if output_path.endswith(".flac"):
+        return "flac"
+    return "mp3"
+
+
 # ===========================================================================
-# Provider: OpenAI TTS
+# Provider: OpenAI TTS (also used by every OpenAI-compatible TTS endpoint —
+# DeepInfra delegates here via _generate_deepinfra_tts).
 # ===========================================================================
-def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """
-    Generate audio using OpenAI TTS.
+def _generate_openai_tts(
+    text: str,
+    output_path: str,
+    tts_config: Dict[str, Any],
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    voice: Optional[str] = None,
+    speed: Optional[float] = None,
+) -> str:
+    """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
+
+    Optional kwargs let OpenAI-compatible backends (DeepInfra etc.) reuse
+    this function — they resolve credentials/model themselves and pass
+    them through, skipping the OpenAI-only ``_resolve_openai_audio_client_config``.
 
     Args:
         text: Text to convert.
         output_path: Where to save the audio file.
-        tts_config: TTS config dict.
+        tts_config: TTS config dict (used for ``tts.openai`` sub-block
+            and the global ``speed`` default).
+        api_key: Bearer token. When None, resolved from the OpenAI auth
+            chain (config → env → managed gateway).
+        base_url: API base URL. When None, falls back to
+            ``tts.openai.base_url`` then the OpenAI default.
+        model: Model id. When None, reads ``tts.openai.model``.
+        voice: Voice id. When None, reads ``tts.openai.voice``.
+        speed: Playback speed. When None, reads ``tts.openai.speed`` /
+            ``tts.speed``.
 
     Returns:
         Path to the saved audio file.
     """
-    api_key, base_url, is_managed = _resolve_openai_audio_client_config()
+    # Only resolve the OpenAI auth chain when the caller didn't pass explicit
+    # credentials. OpenAI-compatible backends (DeepInfra) pass api_key /
+    # base_url / model / voice through and never hit the managed-gateway path.
+    fallback_base: Optional[str] = None
+    is_managed = False
+    explicit_base_url = base_url is not None
+    if api_key is None:
+        api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
 
-    oai_config = tts_config.get("openai") or {}
-    model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
-    voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    custom_base_url = oai_config.get("base_url")
-    if custom_base_url:
-        base_url = custom_base_url
-    speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
+    # ``tts.openai: null`` in YAML yields None — coalesce so .get() is safe.
+    oai_config = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+    if model is None:
+        model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
+    if voice is None:
+        voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
+    config_base_url = oai_config.get("base_url")
+    if base_url is None:
+        # Config override wins over the auth-chain fallback (restores the
+        # pre-refactor precedence, where tts.openai.base_url beat the resolved
+        # default); the auth-chain value is the last-resort default. An
+        # explicit base_url arg from an OpenAI-compatible caller (DeepInfra)
+        # skips this block entirely and always wins.
+        base_url = config_base_url or fallback_base or DEFAULT_OPENAI_BASE_URL
+    if speed is None:
+        speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
+        speed = float(oai_config.get("speed", speed_default))
 
     # The managed OpenAI audio gateway only proxies MANAGED_OPENAI_TTS_MODELS.
     # A model set for direct OpenAI (e.g. "tts-1-hd") 400s there with
     # "Unsupported managed OpenAI speech model", so coerce it — unless the user
     # redirected base_url to their own endpoint, in which case respect it.
-    if is_managed and not custom_base_url and model not in MANAGED_OPENAI_TTS_MODELS:
+    if (
+        is_managed
+        and not explicit_base_url
+        and not config_base_url
+        and model not in MANAGED_OPENAI_TTS_MODELS
+    ):
         logger.warning(
             "TTS: managed OpenAI audio gateway does not support model %r; "
             "falling back to %s. Set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY "
@@ -1047,16 +1111,12 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         )
         model = DEFAULT_OPENAI_MODEL
 
-    # Determine response format from extension
-    if output_path.endswith(".ogg"):
-        response_format = "opus"
-    else:
-        response_format = "mp3"
+    response_format = _tts_response_format_from_path(output_path)
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
     try:
-        create_kwargs = {
+        create_kwargs: Dict[str, Any] = {
             "model": model,
             "voice": voice,
             "input": text,
@@ -1073,6 +1133,64 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+# ===========================================================================
+# Provider: DeepInfra TTS
+# ===========================================================================
+#
+# DeepInfra serves TTS over an OpenAI-compatible /v1/openai/audio/speech
+# endpoint. Models are discovered live via the shared catalog helper
+# (filtered by the ``tts`` surface tag) — no hardcoded model ids in this
+# file, so retired models disappear from hermes the next time the
+# catalog is fetched without a patch.
+
+
+def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Resolve DeepInfra credentials/model, then delegate to the OpenAI handler.
+
+    DeepInfra's audio endpoint is OpenAI-compatible, so there's no need
+    to duplicate the SDK call — we just pass an explicit api_key /
+    base_url / model / voice through. Model ids and the base URL come from
+    the shared ``hermes_cli.models`` helpers so every DeepInfra surface
+    resolves them identically.
+    """
+    api_key = (get_env_value("DEEPINFRA_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "DEEPINFRA_API_KEY not set. Run `hermes setup` to configure, "
+            "or set the env var directly."
+        )
+
+    # ``tts.deepinfra: null`` in YAML yields None, not {} — coalesce so the
+    # ``.get`` calls below don't raise AttributeError (there is no
+    # tts.deepinfra block in DEFAULT_CONFIG to deep-merge over the null).
+    di_config = tts_config.get("deepinfra") if isinstance(tts_config, dict) else None
+    if not isinstance(di_config, dict):
+        di_config = {}
+
+    from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
+
+    model = di_config.get("model")
+    if not isinstance(model, str) or not model.strip():
+        candidates = deepinfra_model_ids("tts")
+        if not candidates:
+            raise ValueError(
+                "No DeepInfra TTS model available. Pin one in config.yaml "
+                "under tts.deepinfra.model, or check connectivity to "
+                "api.deepinfra.com so the live catalog can be fetched."
+            )
+        model = candidates[0]
+    return _generate_openai_tts(
+        text,
+        output_path,
+        tts_config,
+        api_key=api_key,
+        base_url=deepinfra_base_url(di_config),
+        model=model,
+        voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
+        speed=float(di_config.get("speed", tts_config.get("speed", 1.0))),
+    )
 
 
 # ===========================================================================
@@ -1735,6 +1853,19 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         },
     }
 
+    headers = {"Content-Type": "application/json"}
+    if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+        try:
+            import hermes_cli as _hermes_cli
+
+            _hermes_version = str(_hermes_cli.__version__)
+        except Exception:
+            _hermes_version = "0.0.0"
+        # Include Hermes client context following Gemini's partner
+        # integration guidance:
+        # https://ai.google.dev/gemini-api/docs/partner-integration
+        headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
+
     models_to_try = [model]
     if fallback_model:
         models_to_try.append(fallback_model)
@@ -1748,7 +1879,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         response = requests.post(
             endpoint,
             params={"key": api_key},
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             json=payload,
             timeout=60,
         )
@@ -2343,6 +2474,17 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "deepinfra":
+            try:
+                _import_openai_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "DeepInfra TTS uses the 'openai' SDK but it isn't installed."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with DeepInfra TTS...")
+            _generate_deepinfra_tts(text, file_str, tts_config)
+
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
@@ -2358,7 +2500,7 @@ def text_to_speech_tool(
                 return json.dumps({
                     "success": False,
                     "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
+                             "Run `hermes setup` to install Mistral support."
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
@@ -2515,60 +2657,75 @@ def text_to_speech_tool(
 # Requirements check
 # ===========================================================================
 def check_tts_requirements() -> bool:
+    """Return whether the explicitly resolved TTS provider can run.
+
+    Availability must mirror :func:`text_to_speech_tool` dispatch. Unrelated
+    cloud credentials do not make the default Edge backend usable, and an
+    explicitly selected backend is checked on its own requirements.
     """
-    Check if at least one TTS provider is available.
-
-    Edge TTS needs no API key and is the default, so if the package
-    is installed, TTS is available. A user-declared command provider
-    also satisfies the requirement.
-
-    Returns:
-        bool: True if at least one provider can work.
-    """
-    # Any configured command provider counts as available.
-    if _has_any_command_tts_provider():
+    tts_config = _load_tts_config()
+    provider = _get_provider(tts_config)
+    command_config = _resolve_command_provider_config(provider, tts_config)
+    if command_config is not None:
         return True
-    try:
-        _import_edge_tts()
-        return True
-    except ImportError:
-        pass
-    try:
-        _import_elevenlabs()
-        if get_env_value("ELEVENLABS_API_KEY"):
-            return True
-    except ImportError:
-        pass
-    try:
-        _import_openai_client()
-        if _has_openai_audio_backend():
-            return True
-    except ImportError:
-        pass
-    if get_env_value("MINIMAX_API_KEY"):
-        return True
-    try:
-        from tools.xai_http import resolve_xai_http_credentials
 
-        if resolve_xai_http_credentials().get("api_key"):
+    if provider == "edge":
+        try:
+            _import_edge_tts()
             return True
+        except ImportError:
+            return _check_neutts_available()
+    if provider == "elevenlabs":
+        try:
+            _import_elevenlabs()
+        except ImportError:
+            return False
+        return bool(get_env_value("ELEVENLABS_API_KEY"))
+    if provider == "openai":
+        try:
+            _import_openai_client()
+        except ImportError:
+            return False
+        return _has_openai_audio_backend()
+    if provider == "deepinfra":
+        try:
+            _import_openai_client()
+        except ImportError:
+            return False
+        return bool(get_env_value("DEEPINFRA_API_KEY"))
+    if provider == "minimax":
+        return bool(get_env_value("MINIMAX_API_KEY"))
+    if provider == "xai":
+        try:
+            from tools.xai_http import resolve_xai_http_credentials
+
+            return bool(resolve_xai_http_credentials().get("api_key"))
+        except Exception:
+            return False
+    if provider == "gemini":
+        return bool(get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"))
+    if provider == "mistral":
+        try:
+            _import_mistral_client()
+        except ImportError:
+            return False
+        return bool(get_env_value("MISTRAL_API_KEY"))
+    if provider == "neutts":
+        return _check_neutts_available()
+    if provider == "kittentts":
+        return _check_kittentts_available()
+    if provider == "piper":
+        return _check_piper_available()
+
+    try:
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin = get_provider(provider)
+        return bool(plugin and plugin.is_available())
     except Exception:
-        pass
-    if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
-        return True
-    try:
-        _import_mistral_client()
-        if get_env_value("MISTRAL_API_KEY"):
-            return True
-    except ImportError:
-        pass
-    if _check_neutts_available():
-        return True
-    if _check_kittentts_available():
-        return True
-    if _check_piper_available():
-        return True
-    return False
+        return False
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
@@ -2608,11 +2765,8 @@ def _has_openai_audio_backend() -> bool:
 
 
 # ===========================================================================
-# Streaming TTS: sentence-by-sentence pipeline for ElevenLabs
+# Streaming TTS: sentence-by-sentence pipeline
 # ===========================================================================
-# Sentence boundary pattern: punctuation followed by space or newline
-_SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])(?:\s|\n)|(?:\n\n)')
-
 # Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
 _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
@@ -2624,10 +2778,15 @@ _MD_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
 _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
 _MD_HR = re.compile(r'---+')
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
+# Emoji + variation selectors/ZWJ — TTS providers render these as awkward
+# pauses or literal descriptions ("smiling face"), breaking the speech flow.
+_EMOJI = re.compile(
+    '[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\U000E0020-\U000E007F]+'
+)
 
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """Remove markdown formatting that shouldn't be spoken aloud."""
+    """Remove markdown formatting (and emoji) that shouldn't be spoken aloud."""
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)
@@ -2637,6 +2796,7 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = _MD_HEADER.sub('', text)
     text = _MD_LIST_ITEM.sub('', text)
     text = _MD_HR.sub('', text)
+    text = _EMOJI.sub(' ', text)
     text = _MD_EXCESS_NL.sub('\n\n', text)
     return text.strip()
 
@@ -2646,75 +2806,62 @@ def stream_tts_to_speaker(
     stop_event: threading.Event,
     tts_done_event: threading.Event,
     display_callback: Optional[Callable[[str], None]] = None,
+    provider: Optional[str] = None,
 ):
-    """Consume text deltas from *text_queue*, buffer them into sentences,
-    and stream each sentence through ElevenLabs TTS to the speaker in
-    real-time.
+    """Consume text deltas from *text_queue*, buffer them into sentences, and
+    speak each sentence the moment it's ready — the conversational path.
+
+    Provider-agnostic. A registered streaming provider (ElevenLabs, OpenAI, …)
+    plays chunked PCM through one sounddevice stream for the lowest latency;
+    every other provider (edge, the default) is spoken per-sentence via the sync
+    ``text_to_speech_tool`` path, so audio still starts on sentence one instead
+    of after the whole reply.
 
     Protocol:
         * The producer puts ``str`` deltas onto *text_queue*.
         * A ``None`` sentinel signals end-of-text (flush remaining buffer).
-        * *stop_event* can be set to abort early (e.g. user interrupt).
+        * *stop_event* can be set to abort early (barge-in / user interrupt).
         * *tts_done_event* is **set** in the ``finally`` block so callers
           waiting on it (continuous voice mode) know playback is finished.
     """
     tts_done_event.clear()
 
     try:
-        # --- TTS client setup (optional -- display_callback works without it) ---
-        client = None
         output_stream = None
-        voice_id = DEFAULT_ELEVENLABS_VOICE_ID
-        model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
-
         tts_config = _load_tts_config()
-        el_config = tts_config.get("elevenlabs") or {}
-        voice_id = el_config.get("voice_id", voice_id)
-        model_id = el_config.get("streaming_model_id",
-                                 el_config.get("model_id", model_id))
-        # Per-sentence cap for the streaming path. Look up the cap against
-        # the *streaming* model_id (defaults to eleven_flash_v2_5 = 40k chars),
-        # not the sync model_id. A user override
-        # (tts.elevenlabs.max_text_length) still wins.
-        stream_max_len = _resolve_max_text_length(
-            "elevenlabs",
-            {**tts_config, "elevenlabs": {**el_config, "model_id": model_id}},
-        )
 
-        api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
-        if not api_key:
-            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
-        else:
+        # Prefer a chunked streamer for low time-to-first-audio; fall back to
+        # per-sentence sync synthesis (universal — edge + every non-streamer).
+        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
+        streamer = resolve_streaming_provider(tts_config, preferred=provider)
+
+        stream_max_len = 0
+        if streamer is not None:
             try:
-                ElevenLabs = _import_elevenlabs()
-                client = ElevenLabs(api_key=api_key)
-            except ImportError:
-                logger.warning("elevenlabs package not installed; streaming TTS disabled")
+                stream_max_len = _resolve_max_text_length(
+                    provider or _get_provider(tts_config), tts_config
+                )
+            except Exception:
+                stream_max_len = 0
+            try:
+                sd = _import_sounddevice()
+                output_stream = sd.OutputStream(
+                    samplerate=streamer.sample_rate,
+                    channels=streamer.channels,
+                    dtype="int16",
+                )
+                output_stream.start()
+            except (ImportError, OSError) as exc:
+                logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
+                output_stream = None
+            except Exception as exc:
+                logger.warning("sounddevice OutputStream failed: %s", exc)
+                output_stream = None
 
-            # Open a single sounddevice output stream for the lifetime of
-            # this function.  ElevenLabs pcm_24000 produces signed 16-bit
-            # little-endian mono PCM at 24 kHz.
-            if client is not None:
-                try:
-                    sd = _import_sounddevice()
-                    output_stream = sd.OutputStream(
-                        samplerate=24000, channels=1, dtype="int16",
-                    )
-                    output_stream.start()
-                except (ImportError, OSError) as exc:
-                    logger.debug("sounddevice not available: %s", exc)
-                    output_stream = None
-                except Exception as exc:
-                    logger.warning("sounddevice OutputStream failed: %s", exc)
-                    output_stream = None
-
-        sentence_buf = ""
-        min_sentence_len = 20
+        chunker = SentenceChunker()
         long_flush_len = 100
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
-        # Regex to strip complete <think>...</think> blocks from buffer
-        _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
         def _speak_sentence(sentence: str):
             """Display sentence and optionally generate + play audio."""
@@ -2732,33 +2879,51 @@ def stream_tts_to_speaker(
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # Skip audio generation if no TTS client available
-            if client is None:
+            # No chunked streamer → per-sentence sync synthesis (universal).
+            if streamer is None:
+                _speak_via_sync(cleaned)
                 return
-            # Truncate very long sentences (ElevenLabs streaming path)
-            if len(cleaned) > stream_max_len:
+            # Truncate very long sentences to the provider's per-request cap.
+            if stream_max_len and len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
             try:
-                audio_iter = client.text_to_speech.convert(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    model_id=model_id,
-                    output_format="pcm_24000",
-                )
+                audio_iter = streamer.stream(cleaned)
                 if output_stream is not None:
+                    import numpy as _np
                     for chunk in audio_iter:
                         if stop_event.is_set():
                             break
-                        import numpy as _np
-                        audio_array = _np.frombuffer(chunk, dtype=_np.int16)
-                        output_stream.write(audio_array.reshape(-1, 1))
+                        output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
                 else:
-                    # Fallback: write chunks to temp file and play via system player
-                    _play_via_tempfile(audio_iter, stop_event)
+                    # No audio device: buffer chunks to a temp WAV and play it.
+                    _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)
             except Exception as exc:
                 logger.warning("Streaming TTS sentence failed: %s", exc)
 
-        def _play_via_tempfile(audio_iter, stop_evt):
+        def _speak_via_sync(cleaned: str):
+            """Synthesize one sentence via the proven sync tool, then block on
+            playback. No chunked API, but per-*sentence* granularity keeps the
+            flow conversational for edge and every other non-streaming provider.
+            """
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
+                text_to_speech_tool(text=cleaned, output_path=tmp_path)
+                if (not stop_event.is_set() and os.path.isfile(tmp_path)
+                        and os.path.getsize(tmp_path) > 0):
+                    from tools.voice_mode import play_audio_file
+                    play_audio_file(tmp_path)
+            except Exception as exc:
+                logger.warning("Sync per-sentence TTS failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        def _play_via_tempfile(audio_iter, stop_evt, sample_rate=24000):
             """Write PCM chunks to a temp WAV file and play it."""
             tmp_path = None
             try:
@@ -2768,7 +2933,7 @@ def stream_tts_to_speaker(
                 with wave.open(tmp, "wb") as wf:
                     wf.setnchannels(1)
                     wf.setsampwidth(2)  # 16-bit
-                    wf.setframerate(24000)
+                    wf.setframerate(sample_rate)
                     for chunk in audio_iter:
                         if stop_evt.is_set():
                             break
@@ -2789,43 +2954,19 @@ def stream_tts_to_speaker(
             try:
                 delta = text_queue.get(timeout=queue_timeout)
             except queue.Empty:
-                # Timeout: if we have accumulated a long buffer, flush it
-                if len(sentence_buf) > long_flush_len:
-                    _speak_sentence(sentence_buf)
-                    sentence_buf = ""
+                # Idle producer: flush a long buffer instead of sitting on it
+                if len(chunker.buf) > long_flush_len:
+                    for sentence in chunker.flush():
+                        _speak_sentence(sentence)
                 continue
 
             if delta is None:
-                # End-of-text sentinel: strip any remaining think blocks, flush
-                sentence_buf = _think_block_re.sub('', sentence_buf)
-                if sentence_buf.strip():
-                    _speak_sentence(sentence_buf)
+                # End-of-text sentinel: flush whatever remains
+                for sentence in chunker.flush():
+                    _speak_sentence(sentence)
                 break
 
-            sentence_buf += delta
-
-            # --- Think block filtering ---
-            # Strip complete <think>...</think> blocks from buffer.
-            # Works correctly even when tags span multiple deltas.
-            sentence_buf = _think_block_re.sub('', sentence_buf)
-
-            # If an incomplete <think tag is at the end, wait for more data
-            # before extracting sentences (the closing tag may arrive next).
-            if '<think' in sentence_buf and '</think>' not in sentence_buf:
-                continue
-
-            # Check for sentence boundaries
-            while True:
-                m = _SENTENCE_BOUNDARY_RE.search(sentence_buf)
-                if m is None:
-                    break
-                end_pos = m.end()
-                sentence = sentence_buf[:end_pos]
-                sentence_buf = sentence_buf[end_pos:]
-                # Merge short fragments into the next sentence
-                if len(sentence.strip()) < min_sentence_len:
-                    sentence_buf = sentence + sentence_buf
-                    break
+            for sentence in chunker.feed(delta):
                 _speak_sentence(sentence)
 
         # Drain any remaining items from the queue

@@ -223,3 +223,65 @@ class TestBuildMsgBodyWithMentions:
         assert result[2]["msg_type"] == "TIMCustomElem"
         assert json.loads(result[2]["msg_content"]["data"])["user_id"] == "user_def456"
         assert result[3]["msg_type"] == "TIMTextElem"
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_email_only_does_not_trigger_refresh(self):
+        """Cold cache + literal '@' in an email address must NOT trigger a refresh.
+
+        Regression for tek/sweeper review on PR #60324: the previous fast path
+        used `if "@" not in text`, which matched any literal '@' — including
+        emails like `user@example.com`. That forced an unnecessary
+        `get_group_member_list_raw` await before delivery, even though no real
+        mention could ever be produced. The fix gates refresh on the actual
+        mention regex `_AT_USER_RE`.
+        """
+        adapter = _make_mock_adapter({})  # cold cache
+        sender = _make_sender(adapter)
+
+        result = await sender._build_msg_body_with_mentions(
+            "请联系 user@example.com 获取资料", "group_001"
+        )
+
+        # Email '@' is not mention syntax → no refresh, no member lookup
+        adapter._group_query.get_group_member_list_raw.assert_not_called()
+
+        # Text returned as plain TIMTextElem, untouched
+        assert len(result) == 1
+        assert result[0]["msg_type"] == "TIMTextElem"
+        assert result[0]["msg_content"]["text"] == "请联系 user@example.com 获取资料"
+
+    @pytest.mark.asyncio
+    async def test_send_group_message_propagates_async_builder(self):
+        """send_group_message must await _build_msg_body_with_mentions correctly.
+
+        Regression for tek/sweeper review on PR #60324: the sync→async builder
+        boundary added by this PR requires a top-level test. We assert that
+        send_group_message ends up calling send_group_msg_body with the builder's
+        output, not a coroutine object.
+        """
+        cache = {
+            "group_001": (time.time(), _SAMPLE_MEMBERS),
+        }
+        adapter = _make_mock_adapter(cache)
+        sender = _make_sender(adapter)
+
+        # Spy on send_group_msg_body, return a sentinel so we can assert it was called
+        async def _spy_send_group_msg_body(group_code, msg_body, reply_to=None):
+            return {"_spy_called_with_group": group_code, "_spy_msg_body": msg_body}
+
+        sender.send_group_msg_body = _spy_send_group_msg_body
+
+        result = await sender.send_group_message(
+            "group_001", "@元宝 你好"
+        )
+
+        # The async builder's TIMCustomElem output should have been passed through
+        assert result["_spy_called_with_group"] == "group_001"
+        body = result["_spy_msg_body"]
+        assert len(body) == 2
+        assert body[0]["msg_type"] == "TIMCustomElem"
+        assert json.loads(body[0]["msg_content"]["data"])["user_id"] == "user_abc123"
+        assert body[1]["msg_type"] == "TIMTextElem"
+
+        # Cache was fresh → no refresh side-effect
+        adapter._group_query.get_group_member_list_raw.assert_not_called()

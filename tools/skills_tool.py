@@ -559,6 +559,17 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return parse_frontmatter(content)
 
 
+def _extract_conditions(frontmatter: Dict[str, Any]) -> Dict[str, list]:
+    """Extract conditional activation fields from parsed frontmatter.
+
+    Delegates to ``agent.skill_utils.extract_skill_conditions`` — the same
+    helper the system-prompt builder uses — so listing and prompt always
+    parse conditions identically.
+    """
+    from agent.skill_utils import extract_skill_conditions
+    return extract_skill_conditions(frontmatter)
+
+
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """
     Extract category from skill path based on directory structure.
@@ -753,11 +764,14 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                conditions = _extract_conditions(frontmatter)
+
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "conditions": conditions,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

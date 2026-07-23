@@ -4196,17 +4196,48 @@ def fetch_api_models(
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 
-def _strip_ollama_cloud_suffix(model_id: str) -> str:
-    """Strip :cloud / -cloud suffixes that models.dev appends to Ollama Cloud IDs.
+def _ollama_cloud_suffix_key(model_id: str) -> str:
+    """Return a stable dedup key for Ollama Cloud model IDs.
 
-    The live API uses clean IDs (e.g. 'kimi-k2.6') while models.dev sometimes
-    returns them as 'kimi-k2.6:cloud'. Normalising before the dedup merge
-    prevents duplicate entries in the merged model list.
+    Ollama Cloud IDs are endpoint-shaped: the direct hosted OpenAI endpoint may
+    list/use bare IDs, while the local Ollama daemon's cloud proxy uses Ollama
+    tags such as ``kimi-k2.7-code:cloud`` and ``qwen3-coder:480b-cloud``.  Use
+    this key only for equivalence checks; never save it as the actual model ID.
     """
+    key = model_id
     for suffix in (":cloud", "-cloud"):
-        if model_id.endswith(suffix):
-            return model_id[: -len(suffix)]
-    return model_id
+        if key.endswith(suffix):
+            return key[: -len(suffix)]
+    return key
+
+
+def _ollama_cloud_base_is_local_proxy(base_url: str | None) -> bool:
+    """True when Ollama Cloud is routed through a local Ollama daemon."""
+    if not base_url:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(base_url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local")
+
+
+def _ollama_cloud_model_for_endpoint(model_id: str, base_url: str | None) -> str:
+    """Return ``model_id`` in the shape expected by the configured endpoint.
+
+    For the local Ollama cloud proxy, cloud models need Ollama tag suffixes:
+    ``name`` -> ``name:cloud`` and ``name:tag`` -> ``name:tag-cloud``.  Already
+    suffixed IDs are passed through.  For the hosted ``ollama.com/v1`` endpoint,
+    preserve the catalog ID as-is.
+    """
+    if not model_id or not _ollama_cloud_base_is_local_proxy(base_url):
+        return model_id
+    if model_id.endswith(":cloud") or model_id.endswith("-cloud"):
+        return model_id
+    if ":" in model_id:
+        return f"{model_id}-cloud"
+    return f"{model_id}:cloud"
 
 
 def _ollama_cloud_cache_path() -> Path:
@@ -4295,19 +4326,27 @@ def fetch_ollama_cloud_models(
     except Exception:
         pass
 
-    # 4. Merge: live first, then models.dev additions (deduped, order-preserving)
+    # 4. Merge: live first, then models.dev additions (deduped, order-preserving).
+    # Keep the actual model IDs intact; use a suffix-stripped key only to avoid
+    # duplicate bare/suffixed variants when both sources mention the same model.
     if live_models or mdev_models:
-        seen: set[str] = set()
+        seen_keys: set[str] = set()
         merged: list[str] = []
         for m in live_models:
-            if m and m not in seen:
-                seen.add(m)
+            if not m:
+                continue
+            key = _ollama_cloud_suffix_key(m)
+            if key not in seen_keys:
+                seen_keys.add(key)
                 merged.append(m)
         for m in mdev_models:
-            normalized = _strip_ollama_cloud_suffix(m)
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                merged.append(normalized)
+            if not m:
+                continue
+            endpoint_model = _ollama_cloud_model_for_endpoint(m, base_url)
+            key = _ollama_cloud_suffix_key(endpoint_model)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                merged.append(endpoint_model)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged

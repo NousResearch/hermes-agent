@@ -400,17 +400,18 @@ class TestOllamaCloudProvidersNew:
         assert pdef.transport == "openai_chat"
 
 
-# ── Cloud Suffix Stripping ──
+# ── Cloud Suffix Deduplication ──
 
-class TestOllamaCloudSuffixStripping:
-    """models.dev appends :cloud / -cloud suffixes that the live API omits.
+class TestOllamaCloudSuffixDeduplication:
+    """Ollama Cloud IDs may be bare or suffixed depending on endpoint/source.
 
-    fetch_ollama_cloud_models() must normalise these before the dedup merge so
-    users never see broken IDs like 'kimi-k2.6:cloud' in the model picker.
+    fetch_ollama_cloud_models() must never rewrite the ID it returns to the
+    picker. It only uses a suffix-stripped comparison key to dedupe equivalent
+    live/models.dev entries.
     """
 
-    def test_strips_colon_cloud_suffix(self, tmp_path, monkeypatch):
-        """:cloud suffix from models.dev is stripped before merge."""
+    def test_preserves_colon_cloud_suffix_from_models_dev(self, tmp_path, monkeypatch):
+        """:cloud suffix from models.dev is preserved when no live equivalent exists."""
         from hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -424,11 +425,11 @@ class TestOllamaCloudSuffixStripping:
         with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
-        assert "kimi-k2.6" in result
-        assert "kimi-k2.6:cloud" not in result
+        assert "kimi-k2.6:cloud" in result
+        assert "kimi-k2.6" not in result
 
-    def test_strips_dash_cloud_suffix(self, tmp_path, monkeypatch):
-        """-cloud suffix from models.dev is stripped before merge."""
+    def test_preserves_dash_cloud_suffix_from_models_dev(self, tmp_path, monkeypatch):
+        """models.dev-only -cloud IDs are preserved because they may be required by Ollama."""
         from hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -442,11 +443,11 @@ class TestOllamaCloudSuffixStripping:
         with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
-        assert "qwen3-coder:480b" in result
-        assert "qwen3-coder:480b-cloud" not in result
+        assert "qwen3-coder:480b-cloud" in result
+        assert "qwen3-coder:480b" not in result
 
     def test_no_duplicate_when_live_clean_and_mdev_suffixed(self, tmp_path, monkeypatch):
-        """Live API returns clean ID; mdev has :cloud variant — result has exactly one entry."""
+        """Live API wins; suffix variants from mdev are deduped without rewriting live IDs."""
         from hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -464,13 +465,34 @@ class TestOllamaCloudSuffixStripping:
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
-        assert result.count("kimi-k2.6") == 1
-        assert result.count("glm-5.1") == 1
-        assert "kimi-k2.6:cloud" not in result
-        assert "glm-5.1:cloud" not in result
+        assert result == ["kimi-k2.6", "glm-5.1"]
+
+    def test_models_dev_bare_ids_are_suffixed_for_local_proxy(self, tmp_path, monkeypatch):
+        """Local Ollama cloud proxy needs :cloud / -cloud tags for models.dev additions."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "minimax-m2.7": {"tool_call": True},
+                    "qwen3-coder:480b": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert "minimax-m2.7:cloud" in result
+        assert "qwen3-coder:480b-cloud" in result
+        assert "minimax-m2.7" not in result
+        assert "qwen3-coder:480b" not in result
 
     def test_unsuffixed_model_id_unchanged(self, tmp_path, monkeypatch):
-        """Model IDs without :cloud / -cloud suffix are passed through unchanged."""
+        """Model IDs without :cloud / -cloud suffix are passed through unchanged for hosted API."""
         from hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -486,12 +508,15 @@ class TestOllamaCloudSuffixStripping:
 
         assert "nemotron-3-nano:30b" in result
 
-    def test_strip_suffix_helper(self):
-        """Unit test for the _strip_ollama_cloud_suffix helper."""
-        from hermes_cli.models import _strip_ollama_cloud_suffix
+    def test_suffix_key_helper(self):
+        """Unit test for the _ollama_cloud_suffix_key helper."""
+        from hermes_cli.models import _ollama_cloud_model_for_endpoint, _ollama_cloud_suffix_key
 
-        assert _strip_ollama_cloud_suffix("kimi-k2.6:cloud") == "kimi-k2.6"
-        assert _strip_ollama_cloud_suffix("glm-5.1:cloud") == "glm-5.1"
-        assert _strip_ollama_cloud_suffix("qwen3-coder:480b-cloud") == "qwen3-coder:480b"
-        assert _strip_ollama_cloud_suffix("nemotron-3-nano:30b") == "nemotron-3-nano:30b"
-        assert _strip_ollama_cloud_suffix("") == ""
+        assert _ollama_cloud_suffix_key("kimi-k2.6:cloud") == "kimi-k2.6"
+        assert _ollama_cloud_suffix_key("glm-5.1:cloud") == "glm-5.1"
+        assert _ollama_cloud_suffix_key("qwen3-coder:480b-cloud") == "qwen3-coder:480b"
+        assert _ollama_cloud_suffix_key("nemotron-3-nano:30b") == "nemotron-3-nano:30b"
+        assert _ollama_cloud_suffix_key("") == ""
+        assert _ollama_cloud_model_for_endpoint("minimax-m2.7", "http://localhost:11434/v1") == "minimax-m2.7:cloud"
+        assert _ollama_cloud_model_for_endpoint("qwen3-coder:480b", "http://localhost:11434/v1") == "qwen3-coder:480b-cloud"
+        assert _ollama_cloud_model_for_endpoint("minimax-m2.7", "https://ollama.com/v1") == "minimax-m2.7"

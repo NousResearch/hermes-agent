@@ -1037,6 +1037,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
+            self._set_fatal_error("missing_dependency", "discord.py not installed", retryable=False)
             return False
 
         # Load opus codec for voice channel support
@@ -1073,6 +1074,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
+            self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
 
         try:
@@ -9472,7 +9474,7 @@ def register(ctx) -> None:
         check_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
-        install_hint="pip install 'hermes-agent[messaging]'",
+        install_hint="Run `hermes setup` to install Discord support.",
         # Interactive setup wizard — replaces the central
         # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.
         setup_fn=interactive_setup,

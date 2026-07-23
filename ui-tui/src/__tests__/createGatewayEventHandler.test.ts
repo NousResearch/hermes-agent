@@ -743,6 +743,44 @@ describe('createGatewayEventHandler', () => {
     vi.unstubAllEnvs()
   })
 
+  it('a skin that owns the background paints BOTH terminal defaults (OSC 11 bg + OSC 10 fg)', () => {
+    // Default-fg tokens (markdown body, borders) render with the TERMINAL's
+    // default foreground. A dark skin on a light terminal repaints the
+    // backdrop black via OSC-11 — without the OSC-10 pair, those tokens stay
+    // the host's near-black: invisible. The invariant is fg == theme text.
+    const writes: string[] = []
+
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
+      writes.push(String(chunk))
+
+      return true
+    })
+
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+
+    try {
+      const handle = createGatewayEventHandler(buildCtx([]))
+      handle({ payload: { colors: { background: '#000000', ui_text: '#ff9f0a' } }, type: 'skin.changed' } as any)
+
+      const joined = writes.join('')
+      expect(joined).toContain('\x1b]11;#000000\x07')
+      expect(joined).toContain(`\x1b]10;${getUiState().theme.color.text}\x07`)
+
+      // Dropping the background releases BOTH defaults back to the terminal.
+      writes.length = 0
+      handle({ payload: { colors: { ui_text: '#ff9f0a' } }, type: 'skin.changed' } as any)
+      expect(writes.join('')).toContain('\x1b]111\x07')
+      expect(writes.join('')).toContain('\x1b]110\x07')
+    } finally {
+      write.mockRestore()
+
+      if (tty) {
+        Object.defineProperty(process.stdout, 'isTTY', tty)
+      }
+    }
+  })
+
   it('infers polarity from the OSC-10 foreground only when the answer is decisive', async () => {
     const { polarityBackgroundFromForeground } = await import('../app/createGatewayEventHandler.js')
 

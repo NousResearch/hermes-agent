@@ -1057,6 +1057,7 @@ export const ja = defineLocale({
     ageSeconds: seconds => `${seconds}秒前`,
     ageMinutes: minutes => `${minutes}分前`,
     ageHours: hours => `${hours}時間前`,
+    ageDays: days => `${days}日前`,
     durationSeconds: seconds => `${seconds}秒`,
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
     tokens: value => `${value} トーク`
@@ -2073,7 +2074,8 @@ export const ja = defineLocale({
     proNeedsSubscription: 'Pro モデルには有料の Nous サブスクリプションが必要です。',
     free: '無料',
     freeTier: '無料プラン',
-    priceTitle: '100 万トークンあたりの入力/出力価格'
+    priceTitle: '100 万トークンあたりの入力/出力価格',
+    wasPrice: '旧価格'
   },
 
   modelVisibility: {

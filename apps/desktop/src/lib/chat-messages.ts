@@ -17,6 +17,10 @@ export type ChatMessage = {
   error?: string
   branchGroupId?: string
   hidden?: boolean
+  /** Sealed mid-turn commentary (`message.interim`) — rendered without the
+   *  action footer so only the turn's final reply carries copy/refresh, and
+   *  the live view matches rehydration (which merges the turn into one bubble). */
+  interim?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
 }
@@ -76,6 +80,8 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
+  pane?: string
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string

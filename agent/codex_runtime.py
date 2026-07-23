@@ -734,6 +734,18 @@ def run_codex_app_server_turn(
         agent._codex_session = None
         return _codex_app_server_failure_result(messages, exc)
 
+    # This runtime bypasses the normal conversation-loop finalizer. Mirror its
+    # interrupt handoff/cleanup so a hard stop cannot poison the next turn and a
+    # message-bearing compatibility interrupt can still be replayed by callers.
+    _user_interrupted = bool(
+        turn.interrupted and getattr(agent, "_interrupt_requested", False)
+    )
+    _interrupt_message = (
+        getattr(agent, "_interrupt_message", None) if _user_interrupted else None
+    )
+    if _user_interrupted:
+        agent.clear_interrupt()
+
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
     # exited), retire the session so the next turn respawns codex
@@ -839,6 +851,12 @@ def run_codex_app_server_turn(
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
+        "interrupted": _user_interrupted,
+        **(
+            {"interrupt_message": _interrupt_message}
+            if _interrupt_message
+            else {}
+        ),
         "error": turn.error,
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages

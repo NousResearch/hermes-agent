@@ -4,10 +4,10 @@ import { renderSync, Text } from '@hermes/ink'
 import React, { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { GRID_STREAM_COUNT, type GridTestState } from '../app/interfaces.js'
 import { GridStreamsDemo, STREAM_DEFS } from '../components/gridStreamsDemo.js'
 import { GridAreas, type GridAreaWidget, WidgetGrid, type WidgetGridWidget } from '../components/widgetGrid.js'
 import { stripAnsi } from '../lib/text.js'
+import { GRID_STREAM_COUNT, type GridTestState } from '../sdk/apps/gridTestState.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 function StatefulCell({ label }: { label: string }) {

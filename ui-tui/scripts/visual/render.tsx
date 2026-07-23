@@ -1,6 +1,6 @@
 /* Visual self-verification tool: `npm run visual` renders real TUI surfaces
- * across theme x background scenes to /tmp/tui-visual.html, then shot.mjs
- * screenshots it to /tmp/tui-visual.png for eyeball + agent review.
+ * across theme x background scenes to <tmpdir>/hermes-tui-visual/tui-visual.html,
+ * then shot.mjs screenshots it to tui-visual.png for eyeball + agent review.
  *
  * Original note: : render real TUI surfaces with ANSI colors intact,
  * convert to HTML on the actual background, and screenshot in a browser. */
@@ -9,8 +9,11 @@ process.env.COLORTERM = 'truecolor'
 
 import '../../src/lib/forceTruecolor.js'
 
-import { writeFileSync } from 'fs'
+import { mkdirSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { PassThrough } from 'stream'
+
+import { visualOutDir } from './paths.mjs'
 
 import { Box, renderSync, Text } from '@hermes/ink'
 import React, { type ReactElement } from 'react'
@@ -25,7 +28,7 @@ import type { SessionInfo } from '../../src/types.js'
 
 const noop = () => {}
 const pending = () => new Promise<never>(() => {})
- 
+
 const fakeGateway = { gw: { notify: noop, off: noop, on: noop, request: pending }, rpc: pending } as any
 
 const SLATE = {
@@ -304,6 +307,13 @@ for (const scene of scenes) {
 }
 
 page += '</div></body>'
-writeFileSync('/tmp/tui-visual.html', page)
-console.log('wrote /tmp/tui-visual.html')
+
+const outDir = visualOutDir()
+
+mkdirSync(outDir, { recursive: true })
+
+const outFile = join(outDir, 'tui-visual.html')
+
+writeFileSync(outFile, page)
+console.log(`wrote ${outFile}`)
 process.exit(0)

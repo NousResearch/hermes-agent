@@ -298,7 +298,17 @@ def test_fts_read_corruption_detected_by_read_probe(tmp_path):
     reason = _db_opens_cleanly(db_path)
     assert reason is not None
     assert "messages_fts" in reason
-    assert "malformed" in reason.lower() or "database disk image" in reason.lower()
+    # Message varies by SQLite build (same variance documented in
+    # SessionDB._is_fts_write_corruption_error): older builds raise the
+    # generic "database disk image is malformed"; newer builds raise the
+    # FTS5-specific 'fts5: corrupt structure record for table "..."'.
+    # Both are the same corruption class.
+    reason_l = reason.lower()
+    assert (
+        "malformed" in reason_l
+        or "database disk image" in reason_l
+        or ("fts5" in reason_l and "corrupt" in reason_l)
+    )
 
 
 def test_fts_read_corruption_repaired_in_place(tmp_path):

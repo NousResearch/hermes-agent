@@ -9,6 +9,7 @@ Usage:
     python -m hermes_cli.main web --port 8080
 """
 
+import contextlib
 from contextlib import asynccontextmanager, contextmanager
 
 import asyncio
@@ -28,6 +29,7 @@ import json
 import logging
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import shlex
@@ -1136,33 +1138,68 @@ def _custom_provider_options(
     return names
 
 
-def _schema_with_voice_provider_options() -> Dict[str, Dict[str, Any]]:
-    """Return CONFIG_SCHEMA with per-request voice provider options merged.
+def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
+    """Discovered memory providers for a per-request schema merge.
 
-    Computed at request time (not import time) so options reflect the
-    CURRENT config.yaml — including providers added after the server
-    started, and the profile-scoped config when the request carries a
-    ``profile`` param. The module-level ``CONFIG_SCHEMA`` is never mutated;
-    entries that change are shallow-copied onto a copied mapping.
+    Reuses the cheap directory scan of :func:`_memory_provider_options` and
+    additionally preserves the currently-configured provider, so a value
+    selected in config but not (yet) discoverable — e.g. a plugin removed from
+    disk — never silently vanishes from the dropdown.
+    """
+    options = _memory_provider_options()
+
+    memory = cfg.get("memory")
+    configured = memory.get("provider") if isinstance(memory, dict) else None
+    current = _normalize_memory_provider_name(configured)
+
+    if current and current not in options:
+        options = [*options, current]
+
+    return options
+
+
+def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
+    """Return CONFIG_SCHEMA with per-request discovery-driven options merged.
+
+    Some ``*.provider`` selects have options that are discovered at runtime
+    (voice backends via the tts/stt registries + config.yaml command
+    providers; memory providers via a plugin-dir scan). The module-level
+    ``_SCHEMA_OVERRIDES`` freezes those lists at import time, so a provider
+    installed after the server started never appears. This recomputes them at
+    request time — reflecting the CURRENT config.yaml, the profile-scoped
+    config when the request carries a ``profile`` param, and mid-session
+    plugin installs — for every surface that reads the schema (desktop, CLI,
+    dashboard), with no extra frontend round-trips.
+
+    The module-level ``CONFIG_SCHEMA`` is never mutated; entries that change
+    are shallow-copied onto a copied mapping.
     """
     try:
         cfg = load_config()
     except Exception:  # pragma: no cover - schema must survive config errors
         return CONFIG_SCHEMA
+
     overlay: Dict[str, Dict[str, Any]] = {}
-    for kind in ("tts", "stt"):
-        key = f"{kind}.provider"
+
+    def merge(key: str, options: List[str]) -> None:
         entry = CONFIG_SCHEMA.get(key)
-        if not isinstance(entry, dict) or not isinstance(entry.get("options"), list):
-            continue
-        merged = _custom_provider_options(kind, list(entry["options"]), cfg)
-        if merged != entry["options"]:
-            overlay[key] = {**entry, "options": merged}
+
+        if isinstance(entry, dict) and isinstance(entry.get("options"), list) and options != entry["options"]:
+            overlay[key] = {**entry, "options": options}
+
+    for kind in ("tts", "stt"):
+        entry = CONFIG_SCHEMA.get(f"{kind}.provider")
+        existing = entry.get("options") if isinstance(entry, dict) else None
+
+        if isinstance(existing, list):
+            merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
+
+    merge("memory.provider", _memory_provider_schema_options(cfg))
+
     if not overlay:
         return CONFIG_SCHEMA
-    fields = dict(CONFIG_SCHEMA)
-    fields.update(overlay)
-    return fields
+
+    return {**CONFIG_SCHEMA, **overlay}
 
 
 class ConfigUpdate(BaseModel):
@@ -1693,6 +1730,7 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_oauth.json",
     "webhook_subscriptions.json",
     "bws_cache.json",
+    "bws_cache.enc.json",
     # git's credential-store helper cache (agent.file_safety blocks this too).
     ".git-credentials",
 })
@@ -3090,9 +3128,29 @@ async def get_status(profile: Optional[str] = None):
         # "loopback only — no auth gate" with no extra round trips.
         auth_required = bool(getattr(app.state, "auth_required", False))
         auth_providers: list[str] = []
+        # RFC 8252 native-app capability advertisement. The desktop reads this
+        # to decide whether it can use the system-browser + loopback + PKCE
+        # flow (no embedded webview, no session cookies) or must fall back to
+        # the legacy embedded-webview cookie flow. "cookie" is always available
+        # in gated mode; "native_pkce" is present only when at least one
+        # registered session provider is a brokerable OAuth provider (not a
+        # password or token-only credential). Absent field / missing
+        # "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically.
+        auth_flows: list[str] = []
         try:
-            from hermes_cli.dashboard_auth import list_providers as _list_providers
+            from hermes_cli.dashboard_auth import (
+                list_providers as _list_providers,
+                list_session_providers as _list_session_providers,
+            )
             auth_providers = [p.name for p in _list_providers()]
+            if auth_required:
+                auth_flows.append("cookie")
+                brokerable = [
+                    p for p in _list_session_providers()
+                    if not getattr(p, "supports_password", False)
+                ]
+                if brokerable:
+                    auth_flows.append("native_pkce")
         except Exception:
             # Module not importable yet (early startup) — leave as [].
             pass
@@ -3134,6 +3192,7 @@ async def get_status(profile: Optional[str] = None):
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,
+            "auth_flows": auth_flows,
             "nous_session_valid": nous_session_valid,
         }
 
@@ -3179,6 +3238,27 @@ async def get_status(profile: Optional[str] = None):
             if all(item.get("status") == "ok" for item in components.values())
             else "degraded"
         )
+
+        # Deferred FTS rebuild progress (schema v23): lets the desktop /
+        # dashboard render a "search index rebuilding: N%" indicator instead
+        # of users wondering why old-message search is slower after an
+        # update. None/absent when no rebuild is pending (the common case).
+        # Read-only probe, never blocks startup, never raises.
+        try:
+            from hermes_state import SessionDB as _SDB
+            from hermes_constants import get_hermes_home as _ghh
+
+            _db_path = _ghh() / "state.db"
+            if _db_path.exists():
+                _sdb = _SDB(db_path=_db_path, read_only=True)
+                try:
+                    _rebuild = _sdb.fts_rebuild_status()
+                finally:
+                    _sdb.close()
+                if _rebuild is not None:
+                    status["fts_rebuild"] = _rebuild
+        except Exception:
+            pass
 
         # Profile + gateway topology: which profiles exist, whether one
         # multiplexed gateway or several per-profile gateways serve them, and
@@ -3996,6 +4076,18 @@ async def update_hermes():
             "update_command": recommended_update_command_for_method(install_method),
         }
 
+    if install_method in {"nix", "nixos"}:
+        message = recommended_update_command_for_method(install_method)
+        _record_completed_action("hermes-update", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "hermes-update",
+            "error": "nix_update_unsupported",
+            "message": message,
+            "update_command": message,
+        }
+
     try:
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:
@@ -4065,18 +4157,18 @@ async def check_hermes_update(force: bool = False):
     ``POST /api/hermes/update`` actually runs ``hermes update``.
 
     Returns:
-        install_method: 'git' | 'pip' | 'docker' | 'nixos' | 'homebrew' | ...
+        install_method: 'git' | 'docker' | 'nix' | 'nixos' | 'unknown'
         current_version: installed Hermes version string
         behind: commits behind upstream (>=1), 0 if up to date,
-                -1 if behind by an unknown count (nix/pypi), or null if the
+                -1 if behind by an unknown count, or null if the
                 check could not run (offline, no remote, etc.)
         update_available: convenience bool (behind is non-zero and not null)
         can_apply: True when the dashboard's update button can apply it
-                   in place (git/pip); False for docker/nix/homebrew where the
+                   in place (git); False for other install methods where the
                    user must update out-of-band
         update_command: the recommended command for this install method
         message: human-readable guidance for non-applyable methods
-        commits: for git/pip installs that are behind, a list of the commits
+        commits: for git installs that are behind, a list of the commits
                  the local checkout is behind upstream by — each
                  {sha, summary, author, at}. Absent/empty otherwise. The
                  desktop's remote update overlay renders this as "what's
@@ -4104,7 +4196,7 @@ async def check_hermes_update(force: bool = False):
         "current_version": __version__,
         "behind": None,
         "update_available": False,
-        "can_apply": install_method in ("git", "pip"),
+        "can_apply": install_method == "git",
         "update_command": update_command,
         "message": None,
     }
@@ -4113,7 +4205,7 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = format_docker_update_message()
         return payload
 
-    # banner.check_for_updates() handles git / pypi / nix-revision paths and
+    # banner.check_for_updates() handles git / nix-revision paths and
     # caches the result for 6h. ``force`` busts the cache so the "Check now"
     # button reflects reality immediately.
     try:
@@ -4138,9 +4230,9 @@ async def check_hermes_update(force: bool = False):
     else:
         payload["update_available"] = True
         # Enrich with the actual commits we're behind by, so the desktop's
-        # remote update overlay can show "what's changed". git/pip only;
+        # remote update overlay can show "what's changed". git only;
         # best-effort (empty list on any failure).
-        if install_method in ("git", "pip"):
+        if install_method == "git":
             payload["commits"] = await asyncio.to_thread(_recent_upstream_commits)
 
     return payload
@@ -4191,10 +4283,14 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
             tmp.write(audio_bytes)
             temp_path = tmp.name
 
-        from tools.transcription_tools import transcribe_audio
+        # transcribe_recording (not raw transcribe_audio): filters Whisper
+        # hallucinations and maps provider "empty transcript" errors to a
+        # successful empty result — the live voice loop treats "" as silence
+        # and re-listens instead of surfacing a 400 on every quiet turn.
+        from tools.voice_mode import transcribe_recording
 
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, transcribe_audio, temp_path)
+        result = await loop.run_in_executor(None, transcribe_recording, temp_path)
     except HTTPException:
         raise
     except Exception as exc:
@@ -4384,6 +4480,151 @@ async def speak_text(payload: TTSSpeakRequest):
         "mime_type": mime_type,
         "provider": result.get("provider"),
     }
+
+
+def _split_text_for_speak_stream(text: str, cap: int) -> list:
+    """Split *text* into provider-cap-sized pieces on sentence boundaries."""
+    from tools.tts_streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
+
+    cap = cap if cap and cap > 0 else 4000
+    pieces, buf = [], ""
+    for sentence in filter(str.strip, _SENTENCE_BOUNDARY_RE.split(text)):
+        while len(sentence) > cap:
+            pieces.append(sentence[:cap])
+            sentence = sentence[cap:]
+        if buf and len(buf) + len(sentence) + 1 > cap:
+            pieces.append(buf)
+            buf = sentence
+        else:
+            buf = f"{buf} {sentence}" if buf else sentence
+    if buf:
+        pieces.append(buf)
+    return pieces
+
+
+@app.websocket("/api/audio/speak-stream")
+async def speak_stream_ws(ws: "WebSocket") -> None:
+    """Streaming TTS for the desktop: text in, raw int16 PCM frames out.
+
+    The socket is a per-reply speech *session*: the client feeds text
+    incrementally as LLM deltas arrive, the server cuts sentences
+    (``SentenceChunker`` — same cutter as the CLI/TUI speaker pipeline) and
+    streams each one's PCM the moment it's ready. Speech overlaps generation,
+    exactly like the token→sentence→TTS pipelining the realtime-voice
+    literature converges on.
+
+    Protocol:
+      client → ``{"text": "..."}`` frames (incremental; may combine with done),
+               ``{"done": true}`` when the reply is complete,
+               ``{"stop": true}`` or disconnect = barge-in
+      server → ``{"type": "start", "sample_rate": N, "channels": 1}``,
+               binary PCM frames, then ``{"type": "end"}``
+      server → ``{"type": "fallback"}`` when the configured provider has no
+               chunked API — the client uses the POST endpoint instead.
+    """
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+
+    loop = asyncio.get_running_loop()
+
+    def _resolve():
+        from tools.tts_streaming import resolve_streaming_provider
+        from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
+
+        cfg = _load_tts_config()
+        streamer = resolve_streaming_provider(cfg)
+        cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
+        return streamer, cap
+
+    try:
+        streamer, cap = await loop.run_in_executor(None, _resolve)
+    except Exception:
+        _log.exception("speak-stream provider resolution failed")
+        streamer, cap = None, 0
+    if streamer is None:
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "fallback"})
+            await ws.close()
+        return
+
+    await ws.send_json(
+        {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
+    )
+
+    stop = threading.Event()
+    text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
+    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+
+    def _produce():
+        from tools.tts_streaming import SentenceChunker
+        from tools.tts_tool import _strip_markdown_for_tts
+
+        chunker = SentenceChunker()
+
+        def _sentences():
+            while not stop.is_set():
+                delta = text_q.get()
+                if delta is None:
+                    yield from chunker.flush()
+                    return
+                yield from chunker.feed(delta)
+
+        try:
+            for sentence in _sentences():
+                cleaned = _strip_markdown_for_tts(sentence)
+                if not cleaned:
+                    continue
+                for piece in _split_text_for_speak_stream(cleaned, cap):
+                    for chunk in streamer.stream(piece):
+                        if stop.is_set():
+                            return
+                        loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+        except Exception as exc:
+            _log.warning("speak-stream synthesis failed: %s", exc)
+        finally:
+            loop.call_soon_threadsafe(chunks.put_nowait, None)
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    async def _pump_client():
+        # Text frames feed synthesis; done ends the text; stop/disconnect
+        # (or any unparseable frame) is barge-in.
+        try:
+            while True:
+                frame = json.loads(await ws.receive_text())
+                if frame.get("text"):
+                    text_q.put(str(frame["text"]))
+                if frame.get("stop"):
+                    break
+                if frame.get("done"):
+                    text_q.put(None)
+        except Exception:
+            pass
+        stop.set()
+        text_q.put(None)  # unblock the producer
+
+    pump = asyncio.ensure_future(_pump_client())
+    try:
+        while True:
+            chunk = await chunks.get()
+            if chunk is None:
+                break
+            await ws.send_bytes(chunk)
+        if not stop.is_set():
+            await ws.send_json({"type": "end"})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        stop.set()
+        text_q.put(None)
+        pump.cancel()
+        with contextlib.suppress(Exception):
+            await ws.close()
 
 
 @app.get("/api/actions/{name}/status")
@@ -6187,11 +6428,11 @@ async def get_defaults():
 
 @app.get("/api/config/schema")
 async def get_schema(profile: Optional[str] = None):
-    # Voice provider options are merged per-request so user-declared
-    # command providers (tts.providers.* / stt.providers.*) added after
-    # server start still show up, scoped to the requested profile's config.
+    # Discovery-driven provider options (voice command providers + memory
+    # provider plugins) are merged per-request so providers added after server
+    # start still show up, scoped to the requested profile's config.
     with _config_profile_scope(profile):
-        fields = _schema_with_voice_provider_options()
+        fields = _schema_with_dynamic_provider_options()
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 

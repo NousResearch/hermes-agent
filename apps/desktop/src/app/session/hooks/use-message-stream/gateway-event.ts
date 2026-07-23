@@ -1,3 +1,4 @@
+import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -11,6 +12,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { playCompletionSound } from '@/lib/completion-sound'
 import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
@@ -20,6 +22,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -45,6 +48,9 @@ import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
+// Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
+// module graph into the gateway event hot path.
+import { ingestBackendSkin } from '@/themes/backend-sync'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
@@ -66,6 +72,7 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
 ])
 
 interface GatewayEventDeps {
+  activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
@@ -98,6 +105,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const {
     appendAssistantDelta,
     appendReasoningDelta,
+    activeGatewayProfile,
     activeSessionIdRef,
     compactedTurnRef,
     lastCwdInfoSessionRef,
@@ -181,6 +189,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       if (event.type === 'gateway.ready') {
+        // Seed the active skin into the desktop theme registry without applying,
+        // so a fresh connect never overrides the user's persisted desktop theme.
+        ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+
+        return
+      } else if (event.type === 'skin.changed') {
+        // A runtime skin switch (Hermes activating an authored skin, or `/skin`
+        // on another surface). Only the active profile's change repaints.
+        const fromActiveProfile =
+          !event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+
+        if (fromActiveProfile) {
+          ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
+        }
+
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
@@ -353,7 +376,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (modelValueChanged || providerValueChanged) {
           void queryClient.invalidateQueries({
-            queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
+            queryKey:
+              explicitSid && sessionId ? modelOptionsQueryKey(activeGatewayProfile, sessionId) : ['model-options']
           })
         }
       } else if (event.type === 'message.start') {
@@ -727,10 +751,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'pane.reveal') {
+        // Agent revealed a pane via the desktop-gated focus_pane tool, in
+        // response to an explicit user request. Active session only — a
+        // background turn must never move the user's focus (desktop AGENTS.md:
+        // offer, don't hijack).
+        if (isActiveEvent) {
+          revealDesktopPane(payload?.pane ?? '')
+        }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'compacted') {
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
@@ -818,6 +853,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      activeGatewayProfile,
       compactedTurnRef,
       completeAssistantMessage,
       failAssistantMessage,

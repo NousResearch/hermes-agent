@@ -7739,6 +7739,33 @@ def _make_tc_delta(index=0, tc_id=None, name=None, arguments=None):
     return SimpleNamespace(index=index, id=tc_id, function=func)
 
 
+def _provider_sse_429_text(
+    code="Throttling.AllocationQuota",
+    message="Allocated quota exceeded.",
+):
+    return (
+        "id:1\n"
+        "event:error\n"
+        ":HTTP_STATUS/429\n"
+        f'data:{{"request_id":"req-123","code":"{code}","message":"{message}"}}'
+    )
+
+
+def _provider_sse_error_text(status=503, code="ServiceUnavailable", message="Busy"):
+    return (
+        "event: error\n"
+        f'data:{{"status":{status},"request_id":"req-456","code":"{code}",'
+        f'"message":"{message}"}}'
+    )
+
+
+def _provider_bare_sse_error_text(
+    code="rate_limit_exceeded",
+    message="Rate limit exceeded.",
+):
+    return f'data: {{"error":{{"code":"{code}","message":"{message}"}}}}\n'
+
+
 class TestStreamingApiCall:
     """Tests for _streaming_api_call — voice TTS streaming pipeline."""
 
@@ -7761,6 +7788,158 @@ class TestStreamingApiCall:
         callback.assert_any_call("Hel")
         callback.assert_any_call("lo ")
         callback.assert_any_call("World")
+
+    def test_error_finish_http_status_429_stream_raises_rate_limit(self, agent):
+        error_text = _provider_sse_429_text()
+        chunks = [
+            _make_chunk(content=error_text[:5]),
+            _make_chunk(content=error_text[5:]),
+            _make_chunk(finish_reason="error_finish"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({"messages": []})
+
+        exc = exc_info.value
+        assert getattr(exc, "status_code", None) == 429
+        assert "Throttling.AllocationQuota" in str(exc)
+        assert getattr(exc, "body", {})["error"]["code"] == "Throttling.AllocationQuota"
+        agent.stream_delta_callback.assert_not_called()
+
+    def test_error_finish_sse_data_status_raises_provider_status(self, agent):
+        chunks = [
+            _make_chunk(content=_provider_sse_error_text()),
+            _make_chunk(finish_reason="error_finish"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({"messages": []})
+
+        exc = exc_info.value
+        assert getattr(exc, "status_code", None) == 503
+        assert getattr(exc, "body", {})["error"]["code"] == "ServiceUnavailable"
+        assert "Busy" in str(exc)
+        agent.stream_delta_callback.assert_not_called()
+
+    def test_error_finish_bare_sse_error_payload_raises_provider_error(self, agent):
+        chunks = [
+            _make_chunk(content=_provider_bare_sse_error_text()),
+            _make_chunk(finish_reason="error_finish"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({"messages": []})
+
+        exc = exc_info.value
+        assert getattr(exc, "status_code", None) is None
+        assert getattr(exc, "body", {})["error"]["code"] == "rate_limit_exceeded"
+        assert "Rate limit exceeded" in str(exc)
+        agent.stream_delta_callback.assert_not_called()
+
+    def test_provider_error_prefix_like_normal_text_flushes_to_callback(self, agent):
+        chunks = [
+            _make_chunk(content="id: product-42\n"),
+            _make_chunk(content="is ready"),
+            _make_chunk(finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == "id: product-42\nis ready"
+        assert [
+            call.args[0] for call in agent.stream_delta_callback.call_args_list
+        ] == ["id: product-42\n", "is ready"]
+
+    def test_full_bailian_sse_error_example_with_stop_is_literal_text(self, agent):
+        error_text = _provider_sse_429_text(message="Example error payload.")
+        split_at = len(error_text) // 2
+        chunks = [
+            _make_chunk(content=error_text[:split_at]),
+            _make_chunk(content=error_text[split_at:]),
+            _make_chunk(finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == error_text
+        assert [
+            call.args[0] for call in agent.stream_delta_callback.call_args_list
+        ] == [error_text[:split_at], error_text[split_at:]]
+
+    def test_bare_sse_error_payload_with_stop_is_literal_text(self, agent):
+        error_text = _provider_bare_sse_error_text(message="Example error payload.")
+        chunks = [
+            _make_chunk(content=error_text),
+            _make_chunk(finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == error_text
+        assert [
+            call.args[0] for call in agent.stream_delta_callback.call_args_list
+        ] == [error_text]
+
+    def test_bare_sse_error_payload_without_finish_reason_is_literal_text(self, agent):
+        error_text = _provider_bare_sse_error_text(message="Example error payload.")
+        chunks = [_make_chunk(content=error_text)]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == error_text
+        assert resp.choices[0].finish_reason == "stop"
+        assert [
+            call.args[0] for call in agent.stream_delta_callback.call_args_list
+        ] == [error_text]
+
+    def test_run_conversation_retries_stream_error_finish_rate_limit(self, agent):
+        first_attempt = iter([
+            _make_chunk(content=_provider_sse_429_text()),
+            _make_chunk(finish_reason="error_finish"),
+        ])
+        second_attempt = iter([
+            _make_chunk(content="Recovered"),
+            _make_chunk(finish_reason="stop"),
+        ])
+        agent.client.chat.completions.create.side_effect = [first_attempt, second_attempt]
+        agent.stream_delta_callback = MagicMock()
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+
+        import agent.conversation_loop as _conversation_loop
+
+        with (
+            patch.object(_conversation_loop, "jittered_backoff", return_value=0.0),
+            patch.object(
+                _conversation_loop,
+                "adaptive_rate_limit_backoff",
+                return_value=(0.0, None),
+            ),
+            patch.object(_conversation_loop.time, "sleep", return_value=None),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        assert agent.client.chat.completions.create.call_count == 2
+        assert not any(
+            "HTTP_STATUS/429" in str(call.args[0])
+            for call in agent.stream_delta_callback.call_args_list
+        )
 
     def test_tool_call_accumulation(self, agent):
         # Per OpenAI streaming spec, function names are delivered atomically

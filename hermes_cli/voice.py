@@ -217,6 +217,7 @@ from tools.voice_mode import (
     create_audio_recorder,
     is_whisper_hallucination,
     play_audio_file,
+    stop_playback,
     transcribe_recording,
 )
 
@@ -296,6 +297,8 @@ _continuous_recorder: Any = None
 # leak into the mic.
 _tts_playing = threading.Event()
 _tts_playing.set()  # initially "not playing"
+_tts_cancel_lock = threading.Lock()
+_tts_cancel_generation = 0
 _continuous_on_transcript: Optional[Callable[[str], None]] = None
 _continuous_on_status: Optional[Callable[[str], None]] = None
 _continuous_on_silent_limit: Optional[Callable[[], None]] = None
@@ -737,6 +740,40 @@ def _continuous_on_silence() -> None:
 # ── TTS API ──────────────────────────────────────────────────────────
 
 
+def _tts_cancel_token() -> int:
+    with _tts_cancel_lock:
+        return _tts_cancel_generation
+
+
+def _tts_was_cancelled(token: int) -> bool:
+    with _tts_cancel_lock:
+        return token != _tts_cancel_generation
+
+
+def stop_speaking() -> None:
+    """Interrupt active or pending TTS playback."""
+    global _tts_cancel_generation
+
+    with _tts_cancel_lock:
+        _tts_cancel_generation += 1
+    _tts_playing.set()
+    try:
+        stop_playback()
+    except Exception as e:
+        logger.warning("failed to stop voice playback: %s", e)
+
+
+def _cleanup_tts_output(mp3_path: str) -> None:
+    try:
+        if os.path.isfile(mp3_path):
+            os.unlink(mp3_path)
+        ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+        if os.path.isfile(ogg_path):
+            os.unlink(ogg_path)
+    except OSError:
+        pass
+
+
 def speak_text(text: str) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
@@ -757,6 +794,8 @@ def speak_text(text: str) -> None:
     import re
     import tempfile
     import time
+
+    cancel_token = _tts_cancel_token()
 
     # Cancel any live capture before we open the speakers — otherwise the
     # last ~200ms of the user's turn tail + the first syllables of our TTS
@@ -809,16 +848,15 @@ def speak_text(text: str) -> None:
         _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
         text_to_speech_tool(text=tts_text, output_path=mp3_path)
 
+        if _tts_was_cancelled(cancel_token):
+            _debug("speak_text: playback cancelled before audio output")
+            _cleanup_tts_output(mp3_path)
+            return
+
         if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
             _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
             play_audio_file(mp3_path)
-            try:
-                os.unlink(mp3_path)
-                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                if os.path.isfile(ogg_path):
-                    os.unlink(ogg_path)
-            except OSError:
-                pass
+            _cleanup_tts_output(mp3_path)
         else:
             _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
     except Exception as e:

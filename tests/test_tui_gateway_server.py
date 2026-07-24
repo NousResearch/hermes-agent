@@ -1099,7 +1099,9 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         sys.modules,
         "hermes_cli.voice",
         types.SimpleNamespace(
-            start_continuous=fake_start_continuous, stop_continuous=lambda: None
+            start_continuous=fake_start_continuous,
+            stop_continuous=lambda: None,
+            stop_speaking=lambda: None,
         ),
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
@@ -1152,6 +1154,40 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
             captured["silence_duration"] == 3.0
         ), f"bool silence_duration leaked through for {bad_bool_cfg!r}"
         assert captured["auto_restart"] is False
+
+
+def test_voice_record_start_stops_tts_before_recording(monkeypatch):
+    calls: list[str] = []
+
+    def fake_stop_speaking():
+        calls.append("stop_speaking")
+
+    def fake_start_continuous(**_kwargs):
+        calls.append("start_continuous")
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=fake_start_continuous,
+            stop_continuous=lambda **_kwargs: None,
+            stop_speaking=fake_stop_speaking,
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-stop-tts",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        }
+    )
+
+    assert resp["result"]["status"] == "recording"
+    assert calls == ["stop_speaking", "start_continuous"]
 
 
 def test_voice_record_stop_forces_transcription(monkeypatch):
@@ -1211,6 +1247,7 @@ def test_voice_record_start_reports_busy_when_stop_is_in_progress(monkeypatch):
         types.SimpleNamespace(
             start_continuous=lambda **_kwargs: False,
             stop_continuous=lambda **_kwargs: None,
+            stop_speaking=lambda: None,
         ),
     )
     monkeypatch.setenv("HERMES_VOICE", "1")

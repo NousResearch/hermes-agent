@@ -16404,7 +16404,12 @@ def _(rid, params: dict) -> dict:
                 global _voice_event_sid
                 _voice_event_sid = params.get("session_id") or _voice_event_sid
 
-            from hermes_cli.voice import start_continuous
+            from hermes_cli.voice import start_continuous, stop_speaking
+
+            try:
+                stop_speaking()
+            except Exception as e:
+                logger.warning("voice: stop_speaking failed before recording: %s", e)
 
             # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)
             # must not crash /voice with a 5025 — fall back to VAD defaults.

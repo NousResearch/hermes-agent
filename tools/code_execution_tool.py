@@ -715,7 +715,7 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _resolve_container_task_id, _build_container_config,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -757,15 +757,7 @@ def _get_or_create_env(task_id: str):
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_network": config.get("docker_network", True),
-            }
+            container_config = _build_container_config(config)
 
         ssh_config = None
         if env_type == "ssh":

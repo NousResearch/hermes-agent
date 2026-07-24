@@ -11153,6 +11153,12 @@ def _session_latest_descendant(session_id: str, db):
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
+
+    Only plain continuation children are followed. Branch (``_branched_from``),
+    delegate/subagent (``_delegate_from``), and tool children also carry
+    ``parent_session_id`` but are separate transcripts — following them would
+    resume e.g. a subagent's session instead of the chat the user selected.
+    Same exclusion guards as ``SessionDB.resolve_resume_session_id``.
     """
     def row_get(row, key, index):
         if isinstance(row, dict):
@@ -11186,6 +11192,9 @@ def _session_latest_descendant(session_id: str, db):
                 SELECT s.id, s.parent_session_id, s.started_at
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                WHERE json_extract(COALESCE(s.model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(s.source, '') != 'tool'
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """,
@@ -11200,11 +11209,27 @@ def _session_latest_descendant(session_id: str, db):
     else:
         rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
 
+    def lineage_excluded(row) -> bool:
+        # Mirror the CTE guard for the compact-rows fallback path. Rows from
+        # the CTE carry neither field, so this is a no-op there; compact rows
+        # that omit source/model_config simply aren't filtered (rare path).
+        if (row.get("source") or "") == "tool":
+            return True
+        mc = row.get("model_config")
+        if isinstance(mc, str):
+            try:
+                mc = json.loads(mc)
+            except (json.JSONDecodeError, TypeError):
+                mc = None
+        return isinstance(mc, dict) and (
+            "_branched_from" in mc or "_delegate_from" in mc
+        )
+
     children = {}
     for row in rows:
         rid = row.get("id")
         parent = row.get("parent_session_id")
-        if rid and parent:
+        if rid and parent and not lineage_excluded(row):
             children.setdefault(parent, []).append(row)
 
     def started(row):

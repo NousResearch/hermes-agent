@@ -2046,6 +2046,99 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "cyc-b"
 
+    def test_latest_descendant_skips_delegate_branch_tool_children(self):
+        """Branch/delegate/tool children carry parent_session_id but are not
+        resume continuations: resuming a chat that spawned a subagent must
+        reload the chat, not the subagent transcript (same guards as
+        SessionDB.resolve_resume_session_id)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="chat-root", source="cli")
+            db.create_session(
+                session_id="delegate-child",
+                source="subagent",
+                parent_session_id="chat-root",
+                model_config={"_delegate_from": "chat-root"},
+            )
+            db.create_session(
+                session_id="branch-child",
+                source="cli",
+                parent_session_id="chat-root",
+                model_config={"_branched_from": "chat-root"},
+            )
+            db.create_session(
+                session_id="tool-child",
+                source="tool",
+                parent_session_id="chat-root",
+            )
+            # The excluded child's own subtree must be unreachable too: the
+            # walk must never enroll descendants of a skipped child.
+            db.create_session(
+                session_id="delegate-grandchild",
+                source="cli",
+                parent_session_id="delegate-child",
+            )
+            base = 1_700_000_000
+            ordered = [
+                "chat-root",
+                "delegate-child",
+                "branch-child",
+                "tool-child",
+                "delegate-grandchild",
+            ]
+            for i, sid in enumerate(ordered):
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (base + i * 100, sid),
+                )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/chat-root/latest-descendant")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == "chat-root"
+        assert body["changed"] is False
+
+    def test_latest_descendant_still_follows_plain_children(self):
+        """Positive control for the lineage guard: a plain continuation child
+        (e.g. created by /model) is still followed to the newest leaf, even
+        when a newer delegate sibling exists."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="plain-root", source="cli")
+            db.create_session(
+                session_id="plain-tip",
+                source="cli",
+                parent_session_id="plain-root",
+            )
+            db.create_session(
+                session_id="delegate-decoy",
+                source="subagent",
+                parent_session_id="plain-root",
+                model_config={"_delegate_from": "plain-root"},
+            )
+            base = 1_700_000_000
+            for i, sid in enumerate(["plain-root", "plain-tip", "delegate-decoy"]):
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (base + i * 100, sid),
+                )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/plain-root/latest-descendant")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == "plain-tip"
+        assert body["path"] == ["plain-root", "plain-tip"]
+
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
         from hermes_cli import profiles as profiles_mod

@@ -319,6 +319,7 @@ def test_runtime_main_sync_happens_after_restore():
             "api_key": "primary-key",
             "api_mode": "anthropic_messages",
             "auth_mode": "",
+            "default_headers": None,
             "requested_provider": "anthropic",
         },
     )]

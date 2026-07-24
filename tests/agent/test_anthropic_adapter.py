@@ -180,6 +180,36 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
+    def test_custom_headers_merge_with_anthropic_defaults(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("agent.anthropic_adapter.get_model_custom_headers", return_value={"X-Source": "hermes-agent"}):
+            build_anthropic_client("sk-ant...hing")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["X-Source"] == "hermes-agent"
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "interleaved-thinking-2025-05-14" in betas
+
+    def test_default_headers_override_param_merges_with_config_headers(self):
+        """default_headers kwarg should be merged with model.custom_headers."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("agent.anthropic_adapter.get_model_custom_headers", return_value={"X-Config": "from-config"}):
+            build_anthropic_client("sk-ant-api03-x", default_headers={"X-Provider": "from-provider"})
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            # Both config and provider headers should be present
+            assert kwargs["default_headers"]["X-Config"] == "from-config"
+            assert kwargs["default_headers"]["X-Provider"] == "from-provider"
+            # Provider header should win on conflict (last-write-wins in merge)
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "interleaved-thinking-2025-05-14" in betas
+
+    def test_default_headers_override_wins_over_config_on_conflict(self):
+        """When default_headers and model.custom_headers conflict, default_headers wins."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("agent.anthropic_adapter.get_model_custom_headers", return_value={"X-Source": "from-config"}):
+            build_anthropic_client("sk-ant-api03-x", default_headers={"X-Source": "from-provider"})
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["X-Source"] == "from-provider"
+
     def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
         """Azure AI Foundry's /anthropic endpoint requires Authorization: Bearer.
 

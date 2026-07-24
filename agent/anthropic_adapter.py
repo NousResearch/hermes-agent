@@ -21,6 +21,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agent.client_headers import get_model_custom_headers, merge_default_headers
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
@@ -653,6 +654,7 @@ def _build_anthropic_client_with_bearer_hook(
     base_url: str = None,
     timeout: float = None,
     *,
+    default_headers: Dict[str, str] = None,
     drop_context_1m_beta: bool = False,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
@@ -670,6 +672,11 @@ def _build_anthropic_client_with_bearer_hook(
     ``AnthropicError`` at construction if neither ``api_key`` nor
     ``auth_token`` is set — but the hook overrides it per-request so
     the placeholder value never reaches Azure.
+
+    If *default_headers* is provided, these are merged with headers from
+    the matching ``custom_providers[].extra_headers`` entry so callable-token
+    clients (e.g. Azure Foundry Entra ID) also receive configured custom
+    headers.
     """
     _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
@@ -721,6 +728,22 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    # Merge provider-level extra_headers (upstream contract) and caller-supplied
+    # default_headers (propagated from main_runtime) so callable-token clients
+    # also receive configured custom headers.
+    _carried_headers: Dict[str, str] = {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        _carried_headers = get_custom_provider_extra_headers(normalized_base_url or "")
+    except Exception:
+        pass
+    if default_headers:
+        _carried_headers = merge_default_headers(_carried_headers, default_headers)
+    if _carried_headers:
+        kwargs["default_headers"] = merge_default_headers(
+            kwargs.get("default_headers"), _carried_headers,
+        )
+
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
@@ -729,6 +752,7 @@ def build_anthropic_client(
     base_url: str = None,
     timeout: float = None,
     *,
+    default_headers: Dict[str, str] = None,
     drop_context_1m_beta: bool = False,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
@@ -750,6 +774,11 @@ def build_anthropic_client(
     Anthropic-compatible providers respect the same knob as OpenAI-wire
     providers.
 
+    If *default_headers* is provided, these are merged (last-write-wins) with
+    headers from ``model.custom_headers`` in config.yaml.  This lets callers
+    pass provider-specific headers (e.g. from ``custom_providers[].custom_headers``)
+    that are not available in the global config.
+
     ``drop_context_1m_beta=True`` strips ``context-1m-2025-08-07`` from the
     client-level ``anthropic-beta`` header. Used by the reactive OAuth retry
     path in ``run_agent.py`` when a subscription rejects the beta; leave at
@@ -770,6 +799,7 @@ def build_anthropic_client(
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
+            default_headers=default_headers,
             drop_context_1m_beta=drop_context_1m_beta,
         )
 
@@ -778,6 +808,18 @@ def build_anthropic_client(
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    # Read provider-level extra_headers (upstream contract) and also fall back
+    # to model.custom_headers for backward compat with pre-existing configs.
+    # Both are merged with caller-supplied default_headers.
+    _provider_headers = {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        _provider_headers = get_custom_provider_extra_headers(normalized_base_url or "")
+    except Exception:
+        pass
+    custom_headers = merge_default_headers(get_model_custom_headers(), _provider_headers)
+    if default_headers:
+        custom_headers = merge_default_headers(custom_headers, default_headers)
     if normalized_base_url:
         import re as _re
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
@@ -811,10 +853,14 @@ def build_anthropic_client(
         # to be recognized as a valid Coding Agent. Without it, returns 403.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
         kwargs["api_key"] = api_key
-        kwargs["default_headers"] = {
-            "User-Agent": "claude-code/0.1.0",
-            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
-        }
+        kwargs["default_headers"] = merge_default_headers(
+            {
+                "User-Agent": "claude-code/0.1.0",
+                **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} ),
+            },
+            custom_headers,
+            default_headers,
+        )
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints
@@ -824,7 +870,12 @@ def build_anthropic_client(
         # Anthropic OAuth/setup tokens.
         kwargs["auth_token"] = api_key
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            kwargs["default_headers"] = merge_default_headers(
+                {"anthropic-beta": ",".join(common_betas)},
+                custom_headers,
+            )
+        elif custom_headers:
+            kwargs["default_headers"] = dict(custom_headers)
     elif _is_third_party_anthropic_endpoint(base_url):
         # Third-party proxies (Microsoft Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
@@ -832,23 +883,36 @@ def build_anthropic_client(
         # misclassified as OAuth tokens.
         kwargs["api_key"] = api_key
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            kwargs["default_headers"] = merge_default_headers(
+                {"anthropic-beta": ",".join(common_betas)},
+                custom_headers,
+            )
+        elif custom_headers:
+            kwargs["default_headers"] = dict(custom_headers)
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
         all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
-        kwargs["default_headers"] = {
-            "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
-            "x-app": "cli",
-        }
+        kwargs["default_headers"] = merge_default_headers(
+            {
+                "anthropic-beta": ",".join(all_betas),
+                "user-agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
+                "x-app": "cli",
+            },
+            custom_headers,
+        )
     else:
         # Regular API key → x-api-key header + common betas
         kwargs["api_key"] = api_key
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            kwargs["default_headers"] = merge_default_headers(
+                {"anthropic-beta": ",".join(common_betas)},
+                custom_headers,
+            )
+        elif custom_headers:
+            kwargs["default_headers"] = dict(custom_headers)
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -926,13 +990,17 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
         return None
 
-    raw = result.stdout.strip()
+    stdout = getattr(result, "stdout", "")
+    if not isinstance(stdout, str):
+        logger.debug("Keychain: credentials payload is not text")
+        return None
+    raw = stdout.strip()
     if not raw:
         return None
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 

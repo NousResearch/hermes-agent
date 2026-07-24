@@ -361,6 +361,45 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
     )
 
 
+def test_background_review_fork_inherits_runtime_default_headers(monkeypatch):
+    captured_kwargs: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._current_main_runtime = lambda: {
+        "model": agent.model,
+        "provider": agent.provider,
+        "base_url": "https://relay.example/v1",
+        "api_key": "sk-relay",
+        "api_mode": "chat_completions",
+        "default_headers": {"X-Relay": "secret"},
+    }
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert captured_kwargs["default_headers"] == {"X-Relay": "secret"}
+
+
 # ---------------------------------------------------------------------------
 # memory_notifications mode: off | on | verbose
 # ---------------------------------------------------------------------------

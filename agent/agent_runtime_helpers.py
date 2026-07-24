@@ -1253,6 +1253,7 @@ def try_recover_primary_transport(
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=(agent._client_kwargs.get("default_headers") or getattr(agent, "_default_headers", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1445,6 +1446,7 @@ def restore_primary_runtime(agent) -> bool:
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=(agent._client_kwargs.get("default_headers") or getattr(agent, "_default_headers", None)),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1463,6 +1465,7 @@ def restore_primary_runtime(agent) -> bool:
             base_url=rt["compressor_base_url"],
             api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"],
+            default_headers=rt.get("compressor_default_headers"),
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
@@ -2036,7 +2039,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+_DEFAULT_HEADERS_UNSET = object()
+
+
+def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode='', default_headers=_DEFAULT_HEADERS_UNSET):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2055,6 +2061,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Determine api_mode if not provided ──
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url)
+
+    if default_headers is not _DEFAULT_HEADERS_UNSET:
+        agent._default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -2230,6 +2239,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=getattr(agent, "_default_headers", None),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None
@@ -2337,6 +2347,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
+            default_headers=getattr(agent, "_default_headers", None),
         )
 
     # ── Re-resolve reasoning_config from per-model override ──
@@ -2388,6 +2399,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_context_length": _cc.context_length if _cc else 0,
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+        "compressor_default_headers": getattr(_cc, "default_headers", None) if _cc else None,
     }
     if api_mode == "anthropic_messages":
         agent._primary_runtime.update({

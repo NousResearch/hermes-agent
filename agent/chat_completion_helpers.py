@@ -1808,12 +1808,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+            from agent.client_headers import merge_default_headers
             effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+            fb_headers = getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "_default_headers", None)
+            if not fb_headers:
+                fb_headers = getattr(fb_client, "default_headers", None)
+            effective_headers = merge_default_headers(fb_headers, getattr(agent, "_default_headers", None))
+            agent._default_headers = effective_headers if effective_headers else getattr(agent, "_default_headers", None)
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
+                default_headers=effective_headers or getattr(agent, "_default_headers", None),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
             agent.client = None
@@ -1888,6 +1895,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
                 provider=agent.provider,
                 api_mode=agent.api_mode,
+                default_headers=(agent._client_kwargs.get("default_headers") or getattr(agent, "_default_headers", None)),
             )
 
         # Re-resolve reasoning_config for the new fallback model (Closes #21256).

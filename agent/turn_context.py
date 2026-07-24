@@ -361,6 +361,7 @@ def build_turn_context(
     # null; rebuilding from scratch" warning and a needless first-turn prefix
     # cache miss. (Issue #45499.)
 
+
     # Tag log records on this thread with the session ID for ``hermes logs``.
     set_session_context(agent.session_id)
 
@@ -382,6 +383,7 @@ def build_turn_context(
             api_key=getattr(agent, "api_key", "") or "",
             api_mode=getattr(agent, "api_mode", "") or "",
             auth_mode=getattr(agent, "auth_mode", "") or "",
+            default_headers=getattr(agent, "_default_headers", None),
         )
     except Exception:
         pass

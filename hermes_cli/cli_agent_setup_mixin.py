@@ -90,6 +90,7 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        resolved_default_headers = runtime.get("default_headers")
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -125,12 +126,14 @@ class CLIAgentSetupMixin:
             or resolved_api_mode != self.api_mode
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
+            or resolved_default_headers != getattr(self, "_default_headers", None)
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
+        self._default_headers = resolved_default_headers
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -200,6 +203,7 @@ class CLIAgentSetupMixin:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "default_headers": getattr(self, "_default_headers", None),
         }
         route = {
             "model": self.model,
@@ -212,6 +216,7 @@ class CLIAgentSetupMixin:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                tuple(sorted((runtime.get("default_headers") or {}).items())),
             ),
         }
 
@@ -355,6 +360,7 @@ class CLIAgentSetupMixin:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "default_headers": getattr(self, "_default_headers", None),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -367,6 +373,7 @@ class CLIAgentSetupMixin:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                default_headers=runtime.get("default_headers"),
                 max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
@@ -442,6 +449,7 @@ class CLIAgentSetupMixin:
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                tuple(sorted((runtime.get("default_headers") or {}).items())),
             )
 
             # Force-create DB row on /title intent, then apply title.

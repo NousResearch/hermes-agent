@@ -46,6 +46,12 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # Optional extra HTTP headers to attach to provider requests.
+  # Useful for internal routing, auditing, or cost-center tagging.
+  # custom_headers:
+  #   X-Source: "hermes-agent"
+  #   X-Cost-Center: "team-ai-infra"
+
   # Azure Foundry keyless auth example:
   # provider: "azure-foundry"
   # base_url: "https://<resource>.openai.azure.com/openai/v1"

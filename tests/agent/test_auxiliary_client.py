@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     _OPENROUTER_MODEL,
     OPENROUTER_BASE_URL,
     _resolve_auto,
+    _to_async_client,
     _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -875,6 +876,95 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+def test_resolve_auto_passes_main_runtime_headers_to_main_provider(monkeypatch):
+    captured = {}
+
+    def fake_resolve(provider, model=None, **kwargs):
+        captured.update({"provider": provider, "model": model, **kwargs})
+        return object(), model
+
+    monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", fake_resolve)
+
+    client, model = _resolve_auto(
+        main_runtime={
+            "provider": "custom",
+            "model": "custom-model",
+            "base_url": "https://relay.example.com/v1",
+            "api_key": "relay-key",
+            "api_mode": "chat_completions",
+            "default_headers": {"X-Relay-Key": "relay-secret"},
+        }
+    )
+
+    assert client is not None
+    assert model == "custom-model"
+    assert captured["main_runtime"]["default_headers"] == {"X-Relay-Key": "relay-secret"}
+    assert captured["explicit_base_url"] == "https://relay.example.com/v1"
+
+
+@pytest.mark.asyncio
+async def test_async_call_llm_passes_main_runtime_headers_to_cached_client(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+            )
+
+    fake_client = SimpleNamespace(
+        base_url="https://relay.example.com/v1",
+        chat=SimpleNamespace(completions=FakeCompletions()),
+    )
+
+    def fake_get_cached_client(provider, model=None, **kwargs):
+        captured.update({"provider": provider, "model": model, **kwargs})
+        return fake_client, model or "custom-model"
+
+    monkeypatch.setattr("agent.auxiliary_client._get_cached_client", fake_get_cached_client)
+    monkeypatch.setattr(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        lambda task, provider, model, base_url, api_key: ("custom", "custom-model", None, None, "chat_completions"),
+    )
+
+    await async_call_llm(
+        task="session_search",
+        main_runtime={
+            "provider": "custom",
+            "model": "custom-model",
+            "base_url": "https://relay.example.com/v1",
+            "api_key": "relay-key",
+            "api_mode": "chat_completions",
+            "default_headers": {"X-Relay-Key": "relay-secret"},
+        },
+        messages=[{"role": "user", "content": "summarize"}],
+    )
+
+    assert captured["main_runtime"]["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+
+def test_to_async_client_preserves_sync_client_custom_headers(monkeypatch):
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    sync_client = SimpleNamespace(
+        api_key="relay-key",
+        base_url="https://relay.example.com/v1",
+        _custom_headers={"X-Relay-Key": "relay-secret"},
+    )
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+    async_client, model = _to_async_client(sync_client, "relay-model")
+
+    assert isinstance(async_client, FakeAsyncOpenAI)
+    assert model == "relay-model"
+    assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
 
 
 class TestReadCodexAccessToken:
@@ -4114,6 +4204,330 @@ class TestAnthropicCompatImageConversion:
         assert result[0]["content"][1]["type"] == "video"
 
 
+# ---------------------------------------------------------------------------
+# default_headers propagation through _normalize_main_runtime
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeMainRuntimeDefaultHeaders:
+    def test_preserves_default_headers_dict(self):
+        from agent.auxiliary_client import _normalize_main_runtime
+        runtime = {
+            "provider": "custom",
+            "model": "gpt-4o",
+            "base_url": "https://example.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "chat_completions",
+            "default_headers": {"X-Custom": "value", "X-Provider": "test"},
+        }
+        normalized = _normalize_main_runtime(runtime)
+        assert normalized["default_headers"] == {"X-Custom": "value", "X-Provider": "test"}
+
+    def test_strips_empty_default_headers(self):
+        from agent.auxiliary_client import _normalize_main_runtime
+        runtime = {
+            "provider": "openrouter",
+            "default_headers": {},
+        }
+        normalized = _normalize_main_runtime(runtime)
+        assert "default_headers" not in normalized
+
+    def test_strips_non_dict_default_headers(self):
+        from agent.auxiliary_client import _normalize_main_runtime
+        runtime = {
+            "provider": "openrouter",
+            "default_headers": "not-a-dict",
+        }
+        normalized = _normalize_main_runtime(runtime)
+        assert "default_headers" not in normalized
+
+    def test_sanitizes_default_headers_values(self):
+        from agent.auxiliary_client import _normalize_main_runtime
+        runtime = {
+            "provider": "custom",
+            "default_headers": {None: "value", "X-Valid": 123, "": "empty"},
+        }
+        normalized = _normalize_main_runtime(runtime)
+        # None key and empty key should be filtered; int value should be stringified
+        assert "X-Valid" in normalized.get("default_headers", {})
+        assert normalized["default_headers"]["X-Valid"] == "123"
+
+    def test_no_default_headers_in_runtime(self):
+        from agent.auxiliary_client import _normalize_main_runtime
+        runtime = {"provider": "openrouter", "model": "gpt-4o"}
+        normalized = _normalize_main_runtime(runtime)
+        assert "default_headers" not in normalized
+
+    def test_client_cache_key_freezes_default_headers_dict(self):
+        from agent.auxiliary_client import _client_cache_key
+
+        key = _client_cache_key(
+            "auto",
+            async_mode=False,
+            main_runtime={
+                "provider": "custom",
+                "model": "gpt-4o",
+                "default_headers": {"X-B": "2", "X-A": "1"},
+            },
+        )
+
+        assert hash(key)
+        runtime_key = key[5]
+        assert (("X-A", "1"), ("X-B", "2")) in runtime_key
+
+    def test_client_cache_key_separates_header_variants(self):
+        from agent.auxiliary_client import _client_cache_key
+
+        key_a = _client_cache_key(
+            "auto",
+            async_mode=False,
+            main_runtime={"provider": "custom", "default_headers": {"X-Test": "a"}},
+        )
+        key_b = _client_cache_key(
+            "auto",
+            async_mode=False,
+            main_runtime={"provider": "custom", "default_headers": {"X-Test": "b"}},
+        )
+
+        assert key_a != key_b
+
+
+class TestTryAnthropicDefaultHeaders:
+    """Verify that _try_anthropic propagates default_headers to build_anthropic_client."""
+
+    def test_default_headers_passed_to_build_anthropic_client(self):
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-testkey"), \
+             patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic
+            _try_anthropic(default_headers={"X-Provider": "from-provider"})
+            # build_anthropic_client is called internally, verify default_headers
+            # was passed by checking the SDK was called with the right kwargs
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["X-Provider"] == "from-provider"
+
+    def test_resolution_context_headers_used_as_fallback(self):
+        """When no default_headers param is given, _try_anthropic reads from module context."""
+        import agent.auxiliary_client as aux_mod
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-testkey"), \
+             patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic.return_value = MagicMock()
+            # Set the module-level context
+            aux_mod._resolution_default_headers = {"X-Context": "from-context"}
+            try:
+                aux_mod._try_anthropic()
+                kwargs = mock_sdk.Anthropic.call_args[1]
+                assert kwargs["default_headers"]["X-Context"] == "from-context"
+            finally:
+                aux_mod._resolution_default_headers = None
+
+    def test_explicit_default_headers_take_priority_over_context(self):
+        """Explicit default_headers parameter should override module-level context."""
+        import agent.auxiliary_client as aux_mod
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-testkey"), \
+             patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic.return_value = MagicMock()
+            aux_mod._resolution_default_headers = {"X-Context": "from-context"}
+            try:
+                aux_mod._try_anthropic(default_headers={"X-Explicit": "from-explicit"})
+                kwargs = mock_sdk.Anthropic.call_args[1]
+                assert kwargs["default_headers"]["X-Explicit"] == "from-explicit"
+                # Context header should NOT be present (explicit takes priority,
+                # not merged — _try_anthropic uses `or`, not merge)
+            finally:
+                aux_mod._resolution_default_headers = None
+
+
+class TestFallbackChainDefaultHeaders:
+    def test_custom_endpoint_merges_resolution_default_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            lambda: ("https://relay.example.com/v1", "relay-key", "chat_completions"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "relay-model")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        aux_mod._resolution_default_headers = {"X-Relay-Key": "relay-secret"}
+        try:
+            client, model = aux_mod._try_custom_endpoint()
+        finally:
+            aux_mod._resolution_default_headers = None
+
+        assert isinstance(client, FakeOpenAI)
+        assert model == "relay-model"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+    def test_custom_endpoint_falls_back_to_runtime_main_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            lambda: ("https://relay.example.com/v1", "relay-key", "chat_completions"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "relay-model")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        aux_mod._resolution_default_headers = None
+        aux_mod.set_runtime_main(
+            "custom",
+            "relay-model",
+            default_headers={"X-Relay-Key": "relay-secret"},
+        )
+        try:
+            client, model = aux_mod._try_custom_endpoint()
+        finally:
+            aux_mod.clear_runtime_main()
+
+        assert isinstance(client, FakeOpenAI)
+        assert model == "relay-model"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+    def test_openrouter_merges_resolution_default_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+        monkeypatch.setattr(
+            "agent.auxiliary_client.build_or_headers",
+            lambda: {"HTTP-Referer": "https://hermes-agent.nousresearch.com"},
+        )
+
+        aux_mod._resolution_default_headers = {"X-Relay-Key": "relay-secret"}
+        try:
+            client, model = aux_mod._try_openrouter()
+        finally:
+            aux_mod._resolution_default_headers = None
+
+        assert isinstance(client, FakeOpenAI)
+        assert model
+        assert captured["default_headers"]["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+        assert captured["default_headers"]["X-Relay-Key"] == "relay-secret"
+
+    def test_xai_oauth_client_uses_runtime_main_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        class FakeCodex:
+            def __init__(self, client, model):
+                self.client = client
+                self.model = model
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr("agent.auxiliary_client.CodexAuxiliaryClient", FakeCodex)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_xai_oauth_for_aux",
+            lambda: ("xai-token", "https://api.x.ai/v1"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        aux_mod.set_runtime_main(
+            "custom",
+            "grok-vision",
+            default_headers={"X-Relay-Key": "relay-secret"},
+        )
+        try:
+            client, model = aux_mod._build_xai_oauth_aux_client("grok-vision")
+        finally:
+            aux_mod.clear_runtime_main()
+
+        assert isinstance(client, FakeCodex)
+        assert model == "grok-vision"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+    def test_refresh_nous_client_preserves_runtime_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_nous_runtime_api",
+            lambda force_refresh=False: ("fresh-key", "https://inference-api.nousresearch.com/v1"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+
+        client, model = aux_mod._refresh_nous_auxiliary_client(
+            cache_provider="nous",
+            model="google/gemini-3-flash-preview",
+            async_mode=False,
+            main_runtime={"default_headers": {"X-Relay-Key": "relay-secret"}},
+        )
+
+        assert isinstance(client, FakeOpenAI)
+        assert model == "google/gemini-3-flash-preview"
+        assert captured["default_headers"] == {"X-Relay-Key": "relay-secret"}
+
+    def test_openrouter_falls_back_to_runtime_main_headers(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", FakeOpenAI)
+        monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", lambda _provider: (False, None))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setattr("agent.auxiliary_client.get_model_custom_headers", lambda: {})
+        monkeypatch.setattr(
+            "agent.auxiliary_client.build_or_headers",
+            lambda: {"HTTP-Referer": "https://hermes-agent.nousresearch.com"},
+        )
+
+        aux_mod._resolution_default_headers = None
+        aux_mod.set_runtime_main(
+            "custom",
+            "relay-model",
+            default_headers={"X-Relay-Key": "relay-secret"},
+        )
+        try:
+            client, model = aux_mod._try_openrouter()
+        finally:
+            aux_mod.clear_runtime_main()
+
+        assert isinstance(client, FakeOpenAI)
+        assert model
+        assert captured["default_headers"]["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+        assert captured["default_headers"]["X-Relay-Key"] == "relay-secret"
+
+
 class _AuxAuth401(Exception):
     status_code = 401
 
@@ -5144,6 +5558,74 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_kimi_client
         gcc_mock.assert_called_once()
 
+    def test_main_provider_vision_path_receives_runtime_headers(self, monkeypatch):
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+
+        fake_client = MagicMock(name="vision_client")
+        calls = []
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "custom",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "vision-model",
+        )
+
+        def fake_resolve_provider_client(provider, model=None, **kwargs):
+            calls.append((provider, model, kwargs))
+            return fake_client, model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", fake_resolve_provider_client,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            lambda *_args, **_kwargs: (None, None),
+        )
+
+        try:
+            set_runtime_main("custom", "vision-model", {"X-Relay": "secret"})
+            provider, client, model = resolve_vision_provider_client()
+        finally:
+            clear_runtime_main()
+
+        assert provider == "custom"
+        assert client is fake_client
+        assert model == "vision-model"
+        assert calls[0][2]["main_runtime"]["default_headers"] == {"X-Relay": "secret"}
+
+    def test_main_provider_vision_path_omits_empty_runtime_headers(self, monkeypatch):
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+
+        fake_client = MagicMock(name="vision_client")
+        calls = []
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "custom",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "vision-model",
+        )
+
+        def fake_resolve_provider_client(provider, model=None, **kwargs):
+            calls.append((provider, model, kwargs))
+            return fake_client, model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", fake_resolve_provider_client,
+        )
+
+        try:
+            set_runtime_main("custom", "vision-model", {})
+            provider, client, model = resolve_vision_provider_client()
+        finally:
+            clear_runtime_main()
+
+        assert provider == "custom"
+        assert client is fake_client
+        assert model == "vision-model"
+        assert "default_headers" not in calls[0][2]["main_runtime"]
+
     def test_skip_set_covers_exactly_known_entries(self):
         """Guard against accidental widening of the skip list."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
@@ -5851,7 +6333,7 @@ class TestAnthropicExplicitApiKey:
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic
-            client, model = _try_anthropic("explicit-pool-key")
+            client, model = _try_anthropic(explicit_api_key="explicit-pool-key")
         assert client is not None
         assert mock_build.call_args.args[0] == "explicit-pool-key", (
             f"Expected explicit_api_key to be passed, got: {mock_build.call_args.args[0]}"

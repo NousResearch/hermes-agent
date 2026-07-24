@@ -9702,6 +9702,7 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
         "base_url": "https://chatgpt.example.test/backend-api/codex",
         "api_key": _Agent.api_key,
         "api_mode": "codex_responses",
+        "default_headers": None,
     }
 
 

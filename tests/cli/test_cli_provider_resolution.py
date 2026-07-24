@@ -172,6 +172,36 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_cli_passes_runtime_default_headers_to_aiagent(monkeypatch):
+    cli = _import_cli()
+    captured = {}
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://example.test/v1",
+            "api_key": "test-key",
+            "source": "custom_provider:test",
+            "default_headers": {"X-Test": "value"},
+        }
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+
+    assert shell._init_agent() is True
+    assert captured["provider"] == "custom"
+    assert captured["base_url"] == "https://example.test/v1"
+    assert captured["default_headers"] == {"X-Test": "value"}
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

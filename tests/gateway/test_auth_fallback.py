@@ -40,6 +40,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
                 "command": None,
                 "args": None,
                 "credential_pool": None,
+                "default_headers": {"X-Fallback": "yes"},
             }
 
         with patch(
@@ -51,6 +52,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
         assert result["provider"] == "openrouter"
         assert result["api_key"] == "fallback-key"
+        assert result["default_headers"] == {"X-Fallback": "yes"}
         # Should have been called at least twice (primary + fallback)
         assert call_count["n"] >= 2
 

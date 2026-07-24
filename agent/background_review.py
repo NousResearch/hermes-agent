@@ -29,29 +29,12 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Background-review aux-model selector + routed digest.
-#
-# The review fork runs on the MAIN model by default ("auto"), replaying the
-# full conversation — already warm in the prompt cache, so cheap cache reads.
-# Optimal and unchanged. A user can route the review to a different, cheaper
-# model via auxiliary.background_review.{provider,model}. A different model
-# cannot reuse the parent's cache (different key), so the fork is cold
-# regardless — replaying the full transcript would just cold-write it. So when
-# (and only when) routed to a different model, we replay a compact DIGEST to
-# minimise cold-written tokens. Same model -> full replay; different model ->
-# digest. That's the whole policy.
+# Background-review model routing
 # ---------------------------------------------------------------------------
 
 
 def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
-    """Resolve provider/model/credentials for the review fork.
-
-    Default (auto / unset / same as parent): inherit the parent's live runtime
-    (with codex_app_server -> codex_responses downgrade). ``routed`` is False —
-    the fork uses the main model and the warm cache, exactly as before. When
-    ``auxiliary.background_review.{provider,model}`` names a concrete model
-    different from the parent's, resolve that runtime and set ``routed=True``.
-    """
+    """Resolve provider/model/credentials for the review fork."""
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
     if parent_api_mode == "codex_app_server":
@@ -62,6 +45,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "api_key": parent_runtime.get("api_key") or None,
         "base_url": parent_runtime.get("base_url") or None,
         "api_mode": parent_api_mode,
+        "default_headers": parent_runtime.get("default_headers") or None,
         "credential_pool": getattr(agent, "_credential_pool", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None),
@@ -71,6 +55,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
     }
     try:
         from hermes_cli.config import load_config
+
         cfg = load_config()
     except Exception:
         return parent
@@ -83,9 +68,10 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
     if not (task_provider and task_provider != "auto" and task_model):
         return parent
     if task_provider == (agent.provider or "") and task_model == (agent.model or ""):
-        return parent  # same model/provider as parent -> not routed
+        return parent
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
+
         rp = resolve_runtime_provider(
             requested=task_provider,
             target_model=task_model,
@@ -98,6 +84,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
             "api_key": rp.get("api_key"),
             "base_url": rp.get("base_url"),
             "api_mode": rp.get("api_mode"),
+            "default_headers": rp.get("default_headers") or None,
             "credential_pool": rp.get("credential_pool"),
             "request_overrides": dict(rp.get("request_overrides") or {}),
             "max_tokens": rp.get("max_output_tokens"),
@@ -120,13 +107,7 @@ def _msg_text(m: Dict) -> str:
 
 
 def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]:
-    """Compact replay for the routed (different-model) path only.
-
-    Keeps the recent ``tail`` messages verbatim, collapses older turns into one
-    synthetic user-role digest, preserving role alternation. Used ONLY when
-    routed to a different model (cache cold regardless, so fewer cold-written
-    tokens is a pure win). Never on the main-model path (full replay stays warm).
-    """
+    """Compact replay for the routed (different-model) path only."""
     msgs = list(messages_snapshot or [])
     if len(msgs) <= tail:
         return msgs
@@ -141,7 +122,7 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
     for m in old:
         if not isinstance(m, dict):
             continue
-        role = m.get("role")
+        role = m.get("role", "message")
         text = _msg_text(m).replace("\n", " ")
         if role == "user" and text:
             lines.append(f"USER: {text[:300]}")
@@ -718,6 +699,7 @@ def _run_review_in_thread(
                 api_mode=_rt.get("api_mode"),
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,
+                default_headers=_rt.get("default_headers") or None,
                 credential_pool=_rt.get("credential_pool"),
                 request_overrides=_rt.get("request_overrides") or {},
                 parent_session_id=agent.session_id,
@@ -762,29 +744,11 @@ def _run_review_in_thread(
             # _vprint and leak past the stdout redirect (they go via
             # _print_fn/status_callback, which bypass sys.stdout).
             review_agent.suppress_status_output = True
-            # Inherit the parent's cached system prompt verbatim so
-            # the review fork's outbound HTTP request hits the same
-            # Anthropic/OpenRouter prefix cache the parent warmed.
-            # Without this, the fork rebuilds the system prompt from
-            # scratch (fresh _hermes_now() timestamp, fresh
-            # session_id, narrower toolset → different skills_prompt)
-            # and the byte-exact prefix-cache key misses. See
-            # issue #25322 and PR #17276 for the full analysis +
-            # measured impact (~26% end-to-end cost reduction on
-            # Sonnet 4.5).
             # Share the parent's warm cached system prompt ONLY when the review
-            # runs on the SAME model (not routed). When routed to a different
-            # model the parent's cached prompt is for the wrong model/cache key
-            # and would miss anyway, so let the routed fork build its own.
+            # runs on the SAME model. A routed review is cache-cold regardless,
+            # so let it build a prompt for its own model/runtime.
             if not _routed:
                 review_agent._cached_system_prompt = agent._cached_system_prompt
-                # Defensive: pin session_start + session_id to the
-                # parent's so any code path that re-renders parts of
-                # the system prompt (compression, plugin hooks) still
-                # produces byte-identical output. The cached-prompt
-                # assignment above already short-circuits the normal
-                # rebuild path, but these pins guarantee parity even
-                # if a future code path bypasses the cache.
                 review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
             # The fork shares the parent's live session_id (pinned above for

@@ -359,14 +359,39 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    if not target:
+        # Auto-detect platform from session context
+        from gateway.session_context import get_session_env
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+        if session_platform:
+            target = session_platform
+        else:
+            return json.dumps({
+                "error": "No target specified for send_message. Provide a target (e.g., 'feishu', "
+                         "'telegram:chat_id') or ensure there is an active session to auto-detect "
+                         "the platform."
+            })
+    if not message:
+        return tool_error("'message' is required when action='send'")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
+
+    # Pre-populate from session context when only platform name is given.
+    # This ensures thread_id is captured for topic/thread replies.
+    if not target_ref:
+        from gateway.session_context import get_session_env
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+        if session_platform == platform_name:
+            session_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+            if session_chat_id:
+                chat_id = session_chat_id
+                session_thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip()
+                if session_thread_id:
+                    thread_id = session_thread_id
 
     if target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
@@ -444,6 +469,18 @@ def _handle_send(args):
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
+    if not chat_id:
+        # Try session context — auto-detect current conversation chat_id and thread_id
+        from gateway.session_context import get_session_env
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+        if session_platform == platform_name:
+            session_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+            if session_chat_id:
+                chat_id = session_chat_id
+                session_thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip()
+                if session_thread_id and not thread_id:
+                    thread_id = session_thread_id
+
     if not chat_id:
         home = config.get_home_channel(platform)
         if not home and platform_name == "weixin":

@@ -3979,8 +3979,11 @@ def _save_custom_provider(
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
+    Deduplicates by *name* — if an entry with the same display name already
+    exists, updates the model name, context_length, and api_mode but doesn't
+    add a duplicate entry.  Two providers sharing a base URL with *different*
+    names are treated as separate entries (#45481).
+
     Uses *name* when provided, otherwise auto-generates from the URL.
     """
     from hermes_cli.config import load_config, save_config
@@ -3990,37 +3993,51 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
+    # Use provided name or auto-generate from URL
+    if not name:
+        name = _auto_provider_name(base_url)
+
+    def _update_entry(entry: dict) -> bool:
+        """Apply model/context_length/api_mode updates to an existing entry.
+
+        Returns True if any field was changed.
+        """
+        changed = False
+        if model and entry.get("model") != model:
+            entry["model"] = model
+            changed = True
+        if model and context_length:
+            models_cfg = entry.get("models", {})
+            if not isinstance(models_cfg, dict):
+                models_cfg = {}
+            models_cfg[model] = {"context_length": context_length}
+            entry["models"] = models_cfg
+            changed = True
+        if api_mode:
+            if entry.get("api_mode") != api_mode:
+                entry["api_mode"] = api_mode
+                changed = True
+        elif "api_mode" in entry:
+            entry.pop("api_mode", None)
+            changed = True
+        # Always keep base_url and api_key in sync with the latest values
+        if entry.get("base_url", "").rstrip("/") != base_url.rstrip("/"):
+            entry["base_url"] = base_url
+            changed = True
+        if api_key and entry.get("api_key") != api_key:
+            entry["api_key"] = api_key
+            changed = True
+        return changed
+
+    # Deduplicate by name (#45481: matching only on base_url caused silent
+    # overwrites when two entries shared a URL but had different names).
     for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
-            "/"
-        ) == base_url.rstrip("/"):
-            changed = False
-            if model and entry.get("model") != model:
-                entry["model"] = model
-                changed = True
-            if model and context_length:
-                models_cfg = entry.get("models", {})
-                if not isinstance(models_cfg, dict):
-                    models_cfg = {}
-                models_cfg[model] = {"context_length": context_length}
-                entry["models"] = models_cfg
-                changed = True
-            if api_mode:
-                if entry.get("api_mode") != api_mode:
-                    entry["api_mode"] = api_mode
-                    changed = True
-            elif "api_mode" in entry:
-                entry.pop("api_mode", None)
-                changed = True
+        if isinstance(entry, dict) and entry.get("name") == name:
+            changed = _update_entry(entry)
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
             return  # already saved, updated if needed
-
-    # Use provided name or auto-generate from URL
-    if not name:
-        name = _auto_provider_name(base_url)
 
     entry = {"name": name, "base_url": base_url}
     if api_key:

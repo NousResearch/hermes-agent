@@ -201,6 +201,30 @@ class TestRestorePrimaryRuntime:
 
         assert agent._use_prompt_caching == original_caching
 
+    def test_restore_emits_status_callback(self):
+        """When fallback is cleared, user-facing surfaces should be notified."""
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        status_events = []
+        agent.status_callback = lambda event_type, message: status_events.append((event_type, message))
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        status_events.clear()
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert status_events == [
+            (
+                "lifecycle",
+                f"✅ Fallback cleared — resuming with primary model: {agent.model} via {agent.provider}",
+            )
+        ]
+
     def test_restore_skips_cross_provider_pool_entry(self):
         """Restore must not swap in a fallback provider credential for the primary runtime."""
 

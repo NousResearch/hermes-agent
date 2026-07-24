@@ -20250,8 +20250,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not tool_progress_enabled:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in {"tool.started",}:
+            # Only act on visible progress events (ignore tool.completed, reasoning.available, etc.)
+            if event_type not in {"tool.started", "subagent.start"}:
                 return
 
             # Never render a progress bubble for the clarify tool.  The
@@ -20280,6 +20280,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
             except Exception:
                 pass
+
+            if event_type == "subagent.start":
+                # Subagent starts are not normal tool starts: tool_name is None,
+                # so the generic "new"-mode tool-name de-duplication below would
+                # collapse every child after the first one. Route them before that
+                # guard and de-duplicate on the child identity instead.
+                subagent_key = (
+                    "subagent.start",
+                    kwargs.get("subagent_id"),
+                    kwargs.get("task_index"),
+                    preview,
+                )
+                if progress_mode == "new" and subagent_key == last_tool[0]:
+                    return
+                last_tool[0] = subagent_key
+                subagent_label = "Subagent"
+                task_index = kwargs.get("task_index")
+                task_count = kwargs.get("task_count")
+                if (
+                    isinstance(task_index, int)
+                    and isinstance(task_count, int)
+                    and task_count > 1
+                ):
+                    subagent_label = f"Subagent {task_index + 1}/{task_count}"
+                model = (kwargs.get("model") or "").strip()
+                msg = f"🤖 {subagent_label}"
+                if preview:
+                    msg += f": \"{preview}\""
+                if model:
+                    msg += f"\nModel: `{model}`"
+                progress_queue.put(msg)
+                return
 
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:

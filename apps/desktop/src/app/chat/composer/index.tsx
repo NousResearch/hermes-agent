@@ -1090,3 +1090,4 @@ export function ChatBarFallback() {
     </div>
   )
 }
+// Fix for #63574

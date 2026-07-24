@@ -186,8 +186,8 @@ class QQAdapter(BasePlatformAdapter):
         if self.has_fatal_error:
             return
         self._write_runtime_status_safe(
-            "disconnected",
-            platform_state="disconnected",
+            "retrying",
+            platform_state="retrying",
             error_code=None,
             error_message=None,
         )
@@ -635,15 +635,11 @@ class QQAdapter(BasePlatformAdapter):
                     self._session_id = None
                     self._last_seq = None
 
-                if await self._reconnect(backoff_idx):
+                if await self._reconnect(min(backoff_idx, MAX_RECONNECT_ATTEMPTS - 1)):
                     backoff_idx = 0
                     quick_disconnect_count = 0
                 else:
-                    backoff_idx += 1
-                    if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                        self._mark_disconnected()
-                        return
+                    backoff_idx = min(backoff_idx + 1, MAX_RECONNECT_ATTEMPTS - 1)
 
             except Exception as exc:
                 if not self._running:
@@ -652,16 +648,11 @@ class QQAdapter(BasePlatformAdapter):
                 self._mark_transport_disconnected()
                 self._fail_pending("Connection interrupted")
 
-                if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
-                    return
-
-                if await self._reconnect(backoff_idx):
+                if await self._reconnect(min(backoff_idx, MAX_RECONNECT_ATTEMPTS - 1)):
                     backoff_idx = 0
                     quick_disconnect_count = 0
                 else:
-                    backoff_idx += 1
+                    backoff_idx = min(backoff_idx + 1, MAX_RECONNECT_ATTEMPTS - 1)
 
     async def _reconnect(self, backoff_idx: int) -> bool:
         """Attempt to reconnect the WebSocket. Returns True on success."""
@@ -1101,7 +1092,7 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

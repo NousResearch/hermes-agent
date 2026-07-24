@@ -139,6 +139,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { scrubDesktopChildEnv } from './scrub-child-env'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -9815,7 +9816,10 @@ function terminalShellEnv() {
   // which marks the agent *backend* and gates cron/gateway behavior.
   env.HERMES_DESKTOP_TERMINAL = '1'
 
-  return env
+  // Drop provider / messaging secrets that may ride along from the parent
+  // Electron process. The backend loads credentials from HERMES_HOME/.env;
+  // an interactive PTY must not inherit them into the user's shell.
+  return scrubDesktopChildEnv(env)
 }
 
 function terminalChannel(id, suffix) {

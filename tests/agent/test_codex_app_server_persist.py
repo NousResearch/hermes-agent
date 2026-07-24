@@ -28,7 +28,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.codex_runtime import run_codex_app_server_turn
+from agent.codex_runtime import (
+    _record_codex_app_server_usage,
+    run_codex_app_server_turn,
+)
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -59,6 +62,55 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     agent._session_db_created = True
     agent.session_id = session_id
     return agent
+
+
+def test_codex_usage_persistence_propagates_resolved_source():
+    """Both Codex accounting branches preserve one-shot cron provenance."""
+    usage_cases = [
+        None,
+        {
+            "inputTokens": 11,
+            "cachedInputTokens": 3,
+            "outputTokens": 7,
+            "reasoningOutputTokens": 2,
+            "totalTokens": 23,
+        },
+    ]
+
+    for token_usage in usage_cases:
+        session_db = MagicMock()
+        agent = SimpleNamespace(
+            session_api_calls=0,
+            session_prompt_tokens=0,
+            session_completion_tokens=0,
+            session_total_tokens=0,
+            session_input_tokens=0,
+            session_output_tokens=0,
+            session_cache_read_tokens=0,
+            session_cache_write_tokens=0,
+            session_reasoning_tokens=0,
+            session_estimated_cost_usd=0.0,
+            session_cost_status="unknown",
+            session_cost_source="none",
+            context_compressor=None,
+            _session_db=session_db,
+            _session_db_created=True,
+            session_id="cron-codex",
+            model="gpt-4o",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            _session_source_for_db=lambda: "cron",
+        )
+        turn = SimpleNamespace(
+            token_usage_last=token_usage,
+            model_context_window=None,
+        )
+
+        _record_codex_app_server_usage(agent, turn)
+
+        session_db.update_token_counts.assert_called_once()
+        assert session_db.update_token_counts.call_args.kwargs["source"] == "cron"
 
 
 def test_codex_success_flushes_and_reports_persisted():

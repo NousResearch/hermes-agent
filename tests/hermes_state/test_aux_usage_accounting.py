@@ -5,6 +5,7 @@ their token usage into session_model_usage with a ``task`` dimension via
 the ambient accounting context (agent/aux_accounting.py), making aux model
 spend visible in analytics.
 """
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -115,6 +116,77 @@ class TestRecordAuxiliaryUsage:
         db.record_auxiliary_usage("ghost", "vision", model="m", input_tokens=5)
         rows = _usage_rows(db, "ghost")
         assert len(rows) == 1
+
+    def test_missing_row_stays_promotable_after_auxiliary_usage(self, db):
+        """Aux accounting must not strand a later authoritative cron source."""
+        sid = "cron-aux-first"
+        db.record_auxiliary_usage(
+            sid,
+            "title_generation",
+            model="aux-model",
+            input_tokens=5,
+        )
+
+        provisional = db.get_session(sid)
+        assert provisional["source"] == "unknown"
+        assert provisional["model_config"] is None
+
+        db.update_token_counts(
+            sid,
+            input_tokens=10,
+            output_tokens=2,
+            source="cron",
+        )
+
+        accounted = db.get_session(sid)
+        assert accounted["source"] == "cron"
+        assert accounted["model_config"] is None
+
+        db.create_session(
+            sid,
+            source="cron",
+            model_config={"authoritative": True},
+        )
+
+        repaired = db.get_session(sid)
+        assert repaired["source"] == "cron"
+        assert json.loads(repaired["model_config"]) == {"authoritative": True}
+        assert repaired["input_tokens"] == 10
+        assert repaired["output_tokens"] == 2
+        assert [row["task"] for row in _usage_rows(db, sid)] == [
+            "",
+            "title_generation",
+        ]
+
+    def test_known_source_accounting_repair_backfills_authoritative_user(self, db):
+        sid = "known-source-accounting-first"
+        db.update_token_counts(
+            sid,
+            input_tokens=10,
+            source="cron",
+        )
+
+        db.create_session(sid, source="cron", user_id="owner")
+
+        repaired = db.get_session(sid)
+        assert repaired["source"] == "cron"
+        assert repaired["user_id"] == "owner"
+        assert repaired["input_tokens"] == 10
+
+    def test_public_marker_like_model_config_does_not_grant_repair_provenance(self, db):
+        sid = "legitimate-unknown"
+        marker_config = {
+            "_repaired_missing_session_row": "record_auxiliary_usage",
+            "preserve": True,
+        }
+        db.create_session(sid, source="unknown", model_config=marker_config)
+
+        db.create_session(sid, source="cron", user_id="owner")
+
+        preserved = db.get_session(sid)
+        assert preserved["source"] == "unknown"
+        assert preserved["user_id"] is None
+        assert json.loads(preserved["model_config"]) == marker_config
 
 
 class TestSchemaMigrationV22:

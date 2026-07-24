@@ -598,13 +598,17 @@ class AIAgent:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 
+    def _session_source_for_db(self) -> str:
+        """Resolve the authoritative source used by all state.db writes."""
+        return _session_source_for_agent(getattr(self, "platform", None))
+
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
         if getattr(self, "_persist_disabled", False):
             return
         if self._session_db_created or not self._session_db:
             return
-        source = _session_source_for_agent(self.platform)
+        source = self._session_source_for_db()
         try:
             try:
                 from hermes_cli.profiles import get_active_profile_name

@@ -519,6 +519,149 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
 
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_authoritative_create_promotes_token_repair_source(self, db, absolute):
+        """A cron create that catches up after lock contention repairs source.
+
+        Regression for #64573. update_token_counts may be the first successful
+        writer after create_session(source="cron") loses a SQLite lock race.
+        """
+        sid = "cron_job-123_20260714_120000"
+        db.update_token_counts(
+            sid,
+            input_tokens=100,
+            output_tokens=50,
+            model="test-model",
+            absolute=absolute,
+        )
+
+        provisional = db.get_session(sid)
+        assert provisional["source"] == "unknown"
+        assert provisional["model_config"] is None
+
+        db.create_session(
+            sid,
+            source="cron",
+            model="test-model",
+            model_config={"max_iterations": 90, "optional": None},
+            user_id="cron-owner",
+        )
+
+        repaired = db.get_session(sid)
+        assert repaired["source"] == "cron"
+        assert repaired["model"] == "test-model"
+        assert json.loads(repaired["model_config"]) == {
+            "max_iterations": 90,
+            "optional": None,
+        }
+        assert repaired["user_id"] == "cron-owner"
+        assert repaired["input_tokens"] == 100
+        assert repaired["output_tokens"] == 50
+
+    def test_session_meta_refresh_preserves_internal_repair_provenance(self, db):
+        """Metadata refreshes cannot consume internal repair provenance."""
+        sid = "cron-meta-interleaving"
+        db.update_token_counts(
+            sid,
+            input_tokens=100,
+            output_tokens=50,
+            model="usage-model",
+        )
+        db.update_session_meta(
+            sid,
+            json.dumps({"runtime": "saved", "optional": None}),
+            model="runtime-model",
+        )
+
+        refreshed = db.get_session(sid)
+        assert refreshed["source"] == "unknown"
+        assert json.loads(refreshed["model_config"]) == {
+            "runtime": "saved",
+            "optional": None,
+        }
+
+        db.create_session(
+            sid,
+            source="cron",
+            model_config={"authoritative": True, "optional": None},
+            user_id="cron-owner",
+        )
+
+        repaired = db.get_session(sid)
+        assert repaired["source"] == "cron"
+        assert repaired["model"] == "runtime-model"
+        assert repaired["user_id"] == "cron-owner"
+        assert json.loads(repaired["model_config"]) == {
+            "authoritative": True,
+            "optional": None,
+        }
+        assert repaired["input_tokens"] == 100
+        assert repaired["output_tokens"] == 50
+
+    @pytest.mark.parametrize("replacement", [None, ""])
+    def test_session_meta_refresh_preserves_permissive_replacement_semantics(
+        self, db, replacement
+    ):
+        """None and empty-string replacements remain exact, even on repair rows."""
+        sid = f"provisional-meta-{replacement is None}"
+        db.update_token_counts(sid, input_tokens=1, output_tokens=1)
+
+        db.update_session_meta(sid, replacement)
+
+        refreshed = db.get_session(sid)
+        assert refreshed["source"] == "unknown"
+        assert refreshed["model_config"] == replacement
+
+    def test_authoritative_create_preserves_legitimate_unknown_source(self, db):
+        """Only internally registered repair rows are eligible for promotion."""
+        db.create_session(
+            "imported-session",
+            source="unknown",
+            model_config={"origin": "legacy-import"},
+        )
+        db.update_token_counts(
+            "imported-session",
+            input_tokens=10,
+            output_tokens=5,
+        )
+        db.create_session("imported-session", source="cron")
+
+        session = db.get_session("imported-session")
+        assert session["source"] == "unknown"
+        assert json.loads(session["model_config"]) == {
+            "origin": "legacy-import"
+        }
+
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_token_accounting_preserves_known_source_without_retry(self, db, absolute):
+        """A one-shot cron run stays classified even without a later create."""
+        db.update_token_counts(
+            "cron-one-shot",
+            input_tokens=10,
+            output_tokens=5,
+            source="cron",
+            absolute=absolute,
+        )
+
+        session = db.get_session("cron-one-shot")
+        assert session["source"] == "cron"
+        assert session["model_config"] is None
+        assert session["input_tokens"] == 10
+        assert session["output_tokens"] == 5
+
+    def test_token_accounting_does_not_mark_existing_cron_session(self, db):
+        """The fallback marker is written only when token accounting inserts."""
+        db.create_session("cron-existing", source="cron")
+        db.update_token_counts(
+            "cron-existing",
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        session = db.get_session("cron-existing")
+        assert session["source"] == "cron"
+        assert session["model_config"] is None
+
     def test_update_session_model_overwrites_existing(self, db):
         """A mid-session /model switch must overwrite the stored model.
 

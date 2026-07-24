@@ -38,6 +38,10 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
+_MISSING_SESSION_REPAIR_WRITERS = frozenset(
+    {"record_auxiliary_usage", "update_token_counts"}
+)
+
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 
 
@@ -1103,6 +1107,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+);
+
+CREATE TABLE IF NOT EXISTS provisional_session_repairs (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    repair_writer TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -3351,6 +3360,38 @@ class SessionDB:
     # Session lifecycle
     # =========================================================================
 
+    def _promote_missing_session_repair_row(
+        self,
+        conn,
+        *,
+        session_id: str,
+        source: str,
+        user_id: Optional[str] = None,
+        model_config_json: Optional[str] = None,
+    ) -> None:
+        """Promote an internally registered accounting-repair row."""
+        source_norm = str(source or "").strip().lower()
+        if source_norm in {"", "unknown"}:
+            return
+
+        promoted = conn.execute(
+            """UPDATE sessions SET
+                   source = ?,
+                   user_id = COALESCE(user_id, ?),
+                   model_config = COALESCE(?, model_config)
+               WHERE id = ?
+                 AND EXISTS (
+                     SELECT 1 FROM provisional_session_repairs
+                      WHERE session_id = sessions.id
+                 )""",
+            (source, user_id, model_config_json, session_id),
+        )
+        if promoted.rowcount:
+            conn.execute(
+                "DELETE FROM provisional_session_repairs WHERE session_id = ?",
+                (session_id,),
+            )
+
     def _insert_session_row(
         self,
         session_id: str,
@@ -3403,6 +3444,7 @@ class SessionDB:
         crash before the gateway re-records the peer can't strand the child
         without a recoverable routing mapping (#59527).
         """
+        model_config_json = json.dumps(model_config) if model_config else None
         def _do(conn):
             conn.execute(
                 """INSERT INTO sessions (
@@ -3432,7 +3474,7 @@ class SessionDB:
                     chat_type,
                     thread_id,
                     model,
-                    json.dumps(model_config) if model_config else None,
+                    model_config_json,
                     system_prompt,
                     parent_session_id,
                     cwd,
@@ -3441,6 +3483,18 @@ class SessionDB:
                     time.time(),
                 ),
             )
+            # Accounting can provision a missing session row after the
+            # authoritative create path loses a transient SQLite lock race.
+            # Promote only rows carrying an explicit internal repair marker:
+            # a real imported/legacy source="unknown" row stays first-writer-wins.
+            self._promote_missing_session_repair_row(
+                conn,
+                session_id=session_id,
+                source=source,
+                user_id=user_id,
+                model_config_json=model_config_json,
+            )
+
             if parent_session_id:
                 conn.execute(
                     """UPDATE sessions
@@ -4335,14 +4389,16 @@ class SessionDB:
     def update_session_meta(
         self,
         session_id: str,
-        model_config_json: str,
+        model_config_json: Optional[str],
         model: Optional[str] = None,
     ) -> None:
         """Update model_config and optionally model for an existing session.
 
         Uses COALESCE so that passing model=None leaves the stored model
-        column unchanged.  Routes through _execute_write for the standard
-        BEGIN IMMEDIATE + jitter-retry + lock guarantee.
+        column unchanged. Routes through _execute_write for the standard
+        BEGIN IMMEDIATE + jitter-retry + lock guarantee. Accounting-repair
+        provenance lives in a separate internal table, so arbitrary public
+        model_config values never affect promotion eligibility.
         """
         def _do(conn):
             conn.execute(
@@ -4404,6 +4460,54 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def _insert_accounting_fallback_row(
+        self,
+        conn,
+        *,
+        session_id: str,
+        source: Optional[str],
+        model: Optional[str],
+        repair_writer: str,
+    ) -> None:
+        """Create or promote the session row required by usage accounting."""
+        if repair_writer not in _MISSING_SESSION_REPAIR_WRITERS:
+            raise ValueError(f"unsupported missing-session repair writer: {repair_writer}")
+
+        fallback_source = str(source or "").strip()
+        if not fallback_source or fallback_source.lower() == "unknown":
+            fallback_source = "unknown"
+
+        inserted = conn.execute(
+            """INSERT OR IGNORE INTO sessions
+               (id, source, model, started_at)
+               VALUES (?, ?, ?, ?)""",
+            (
+                session_id,
+                fallback_source,
+                model,
+                time.time(),
+            ),
+        )
+        if inserted.rowcount:
+            conn.execute(
+                """INSERT INTO provisional_session_repairs
+                   (session_id, repair_writer) VALUES (?, ?)""",
+                (session_id, repair_writer),
+            )
+        elif fallback_source.lower() != "unknown":
+            # A later accounting path may know the real source. Preserve that
+            # provenance without consuming provisional status; only an
+            # authoritative create_session may finish promotion/backfill.
+            conn.execute(
+                """UPDATE sessions SET source = ?
+                   WHERE id = ? AND source = 'unknown'
+                     AND EXISTS (
+                         SELECT 1 FROM provisional_session_repairs
+                          WHERE session_id = sessions.id
+                     )""",
+                (fallback_source, session_id),
+            )
+
     def update_token_counts(
         self,
         session_id: str,
@@ -4423,6 +4527,7 @@ class SessionDB:
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
+        source: Optional[str] = None,
     ) -> None:
         """Update token counters and backfill model if not already set.
 
@@ -4432,12 +4537,12 @@ class SessionDB:
         When *absolute* is True, values are **set directly** — use this when
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
+
+        ``source`` is optional for compatibility with non-agent callers. Agent
+        runtimes pass the resolved session source so fallback row creation can
+        preserve provenance even when a one-shot run has no later turn to
+        retry ``create_session``.
         """
-        # Ensure the session row exists so the UPDATE doesn't silently affect
-        # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
-        # initial create_session() may have failed due to SQLite locking.
-        # INSERT OR IGNORE is cheap and idempotent.
-        self._insert_session_row(session_id, "unknown", model=model)
         if absolute:
             sql = """UPDATE sessions SET
                    input_tokens = ?,
@@ -4522,8 +4627,18 @@ class SessionDB:
             or cache_write_tokens or reasoning_tokens or api_call_count
             or estimated_cost_usd
         )
-
         def _do(conn):
+            # Keep fallback row creation in the same write transaction as the
+            # counters. The internal repair registration lets a later
+            # authoritative create_session safely finish metadata backfill
+            # without trusting caller-controlled session fields.
+            self._insert_accounting_fallback_row(
+                conn,
+                session_id=session_id,
+                source=source,
+                model=model,
+                repair_writer="update_token_counts",
+            )
             row = conn.execute(
                 "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
                 (session_id,),
@@ -4718,12 +4833,17 @@ class SessionDB:
         """
         if not session_id or not task:
             return
-        # FK on session_model_usage.session_id → sessions.id: ensure the row
-        # exists (same INSERT OR IGNORE guard update_token_counts uses — the
-        # initial create_session() can fail under concurrent SQLite locking).
-        self._insert_session_row(session_id, "unknown")
-
         def _do(conn):
+            # Keep the FK fallback row and the auxiliary usage delta in one
+            # transaction. The marker lets a later known-source accounting
+            # write or authoritative create promote this provisional row.
+            self._insert_accounting_fallback_row(
+                conn,
+                session_id=session_id,
+                source=None,
+                model=None,
+                repair_writer="record_auxiliary_usage",
+            )
             self._record_model_usage(
                 conn,
                 session_id,

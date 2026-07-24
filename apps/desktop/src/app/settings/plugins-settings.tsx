@@ -6,26 +6,48 @@ import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { getStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { copyTextToClipboard, desktopHermesHome, isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { triggerHaptic } from '@/lib/haptics'
 import { Package } from '@/lib/icons'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
 
 const KIND_ORDER: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
 
+function notifyCopied(path: string) {
+  notify({
+    kind: 'info',
+    message: 'Remote plugins path copied',
+    detail: path
+  })
+}
+
 function reveal(file: string) {
+  if (isDesktopFsRemoteMode()) {
+    void copyTextToClipboard(file).then(() => notifyCopied(file)).catch(err => notifyError(err, 'Could not copy plugin path'))
+
+    return
+  }
+
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
 }
 
 async function revealPluginsDir() {
   try {
-    const { hermes_home } = await getStatus()
+    const { desktop_plugins } = await desktopHermesHome()
+
+    if (isDesktopFsRemoteMode()) {
+      await copyTextToClipboard(desktop_plugins)
+      notifyCopied(desktop_plugins)
+
+      return
+    }
+
     // openDir (not reveal): the door often doesn't exist on first use, and
     // showItemInFolder on a missing path silently no-ops (esp. Windows).
-    const result = await window.hermesDesktop?.openDir?.(`${hermes_home}/desktop-plugins`)
+    const result = await window.hermesDesktop?.openDir?.(desktop_plugins)
 
     if (result && !result.ok) {
       notifyError(result.error ?? 'unknown error', 'Could not open the plugins folder')

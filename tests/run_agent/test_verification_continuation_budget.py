@@ -105,6 +105,67 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
     assert not result["messages"][1].get("_pre_verify_synthetic")
 
 
+def test_pre_verify_sanitizes_substantive_subagent_report_before_output_gate(
+    agent,
+    monkeypatch,
+):
+    # Given: a completed audit report contains synthetic credential-shaped
+    # terminology, while a retry would return only a promise-shaped response.
+    agent.max_iterations = 2
+    agent.iteration_budget.max_total = 2
+    agent._delegate_depth = 1
+    synthetic_secret = "synthetic-secret-value-123456"
+    report = (
+        "Audit findings:\n"
+        "- SEC-17 in agent/output.py: redaction preserved 3 evidence records.\n"
+        f"- Synthetic fixture OPENAI_API_KEY={synthetic_secret} exercised the output gate."
+    )
+    promise = "곧 안전하게 정리해서 결과를 제공하겠습니다."
+    streamed: list[str] = []
+    agent.stream_delta_callback = streamed.append
+
+    def streaming_model_call(_api_kwargs, *, on_first_delta=None):
+        if on_first_delta:
+            on_first_delta()
+        agent._fire_stream_delta(report)
+        return _response(report)
+
+    agent._interruptible_streaming_api_call = streaming_model_call
+    seen: list[str] = []
+
+    def output_gate(**kwargs):
+        candidate = kwargs["final_response"]
+        seen.append(candidate)
+        if synthetic_secret in candidate:
+            return "sanitize the completed report and return its evidence now"
+        return None
+
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
+
+    # When: the subagent candidate passes through the final-output gate.
+    with (
+        patch("hermes_cli.plugins.has_hook", side_effect=lambda name: name == "pre_verify"),
+        patch("hermes_cli.plugins.get_pre_verify_continue_message", side_effect=output_gate),
+        patch("agent.verify_hooks.max_verify_nudges", return_value=2),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("audit the output safety path")
+
+    # Then: the same-turn result is sanitized evidence, never the canned retry.
+    final_response = result["final_response"]
+    streamed_response = "".join(streamed)
+    assert synthetic_secret not in streamed_response
+    assert "SEC-17" in streamed_response
+    assert "agent/output.py" in streamed_response
+    assert "3 evidence records" in streamed_response
+    assert synthetic_secret not in final_response
+    assert "SEC-17" in final_response
+    assert "agent/output.py" in final_response
+    assert "3 evidence records" in final_response
+    assert final_response != promise
+    assert len(seen) == 1
+
+
 def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypatch):
     agent.valid_tool_names = ["web_search"]
     agent._intent_ack_continuation = True

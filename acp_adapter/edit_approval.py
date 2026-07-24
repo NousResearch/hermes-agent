@@ -102,7 +102,14 @@ def _proposal_for_patch_replace(arguments: dict[str, Any]) -> EditProposal:
     old_string = arguments.get("old_string")
     new_string = arguments.get("new_string")
     if old_string is None or new_string is None:
-        raise ValueError("old_string and new_string required")
+        # This runs BEFORE patch_tool, so a bare "required" here would dead-end
+        # the model with the same message patch_tool was fixed to stop emitting —
+        # and the caller wraps it as "Edit approval denied", which misattributes
+        # a malformed call to the user refusing it. Reuse the tool's guidance so
+        # both layers say the same thing. Imported lazily: this module is kept
+        # isolated from the tool registry (see module docstring).
+        from tools.file_tools import REPLACE_MODE_ARGS_HELP
+        raise ValueError(REPLACE_MODE_ARGS_HELP)
 
     old_text = _read_text_if_exists(path)
     if old_text is None:
@@ -243,6 +250,13 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 
     try:
         proposal = build_edit_proposal(tool_name, arguments)
+    except ValueError as exc:
+        # A malformed tool call, not a refusal. Framing it as "Edit approval
+        # denied" tells the model the user rejected the edit, so it retries the
+        # same broken call or gives up instead of fixing its arguments. Surface
+        # the argument guidance on its own.
+        logger.warning("Malformed %s call reached ACP edit approval: %s", tool_name, exc)
+        return json.dumps({"error": str(exc), "success": False}, ensure_ascii=False)
     except Exception as exc:
         logger.warning("Could not build ACP edit approval proposal for %s: %s", tool_name, exc)
         return json.dumps({"error": f"Edit approval denied: could not prepare diff ({exc})"}, ensure_ascii=False)

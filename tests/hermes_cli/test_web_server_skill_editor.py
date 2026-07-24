@@ -8,6 +8,7 @@ gap for headless/VPS users. These tests pin:
 - POST /api/skills creates a skill through the same validated write path
   as the agent's ``skill_manage`` tool (frontmatter validation enforced).
 - PUT /api/skills/content rewrites an existing SKILL.md (404 on unknown).
+- DELETE /api/skills/{name} removes a skill through the same guarded delete path.
 - POST /api/cron/jobs accepts ``skills`` and persists it on the job;
   PUT /api/cron/jobs/{id} can update the list.
 """
@@ -195,6 +196,41 @@ class TestSkillUpdate:
         assert resp.status_code == 400
 
 
+class TestSkillDelete:
+    def test_delete_removes_skill(self, client, isolated_profiles):
+        resp = client.request("DELETE", "/api/skills/dashboard-skill", json={})
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        assert not (isolated_profiles["default"] / "skills" / "dashboard-skill").exists()
+
+        listed = client.get("/api/skills").json()
+        assert "dashboard-skill" not in {skill["name"] for skill in listed}
+
+    def test_delete_scopes_to_profile(self, client, isolated_profiles):
+        resp = client.request(
+            "DELETE",
+            "/api/skills/worker-skill",
+            json={"profile": "worker_alpha"},
+        )
+        assert resp.status_code == 200
+        assert not (isolated_profiles["worker_alpha"] / "skills" / "worker-skill").exists()
+        assert (isolated_profiles["default"] / "skills" / "dashboard-skill").exists()
+
+    def test_delete_unknown_skill_404(self, client, isolated_profiles):
+        resp = client.request("DELETE", "/api/skills/nope", json={})
+        assert resp.status_code == 404
+
+    def test_delete_pinned_skill_refuses(self, client, isolated_profiles, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._pinned_guard",
+            lambda name: "Skill is pinned and cannot be deleted.",
+        )
+        resp = client.request("DELETE", "/api/skills/dashboard-skill", json={})
+        assert resp.status_code == 400
+        assert "pinned" in resp.json()["detail"]
+        assert (isolated_profiles["default"] / "skills" / "dashboard-skill").exists()
+
+
 class TestEditorEndpointsAuth:
     @pytest.mark.parametrize(
         "method,path,kwargs",
@@ -202,6 +238,7 @@ class TestEditorEndpointsAuth:
             ("get", "/api/skills/content?name=dashboard-skill", {}),
             ("post", "/api/skills", {"json": {"name": "x", "content": "y"}}),
             ("put", "/api/skills/content", {"json": {"name": "x", "content": "y"}}),
+            ("delete", "/api/skills/dashboard-skill", {}),
         ],
     )
     def test_endpoints_401_without_token(

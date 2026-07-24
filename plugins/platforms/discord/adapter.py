@@ -2896,6 +2896,26 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+            # Single designated reply channel: when configured and the origin
+            # is a different guild channel/thread, deliver there instead, with
+            # a short context line pointing back at the origin channel.
+            redirect = self._reply_redirect_target(channel)
+            if redirect is not None:
+                reply_channel_id, origin_name = redirect
+                target = self._client.get_channel(int(reply_channel_id))
+                if not target:
+                    try:
+                        target = await self._client.fetch_channel(int(reply_channel_id))
+                    except Exception as e:
+                        logger.warning("reply_channel %s not resolvable: %s", reply_channel_id, e)
+                        target = None
+                if target:
+                    channel = target
+                    content = f"[re: #{origin_name}]\n{content}"
+                    # The reply_to message lives in the origin channel; a
+                    # cross-channel reference would fail, so drop it.
+                    reply_to = None
+
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
@@ -5769,6 +5789,41 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_reply_channel(self) -> str:
+        """Return the single designated reply channel ID, or "" when off.
+
+        Config key ``discord.reply_channel`` (bridged into ``config.extra``),
+        with ``DISCORD_REPLY_CHANNEL`` env var as fallback. Empty string means
+        the feature is disabled and replies go to the origin channel.
+        """
+        raw = self.config.extra.get("reply_channel")
+        if raw is None:
+            raw = os.getenv("DISCORD_REPLY_CHANNEL", "")
+        return str(raw).strip() if raw is not None else ""
+
+    def _reply_redirect_target(self, channel: Any) -> Optional[tuple]:
+        """Return ``(reply_channel_id, origin_name)`` when a send should be
+        redirected to the designated reply channel, else ``None``.
+
+        Rules:
+        - Feature off (no ``reply_channel`` configured) → no redirect.
+        - DMs (no ``guild`` on the channel) → never redirect.
+        - The reply channel itself, or a thread under it → no redirect.
+        - Any other guild channel, or a thread under one → redirect.
+        """
+        reply_channel = self._discord_reply_channel()
+        if not reply_channel:
+            return None
+        if getattr(channel, "guild", None) is None:
+            return None  # DM — reply stays in the DM
+        if str(getattr(channel, "id", "")) == reply_channel:
+            return None
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id is not None and str(parent_id) == reply_channel:
+            return None  # thread under the reply channel — reply in place
+        origin_name = getattr(channel, "name", None) or str(getattr(channel, "id", ""))
+        return (reply_channel, origin_name)
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.

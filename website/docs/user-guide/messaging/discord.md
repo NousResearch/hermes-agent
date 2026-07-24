@@ -400,6 +400,24 @@ If a thread's parent channel is in this list, the thread also becomes mention-fr
 
 Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
 
+#### `discord.reply_channel`
+
+**Type:** string — **Default:** `""` (off)
+
+A single designated output channel. When set, the bot can *read* (and be triggered from) many channels, but its replies are consolidated into this one channel. Replies triggered from any other guild channel — or a thread under one — are posted to the reply channel instead, prefixed with a short context line like `[re: #origin-channel-name]`.
+
+```yaml
+discord:
+  reply_channel: "1234567890"   # channel ID where all replies land
+```
+
+Rules:
+
+- **DMs are never redirected** — a DM conversation always replies in the DM.
+- Messages sent *in* the reply channel, or in a thread under it, reply in place as normal.
+- Threads under other channels redirect the same as their parent channel.
+- Leaving the key empty (the default) disables the feature entirely — no behavior change.
+
 #### `discord.auto_thread`
 
 **Type:** boolean — **Default:** `true`

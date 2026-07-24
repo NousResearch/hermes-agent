@@ -7,6 +7,8 @@ launching profile preselected. `--isolated` opts out.
 """
 import sys
 import types
+from pathlib import PurePath
+
 import pytest
 
 
@@ -33,7 +35,7 @@ class TestUnifiedDashboardRouting:
         )
         monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: True)
         execs = []
-        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+        monkeypatch.setattr(main_mod, "_reexec_dashboard", lambda *a, **k: execs.append(a))
 
         with pytest.raises(SystemExit) as exc:
             main_mod.cmd_dashboard(_args())
@@ -64,18 +66,21 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
         execs = []
 
-        def fake_exec(exe, argv, env):
-            execs.append((exe, argv, env))
-            raise SystemExit(0)  # execvpe never returns
+        def fake_reexec(argv, env):
+            execs.append((argv, env))
+            raise SystemExit(0)  # the real hand-off never returns
 
-        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+        # Patch the platform-neutral seam, NOT os.execvpe: on Windows the real
+        # hand-off goes through subprocess.Popen, so an execvpe-only patch
+        # would spawn a real dashboard server and hang the test (#61729).
+        monkeypatch.setattr(main_mod, "_reexec_dashboard", fake_reexec)
 
         with pytest.raises(SystemExit):
             main_mod.cmd_dashboard(_args())
 
         assert len(execs) == 1
-        exe, argv, env = execs[0]
-        assert exe == sys.executable
+        argv, env = execs[0]
+        assert argv[0] == sys.executable
         # Pinned to the default profile + launching profile preselected.
         assert "-p" in argv and argv[argv.index("-p") + 1] == "default"
         assert "--open-profile" in argv
@@ -105,21 +110,22 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
         execs = []
 
-        def fake_exec(exe, argv, env):
-            execs.append((exe, argv, env))
+        def fake_reexec(argv, env):
+            execs.append((argv, env))
             raise SystemExit(0)
 
-        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+        monkeypatch.setattr(main_mod, "_reexec_dashboard", fake_reexec)
 
         with pytest.raises(SystemExit):
             main_mod.cmd_dashboard(_args())
 
         assert len(execs) == 1
-        _exe, _argv, env = execs[0]
+        _argv, env = execs[0]
         # get_default_hermes_root() strips the trailing profiles/<name>, so the
         # child binds /opt/data — where the real default/oracle/saga profiles
-        # and the .install_method stamp actually live.
-        assert env.get("HERMES_HOME") == "/opt/data"
+        # and the .install_method stamp actually live.  Compare as paths, not
+        # strings: on Windows the resolved root stringifies with backslashes.
+        assert PurePath(env.get("HERMES_HOME")) == PurePath("/opt/data")
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT
@@ -136,7 +142,7 @@ class TestUnifiedDashboardRouting:
             lambda host, port: listening_calls.append(1) or False,
         )
         execs = []
-        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+        monkeypatch.setattr(main_mod, "_reexec_dashboard", lambda *a, **k: execs.append(a))
         monkeypatch.setitem(sys.modules, "fastapi", None)
 
         with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
@@ -184,7 +190,7 @@ class TestUnifiedDashboardRouting:
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         execs = []
-        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+        monkeypatch.setattr(main_mod, "_reexec_dashboard", lambda *a, **k: execs.append(a))
         monkeypatch.setitem(sys.modules, "fastapi", None)
 
         with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):

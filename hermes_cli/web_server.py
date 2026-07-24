@@ -18554,6 +18554,8 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "zinc",      "label": "Zinc",           "description": "shadcn/ui-style dark zinc — rounded, soft, Geist"},
+    {"name": "neon-samurai", "label": "Neon Samurai", "description": "Cyberpunk Osaka night — magenta & cyan neon on indigo black, pixel sakura in the wind"},
 ]
 
 

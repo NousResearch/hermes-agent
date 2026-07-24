@@ -2163,3 +2163,21 @@ class TestJobsJsonUtf8Bom:
         loaded = load_jobs()
         assert [j["id"] for j in loaded] == ["ctrlbom01"]
         assert "newline" in loaded[0]["name"]
+
+
+def test_cron_fire_profile_hints_are_per_job_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from cron import jobs as jobs_mod
+
+    jobs_mod.record_cron_fire_profile_hint("job-1", "work")
+
+    hint_path = tmp_path / "cron" / "fire_profile_index" / "job-1.profile"
+    assert hint_path.read_text(encoding="utf-8") == "work\n"
+    assert jobs_mod.resolve_cron_fire_profile_hint("job-1") == "work"
+
+    jobs_mod.record_cron_fire_profile_hint("../escape", "work")
+    assert not (tmp_path / "cron" / "fire_profile_index" / "../escape.profile").exists()
+
+    jobs_mod.forget_cron_fire_profile_hint("job-1")
+    assert jobs_mod.resolve_cron_fire_profile_hint("job-1") is None

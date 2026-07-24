@@ -1397,6 +1397,36 @@ def _classify_by_error_code(
             should_fallback=False,
         )
 
+    # Provider-native error codes that arrive without HTTP status (code-only body).
+    # These cover Gemini, Anthropic, and OpenAI structured-code errors.
+    if code_lower in {"unavailable", "overloaded", "service_unavailable", "no_endpoints", "downtimed", "maintenance"}:
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+            should_fallback=True,
+        )
+
+    if code_lower in {"deadline_exceeded", "api_timeout", "timed_out", "timeout"}:
+        return result_fn(
+            FailoverReason.timeout,
+            retryable=True,
+            should_fallback=True,
+        )
+
+    if code_lower in {"internal", "server_error", "api_error", "internal_server_error", "service_error"}:
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_fallback=True,
+        )
+
+    if code_lower in {"rate_limit_error", "rate_limited", "429", "too_many_requests"}:
+        return result_fn(
+            FailoverReason.rate_limit,
+            retryable=True,
+            should_rotate_credential=True,
+        )
+
     return None
 
 

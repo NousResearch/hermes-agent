@@ -22,6 +22,7 @@ import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { VoiceCommandProviderAction } from './voice-command-provider-dialog'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -293,6 +294,7 @@ export function ConfigSettings({
       {activeSectionId === 'advanced' && (
         <ToggleRow checked={keepAwake} description={c.keepAwakeDesc} label={c.keepAwakeTitle} onChange={setKeepAwake} />
       )}
+      {activeSectionId === 'voice' && <VoiceCommandProviderAction config={config} onApply={updateConfig} />}
       {visibleFields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (

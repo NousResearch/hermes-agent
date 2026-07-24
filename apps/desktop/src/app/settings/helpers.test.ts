@@ -5,6 +5,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
+  addSttCommandProvider,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
@@ -12,7 +13,8 @@ import {
   sectionFieldEntries,
   setNested,
   stripToolsetLabel,
-  toolsetDisplayLabel
+  toolsetDisplayLabel,
+  validateSttCommandProvider
 } from './helpers'
 
 describe('settings helpers', () => {
@@ -306,6 +308,88 @@ describe('settings helpers', () => {
       expect(opts).not.toContain('local_command')
       expect(opts).not.toContain('deepinfra')
       expect(opts).toContain('myasr')
+    })
+  })
+
+  describe('STT command provider creation', () => {
+    const draft = {
+      name: 'sensevoice',
+      command: 'sensevoice-cli {input_path} --json | tee {output_path}',
+      format: 'json' as const,
+      language: 'zh',
+      model: 'iic/SenseVoiceSmall',
+      timeout: 300
+    }
+
+    it('writes the canonical provider block and makes it active', () => {
+      const config: HermesConfigRecord = {
+        stt: { enabled: false, provider: 'local', echo_transcripts: true },
+        voice: { auto_tts: false }
+      }
+
+      const next = addSttCommandProvider(config, draft)
+
+      expect(next).toEqual({
+        stt: {
+          enabled: true,
+          provider: 'sensevoice',
+          echo_transcripts: true,
+          providers: {
+            sensevoice: {
+              type: 'command',
+              command: draft.command,
+              format: 'json',
+              language: 'zh',
+              model: 'iic/SenseVoiceSmall',
+              timeout: 300
+            }
+          }
+        },
+        voice: { auto_tts: false }
+      })
+      expect(config.stt).toEqual({ enabled: false, provider: 'local', echo_transcripts: true })
+    })
+
+    it('omits blank optional values from the provider block', () => {
+      const next = addSttCommandProvider(
+        {},
+        {
+          ...draft,
+          format: 'txt',
+          language: ' ',
+          model: '',
+          timeout: undefined
+        }
+      )
+
+      expect(getNested(next, 'stt.providers.sensevoice')).toEqual({
+        type: 'command',
+        command: draft.command,
+        format: 'txt'
+      })
+    })
+
+    it('rejects unsafe, built-in, and existing provider names', () => {
+      const config: HermesConfigRecord = {
+        stt: { providers: { myasr: { type: 'command', command: 'old command' } } }
+      }
+
+      expect(validateSttCommandProvider(config, { ...draft, name: 'Sense.Voice' }).name).toMatch(/lowercase/)
+      expect(validateSttCommandProvider(config, { ...draft, name: 'openai' }).name).toMatch(/built-in/)
+      expect(validateSttCommandProvider(config, { ...draft, name: 'MYASR' }).name).toMatch(/lowercase/)
+      expect(validateSttCommandProvider(config, { ...draft, name: 'myasr' }).name).toMatch(/already exists/)
+    })
+
+    it('requires input and output placeholders in the command', () => {
+      expect(validateSttCommandProvider({}, { ...draft, command: 'sensevoice-cli audio.wav' }).command).toMatch(
+        /input_path/
+      )
+      expect(validateSttCommandProvider({}, { ...draft, command: 'sensevoice-cli {input_path}' }).command).toMatch(
+        /output_path.*output_dir/
+      )
+      expect(
+        validateSttCommandProvider({}, { ...draft, command: 'whisper {input_path} -of {output_dir}/transcript' })
+      ).toEqual({})
     })
   })
 

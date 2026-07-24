@@ -202,6 +202,103 @@ const BUILTIN_STT_PROVIDERS = new Set([
   'deepinfra'
 ])
 
+export type SttCommandFormat = 'txt' | 'json' | 'srt' | 'vtt'
+
+export interface SttCommandProviderDraft {
+  name: string
+  command: string
+  format: SttCommandFormat
+  language?: string
+  model?: string
+  timeout?: number
+}
+
+export interface SttCommandProviderErrors {
+  name?: string
+  command?: string
+}
+
+const STT_COMMAND_PROVIDER_NAME = /^[a-z][a-z0-9_-]*$/
+
+function sttConfigNames(config: HermesConfigRecord): Set<string> {
+  const names = new Set<string>()
+
+  for (const path of ['stt', 'stt.providers']) {
+    const block = getNested(config, path)
+
+    if (!block || typeof block !== 'object' || Array.isArray(block)) {
+      continue
+    }
+
+    for (const name of Object.keys(block as Record<string, unknown>)) {
+      names.add(normalize(name))
+    }
+  }
+
+  return names
+}
+
+export function validateSttCommandProvider(
+  config: HermesConfigRecord,
+  draft: SttCommandProviderDraft
+): SttCommandProviderErrors {
+  const errors: SttCommandProviderErrors = {}
+  const name = draft.name.trim()
+  const command = draft.command.trim()
+
+  if (!STT_COMMAND_PROVIDER_NAME.test(name)) {
+    errors.name = 'Use a lowercase name starting with a letter; numbers, hyphens, and underscores are allowed.'
+  } else if (BUILTIN_STT_PROVIDERS.has(name)) {
+    errors.name = 'That name is reserved for a built-in STT provider.'
+  } else if (sttConfigNames(config).has(name)) {
+    errors.name = 'A provider with that name already exists.'
+  }
+
+  if (!command.includes('{input_path}')) {
+    errors.command = 'The command must include {input_path}.'
+  } else if (!command.includes('{output_path}') && !command.includes('{output_dir}')) {
+    errors.command = 'The command must include {output_path} or {output_dir}.'
+  }
+
+  return errors
+}
+
+export function addSttCommandProvider(config: HermesConfigRecord, draft: SttCommandProviderDraft): HermesConfigRecord {
+  const errors = validateSttCommandProvider(config, draft)
+
+  if (Object.keys(errors).length > 0) {
+    throw new Error(Object.values(errors).join(' '))
+  }
+
+  const name = draft.name.trim()
+
+  const provider: Record<string, unknown> = {
+    type: 'command',
+    command: draft.command.trim(),
+    format: draft.format
+  }
+
+  const language = draft.language?.trim()
+  const model = draft.model?.trim()
+
+  if (language) {
+    provider.language = language
+  }
+
+  if (model) {
+    provider.model = model
+  }
+
+  if (draft.timeout != null && Number.isFinite(draft.timeout) && draft.timeout > 0) {
+    provider.timeout = draft.timeout
+  }
+
+  let next = setNested(config, `stt.providers.${name}`, provider)
+  next = setNested(next, 'stt.enabled', true)
+
+  return setNested(next, 'stt.provider', name)
+}
+
 // A user-declared command provider, mirroring the runtime discriminator
 // (`tts_tool.py:_is_command_provider_config` / `transcription_tools.py`): `type`
 // is OPTIONAL and case/space-insensitive (absent or normalizing to "command"),

@@ -65,11 +65,13 @@ class TestApiServerRouteTable:
         assert "/v1/models" in paths
         assert "/api/model/options" in paths
         assert "/v1/chat/completions" in paths
+        assert "/api/sessions/{session_id}/model" in paths
         # connect() mirrors every native path under /p/{profile}/…
         mirrored = {f"/p/{{profile}}{path}" for path in paths}
         assert "/p/{profile}/v1/models" in mirrored
         assert "/p/{profile}/api/model/options" in mirrored
         assert "/p/{profile}/v1/chat/completions" in mirrored
+        assert "/p/{profile}/api/sessions/{session_id}/model" in mirrored
 
 
 class TestApiServerModelsUnderProfile:

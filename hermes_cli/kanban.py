@@ -1102,6 +1102,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "create",
     "swarm",
     "assign",
+    "set-model",
     "reclaim",
     "reassign",
     "link",
@@ -1577,9 +1578,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if args.mine and not assignee:
         assignee = _profile_author()
     with kb.connect_closing() as conn:
-        # Cheap "mini-dispatch": recompute ready so list output reflects
-        # dependencies that may have cleared since the last dispatcher tick.
-        kb.recompute_ready(conn)
+        # Cheap "mini-dispatch" for interactive callers. Running workers get a
+        # genuinely read-only list path so terminal-based reads cannot mutate the
+        # board behind structured tool policy hooks.
+        if not os.environ.get("HERMES_KANBAN_TASK"):
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn,
             assignee=assignee,

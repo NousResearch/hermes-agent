@@ -1,9 +1,14 @@
-"""Tests for the light-mode terminal detection + color remap in cli.py.
+"""Tests for the light-mode terminal detection + color remap.
+
+The detection + remap logic was extracted from cli.py into
+hermes_cli/light_mode.py; cli.py re-exports the helpers and keeps the
+import-time side effects (skin hook install + OSC 11 prime).  These tests
+target the module that owns the logic (and the mutable cache global).
 
 Covers the env-override path and the SkinConfig.get_color() wrapper that
-the resize / light-mode salvage installs at module import time.  We don't
-try to fake an OSC 11 reply — the env-override branch short-circuits
-before the terminal query, which is the path most users hit.
+the light-mode salvage installs at module import time.  We don't try to
+fake an OSC 11 reply — the env-override branch short-circuits before the
+terminal query, which is the path most users hit.
 """
 
 from __future__ import annotations
@@ -14,14 +19,18 @@ import pytest
 
 @pytest.fixture
 def cli_mod(monkeypatch):
-    """Import cli with the light-mode cache cleared each test."""
-    import cli as _cli
+    """Import the light-mode module with its detection cache cleared.
 
-    # The module-level _install_skin_light_mode_hook() and import-time
-    # _detect_light_mode() prime ran once at first import.  We just reset
-    # the detection cache so the per-test env override takes effect.
-    monkeypatch.setattr(_cli, "_LIGHT_MODE_CACHE", None)
-    return _cli
+    Importing cli first ensures the import-time _install_skin_light_mode_hook()
+    has run (the SkinConfigHook tests assert on it).  We then reset the
+    detection cache on the module that actually owns it so the per-test env
+    override takes effect.
+    """
+    import cli  # noqa: F401  # trigger import-time hook install / prime
+    import hermes_cli.light_mode as _lm
+
+    monkeypatch.setattr(_lm, "_LIGHT_MODE_CACHE", None)
+    return _lm
 
 
 class TestLightModeDetection:

@@ -406,8 +406,11 @@ def get_board(
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
         )
-        # Pre-fetch link counts per task (cheap: one query).
+        # Pre-fetch link counts per task (cheap: one query). Also collect the
+        # raw parent->child edges so the dashboard can draw the dependency
+        # graph (the "Show dependencies" overlay) without N per-task fetches.
         link_counts: dict[str, dict[str, int]] = {}
+        edges: list[dict[str, str]] = []
         for row in conn.execute(
             "SELECT parent_id, child_id FROM task_links"
         ).fetchall():
@@ -417,6 +420,7 @@ def get_board(
             link_counts.setdefault(row["child_id"], {"parents": 0, "children": 0})[
                 "parents"
             ] += 1
+            edges.append({"parent": row["parent_id"], "child": row["child_id"]})
 
         # Comment + event counts (both cheap aggregates).
         comment_counts: dict[str, int] = {
@@ -503,6 +507,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "edges": edges,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
@@ -878,7 +883,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=400,
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
-            elif s in ("todo", "triage", "scheduled"):
+            elif s in ("todo", "triage", "scheduled", "review"):
                 ok = _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
@@ -1242,7 +1247,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         continue
                     elif s == "scheduled":
                         ok = kanban_db.schedule_task(conn, tid)
-                    elif s in {"todo", "triage"}:
+                    elif s in {"todo", "triage", "review"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")

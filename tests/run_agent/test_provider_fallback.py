@@ -182,6 +182,129 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_forwards_configured_api_mode_to_provider_resolver(self):
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "k3",
+                "api_mode": "chat_completions",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(
+                _mock_client(base_url="https://api.kimi.com/coding/v1"),
+                "k3",
+            ),
+        ) as mock_rpc:
+            assert agent._try_activate_fallback() is True
+
+        assert mock_rpc.call_args.kwargs["api_mode"] == "chat_completions"
+        assert agent.base_url.rstrip("/") == "https://api.kimi.com/coding/v1"
+
+    def test_kimi_chat_completions_uses_real_resolver_through_fallback(self):
+        """The configured transport must reach the real resolver, not only a mock.
+
+        Kimi's bare ``/coding`` URL auto-detects as Anthropic Messages.  An
+        explicit ``chat_completions`` fallback must therefore reach
+        ``resolve_provider_client`` and build the OpenAI-compatible ``/v1``
+        client.  This is the integration boundary that originally produced a
+        404 when ``api_mode`` was dropped.
+        """
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "k3",
+                "base_url": "https://api.kimi.com/coding",
+                "api_key": "test-key",
+                "api_mode": "chat_completions",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+
+        assert agent._try_activate_fallback() is True
+        assert getattr(agent, "api_mode", None) == "chat_completions"
+        assert agent.client is not None
+        assert not isinstance(agent.client, AnthropicAuxiliaryClient)
+        assert agent.base_url.rstrip("/") == "https://api.kimi.com/coding/v1"
+
+    def test_explicit_api_mode_wins_at_resolver_and_agent_state(self):
+        """The configured wire protocol must survive both fallback boundaries."""
+        fbs = [
+            {
+                "provider": "my-proxy",
+                "model": "some-model",
+                "base_url": "https://proxy.example.com/v1",
+                "api_key": "test-key",
+                "api_mode": "anthropic_messages",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://proxy.example.com/v1"),
+                    "some-model",
+                ),
+            ) as mock_rpc,
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert mock_rpc.call_args.kwargs["api_mode"] == "anthropic_messages"
+        assert getattr(agent, "api_mode", None) == "anthropic_messages"
+
+    def test_kimi_bare_coding_endpoint_autodetects_anthropic_messages(self):
+        """Without an explicit override, Kimi's bare /coding URL stays native."""
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "kimi-k2.7-code",
+                "base_url": "https://api.kimi.com/coding",
+                "api_key": "test-key",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+
+        assert agent._try_activate_fallback() is True
+        assert getattr(agent, "api_mode", None) == "anthropic_messages"
+
+    def test_invalid_api_mode_is_ignored_before_resolver(self, caplog):
+        """An unknown mode must not disable resolver URL heuristics."""
+        fbs = [
+            {
+                "provider": "kimi-coding",
+                "model": "kimi-k2.7-code",
+                "base_url": "https://api.kimi.com/coding",
+                "api_key": "test-key",
+                "api_mode": "not-a-real-mode",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+
+        with (
+            caplog.at_level("WARNING"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://api.kimi.com/coding"),
+                    "kimi-k2.7-code",
+                ),
+            ) as mock_rpc,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert "ignoring unknown api_mode" in caplog.text
+        assert mock_rpc.call_args.kwargs["api_mode"] is None
+        assert getattr(agent, "api_mode", None) == "anthropic_messages"
+
     def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
         """A custom provider on the native api.anthropic.com host (no
         "/anthropic" path suffix, name != "anthropic") must resolve to the

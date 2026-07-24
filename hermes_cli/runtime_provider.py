@@ -24,6 +24,7 @@ from hermes_cli.auth import (
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
+    KIMI_CODE_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
     _nous_inference_env_override,
@@ -367,6 +368,45 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
         if normalized in _VALID_API_MODES:
             return normalized
     return None
+
+
+def _parse_explicit_runtime_api_mode(raw: Any, provider: str) -> Optional[str]:
+    """Validate a fallback transport override without bypassing runtime gates."""
+    parsed = _parse_api_mode(raw)
+    if not parsed:
+        return None
+
+    # Fallback entries may select wire transports only.  codex_app_server is a
+    # local execution runtime and must remain behind model.openai_runtime plus
+    # the OpenAI-provider gate in _maybe_apply_codex_app_server_runtime().
+    from hermes_cli.providers import TRANSPORT_TO_API_MODE
+
+    if parsed not in set(TRANSPORT_TO_API_MODE.values()):
+        return None
+    if parsed == "bedrock_converse" and provider != "bedrock":
+        return None
+    return parsed
+
+
+def _normalize_explicit_runtime_base_url(
+    runtime: Dict[str, Any], api_mode: str
+) -> Dict[str, Any]:
+    """Normalize a provider endpoint after selecting its authoritative wire mode."""
+    if api_mode != "chat_completions":
+        return runtime
+    if str(runtime.get("provider") or "").strip().lower() != "kimi-coding":
+        return runtime
+
+    raw_url = str(runtime.get("base_url") or "").strip()
+    # Exact equality is intentional.  Do not normalize trailing slashes, a
+    # trailing-dot hostname, explicit :443, credentials, query strings, or any
+    # other lookalike into the trusted Kimi Coding endpoint.
+    if raw_url != KIMI_CODE_BASE_URL:
+        return runtime
+
+    normalized = dict(runtime)
+    normalized["base_url"] = KIMI_CODE_BASE_URL + "/v1"
+    return normalized
 
 
 def _nous_inference_base_url_override() -> str:
@@ -1539,7 +1579,7 @@ def _resolve_explicit_runtime(
     return None
 
 
-def resolve_runtime_provider(
+def _resolve_runtime_provider_impl(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
@@ -2141,6 +2181,50 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
+    return runtime
+
+
+def resolve_runtime_provider(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    explicit_api_mode: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve provider credentials and honor a validated transport override.
+
+    ``explicit_api_mode`` is intended for fallback entries and other callers
+    that already resolved a provider-specific wire protocol.  A valid explicit
+    value is authoritative over persisted primary-model state and URL
+    heuristics.  Unknown values are ignored so the normal resolver remains the
+    safe fallback.
+    """
+    runtime = _resolve_runtime_provider_impl(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    if explicit_api_mode is None:
+        return runtime
+
+    runtime_provider = str(runtime.get("provider") or "").strip().lower()
+    parsed_mode = _parse_explicit_runtime_api_mode(
+        explicit_api_mode,
+        runtime_provider,
+    )
+    if parsed_mode:
+        runtime = dict(runtime)
+        runtime["api_mode"] = parsed_mode
+        runtime = _normalize_explicit_runtime_base_url(runtime, parsed_mode)
+    elif str(explicit_api_mode or "").strip():
+        logger.warning(
+            "Ignoring unknown or provider-incompatible explicit api_mode %r "
+            "for provider %s",
+            explicit_api_mode,
+            requested or runtime.get("provider"),
+        )
     return runtime
 
 

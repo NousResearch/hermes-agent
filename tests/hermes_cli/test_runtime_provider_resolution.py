@@ -49,6 +49,176 @@ def test_noauth_lmstudio_still_resolves(monkeypatch):
     assert resolved["api_key"]
 
 
+def test_explicit_api_mode_override_is_authoritative(monkeypatch):
+    """Fallback callers can override stale persisted or URL-derived modes."""
+    base_runtime = {
+        "provider": "kimi-coding",
+        "api_mode": "codex_responses",
+        "base_url": "https://api.kimi.com/coding/v1",
+        "api_key": "test-key",
+    }
+    monkeypatch.setattr(
+        rp,
+        "_resolve_runtime_provider_impl",
+        lambda **_kwargs: base_runtime,
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="kimi-coding",
+        explicit_api_mode="chat_completions",
+    )
+
+    assert resolved["api_mode"] == "chat_completions"
+    assert base_runtime["api_mode"] == "codex_responses"
+
+
+def test_explicit_api_mode_wins_on_real_kimi_runtime_path(monkeypatch):
+    """Gateway/cron Kimi fallbacks override stale primary config end to end."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: False),
+    )
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-codex",
+            "default": "gpt-5.4",
+            "api_mode": "codex_responses",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="kimi-coding",
+        explicit_api_key="test-key",
+        explicit_base_url="https://api.kimi.com/coding",
+        explicit_api_mode="chat_completions",
+        target_model="k3",
+    )
+
+    assert resolved["provider"] == "kimi-coding"
+    assert resolved["base_url"] == "https://api.kimi.com/coding/v1"
+    assert resolved["api_mode"] == "chat_completions"
+
+
+def test_invalid_explicit_api_mode_falls_back_to_resolver(monkeypatch, caplog):
+    """Unknown override values must not replace the resolver's safe mode."""
+    monkeypatch.setattr(
+        rp,
+        "_resolve_runtime_provider_impl",
+        lambda **_kwargs: {
+            "provider": "kimi-coding",
+            "api_mode": "anthropic_messages",
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        resolved = rp.resolve_runtime_provider(
+            requested="kimi-coding",
+            explicit_api_mode="not-a-real-mode",
+        )
+
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert "Ignoring unknown or provider-incompatible explicit api_mode" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("provider", "api_mode"),
+    [
+        ("openrouter", "codex_app_server"),
+        ("openai", "codex_app_server"),
+        ("openrouter", "bedrock_converse"),
+    ],
+)
+def test_provider_incompatible_explicit_runtime_modes_are_rejected(
+    monkeypatch,
+    caplog,
+    provider,
+    api_mode,
+):
+    """Fallback config cannot bypass local-runtime or provider-specific gates."""
+    monkeypatch.setattr(
+        rp,
+        "_resolve_runtime_provider_impl",
+        lambda **_kwargs: {
+            "provider": provider,
+            "api_mode": "chat_completions",
+            "base_url": "https://example.invalid/v1",
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        resolved = rp.resolve_runtime_provider(
+            requested=provider,
+            explicit_api_mode=api_mode,
+        )
+
+    assert resolved["api_mode"] == "chat_completions"
+    assert "provider-incompatible explicit api_mode" in caplog.text
+
+
+def test_bedrock_explicit_runtime_mode_keeps_provider_gate(monkeypatch):
+    """The Bedrock wire mode remains available only on the Bedrock provider."""
+    monkeypatch.setattr(
+        rp,
+        "_resolve_runtime_provider_impl",
+        lambda **_kwargs: {
+            "provider": "bedrock",
+            "api_mode": "bedrock_converse",
+            "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="bedrock",
+        explicit_api_mode="bedrock_converse",
+    )
+
+    assert resolved["api_mode"] == "bedrock_converse"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://api.kimi.com/coding",
+        "https://user:pass@api.kimi.com/coding",
+        "https://api.kimi.com:8443/coding",
+        "https://api.kimi.com/coding?mode=chat",
+        "https://api.kimi.com/coding#fragment",
+        "https://api.kimi.com/coding/",
+        "https://api.kimi.com/coding//",
+        "https://api.kimi.com./coding",
+        "https://api.kimi.com:443/coding",
+        "https://evil.example/coding",
+        "https://api.kimi.com/not-coding",
+    ],
+)
+def test_kimi_runtime_base_url_normalization_rejects_noncanonical_urls(
+    monkeypatch,
+    base_url,
+):
+    """Only the trusted bare Coding endpoint gains the OpenAI /v1 suffix."""
+    monkeypatch.setattr(
+        rp,
+        "_resolve_runtime_provider_impl",
+        lambda **_kwargs: {
+            "provider": "kimi-coding",
+            "api_mode": "anthropic_messages",
+            "base_url": base_url,
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="kimi-coding",
+        explicit_api_mode="chat_completions",
+    )
+
+    assert resolved["base_url"] == base_url
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def _fake_invoke_jwt(ttl_seconds=3600):
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
     payload = base64.urlsafe_b64encode(

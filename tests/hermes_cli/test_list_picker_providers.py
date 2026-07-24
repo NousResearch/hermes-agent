@@ -115,6 +115,30 @@ def test_non_openrouter_rows_passed_through_unchanged(monkeypatch):
     assert result[1]["models"] == ["gemini-3-flash-preview"]
 
 
+def test_kimi_picker_preserves_endpoint_scoped_k3_catalog(monkeypatch):
+    """Telegram/Discord retain K3 once the Kimi profile authorizes it."""
+    base = [
+        _make_provider(
+            "kimi-coding",
+            models=["kimi-k2.7-code", "k3"],
+        )
+    ]
+    monkeypatch.setattr(
+        model_switch,
+        "list_authenticated_providers",
+        lambda **kw: list(base),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: pytest.fail("should not be called"),
+    )
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    assert result[0]["slug"] == "kimi-coding"
+    assert result[0]["models"] == ["kimi-k2.7-code", "k3"]
+
+
 def test_include_moa_adds_virtual_provider_with_named_presets(monkeypatch):
     """Gateway pickers opt into a virtual MoA provider so presets are tappable."""
     base = [_make_provider("minimax", models=["MiniMax-M3"])]

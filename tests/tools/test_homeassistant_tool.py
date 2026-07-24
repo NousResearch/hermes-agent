@@ -12,6 +12,7 @@ import pytest
 from tools.homeassistant_tool import (
     _check_ha_available,
     _filter_and_summarize,
+    _async_list_entities,
     _build_service_payload,
     _parse_service_response,
     _get_headers,
@@ -110,6 +111,116 @@ class TestFilterAndSummarize:
 # ---------------------------------------------------------------------------
 # Service payload building
 # ---------------------------------------------------------------------------
+
+
+class TestAsyncListEntities:
+    @pytest.mark.asyncio
+    async def test_falls_back_to_template_api_on_states_5xx(self, monkeypatch):
+        """A broken /api/states payload should not make entity discovery unusable."""
+        import aiohttp
+
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, *, status=200, json_data=None, text_data=None):
+                self.status = status
+                self._json_data = json_data
+                self._text_data = text_data
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self):
+                if self.status >= 400:
+                    raise aiohttp.ClientResponseError(
+                        request_info=None,  # type: ignore[arg-type]
+                        history=(),
+                        status=self.status,
+                        message="Internal Server Error",
+                    )
+
+            async def json(self):
+                return self._json_data
+
+            async def text(self):
+                return self._text_data
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, **kwargs):
+                calls.append(("GET", url, kwargs))
+                return FakeResponse(status=500)
+
+            def post(self, url, **kwargs):
+                calls.append(("POST", url, kwargs))
+                assert url == "http://ha.local:8123/api/template"
+                assert kwargs["json"] == {
+                    "template": (
+                        "{% set ns = namespace(entities=[]) %}"
+                        "{% for s in states %}"
+                        "{% set ns.entities = ns.entities + [{"
+                        "'entity_id': s.entity_id, "
+                        "'state': s.state, "
+                        "'attributes': {"
+                        "'friendly_name': s.name, "
+                        "'area': area_name(s.entity_id) or ''"
+                        "}"
+                        "}] %}"
+                        "{% endfor %}"
+                        "{{ ns.entities | tojson }}"
+                    )
+                }
+                return FakeResponse(
+                    text_data=json.dumps(
+                        [
+                            {
+                                "entity_id": "light.kitchen",
+                                "state": "on",
+                                "attributes": {
+                                    "friendly_name": "Kitchen Light",
+                                    "area": "Kitchen",
+                                },
+                            },
+                            {
+                                "entity_id": "sensor.temperature",
+                                "state": "72",
+                                "attributes": {
+                                    "friendly_name": "Temperature",
+                                    "area": "Kitchen",
+                                },
+                            },
+                        ]
+                    )
+                )
+
+        monkeypatch.setattr(
+            "tools.homeassistant_tool._HASS_URL",
+            "http://ha.local:8123",
+        )
+        monkeypatch.setattr("tools.homeassistant_tool._HASS_TOKEN", "token")
+        monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+
+        result = await _async_list_entities(domain="light", area="kitchen")
+
+        assert result == {
+            "count": 1,
+            "entities": [
+                {
+                    "entity_id": "light.kitchen",
+                    "state": "on",
+                    "friendly_name": "Kitchen Light",
+                }
+            ],
+        }
+        assert [method for method, _, _ in calls] == ["GET", "POST"]
 
 
 class TestBuildServicePayload:

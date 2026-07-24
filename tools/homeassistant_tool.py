@@ -106,15 +106,48 @@ async def _async_list_entities(
     domain: Optional[str] = None,
     area: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Fetch entity states from HA and optionally filter by domain/area."""
+    """Fetch entity states from HA and optionally filter by domain/area.
+
+    Some HA instances can return HTTP 500 for ``/api/states`` when one
+    integration has a non-serializable state payload. Fall back to the template
+    API, which renders a compact entity list inside HA and often still works.
+    """
     import aiohttp
 
     hass_url, hass_token = _get_config()
+    headers = _get_headers(hass_token)
     url = f"{hass_url}/api/states"
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            resp.raise_for_status()
-            states = await resp.json()
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                resp.raise_for_status()
+                states = await resp.json()
+        except aiohttp.ClientResponseError as e:
+            if e.status < 500:
+                raise
+            template_url = f"{hass_url}/api/template"
+            template = (
+                "{% set ns = namespace(entities=[]) %}"
+                "{% for s in states %}"
+                "{% set ns.entities = ns.entities + [{"
+                "'entity_id': s.entity_id, "
+                "'state': s.state, "
+                "'attributes': {"
+                "'friendly_name': s.name, "
+                "'area': area_name(s.entity_id) or ''"
+                "}"
+                "}] %}"
+                "{% endfor %}"
+                "{{ ns.entities | tojson }}"
+            )
+            async with session.post(
+                template_url,
+                headers=headers,
+                json={"template": template},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                resp.raise_for_status()
+                states = json.loads(await resp.text())
 
     return _filter_and_summarize(states, domain, area)
 

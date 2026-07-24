@@ -49,7 +49,7 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "stepfun-plan", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
     "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
@@ -2587,7 +2587,7 @@ def get_model_context_length(
 
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
-        ctx = lookup_models_dev_context(effective_provider, model)
+        ctx = lookup_models_dev_context(effective_provider, model, base_url=base_url)
         if ctx:
             # MiniMax M3: models.dev reports 512K but actual context is 1M.
             # Prefer hardcoded catalog over stale probe value.

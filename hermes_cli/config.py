@@ -3585,7 +3585,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -3770,14 +3770,22 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "STEPFUN_API_KEY": {
-        "description": "StepFun Step Plan API key",
-        "prompt": "StepFun Step Plan API key",
+        "description": "StepFun API key (standard + Step Plan)",
+        "prompt": "StepFun API key",
         "url": "https://platform.stepfun.com/",
         "password": True,
         "category": "provider",
         "advanced": True,
     },
     "STEPFUN_BASE_URL": {
+        "description": "StepFun standard chat base URL override",
+        "prompt": "StepFun base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "STEPFUN_STEP_PLAN_BASE_URL": {
         "description": "StepFun Step Plan base URL override",
         "prompt": "StepFun Step Plan base URL (leave empty for default)",
         "url": None,
@@ -6491,6 +6499,61 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
                 )
+
+    # ── Version 33 → 34: legacy `stepfun` step-plan id → `stepfun-plan` ──
+    # The bare `stepfun` id now means the standard chat API (api.stepfun.ai/v1).
+    # Configs that used `stepfun` for the Step Plan endpoint are rewritten to
+    # `stepfun-plan`. A config is treated as Step Plan when EITHER:
+    #   (a) config.yaml `model.base_url` contains `/step_plan/`, OR
+    #   (b) base_url is empty/absent AND the env var STEPFUN_BASE_URL (the old
+    #       shared override) contains `/step_plan/`. In that env-var case the
+    #       value is moved to STEPFUN_STEP_PLAN_BASE_URL (the plan-specific
+    #       override) and STEPFUN_BASE_URL cleared, so the URL attaches to the
+    #       new `stepfun-plan` id instead of standard `stepfun`.
+    # Standard `/v1` configs (or plain `/v1` env URLs with no base_url) stay
+    # `stepfun`.
+    if current_ver < 34:
+        config = read_raw_config()
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict) and model_cfg.get("provider") == "stepfun":
+            base_url = str(model_cfg.get("base_url") or "")
+            is_step_plan = "/step_plan/" in base_url
+            env_var_moved = False
+            if not is_step_plan and not base_url:
+                # No base_url in config — check the env override the old shared
+                # id read. If it points at the Step Plan endpoint, treat this as
+                # a Step Plan config and move the value to the plan-specific var.
+                env_val = get_env_value("STEPFUN_BASE_URL")
+                if env_val and "/step_plan/" in env_val:
+                    is_step_plan = True
+                    if not get_env_value("STEPFUN_STEP_PLAN_BASE_URL"):
+                        try:
+                            save_env_value("STEPFUN_STEP_PLAN_BASE_URL", env_val)
+                            remove_env_value("STEPFUN_BASE_URL")
+                            env_var_moved = True
+                        except Exception:
+                            # Best-effort: never let an env write crash a config
+                            # migration. The provider rewrite below still lands.
+                            env_var_moved = False
+            if is_step_plan:
+                model_cfg["provider"] = "stepfun-plan"
+                config["model"] = model_cfg
+                _persist_migration(config)
+                results["config_added"].append(
+                    "model.provider stepfun → stepfun-plan (Step Plan endpoint)"
+                )
+                if env_var_moved:
+                    results["config_added"].append(
+                        "env STEPFUN_BASE_URL → STEPFUN_STEP_PLAN_BASE_URL "
+                        "(Step Plan base URL now attaches to stepfun-plan)"
+                    )
+                    if not quiet:
+                        print(
+                            "  ✓ Moved STEPFUN_BASE_URL → "
+                            "STEPFUN_STEP_PLAN_BASE_URL for Step Plan config"
+                        )
+                if not quiet:
+                    print("  ✓ Migrated StepFun Step Plan config to provider 'stepfun-plan'")
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

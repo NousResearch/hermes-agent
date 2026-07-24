@@ -341,6 +341,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "stepfun": [
+        "step-3.7-flash",
+        "step-3.5-flash",
+        "step-3.5-flash-2603",
+    ],
+    "stepfun-plan": [
+        "step-3.7-flash",
         "step-3.5-flash",
         "step-3.5-flash-2603",
     ],
@@ -1099,7 +1105,8 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com & Moonshot API)"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Domestic direct API)"),
-    ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (Agent / coding models via Step Plan API)"),
+    ProviderEntry("stepfun",        "StepFun",                 "StepFun standard chat completions (Step models)"),
+    ProviderEntry("stepfun-plan",   "StepFun Step Plan",       "StepFun Step Plan (Agent / coding models via Step Plan API)"),
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (Global direct API)"),
     ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (Domestic direct API)"),
@@ -1264,8 +1271,9 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
-    "step": "stepfun",
-    "stepfun-coding-plan": "stepfun",
+    "step": "stepfun-plan",
+    "stepfun-coding-plan": "stepfun-plan",
+    "stepfun-ai": "stepfun",
     "arcee-ai": "arcee",
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
@@ -2615,11 +2623,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         manifest_ids = get_curated_nous_model_ids()
         if manifest_ids:
             return manifest_ids
-    if normalized == "stepfun":
+    if normalized in ("stepfun", "stepfun-plan"):
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
-            creds = resolve_api_key_provider_credentials("stepfun")
+            creds = resolve_api_key_provider_credentials(normalized)
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:

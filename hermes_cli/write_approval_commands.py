@@ -22,7 +22,10 @@ from tools import write_approval as wa
 
 
 def _fmt_state(subsystem: str) -> str:
-    on = wa.write_approval_enabled(subsystem)
+    try:
+        on = wa.write_approval_enabled(subsystem)
+    except wa.WriteApprovalConfigError:
+        return f"{subsystem}.write_approval = unavailable (writes blocked)"
     return f"{subsystem}.write_approval = {'on' if on else 'off'}"
 
 

@@ -67,6 +67,10 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 CONFIG_KEY = "write_approval"
 
 
+class WriteApprovalConfigError(RuntimeError):
+    """Raised when the write gate cannot determine its configured posture."""
+
+
 # ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
@@ -84,8 +88,10 @@ def write_approval_enabled(subsystem: str) -> bool:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
-    except Exception:
-        return False
+    except Exception as exc:
+        raise WriteApprovalConfigError(
+            f"Unable to read {subsystem}.{CONFIG_KEY} from configuration"
+        ) from exc
     return _normalize_enabled(raw)
 
 
@@ -271,7 +277,19 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
-    if not write_approval_enabled(subsystem):
+    try:
+        enabled = write_approval_enabled(subsystem)
+    except WriteApprovalConfigError as exc:
+        logger.error("Write approval configuration unavailable: %s", exc)
+        return GateDecision(
+            blocked=True,
+            message=(
+                "Write blocked: approval-gate configuration is unavailable. "
+                "No persistent memory or skill change was saved."
+            ),
+        )
+
+    if not enabled:
         return GateDecision(allow=True)
 
     background = is_background()

@@ -9754,7 +9754,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         process using the same Hermes profile.  Always pass this CLI's stable
         session identity when draining so another window cannot claim and mark
         delivered a completion that belongs to this one.
+
+        When the parent session has active delegate_task sub-agents, skip
+        draining so a background-process completion notification does not
+        create a new agent turn while the sub-agent is still working (#69127).
+        The events remain in the queue and will be delivered after all
+        sub-agents complete.
         """
+        from tools.delegate_tool import list_active_subagents
+        # Defer when sub-agents are still running — the notification would
+        # create a conflicting agent turn that interleaves with the pending
+        # sub-agent result (#69127).  Safe-guard (list_active_subagents may
+        # raise on import): only skip when we can positively confirm activity.
+        try:
+            if list_active_subagents():
+                return
+        except Exception:
+            pass  # best-effort; drain normally on error
+
         from tools.process_registry import process_registry
         from tools.async_delegation import (
             claim_event_delivery,

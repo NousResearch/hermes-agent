@@ -687,6 +687,13 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_groups = _csv_set(
             os.getenv("LINE_ALLOWED_GROUPS", "")
         ) | set(extra.get("allowed_groups", []))
+        # Group wake-up policy is config-backed; behavioral settings do not
+        # need additional user-facing environment variables.
+        self.require_prefix_groups = set(extra.get("require_prefix_groups", []))
+        self.group_prefixes = [
+            str(prefix) for prefix in (extra.get("group_prefixes") or ["Hermes:"])
+            if str(prefix)
+        ]
         self.allowed_rooms = _csv_set(
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
@@ -939,22 +946,31 @@ class LineAdapter(BasePlatformAdapter):
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
+        text = ""
 
-        # Stash the reply token for outbound use.
-        if chat_id and reply_token:
-            self._reply_tokens[chat_id] = (
-                reply_token,
-                time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
-            )
+        # Gate configured groups before any reply-token storage or media
+        # download. Ignored events must have no inbound side effects.
+        if chat_type == "group" and chat_id in self.require_prefix_groups:
+            if msg_type != "text":
+                logger.info("LINE: ignoring non-text group event without prefix chat=%s type=%s", chat_id, msg_type)
+                return
+            text = msg.get("text", "") or ""
+            matched = next((prefix for prefix in self.group_prefixes if text.startswith(prefix)), None)
+            if matched is None:
+                logger.info("LINE: ignoring unprefixed group event chat=%s", chat_id)
+                return
+            text = text[len(matched):].lstrip()
+            if not text:
+                logger.info("LINE: ignoring prefix-only group event chat=%s", chat_id)
+                return
 
         # Handle media inbound — fetch the binary, cache it, and surface a
         # vision-tool-friendly local path on the MessageEvent.
         media_urls: List[str] = []
         media_types: List[str] = []
-        text = ""
 
         if msg_type == "text":
-            text = msg.get("text", "") or ""
+            text = text or msg.get("text", "") or ""
         elif msg_type in {"image", "audio", "video", "file"}:
             local_path = await self._download_media(message_id, msg_type)
             if local_path:
@@ -970,6 +986,13 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {title} {address}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+
+        # Stash the reply token for outbound use only after the gate.
+        if chat_id and reply_token:
+            self._reply_tokens[chat_id] = (
+                reply_token,
+                time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
+            )
 
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:

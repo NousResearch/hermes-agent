@@ -674,3 +674,23 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+    def test_configured_group_gate_has_no_side_effects_for_non_text_and_prefix_only(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        from gateway.config import PlatformConfig
+        ad = LineAdapter(PlatformConfig(enabled=True, extra={"allowed_groups": ["Cgate"], "require_prefix_groups": ["Cgate"], "group_prefixes": ["Joi:"]}))
+        ad._download_media = AsyncMock(side_effect=AssertionError("ignored media must not download"))
+        ad.handle_message = AsyncMock(side_effect=AssertionError("ignored event must not dispatch"))
+        for message in ({"type": "audio", "id": "m-audio"}, {"type": "text", "id": "m-text", "text": "Joi:"}):
+            asyncio.run(ad._handle_message_event({"type": "message", "replyToken": "reply", "source": {"type": "group", "groupId": "Cgate", "userId": "U1"}, "message": message}))
+        assert "Cgate" not in ad._reply_tokens
+
+    def test_configured_group_gate_strips_prefix_before_dispatch(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        from gateway.config import PlatformConfig
+        ad = LineAdapter(PlatformConfig(enabled=True, extra={"allowed_groups": ["Cgate"], "require_prefix_groups": ["Cgate"], "group_prefixes": ["Joi:"]}))
+        ad.handle_message = AsyncMock()
+        asyncio.run(ad._handle_message_event({"type": "message", "replyToken": "reply", "source": {"type": "group", "groupId": "Cgate", "userId": "U1"}, "message": {"type": "text", "id": "m", "text": "Joi: hello"}}))
+        assert ad.handle_message.await_args.args[0].text == "hello"

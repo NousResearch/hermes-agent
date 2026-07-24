@@ -117,6 +117,32 @@ DINGTALK_TYPE_MAPPING = {
 }
 
 
+def _get_text_extensions(message: "ChatbotMessage") -> Dict[str, Any]:
+    """Return DingTalk text extensions for SDK object and dict payload shapes."""
+    text = getattr(message, "text", None)
+    extensions = getattr(text, "extensions", None)
+    if isinstance(extensions, dict):
+        return extensions
+    if isinstance(text, dict):
+        extensions = text.get("extensions") or text.get("extension")
+        if isinstance(extensions, dict):
+            return extensions
+    return {}
+
+
+def _extract_replied_text_original(replied: Dict[str, Any]) -> str:
+    """Best-effort extraction of a DingTalk replied message's text."""
+    content = replied.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, dict):
+        for key in ("content", "text", "value"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available and configured.
 
@@ -689,6 +715,26 @@ class DingTalkAdapter(BasePlatformAdapter):
         except (ValueError, OSError, TypeError):
             timestamp = datetime.now(tz=timezone.utc)
 
+        reply_kwargs: Dict[str, Any] = {}
+        try:
+            replied = _get_text_extensions(message).get("repliedMsg")
+            if isinstance(replied, dict):
+                reply_to_message_id = str(
+                    replied.get("msgId") or replied.get("msgid") or ""
+                ).strip()
+                reply_type = str(
+                    replied.get("msgType") or replied.get("msgtype") or ""
+                ).lower()
+                reply_text = _extract_replied_text_original(replied)
+                if reply_to_message_id and reply_text and reply_type != "file":
+                    reply_kwargs = {
+                        "reply_to_message_id": reply_to_message_id,
+                        "reply_to_text": reply_text,
+                        "reply_to_is_own_message": False,
+                    }
+        except Exception:
+            logger.debug("[%s] Failed to extract DingTalk reply context", self.name, exc_info=True)
+
         event = MessageEvent(
             text=text,
             message_type=msg_type,
@@ -698,6 +744,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             timestamp=timestamp,
+            **reply_kwargs,
         )
 
         logger.debug(

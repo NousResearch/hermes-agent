@@ -683,6 +683,69 @@ class TestAllowedUsersGate:
         assert adapter._is_user_allowed("dave", "") is False
 
 
+class TestDingTalkReplyContext:
+
+    def _message_with_reply(self, replied):
+        return SimpleNamespace(
+            message_id="msg-001",
+            conversation_id="conv-1",
+            conversation_type="1",
+            sender_id="user-1",
+            sender_nick="Alice",
+            sender_staff_id="staff-1",
+            text=SimpleNamespace(
+                content="what about this?",
+                extensions={"repliedMsg": replied},
+            ),
+            rich_text_content=None,
+            rich_text=None,
+            session_webhook="",
+            session_webhook_expired_time=0,
+            create_at=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_message_preserves_replied_text(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._resolve_media_codes = AsyncMock()
+        adapter.handle_message = AsyncMock()
+
+        await adapter._on_message(
+            self._message_with_reply(
+                {
+                    "msgId": "quoted-msg-1",
+                    "msgType": "text",
+                    "content": {"content": "original DingTalk message"},
+                }
+            )
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "quoted-msg-1"
+        assert event.reply_to_text == "original DingTalk message"
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_on_message_without_replied_text_leaves_context_empty(self, monkeypatch):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        monkeypatch.delenv("DINGTALK_ALLOWED_USERS", raising=False)
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._resolve_media_codes = AsyncMock()
+        adapter.handle_message = AsyncMock()
+
+        await adapter._on_message(
+            self._message_with_reply({"msgId": "quoted-msg-2", "msgType": "text"})
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+
+
 class TestMentionPatterns:
 
     def test_empty_patterns_list(self, monkeypatch):

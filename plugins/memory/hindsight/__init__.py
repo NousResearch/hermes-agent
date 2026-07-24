@@ -1026,7 +1026,37 @@ class HindsightMemoryProvider(MemoryProvider):
                     pass
                 except Exception as _e:
                     raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
+                # Upstream bug as of vectorize-io/hindsight 0.8.4:
+                # `hindsight-all`'s wheel ships a top-level `hindsight/` package
+                # (containing HindsightEmbedded), but the package's setuptools
+                # metadata does NOT declare it as a dependency — so
+                # `pip install hindsight-all` does not actually install the
+                # bare `hindsight` import path. We fall back gracefully:
+                # try the documented `hindsight` import first (works when the
+                # bare package is on PYTHONPATH, e.g. via `hindsight-all` from
+                # source, or if a user manually vendored it), then fall back
+                # to constructing the embedded client from
+                # `hindsight_embed.get_embed_manager()` + `hindsight_client.Hindsight`.
+                # Tracked upstream: vectorize-io/hindsight (see HindsightEmbedded packaging).
+                try:
+                    from hindsight import HindsightEmbedded as _HindsightEmbedded
+                except ImportError as _hindsight_err:
+                    raise ImportError(
+                        "Cannot import HindsightEmbedded (from `hindsight` package). "
+                        "This is a known upstream packaging gap in vectorize-io/hindsight 0.8.4: "
+                        "`hindsight-all`'s wheel ships the bare `hindsight/` package but does "
+                        "NOT declare it as a dependency. Workarounds, in order of preference:\n"
+                        "  1. Install the released `hindsight-all==0.8.4` source distribution "
+                        "(`pip install hindsight-all --no-binary :all:`) which DOES install "
+                        "the bare package.\n"
+                        "  2. Switch the plugin to `mode: local_external` and point it at a "
+                        "running Hindsight daemon you started yourself.\n"
+                        "  3. For now, ensure `site-packages/hindsight/` exists with the files "
+                        "`__init__.py`, `embedded.py`, and `api_namespaces.py` from the "
+                        "hindsight-all wheel.\n"
+                        f"  (original import error: {_hindsight_err})"
+                    ) from _hindsight_err
+                HindsightEmbedded = _HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:

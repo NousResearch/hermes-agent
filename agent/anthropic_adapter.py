@@ -262,6 +262,49 @@ def _supports_adaptive_thinking(model: str) -> bool:
     return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
 
 
+_ALWAYS_ON_ADAPTIVE_THINKING_MODELS = (
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-mythos-preview",
+)
+
+
+def _uses_always_on_adaptive_thinking(model: str) -> bool:
+    """Return whether Anthropic rejects attempts to disable thinking."""
+    model_lower = model.lower()
+    return any(name in model_lower for name in _ALWAYS_ON_ADAPTIVE_THINKING_MODELS)
+
+
+def _resolve_anthropic_replay_thinking_enabled(
+    model: str,
+    request_kwargs: Dict[str, Any],
+) -> bool | None:
+    """Resolve thinking from the final request payload.
+
+    ``None`` means the behavior of a third-party Anthropic-compatible endpoint
+    is unknown, so replayed thinking should be preserved conservatively.
+    """
+    model_lower = model.lower()
+
+    if _uses_always_on_adaptive_thinking(model):
+        return True
+
+    thinking = request_kwargs.get("thinking")
+    if isinstance(thinking, dict):
+        thinking_type = str(thinking.get("type", "")).strip().lower()
+        if thinking_type == "disabled":
+            return False
+        if thinking_type in {"adaptive", "enabled"}:
+            return True
+
+    if _is_claude_model(model):
+        # Sonnet 5 defaults to adaptive thinking when the field is omitted.
+        # Other current Claude models default to thinking off.
+        return "claude-sonnet-5" in model_lower
+
+    return None
+
+
 def _supports_xhigh_effort(model: str) -> bool:
     """Return True for models that accept the 'xhigh' adaptive effort level.
 
@@ -2308,8 +2351,50 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
     return fixed
 
 
+def _find_active_anthropic_tool_turn_assistant_index(
+    result: List[Dict[str, Any]],
+) -> int | None:
+    """Return the assistant turn continued by trailing tool results."""
+    if len(result) < 2:
+        return None
+
+    trailing_user = result[-1]
+    trailing_content = trailing_user.get("content")
+    if trailing_user.get("role") != "user" or not isinstance(trailing_content, list):
+        return None
+
+    tool_result_ids = {
+        block.get("tool_use_id")
+        for block in trailing_content
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    }
+    if not tool_result_ids or any(
+        not isinstance(block, dict) or block.get("type") != "tool_result"
+        for block in trailing_content
+    ):
+        return None
+
+    assistant_idx = len(result) - 2
+    assistant = result[assistant_idx]
+    assistant_content = assistant.get("content")
+    if assistant.get("role") != "assistant" or not isinstance(assistant_content, list):
+        return None
+
+    tool_use_ids = {
+        block.get("id")
+        for block in assistant_content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    }
+    if tool_result_ids.issubset(tool_use_ids):
+        return assistant_idx
+    return None
+
+
 def _manage_thinking_signatures(
-    result: List[Dict[str, Any]], base_url: str | None, model: str | None
+    result: List[Dict[str, Any]],
+    base_url: str | None,
+    model: str | None,
+    thinking_enabled: bool | None = None,
 ) -> None:
     """Strip or preserve thinking blocks based on endpoint type.
 
@@ -2330,6 +2415,7 @@ def _manage_thinking_signatures(
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    active_tool_turn_idx = _find_active_anthropic_tool_turn_assistant_index(result)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -2357,7 +2443,11 @@ def _manage_thinking_signatures(
                     continue
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
+        elif (
+            _is_third_party
+            or idx != last_assistant_idx
+            or (thinking_enabled is False and idx != active_tool_turn_idx)
+        ):
             # Third-party: strip ALL thinking blocks (signatures are proprietary).
             # Direct Anthropic: strip from non-latest assistant messages only.
             stripped = [
@@ -2468,6 +2558,7 @@ def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
     model: str | None = None,
+    thinking_enabled: bool | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
@@ -2523,7 +2614,12 @@ def convert_messages_to_anthropic(
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
-    _manage_thinking_signatures(result, base_url, model)
+    _manage_thinking_signatures(
+        result,
+        base_url,
+        model,
+        thinking_enabled=thinking_enabled,
+    )
     _evict_old_screenshots(result)
 
     return system, result
@@ -2542,6 +2638,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    extra_body: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -2582,7 +2679,9 @@ def build_anthropic_kwargs(
     compatible ones).
     """
     system, anthropic_messages = convert_messages_to_anthropic(
-        messages, base_url=base_url, model=model
+        messages,
+        base_url=base_url,
+        model=model,
     )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
@@ -2731,6 +2830,13 @@ def build_anthropic_kwargs(
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+        elif (
+            "claude-sonnet-5" in model.lower()
+            and not _uses_always_on_adaptive_thinking(model)
+        ):
+            # Sonnet 5 defaults to adaptive thinking when omitted, so disabling
+            # it requires an explicit wire parameter.
+            kwargs["thinking"] = {"type": "disabled"}
 
     # ── Strip sampling params on 4.7+ ─────────────────────────────────
     # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.
@@ -2763,6 +2869,34 @@ def build_anthropic_kwargs(
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    if isinstance(extra_body, dict):
+        passthrough = {
+            key: value
+            for key, value in extra_body.items()
+            if key != "reasoning" and not str(key).startswith("_")
+        }
+        override_thinking = passthrough.pop("thinking", None)
+        if isinstance(override_thinking, dict):
+            override_type = str(override_thinking.get("type", "")).strip().lower()
+            if not (
+                override_type == "disabled"
+                and _uses_always_on_adaptive_thinking(model)
+            ):
+                kwargs["thinking"] = dict(override_thinking)
+        if passthrough:
+            existing = kwargs.get("extra_body") or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            kwargs["extra_body"] = {**existing, **passthrough}
+
+    thinking_enabled = _resolve_anthropic_replay_thinking_enabled(model, kwargs)
+    _manage_thinking_signatures(
+        kwargs["messages"],
+        base_url,
+        model,
+        thinking_enabled=thinking_enabled,
+    )
 
     return kwargs
 

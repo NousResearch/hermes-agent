@@ -3880,6 +3880,36 @@ class TestHandleMaxIterations:
         assert "error" in result.lower()
         assert "API down" in result
 
+    def test_anthropic_summary_and_retry_keep_request_extra_body(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.request_overrides = {
+            "extra_body": {
+                "thinking": {"type": "disabled"},
+                "metadata": {"tenant": "test"},
+            }
+        }
+        agent._cached_system_prompt = "You are helpful."
+
+        transport = MagicMock()
+        transport.build_kwargs.side_effect = lambda **kwargs: kwargs
+        transport.normalize_response.side_effect = [
+            SimpleNamespace(content=""),
+            SimpleNamespace(content="Summary"),
+        ]
+        agent._get_transport = MagicMock(return_value=transport)
+        agent._anthropic_messages_create = MagicMock(return_value=object())
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            60,
+        )
+
+        assert result == "Summary"
+        assert transport.build_kwargs.call_count == 2
+        for call in transport.build_kwargs.call_args_list:
+            assert call.kwargs["extra_body"] == agent.request_overrides["extra_body"]
+
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"

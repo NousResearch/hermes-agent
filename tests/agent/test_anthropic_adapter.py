@@ -2444,6 +2444,361 @@ class TestThinkingBlockSignatureManagement:
         assert thinking[0]["signature"] == "sig_live"
         assert "_thinking_signature_invalidated" not in assistant
 
+    def test_disabled_thinking_strips_completed_latest_turn(self):
+        """A new non-thinking request must not replay completed native thinking."""
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "The answer is 42.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                    {
+                        "type": "redacted_thinking",
+                        "data": "redacted_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Answer briefly now."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        assert [b["type"] for b in assistant["content"]] == ["text"]
+        assert assistant["content"][0]["text"] == "The answer is 42."
+
+    def test_omitted_thinking_strips_latest_turn_for_default_off_model(self):
+        """Sonnet 4.6 runs without thinking when the field is omitted."""
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        assert assistant["content"] == [{"type": "text", "text": "Done."}]
+
+    def test_sonnet_5_omitted_thinking_preserves_latest_turn(self):
+        """Sonnet 5 defaults to adaptive thinking when the field is omitted."""
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-5",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        thinking = [
+            block for block in assistant["content"] if block.get("type") == "thinking"
+        ]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_prior"
+        assert "thinking" not in kwargs
+
+    def test_sonnet_5_disabled_thinking_is_explicit_and_strips_latest_turn(self):
+        """Sonnet 5 needs type=disabled because omission defaults to adaptive."""
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue briefly."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-5",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        assert assistant["content"] == [{"type": "text", "text": "Done."}]
+        assert kwargs["thinking"] == {"type": "disabled"}
+
+    def test_extra_body_enabled_thinking_preserves_latest_turn(self):
+        """The final wire override wins over a disabled reasoning config."""
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            extra_body={"thinking": {"type": "adaptive"}},
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        thinking = [
+            block for block in assistant["content"] if block.get("type") == "thinking"
+        ]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_prior"
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    def test_extra_body_disabled_thinking_strips_latest_turn(self):
+        """The final wire override wins over an enabled reasoning config."""
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-5",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        assert assistant["content"] == [{"type": "text", "text": "Done."}]
+        assert kwargs["thinking"] == {"type": "disabled"}
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    def test_primary_request_path_honors_extra_body_thinking_override(self):
+        """Profile extra_body must reach the final main-agent wire decision."""
+        from agent.chat_completion_helpers import build_api_kwargs
+
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+        agent = SimpleNamespace(
+            api_mode="anthropic_messages",
+            tools=None,
+            model="claude-sonnet-5",
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            request_overrides={
+                "extra_body": {"thinking": {"type": "adaptive"}}
+            },
+            _is_anthropic_oauth=False,
+            _ephemeral_max_output_tokens=None,
+            _anthropic_base_url=None,
+            _oauth_1m_beta_disabled=False,
+            _get_transport=lambda: get_transport("anthropic_messages"),
+            _prepare_anthropic_messages_for_api=lambda value: value,
+            _anthropic_preserve_dots=lambda: False,
+        )
+
+        kwargs = build_api_kwargs(agent, messages)
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        thinking = [
+            block for block in assistant["content"] if block.get("type") == "thinking"
+        ]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_prior"
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-mythos-preview",
+        ],
+    )
+    def test_always_on_models_preserve_thinking_when_disabled_requested(self, model):
+        """Always-on models reject type=disabled and still require replay."""
+        messages = [
+            {"role": "user", "content": "Think about this."},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Signed prior reasoning.",
+                        "signature": "sig_prior",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model=model,
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        thinking = [
+            block for block in assistant["content"] if block.get("type") == "thinking"
+        ]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_prior"
+        assert "thinking" not in kwargs
+
+    def test_disabled_thinking_preserves_active_tool_turn_signature(self):
+        """Tool-result continuation still needs the original signed thinking."""
+        messages = [
+            {"role": "user", "content": "Inspect the file."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc_read",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    },
+                ],
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "I should inspect it.",
+                        "signature": "sig_tool",
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_read", "content": "contents"},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        thinking = [
+            block for block in assistant["content"] if block.get("type") == "thinking"
+        ]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_tool"
+
+    def test_disabled_thinking_keeps_placeholder_for_thinking_only_turn(self):
+        """Stripping a completed thinking-only turn must not make it empty."""
+        messages = [
+            {"role": "user", "content": "Think."},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Only reasoning.",
+                        "signature": "sig_only",
+                    },
+                ],
+            },
+            {"role": "user", "content": "Continue without thinking."},
+        ]
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+        )
+
+        assistant = next(m for m in kwargs["messages"] if m["role"] == "assistant")
+        assert assistant["content"] == [
+            {"type": "text", "text": "(thinking elided)"}
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Tool choice

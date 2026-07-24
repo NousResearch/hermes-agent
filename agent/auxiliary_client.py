@@ -1356,6 +1356,7 @@ class _AnthropicCompletionsAdapter:
             reasoning_config=_reasoning_cfg,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
+            extra_body=kwargs.get("extra_body"),
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
@@ -1364,31 +1365,6 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
-
-        # Pass through caller-supplied extra_body so providers behind
-        # Anthropic-compatible gateways receive their per-vendor request
-        # fields (thinking control, metadata, portal tags, ...). The dict
-        # form is the documented Anthropic SDK passthrough for non-standard
-        # request body keys; merge on top of whatever build_anthropic_kwargs
-        # already produced (e.g. fast-mode ``speed``) so call-time settings
-        # survive. Two exclusions:
-        #   - ``reasoning``: the OpenAI-shaped config dict is TRANSLATED into
-        #     the native ``thinking`` field above (build_anthropic_kwargs);
-        #     forwarding the raw field alongside would double-specify
-        #     reasoning and 400 on strict gateways.
-        #   - ``_``-prefixed keys: private Hermes plumbing (_reasoning_config
-        #     et al.), never wire fields.
-        caller_extra_body = kwargs.get("extra_body")
-        if caller_extra_body and isinstance(caller_extra_body, dict):
-            passthrough = {
-                k: v for k, v in caller_extra_body.items()
-                if k != "reasoning" and not str(k).startswith("_")
-            }
-            if passthrough:
-                existing = anthropic_kwargs.get("extra_body") or {}
-                if not isinstance(existing, dict):
-                    existing = {}
-                anthropic_kwargs["extra_body"] = {**existing, **passthrough}
 
         response = create_anthropic_message(self._client, anthropic_kwargs)
         _transport = get_transport("anthropic_messages")

@@ -351,19 +351,28 @@ export function DirectiveContent({ text }: { text: string }) {
   const { cleanedText, images } = useMemo(() => safeEmbeddedImages(text ?? ''), [text])
   const segments = useMemo(() => safeDirectiveSegments(cleanedText), [cleanedText])
 
+  // `@image:<path>` directives render as a block-level thumbnail row (like
+  // embedded base64 images below), not inline mid-text — otherwise a large
+  // thumbnail gets wedged between words and breaks the text's line flow.
+  const imageSegments = segments.filter(
+  (segment): segment is Extract<Unstable_DirectiveSegment, { kind: 'mention' }> =>
+    segment.kind === 'mention' && segment.type === 'image'
+)
+
   return (
     <span className="whitespace-pre-line" data-slot="aui_directive-text">
       {segments.map((segment, index) =>
         segment.kind === 'text' ? (
           <Fragment key={`t-${index}`}>{segment.text}</Fragment>
-        ) : segment.type === 'image' ? (
-          <DirectiveImage id={segment.id} key={`img-${index}-${segment.id}`} label={segment.label} />
-        ) : (
+        ) : segment.type === 'image' ? null : (
           <DirectiveChip id={segment.id} key={`m-${index}-${segment.id}`} label={segment.label} type={segment.type} />
         )
       )}
-      {images.length > 0 && (
+      {(imageSegments.length > 0 || images.length > 0) && (
         <span className="mt-2 flex flex-wrap gap-2" data-slot="aui_embedded-images">
+          {imageSegments.map((segment, index) => (
+            <DirectiveImage id={segment.id} key={`img-ref-${index}-${segment.id}`} label={segment.label} />
+          ))}
           {images.map((src, index) => (
             <ZoomableImage
               alt=""
@@ -430,7 +439,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   return (
     <ZoomableImage
       alt={label}
-      className="max-h-32 max-w-48 rounded-md border border-border/40 object-contain"
+      className="max-h-48 max-w-full rounded-lg border border-border/60 object-contain"
       draggable={false}
       slot="aui_directive-image"
       src={src}

@@ -131,6 +131,47 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('Here you go.')
   })
 
+  it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png\nwhat is in this photo?',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('keeps a user turn that carried only an attached image (no caption)', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png',
+        timestamp: 1
+      }
+    ])
+
+    // The bubble has no visible text, but must survive the empty-turn filter
+    // because it carries attachment refs — otherwise a stand-alone attachment
+    // vanishes from the transcript after a session switch / restart.
+    expect(chatMessageText(message)).toBe('')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('leaves a plain user prompt without attachment refs untouched', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'just a question',
+        timestamp: 1
+      }
+    ])
+
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toBeUndefined()
+  })
+
   it('coerces non-string message content without throwing', () => {
     const [message] = toChatMessages([
       {

@@ -19,6 +19,8 @@ import hashlib
 import hmac
 import base64
 import json
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,6 +47,78 @@ validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
+_LineClient = _line._LineClient
+
+
+class _FakeLineAiohttpContent:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+        self._offset = 0
+        self.bytes_read = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = len(self._payload) - self._offset
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        self.bytes_read += len(chunk)
+        return chunk
+
+
+class _FakeLineAiohttpResponse:
+    def __init__(self, status: int, payload: bytes) -> None:
+        self.status = status
+        self._payload = payload
+        self.content = _FakeLineAiohttpContent(payload)
+        self.released = False
+        self.text_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def text(self) -> str:
+        self.text_calls += 1
+        return self._payload.decode("utf-8", errors="replace")
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _FakeLineAiohttpSession:
+    def __init__(self, response: _FakeLineAiohttpResponse, *args, **kwargs) -> None:
+        self.response = response
+        self.init_args = args
+        self.init_kwargs = kwargs
+        self.posts = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, *args, **kwargs):
+        self.posts.append((args, kwargs))
+        return self.response
+
+
+def _install_fake_line_aiohttp(monkeypatch, response: _FakeLineAiohttpResponse):
+    sessions = []
+
+    class _ClientSession(_FakeLineAiohttpSession):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(response, *args, **kwargs)
+            sessions.append(self)
+
+    fake_aiohttp = types.SimpleNamespace(
+        ClientSession=_ClientSession,
+        ClientTimeout=lambda **kwargs: kwargs,
+    )
+    monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+    return sessions
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +564,51 @@ class TestEnvEnablement:
         monkeypatch.setenv("LINE_PUBLIC_URL", "https://my-tunnel.example.com")
         result = _env_enablement()
         assert result["public_url"] == "https://my-tunnel.example.com"
+
+
+class TestLineClientHttpErrors:
+
+    def test_reply_error_reads_limited_body(self, monkeypatch):
+        payload = b"line reply failure " * 1000
+        response = _FakeLineAiohttpResponse(500, payload)
+        sessions = _install_fake_line_aiohttp(monkeypatch, response)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            asyncio.run(
+                _LineClient("tok").reply(
+                    "reply-token",
+                    [{"type": "text", "text": "hello"}],
+                )
+            )
+
+        assert "LINE reply 500" in str(exc_info.value)
+        assert response.text_calls == 0
+        assert response.content.bytes_read == _line._LINE_ERROR_BODY_LIMIT_BYTES + 1
+        assert response.released is True
+        args, kwargs = sessions[0].posts[0]
+        assert args[0] == _line.LINE_REPLY_URL
+        assert kwargs["json"]["replyToken"] == "reply-token"
+
+    def test_push_error_reads_limited_body(self, monkeypatch):
+        payload = b"line push failure " * 1000
+        response = _FakeLineAiohttpResponse(503, payload)
+        sessions = _install_fake_line_aiohttp(monkeypatch, response)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            asyncio.run(
+                _LineClient("tok").push(
+                    "Uchat",
+                    [{"type": "text", "text": "hello"}],
+                )
+            )
+
+        assert "LINE push 503" in str(exc_info.value)
+        assert response.text_calls == 0
+        assert response.content.bytes_read == _line._LINE_ERROR_BODY_LIMIT_BYTES + 1
+        assert response.released is True
+        args, kwargs = sessions[0].posts[0]
+        assert args[0] == _line.LINE_PUSH_URL
+        assert kwargs["json"]["to"] == "Uchat"
 
 
 class TestStandaloneSend:

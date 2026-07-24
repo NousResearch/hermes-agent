@@ -291,6 +291,28 @@ class TestFormatMessageBoldItalic:
         assert "tool\\[beta\\]" in result
         assert "alpha\\*prod" in result
 
+    def test_unpaired_trailing_bold_no_leak(self, adapter):
+        """Regression: a lone trailing ``**`` (no closing pair) cannot be
+        matched by the bold converter, so it used to be escaped to ``\\*\\*``
+        and render as a literal ``**``.  The safety net strips orphan escaped
+        ``\\*\\*`` so the raw marker never reaches Telegram.
+        """
+        result = adapter.format_message("Status: active **")
+        assert "**" not in result
+        assert "\\*\\*" not in result
+
+    def test_multiline_bold_no_leak(self, adapter):
+        """Regression: ``**bold\\nacross lines**`` spans a newline, which the
+        single-line bold regex cannot match, so both markers leaked as literal
+        ``**``.  The safety net now strips the orphan escaped pairs (the inner
+        text is left plain rather than showing raw ``**``).
+        """
+        result = adapter.format_message("**bold\ntext** end")
+        assert "**" not in result
+        assert "\\*\\*" not in result
+        assert "bold" in result
+        assert "text" in result
+
 
 # =========================================================================
 # format_message - headers
@@ -840,6 +862,27 @@ class TestFormatMessageTables:
         assert out.count("*1*") == 1
         assert out.count("*9*") == 1
         assert "• Y: 8" in out
+
+    def test_table_with_bold_cells_no_leak(self, adapter):
+        """Regression: when an LLM emits a GFM table whose first-column cells
+        already contain ``**bold**``, the heading used to be double-wrapped to
+        ``****bold****`` and then mangled into an escaped ``\\*\\*`` that
+        Telegram renders as a literal ``**``.  The heading ``*`` markers are
+        now stripped before wrapping, so no ``**`` leaks into the output.
+        """
+        text = (
+            "| 구분 | 설명 |\n"
+            "|------|------|\n"
+            "| **OCR** | 이미지에서 텍스트 |\n"
+            "| **LLM** | 대형 언어 모델 |"
+        )
+        out = adapter.format_message(text)
+        # No literal or escaped ** pair survives anywhere in the output.
+        assert "**" not in out
+        assert "\\*\\*" not in out
+        # The bold headings converted cleanly to MarkdownV2 single-* bold.
+        assert "*OCR*" in out
+        assert "*LLM*" in out
 
 
 @pytest.mark.asyncio

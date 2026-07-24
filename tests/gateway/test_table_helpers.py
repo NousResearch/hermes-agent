@@ -48,6 +48,38 @@ class TestConvertTableToBullets:
         assert "• Score: 120" in out
         assert "• Player: Alice" not in out
 
+    def test_bold_cell_heading_not_double_wrapped(self):
+        """Regression: a ``**bold**`` cell used to be wrapped again into
+        ``****bold****``, which the MarkdownV2 bold converter downstream
+        mangles into an escaped ``\\*\\*`` that Telegram renders as a literal
+        ``**``.  The heading's existing ``*`` markers must be stripped before
+        wrapping so each bold cell ends up wrapped exactly once.
+        """
+        text = (
+            "| 항목 | 설명 |\n"
+            "|------|------|\n"
+            "| **OCR** | 이미지에서 텍스트 |\n"
+            "| **LLM** | 대형 언어 모델 |"
+        )
+        out = convert_table_to_bullets(text)
+        # No double-wrap survives anywhere.
+        assert "****" not in out
+        # Each bold heading is wrapped exactly once.
+        assert out.count("**OCR**") == 1
+        assert out.count("**LLM**") == 1
+
+    def test_italic_marker_in_heading_stripped(self):
+        """A single-``*`` italic marker in a heading cell is stripped too,
+        so ``*foo*`` wraps to ``**foo**`` instead of ``***foo***``."""
+        text = (
+            "| Type | Count |\n"
+            "|------|-------|\n"
+            "| *foo* | 3 |"
+        )
+        out = convert_table_to_bullets(text)
+        assert "***" not in out
+        assert "**foo**" in out
+
     def test_three_column_table(self):
         text = (
             "| Name | Age | City |\n"

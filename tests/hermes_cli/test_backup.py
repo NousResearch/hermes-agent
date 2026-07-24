@@ -1,7 +1,9 @@
 """Tests for hermes backup and import commands."""
 
+import errno
 import json
 import os
+import shutil
 import sqlite3
 import zipfile
 from argparse import Namespace
@@ -14,6 +16,43 @@ import pytest
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+class _FakeScandirIterator:
+    """A faithful stand-in for os.scandir()'s return value: an ITERATOR
+    (supports direct next(), not just `for x in it`) AND a context manager
+    (create_quick_snapshot() does ``with scandir_it:`` then advances via
+    next(), matching CPython's own os.walk() implementation — see #68907
+    review pass 6). A plain list supports neither: no __enter__/__exit__,
+    and calling next() on a list itself (rather than iter(list)) raises
+    TypeError. Tests that fake os.scandir() must wrap their entries in
+    this so they exercise the real code path instead of an unrelated
+    protocol mismatch.
+
+    Tracks `closed` so a test can assert the `with scandir_it:` block
+    actually released the (simulated) OS handle — including on an early
+    break, e.g. when the traversal budget trips mid-listing (#68907
+    review pass 7 nit)."""
+
+    def __init__(self, entries):
+        self._it = iter(entries)
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._it)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+        return False
+
+    def close(self):
+        self.closed = True
+
 
 def _make_hermes_tree(root: Path) -> None:
     """Create a realistic ~/.hermes directory structure for testing."""
@@ -1402,8 +1441,9 @@ class TestSafeCopyDb:
         conn.commit()
         conn.close()
 
-        result = _safe_copy_db(src, dst)
-        assert result is True
+        ok, err = _safe_copy_db(src, dst)
+        assert ok is True
+        assert err is None
 
         conn = sqlite3.connect(str(dst))
         rows = conn.execute("SELECT x FROM t").fetchall()
@@ -1422,13 +1462,28 @@ class TestSafeCopyDb:
         conn.commit()
         conn.close()
 
-        result = _safe_copy_db(src, dst)
-        assert result is True
+        ok, err = _safe_copy_db(src, dst)
+        assert ok is True
+        assert err is None
 
         conn = sqlite3.connect(str(dst))
         rows = conn.execute("SELECT x FROM t").fetchall()
         conn.close()
         assert rows == [("wal-test",)]
+
+    def test_unreadable_database_fails_closed_with_reason(self, tmp_path):
+        """A present-but-unreadable DB (e.g. zeroed by storage failure,
+        issue #68474) must fail closed AND surface the sqlite error so
+        callers can record why the file was not captured."""
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "zeroed.db"
+        src.write_bytes(b"\x00" * 4096)  # valid size, no SQLite header
+        dst = tmp_path / "copy.db"
+
+        ok, err = _safe_copy_db(src, dst)
+        assert ok is False
+        assert err is not None and "not a database" in err
+        assert not dst.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1551,6 +1606,140 @@ class TestQuickSnapshot:
         assert "skipping state.db" in out
         assert "exceeds" in out
 
+    def test_oversized_protected_file_does_not_evict_prior_snapshot(
+        self, hermes_home, capsys
+    ):
+        """A protected file skipped for exceeding the size cap makes the
+        snapshot incomplete, so the keep=1 prune must NOT delete the previous
+        complete snapshot. Otherwise a state.db that crosses the cap on a
+        pre-update run would destroy the last good recovery source — the exact
+        loss the #68474 fix exists to prevent (#68907 review)."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        # A prior COMPLETE snapshot that must survive the incomplete run.
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text('{"id": "20200101-000000", "files": {}}')
+
+        # state.db in the fixture is a few KB — cap below it so it is skipped
+        # for SIZE (not corruption), under the pre-update keep=1 policy.
+        snap_id = create_quick_snapshot(
+            hermes_home=hermes_home, max_file_size=1024, keep=1
+        )
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        # The prior complete snapshot is retained, not evicted.
+        assert prior.is_dir(), "prior complete snapshot was pruned by an incomplete run"
+        # state.db was skipped for size; small protected files still captured.
+        assert not (snap_dir / "state.db").exists()
+        assert (snap_dir / "cron" / "jobs.json").exists()
+        # The manifest records the size skip as the reason it is incomplete.
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        assert "state.db" in meta["size_skipped"]
+        assert "state.db" not in meta["files"]
+        out = capsys.readouterr().out
+        assert "keeping older snapshots" in out
+
+    def test_oversized_file_inside_protected_dir_blocks_eviction(
+        self, hermes_home
+    ):
+        """The residual-bypass guard must cover the rglob path too: an oversized
+        file inside a protected DIRECTORY (not just a top-level protected file)
+        is recorded in size_skipped and must not let the prune evict the prior
+        complete snapshot (#68907 review)."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {"state.db": 100}}'
+        )
+        # Oversized file inside the protected `kanban/boards` directory, which the
+        # snapshot walks via rglob (exercises the directory-contained call site).
+        board = hermes_home / "kanban" / "boards" / "board1"
+        board.mkdir(parents=True)
+        (board / "kanban.db").write_bytes(b"x" * 4096)
+
+        snap_id = create_quick_snapshot(
+            hermes_home=hermes_home, max_file_size=1024, keep=1
+        )
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        # The directory-contained oversized file is recorded via the rglob path.
+        assert "kanban/boards/board1/kanban.db" in meta["size_skipped"]
+        # The prior complete snapshot survives the incomplete run.
+        assert prior.is_dir()
+
+    def test_all_size_skipped_snapshot_persists_manifest_and_keeps_prior(
+        self, tmp_path
+    ):
+        """When EVERY present protected file is skipped for size, `manifest`
+        and `failed` both stay empty -- only `size_skipped` is populated. The
+        snapshot must still persist a manifest recording size_skipped and must
+        NOT be deleted, and a prior complete snapshot must survive.
+
+        Reproduces egilewski's report on #68907: an 8 KiB state.db as the only
+        present protected file with a 4 KiB cap left no durable size_skipped
+        record, because `if not manifest and not failed:` fired and deleted
+        snap_dir before the manifest (and its size_skipped entries) could ever
+        be written -- losing the forensic "these files existed but were
+        skipped for size" record."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        # Only protected file present, and it is over the cap -- the
+        # all-size-skipped path (manifest={}, failed={}, size_skipped={...}).
+        (home / "state.db").write_bytes(b"x" * 8192)
+
+        prior = home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text('{"id": "20200101-000000", "files": {}}')
+
+        snap_id = create_quick_snapshot(hermes_home=home, max_file_size=4096, keep=1)
+
+        assert snap_id is not None, (
+            "an all-size-skipped snapshot must not return None -- it has a "
+            "durable size_skipped record to persist"
+        )
+        snap_dir = home / "state-snapshots" / snap_id
+        assert snap_dir.is_dir(), "snapshot dir must not be deleted"
+        manifest_path = snap_dir / "manifest.json"
+        assert manifest_path.exists(), (
+            "manifest must persist even though manifest/failed are both empty"
+        )
+        with open(manifest_path) as f:
+            meta = json.load(f)
+        assert meta.get("files") == {}
+        assert "state.db" in meta.get("size_skipped", {})
+        # The prior complete snapshot must not be evicted by this incomplete run.
+        assert prior.is_dir(), "prior complete snapshot was pruned by an incomplete run"
+
+    def test_failed_capture_never_prunes_any_snapshot(self, hermes_home):
+        """A HARD capture failure blocks pruning entirely: an older snapshot may
+        be the only copy of the file this run failed on, so nothing is evicted
+        (the #68474 no-evict guarantee, locked in for the failed path)."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        snaps = hermes_home / "state-snapshots"
+        for name in ("20200101-000000", "20200102-000000"):
+            d = snaps / name
+            d.mkdir(parents=True)
+            (d / "manifest.json").write_text(f'{{"id": "{name}", "files": {{}}}}')
+
+        # Zero out state.db so the copy fails (not a size skip).
+        (hermes_home / "state.db").write_bytes(b"\x00" * 8192)
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+        assert snap_id is not None
+        # Nothing is pruned in the hard-failure case.
+        assert (snaps / "20200101-000000").is_dir()
+        assert (snaps / "20200102-000000").is_dir()
+        assert (snaps / snap_id).is_dir()
+
     def test_max_file_size_none_copies_everything(self, hermes_home):
         """Default (no cap) preserves manual /snapshot behavior."""
         from hermes_cli.backup import create_quick_snapshot
@@ -1563,6 +1752,86 @@ class TestQuickSnapshot:
             hermes_home=hermes_home, max_file_size=1 << 30
         )
         assert (hermes_home / "state-snapshots" / snap_id / "state.db").exists()
+
+    def test_failed_db_capture_is_loud_and_recorded(self, hermes_home, capsys):
+        """An existing state.db that cannot be captured (e.g. zeroed to null
+        bytes, issue #68474) must not ride through silently: the failure is
+        printed prominently and persisted in the manifest for forensics,
+        while the small files the snapshot exists to protect still land."""
+        from hermes_cli.backup import create_quick_snapshot
+        (hermes_home / "state.db").write_bytes(b"\x00" * 8192)
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        assert not (snap_dir / "state.db").exists()
+        assert (snap_dir / "cron" / "jobs.json").exists()
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        assert "state.db" not in meta["files"]
+        assert "not a database" in meta["failed"]["state.db"]
+
+        out = capsys.readouterr().out
+        assert "could not capture state.db" in out
+        assert "Snapshot INCOMPLETE" in out
+        assert "NOT protected" in out
+
+    def test_failed_plain_copy_is_recorded(self, hermes_home, capsys):
+        """Non-DB copy failures (OSError from shutil.copy2) are recorded in
+        the manifest too, not just logged."""
+        from hermes_cli.backup import create_quick_snapshot
+        real_copy2 = shutil.copy2
+
+        def failing_copy2(src, dst, **kw):
+            if str(src).endswith(".env"):
+                raise OSError("disk full")
+            return real_copy2(src, dst, **kw)
+
+        with patch("hermes_cli.backup.shutil.copy2", side_effect=failing_copy2):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        assert snap_id is not None
+        with open(hermes_home / "state-snapshots" / snap_id / "manifest.json") as f:
+            meta = json.load(f)
+        assert ".env" not in meta["files"]
+        assert "disk full" in meta["failed"][".env"]
+        assert "Snapshot INCOMPLETE" in capsys.readouterr().out
+
+    def test_incomplete_snapshot_never_prunes_older_snapshots(self, hermes_home):
+        """An incomplete snapshot must not evict older (possibly complete)
+        snapshots: with the pre-update keep=1 policy, pruning would delete
+        the last snapshot still holding a good copy of the very file this
+        run failed to capture (issue #68474)."""
+        from hermes_cli.backup import create_quick_snapshot
+        good_id = create_quick_snapshot(label="good", hermes_home=hermes_home, keep=1)
+        assert good_id is not None
+
+        (hermes_home / "state.db").write_bytes(b"\x00" * 8192)
+        bad_id = create_quick_snapshot(label="bad", hermes_home=hermes_home, keep=1)
+        assert bad_id is not None
+
+        root = hermes_home / "state-snapshots"
+        assert (root / good_id).is_dir(), "complete snapshot was evicted"
+        assert (root / bad_id).is_dir()
+
+    def test_complete_snapshot_still_prunes(self, hermes_home):
+        """Prune behavior is unchanged when every capture succeeds."""
+        from hermes_cli.backup import create_quick_snapshot
+        first = create_quick_snapshot(label="a", hermes_home=hermes_home, keep=1)
+        second = create_quick_snapshot(label="b", hermes_home=hermes_home, keep=1)
+        root = hermes_home / "state-snapshots"
+        assert not (root / first).exists()
+        assert (root / second).is_dir()
+
+    def test_clean_snapshot_has_no_failed_key(self, hermes_home, capsys):
+        """The failed key and the INCOMPLETE warning appear only on failure."""
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        with open(hermes_home / "state-snapshots" / snap_id / "manifest.json") as f:
+            meta = json.load(f)
+        assert "failed" not in meta
+        assert "Snapshot INCOMPLETE" not in capsys.readouterr().out
 
     def test_list_snapshots(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
@@ -1703,6 +1972,901 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # Other state still present → snapshot succeeds.
         assert snap_id is not None
+
+    def test_directory_scandir_open_failure_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """A protected directory that cannot be opened at all for listing
+        (e.g. a mode-000 ``pairing/`` on POSIX — os.scandir() itself raises)
+        must be treated like a hard capture failure: recorded in the
+        manifest so it is visible why the snapshot is incomplete, and
+        blocking the keep=1 prune so the prior complete snapshot survives.
+
+        Python 3.13's ``Path.rglob()`` SILENTLY suppresses ``OSError`` raised
+        while scanning a subdirectory it cannot list, so a snapshot walk built
+        on rglob would just yield fewer manifest entries with neither
+        ``failed`` nor ``size_skipped`` set — reintroducing #68474's
+        recovery-loss via directory-backed state (#68907 review).
+
+        The failure is driven through a monkeypatched ``os.scandir`` (rather
+        than a real mode-000 directory) so the reproduction is deterministic
+        on both POSIX and Windows — real permission bits don't work the same
+        way on Windows CI.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        # A prior COMPLETE snapshot that must survive the incomplete run.
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        (pairing_dir / "users.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
+                raise OSError(13, "Permission denied", str(pairing_dir))
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The enumeration failure is recorded so the manifest shows WHY the
+        # snapshot is incomplete (same forensic contract as `failed` for a
+        # per-file capture error).
+        assert "failed" in meta, "directory enumeration failure was not recorded"
+        assert "pairing" in meta["failed"]
+        assert "Permission denied" in meta["failed"]["pairing"]
+
+        # The file inside the unreadable directory was never captured.
+        assert "pairing/users.json" not in meta["files"]
+        assert not (snap_dir / "pairing" / "users.json").exists()
+
+        # The prior complete snapshot must survive: an enumeration failure
+        # blocks the keep=1 prune exactly like a hard capture failure does.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a directory "
+            "enumeration failure"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
+
+    def test_dir_entry_classification_failure_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """A subdirectory whose type cannot be classified — DirEntry.is_dir()
+        itself raises OSError, distinct from scandir() failing to open the
+        parent — must also be recorded and block the keep=1 prune.
+
+        Verified against CPython 3.13's ``Lib/os.py`` ``walk()``: when
+        ``entry.is_dir()`` raises, ``os.walk`` catches the OSError
+        internally and puts the entry in ``filenames`` WITHOUT calling
+        ``onerror`` (this is why an os.walk(onerror=...)-based fix is not
+        enough — the traversal must control classification itself via
+        os.scandir, per Finding 1 of the #68907 review). A caller then sees
+        the misclassified name in ``filenames`` and either silently drops
+        it or crashes — either way nothing is recorded and #68474's
+        recovery-loss reproduces via a subtly different enumeration op.
+
+        Driven through a monkeypatched ``os.scandir`` that returns a
+        wrapper whose ``is_dir()`` raises for one specific entry, so the
+        reproduction is deterministic on both POSIX and Windows.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        # A sibling FILE directly in pairing/ — the success path for a
+        # normal entry must be unaffected by the misclassified sibling.
+        (pairing_dir / "telegram-approved.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+        # A subdirectory whose classification will be made to raise.
+        private_dir = pairing_dir / "private"
+        private_dir.mkdir()
+        (private_dir / "users.json").write_text('{"67890": {"user_name": "bob"}}')
+
+        class _RaisingIsDirEntry:
+            """Wraps a real os.DirEntry, forcing is_dir() to raise —
+            simulating the ESTALE/EIO/transient-error class of failure
+            CPython's os.walk() swallows silently."""
+
+            def __init__(self, real_entry):
+                self._real = real_entry
+                self.name = real_entry.name
+                self.path = real_entry.path
+
+            def is_dir(self, *args, **kwargs):
+                raise OSError(5, "Simulated classification failure", self.path)
+
+            def is_file(self, *args, **kwargs):
+                return self._real.is_file(*args, **kwargs)
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
+                wrapped = []
+                for entry in real_scandir(path):
+                    if entry.name == "private":
+                        wrapped.append(_RaisingIsDirEntry(entry))
+                    else:
+                        wrapped.append(entry)
+                return _FakeScandirIterator(wrapped)
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The classification failure is recorded ...
+        assert "failed" in meta, "DirEntry classification failure was not recorded"
+        assert "pairing/private" in meta["failed"]
+        assert "Simulated classification failure" in meta["failed"]["pairing/private"]
+
+        # ... the file inside the misclassified subdirectory was never
+        # captured ...
+        assert "pairing/private/users.json" not in meta["files"]
+        assert not (snap_dir / "pairing" / "private" / "users.json").exists()
+
+        # ... but the readable sibling file is captured normally (success
+        # path unchanged).
+        assert "pairing/telegram-approved.json" in meta["files"]
+        assert (snap_dir / "pairing" / "telegram-approved.json").exists()
+
+        # The prior complete snapshot must survive.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a DirEntry "
+            "classification failure"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
+
+    def test_unreadable_excluded_subtree_does_not_block_prune(self, hermes_home):
+        """An enumeration failure INSIDE an excluded subtree (workspaces/
+        attachments under a kanban board) must NOT mark the snapshot
+        incomplete: nothing under those subtrees is ever captured, so a
+        failure there carries no recovery-loss risk and must not block
+        pruning forever (#68907 review, Finding 2).
+
+        The exclusion must be applied BEFORE descending into the
+        subdirectory — asserted here by poisoning os.scandir for the
+        excluded path: if the implementation ever descended into it, this
+        test would surface a failure entry instead of a clean prune.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        board = hermes_home / "kanban" / "boards" / "board1"
+        board.mkdir(parents=True)
+        conn = sqlite3.connect(str(board / "kanban.db"))
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        workspaces_dir = board / "workspaces"
+        workspaces_dir.mkdir()
+        (workspaces_dir / "scratch.txt").write_text("regenerable scratch data")
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so unrelated fd-based scandir calls must pass
+            # through untouched; only intercept a real path to workspaces/.
+            if not isinstance(path, int):
+                p = Path(path)
+                if p == workspaces_dir or workspaces_dir in p.parents:
+                    raise OSError(13, "Permission denied", str(path))
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The board db is still captured normally.
+        assert "kanban/boards/board1/kanban.db" in meta["files"]
+        # Nothing under the excluded, unreadable workspaces/ subtree was
+        # ever touched, so the snapshot is complete.
+        assert not meta.get("failed"), (
+            f"unreadable excluded subtree wrongly marked incomplete: {meta.get('failed')}"
+        )
+
+        # A complete capture prunes normally — the excluded subtree's
+        # unreadability must not block pruning forever.
+        assert not prior.is_dir(), (
+            "prior snapshot was retained even though the only failure was "
+            "inside an excluded (never-descended) subtree"
+        )
+
+    def test_top_level_classification_failure_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """A transient classification failure on a PRESENT top-level
+        protected file (e.g. state.db) must be recorded and block the
+        keep=1 prune — not silently treated as "doesn't exist".
+
+        Path.exists()/is_dir()/is_file() swallow OSError for a specific
+        errno set (pathlib._IGNORED_ERRNOS = ENOENT, ENOTDIR, EBADF,
+        ELOOP) and return False. EBADF in particular is a real,
+        documented transient failure mode (pathlib's own source notes it
+        guards against a macOS stat() quirk) — using those methods for
+        the top-level src classification means a present file can look
+        identical to an absent one, silently dropping it from the
+        manifest with nothing recorded (#68907 review, Finding 1).
+
+        Driven through a monkeypatched os.stat (deterministic on any OS —
+        the errno is synthesized, not produced by a real syscall).
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        target = hermes_home / "state.db"
+        real_stat = backup_mod.os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            # os.stat accepts an int fd on POSIX (equivalent to os.fstat),
+            # and this patch is process-global, so an unrelated fd-based
+            # stat call (e.g. from shutil.copy2's Linux sendfile fast
+            # path, which stats the source fd for its size) must pass
+            # through untouched; only intercept the real target path.
+            if not isinstance(path, int) and Path(path) == target:
+                raise OSError(errno.EBADF, "Bad file descriptor", str(target))
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(backup_mod.os, "stat", side_effect=fake_stat):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The classification failure is recorded ...
+        assert "failed" in meta, "top-level classification failure was not recorded"
+        assert "state.db" in meta["failed"]
+        assert "Bad file descriptor" in meta["failed"]["state.db"]
+
+        # ... state.db was never captured ...
+        assert "state.db" not in meta["files"]
+        assert not (snap_dir / "state.db").exists()
+
+        # ... but another protected file is still captured normally
+        # (success path unaffected by the unrelated failure).
+        assert "cron/jobs.json" in meta["files"]
+        assert (snap_dir / "cron" / "jobs.json").exists()
+
+        # The prior complete snapshot must survive.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a top-level "
+            "classification failure"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
+
+    def test_multi_subdirectory_windows_stat_collision_does_not_drop_files(
+        self, hermes_home
+    ):
+        """Two distinct sibling subdirectories under a protected root must
+        BOTH be captured, even when DirEntry.stat() reports colliding
+        identity for them.
+
+        Verified by direct measurement on a real Windows machine: CPython
+        3.13's DirEntry.stat() — the cached fast-path stat, as opposed to
+        os.stat() — returns st_dev=0, st_ino=0 for every entry. A prior
+        fix (commit dd860c07c) used a visited-set keyed on (st_dev,
+        st_ino) from entry.stat() to guard against directory cycles. On
+        Windows this silently collided ANY two sibling directories on
+        (0, 0): the second one visited was treated as "already seen" and
+        never scanned, dropping its files from the manifest with neither
+        `failed` nor `size_skipped` set — a regression worse than the
+        junction bug it targeted, breaking every multi-subdirectory
+        protected root (pairing/, kanban/boards/) on Windows. The fix
+        removes identity checking entirely in favor of a depth bound
+        (#68907 review, pass 4) — this test's fake scandir has zero
+        effect on that new code path.
+
+        The (0, 0) collision is reproduced deterministically on any host
+        OS (not just Windows) by wrapping every scanned entry so its
+        stat() zeroes out st_dev/st_ino, exactly matching the real
+        Windows behavior regardless of which OS runs this test.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        (pairing_dir / "a").mkdir()
+        (pairing_dir / "a" / "one.json").write_text('{"one": true}')
+        (pairing_dir / "b").mkdir()
+        (pairing_dir / "b" / "two.json").write_text('{"two": true}')
+
+        class _ZeroIdentityStat:
+            """Delegates to a real stat_result but zeroes st_dev/st_ino —
+            replicating DirEntry.stat()'s measured Windows behavior."""
+
+            def __init__(self, real_result):
+                self._real = real_result
+                self.st_dev = 0
+                self.st_ino = 0
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        class _ZeroIdentityEntry:
+            def __init__(self, real_entry):
+                self._real = real_entry
+                self.name = real_entry.name
+                self.path = real_entry.path
+
+            def is_dir(self, *args, **kwargs):
+                return self._real.is_dir(*args, **kwargs)
+
+            def is_file(self, *args, **kwargs):
+                return self._real.is_file(*args, **kwargs)
+
+            def stat(self, *args, **kwargs):
+                return _ZeroIdentityStat(self._real.stat(*args, **kwargs))
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            return _FakeScandirIterator(
+                [_ZeroIdentityEntry(e) for e in real_scandir(path)]
+            )
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        assert "pairing/a/one.json" in meta["files"], (
+            "first sibling directory's file missing from manifest"
+        )
+        assert "pairing/b/two.json" in meta["files"], (
+            "second sibling directory dropped — (st_dev, st_ino) identity "
+            "collision silently skipped it"
+        )
+        assert not meta.get("failed"), (
+            f"a working (non-colliding) traversal should not need to "
+            f"record any failure here: {meta.get('failed')}"
+        )
+        assert (snap_dir / "pairing" / "a" / "one.json").exists()
+        assert (snap_dir / "pairing" / "b" / "two.json").exists()
+
+    def test_linear_cycle_terminates_via_traversal_budget_and_blocks_prune(
+        self, hermes_home, monkeypatch
+    ):
+        """A directory structure that recurses unboundedly in a straight
+        line (e.g. a Windows junction looping back to an ancestor) must
+        be caught by the traversal work budget: the traversal
+        terminates, the overrun is recorded as a failure (visible,
+        forensic), and the keep=1 prune is blocked — never silent data
+        loss, never an unbounded hang (#68907 review, pass 5).
+
+        A prior version of this guard used a max recursion DEPTH (64)
+        instead of a total-work budget. Depth alone only bounds path
+        LENGTH: it happens to catch a purely linear chain like this one
+        fine, but a BRANCHING cycle (see
+        test_binary_cycle_terminates_via_traversal_budget_and_blocks_prune
+        below) blows up exponentially long before any fixed depth is
+        reached. The work budget subsumes the linear case too, so this
+        test now exercises the budget instead of a separate depth check.
+
+        The budget (_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES) is patched
+        down to a small value so the test runs fast without needing
+        200k synthetic iterations; production still uses 200_000.
+        Simulated by an os.scandir fake that always yields exactly one
+        (synthetic) child directory, however deep the traversal goes —
+        behaviorally identical to a self-referencing junction. The test
+        carries its own independent safety ceiling, comfortably above
+        the patched budget: if the production guard somehow failed to
+        stop it, the test's sentinel (non-OSError) exception fires
+        instead of letting the test hang.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        # raising=False: on a pre-pass-5 commit this attribute doesn't
+        # exist yet, and the patch should be a harmless no-op there (that
+        # commit's own — different — bound mechanism is exercised as-is).
+        monkeypatch.setattr(
+            backup_mod, "_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES", 50, raising=False
+        )
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+
+        class _LoopEntry:
+            """A synthetic subdirectory whose own listing always yields
+            another copy of itself."""
+
+            name = "loop"
+
+            def __init__(self, path):
+                self.path = str(path)
+
+            def is_dir(self, *args, **kwargs):
+                return True
+
+            def is_file(self, *args, **kwargs):
+                return False
+
+        class _RunawayRecursion(Exception):
+            """Raised only if the traversal exceeds the test's own
+            ceiling — proves the traversal budget failed to terminate
+            the recursion, without ever letting the test actually
+            hang."""
+
+        call_count = {"n": 0}
+        CALL_CEILING = 500  # far above the patched budget (50)
+
+        real_scandir = backup_mod.os.scandir
+        created_iterators = []
+
+        def fake_scandir(path):
+            call_count["n"] += 1
+            if call_count["n"] > CALL_CEILING:
+                raise _RunawayRecursion(
+                    f"os.scandir called {call_count['n']} times — the "
+                    "traversal work budget did not stop recursion"
+                )
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int):
+                p = Path(path)
+                if p == pairing_dir or p.name == "loop":
+                    it = _FakeScandirIterator([_LoopEntry(p / "loop")])
+                    created_iterators.append(it)
+                    return it
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        assert call_count["n"] <= CALL_CEILING, (
+            "traversal did not terminate within the safety ceiling"
+        )
+
+        # `with scandir_it:` must close the handle for every directory
+        # scanned, including the last one — the one whose iteration is
+        # what actually trips the budget and breaks out early (#68907
+        # review pass 7 nit: this was previously true by inspection only).
+        assert created_iterators, "fake scandir was never exercised"
+        assert all(it.closed for it in created_iterators), (
+            "not every scandir iterator was closed — `with scandir_it:` "
+            "did not release the handle on early budget break"
+        )
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        assert "failed" in meta, "traversal budget was exceeded but not recorded"
+        assert any("cycle" in reason for reason in meta["failed"].values()), (
+            meta["failed"]
+        )
+
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite an unterminated "
+            "traversal budget"
+        )
+
+    def test_binary_cycle_terminates_via_traversal_budget_and_blocks_prune(
+        self, hermes_home, monkeypatch
+    ):
+        """A BRANCHING directory cycle — e.g. two Windows junctions
+        pairing/a -> pairing and pairing/b -> pairing (junctions bypass
+        islink()) — must also be caught, and caught FAST.
+
+        This is the case a depth-only bound misses: reaching a fixed
+        depth of 64 down EVERY branch of a binary cycle requires
+        2**65-1 ~= 3.7e19 scandir calls, so the snapshot would hang or
+        exhaust resources long before any failure is recorded. A
+        total-work budget (counting entries visited, not path length)
+        catches this almost immediately, because branching makes the
+        entry count explode exponentially per level.
+
+        The budget is patched down to a small value for a fast,
+        deterministic test; production still uses 200_000. The test
+        carries its own independent safety ceiling — generously above
+        what the patched budget needs, but tiny compared to what a
+        depth-only guard would need for this shape — so a version with
+        no total-work budget (only depth) fails this test LOUDLY AND
+        FAST (RED against 959130e40) instead of hanging, and the
+        work-budgeted version passes almost immediately (GREEN).
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        # raising=False: on a pre-pass-5 commit (959130e40, depth-only)
+        # this attribute doesn't exist — the patch is then a harmless
+        # no-op and that commit's own depth-64 bound runs unmodified,
+        # which is exactly what should fail this test's ceiling.
+        monkeypatch.setattr(
+            backup_mod, "_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES", 50, raising=False
+        )
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+
+        class _BranchEntry:
+            """A synthetic subdirectory whose own listing always yields
+            TWO more copies of the same shape — an infinite binary tree,
+            modeling two junctions that each loop back into the cycle."""
+
+            def __init__(self, path, name):
+                self.path = str(path)
+                self.name = name
+
+            def is_dir(self, *args, **kwargs):
+                return True
+
+            def is_file(self, *args, **kwargs):
+                return False
+
+        class _RunawayRecursion(Exception):
+            """Raised only if the traversal exceeds the test's own
+            ceiling — proves the traversal budget failed to bound the
+            branching cycle, without ever letting the test actually
+            hang."""
+
+        call_count = {"n": 0}
+        # Generous vs. what the patched budget (50) needs (~25-30 calls,
+        # since each call yields 2 entries) but minuscule compared to
+        # what an unbounded-branching depth-64 traversal would need.
+        CALL_CEILING = 2000
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            call_count["n"] += 1
+            if call_count["n"] > CALL_CEILING:
+                raise _RunawayRecursion(
+                    f"os.scandir called {call_count['n']} times — the "
+                    "traversal budget did not bound the branching cycle"
+                )
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int):
+                p = Path(path)
+                if p == pairing_dir or p.name in ("a", "b"):
+                    return _FakeScandirIterator([
+                        _BranchEntry(p / "a", "a"),
+                        _BranchEntry(p / "b", "b"),
+                    ])
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        assert call_count["n"] <= CALL_CEILING, (
+            "branching traversal did not terminate within the safety ceiling"
+        )
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        assert "failed" in meta, "traversal budget was exceeded but not recorded"
+        # Exactly one failure: the whole protected-root traversal must
+        # abort immediately on budget overrun, not just skip the
+        # offending branch and keep burning budget on the others.
+        assert len(meta["failed"]) == 1, (
+            f"expected exactly one recorded failure (traversal aborts "
+            f"immediately), got: {meta['failed']}"
+        )
+        assert any("cycle" in reason for reason in meta["failed"].values()), (
+            meta["failed"]
+        )
+
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite an unbounded "
+            "branching cycle"
+        )
+
+    def test_lazy_high_fan_out_scandir_is_not_eagerly_drained(
+        self, hermes_home, monkeypatch
+    ):
+        """A SINGLE os.scandir() call whose listing itself yields many
+        entries — a junction whose target directory has high fan-out —
+        must have the traversal budget checked PER YIELD, not after the
+        whole listing has been pulled.
+
+        A prior version of this guard did
+        ``entries = list(os.scandir(current))``: that fully DRAINS the
+        directory listing before entries_visited is ever incremented.
+        Neither the binary-cycle test above nor the linear-cycle test can
+        catch this — both simulate the cycle across MANY separate
+        os.scandir() calls (one entry per call), so even an eager list()
+        of a 1-element listing is trivially cheap either way. This test
+        isolates the eager-vs-lazy question specifically: ONE scandir()
+        call, many entries (#68907 review, pass 6).
+
+        Reproduced with a Python generator (the same lazy, pull-based
+        shape a real ScandirIterator has under the hood) that yields
+        entries one at a time and raises a distinct sentinel exception if
+        ever pulled past 100 yields. The production budget is patched
+        down to 50. A correct (lazy) implementation stops pulling at
+        ~entries_visited + 1 (to detect the overrun) — the generator must
+        NEVER be asked for its 60th+ item, let alone its 100th. An eager
+        implementation (list(os.scandir(...))) drains the whole
+        generator up front to build the list, tripping the sentinel with
+        entries_visited still at 0 — the unambiguous RED signal.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        monkeypatch.setattr(
+            backup_mod, "_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES", 50, raising=False
+        )
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+
+        class _LazyOverdrawn(Exception):
+            """Raised only if the generator below is pulled past
+            SENTINEL_AFTER — proves entries were drained without the
+            budget ever stopping the pull (eager materialization), not a
+            real resource limit or an infinite hang."""
+
+        class _ChildEntry:
+            """A synthetic subdirectory entry — never actually descended
+            into either way (a correct implementation aborts the whole
+            traversal before popping any of these off the stack; an
+            eager implementation crashes on _LazyOverdrawn before ever
+            reaching the stack at all)."""
+
+            def __init__(self, path, name):
+                self.path = str(path)
+                self.name = name
+
+            def is_dir(self, *args, **kwargs):
+                return True
+
+            def is_file(self, *args, **kwargs):
+                return False
+
+        yielded = {"n": 0}
+        SENTINEL_AFTER = 100  # far above the patched budget (50)
+
+        def lazy_children():
+            """Yields _ChildEntry objects ONE AT A TIME from a single
+            (simulated) directory listing — exactly how a real
+            ScandirIterator behaves: it does not pre-build a list
+            internally either."""
+            i = 0
+            while True:
+                yielded["n"] += 1
+                if yielded["n"] > SENTINEL_AFTER:
+                    raise _LazyOverdrawn(
+                        f"generator was pulled {yielded['n']} times — the "
+                        "traversal budget did not stop the pull; entries "
+                        "were drained eagerly instead of lazily"
+                    )
+                yield _ChildEntry(pairing_dir / f"child-{i}", f"child-{i}")
+                i += 1
+
+        real_scandir = backup_mod.os.scandir
+        created_iterator = {}
+
+        def fake_scandir(path):
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
+                it = _FakeScandirIterator(lazy_children())
+                created_iterator["it"] = it
+                return it
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        assert yielded["n"] <= SENTINEL_AFTER, (
+            "the generator's own sentinel had to intervene — the "
+            "production code drained more entries than the budget "
+            "should ever have allowed"
+        )
+        # The real assertion: pulls stop close to the patched budget (50),
+        # nowhere near the generator's full 100-yield sentinel. A margin
+        # (not exact equality) avoids coupling the test to the "+1 to
+        # detect overrun" implementation detail.
+        assert yielded["n"] <= 60, (
+            f"generator was pulled {yielded['n']} times for a budget of "
+            f"50 — entries were not stopped promptly (looks eager, not "
+            f"lazy)"
+        )
+
+        # `with scandir_it:` must release the handle even though the
+        # budget cut iteration short partway through the listing (#68907
+        # review pass 7 nit: previously true by inspection only).
+        assert "it" in created_iterator, "fake scandir was never exercised"
+        assert created_iterator["it"].closed, (
+            "the scandir iterator was not closed — `with scandir_it:` did "
+            "not release the handle on early budget break"
+        )
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        assert "failed" in meta, "traversal budget was exceeded but not recorded"
+        assert any("cycle" in reason for reason in meta["failed"].values()), (
+            meta["failed"]
+        )
+
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite an unbounded "
+            "high-fan-out listing"
+        )
+
+    def test_mid_iteration_scandir_error_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """An OSError raised WHILE ITERATING a directory listing — not
+        just at os.scandir()'s open call — must be recorded and block
+        the keep=1 prune, exactly like an open-time failure does.
+        scandir can fail mid-iteration on some filesystems (transient
+        ESTALE/EIO partway through a listing), and the production code
+        already routes this through the same next()/except OSError path
+        CPython's own os.walk() uses (#68907 review pass 7) — this test
+        is the previously-missing regression guard for that path, not a
+        behavior change.
+
+        A generator yields one REAL DirEntry (proving a file enumerated
+        before the failure is still captured — partial success, not
+        total loss) and then raises OSError instead of returning
+        normally — a mid-listing failure the try/except around
+        os.scandir(current) itself (open time) cannot catch, since
+        scandir() already succeeded there.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        (pairing_dir / "telegram-approved.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+
+        real_scandir = backup_mod.os.scandir
+
+        def mid_iteration_entries():
+            # os.scandir(pairing_dir) itself succeeds — the failure
+            # happens partway through consuming the results, which is
+            # exactly what a try/except wrapped only around the open
+            # call would miss.
+            yield from real_scandir(pairing_dir)
+            raise OSError(5, "Input/output error", str(pairing_dir))
+
+        def fake_scandir(path):
+            # os.scandir accepts an int dir-fd on POSIX, and this patch is
+            # process-global, so an unrelated fd-based scandir call (e.g.
+            # from shutil.copy2's Linux sendfile fast path) must pass
+            # through untouched; only intercept a real path to pairing/.
+            if not isinstance(path, int) and Path(path) == pairing_dir:
+                return _FakeScandirIterator(mid_iteration_entries())
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The file enumerated BEFORE the mid-iteration error is still
+        # captured — a partial listing failure doesn't undo already
+        # completed work.
+        assert "pairing/telegram-approved.json" in meta["files"]
+        assert (snap_dir / "pairing" / "telegram-approved.json").exists()
+
+        # The mid-iteration failure itself is recorded ...
+        assert "failed" in meta, "mid-iteration scandir error was not recorded"
+        assert "pairing" in meta["failed"]
+        assert "Input/output error" in meta["failed"]["pairing"]
+
+        # ... and blocks the keep=1 prune exactly like an open-time
+        # failure or a per-entry classification failure would.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a mid-iteration "
+            "scandir error"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
 
 # ---------------------------------------------------------------------------
 # Pre-update backup (hermes update safety net)
@@ -2243,6 +3407,39 @@ class TestRunPreUpdateBackup:
         assert "Creating pre-update backup" not in out
         assert self._snaps(hermes_home)
         assert not self._zips(hermes_home)
+
+    def test_snapshot_creation_failure_is_surfaced_loudly(self, hermes_home, capsys):
+        """A pre-update snapshot that never gets created -- e.g. snap_dir.mkdir
+        failing on a full or read-only filesystem, which raises before any
+        per-file reporting can run -- must be surfaced loudly through the caller,
+        not swallowed at debug level, so the user knows the update is proceeding
+        without a recovery point (#68907 review)."""
+        from hermes_cli.main import _run_pre_update_backup
+        with patch(
+            "hermes_cli.backup.create_quick_snapshot",
+            side_effect=OSError("[Errno 30] Read-only file system"),
+        ):
+            snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        # The failure does not block the update...
+        assert snap_id is None
+        # ...but it is loud, not silent.
+        out = capsys.readouterr().out
+        assert "Pre-update snapshot FAILED" in out
+        assert "WITHOUT a recovery snapshot" in out
+        assert "Read-only file system" in out
+
+    def test_snapshot_returning_none_is_surfaced_loudly(self, hermes_home, capsys):
+        """create_quick_snapshot() can also return None with nothing captured --
+        another silent no-recovery-point path the caller must surface, not only
+        the raise path. The trust-boundary wrapper reports a missing snapshot
+        regardless of HOW the helper failed (#68907 review, Sol)."""
+        from hermes_cli.main import _run_pre_update_backup
+        with patch("hermes_cli.backup.create_quick_snapshot", return_value=None):
+            snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        assert snap_id is None
+        out = capsys.readouterr().out
+        assert "Pre-update snapshot FAILED" in out
+        assert "WITHOUT a recovery snapshot" in out
 
     def test_backup_flag_forces_full(self, hermes_home, capsys):
         """--backup forces the full zip (plus quick snapshot) for one run."""

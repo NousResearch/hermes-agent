@@ -13,13 +13,14 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
 
@@ -253,27 +254,28 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 # SQLite safe copy
 # ---------------------------------------------------------------------------
 
-def _safe_copy_db(src: Path, dst: Path) -> bool:
+def _safe_copy_db(src: Path, dst: Path) -> Tuple[bool, Optional[str]]:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to. Fail closed if a consistent snapshot cannot
     be created: copying only the live main file can omit committed WAL data.
+
+    Returns ``(ok, error)``: ``(True, None)`` on success, ``(False, reason)``
+    on failure. The reason string lets callers persist WHY a present file
+    could not be captured (e.g. ``file is not a database`` for a zeroed
+    state.db, issue #68474) instead of dropping it silently.
     """
     conn = None
     backup_conn = None
+    error: Optional[str] = None
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))
         conn.backup(backup_conn)
-        return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
+        error = str(exc)
     finally:
         for connection in (backup_conn, conn):
             if connection is not None:
@@ -281,6 +283,18 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
                     connection.close()
                 except Exception:
                     pass
+    if error is not None:
+        # Remove the partial destination AFTER closing the connections: on
+        # Windows an open handle makes unlink fail with a (swallowed)
+        # PermissionError, silently leaving a broken copy in the snapshot.
+        try:
+            dst.unlink(missing_ok=True)
+        except OSError as cleanup_exc:
+            logger.warning(
+                "Could not remove partial copy %s: %s", dst, cleanup_exc
+            )
+        return False, error
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +415,7 @@ def run_backup(args) -> None:
                         suffix=".db", delete=False, dir=str(out_path.parent)
                     ) as tmp:
                         tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
+                    if _safe_copy_db(abs_path, tmp_db)[0]:
                         zf.write(tmp_db, arcname=str(rel_path))
                         total_bytes += tmp_db.stat().st_size
                         tmp_db.unlink(missing_ok=True)
@@ -797,6 +811,16 @@ _QUICK_STATE_FILES = (
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
 _QUICK_DEFAULT_KEEP = 20
 
+# Total-work budget (scandir'd directory entries) for one protected-root
+# capture in create_quick_snapshot(). Bounds a directory-cycle traversal
+# (e.g. a Windows junction looping back to an ancestor, linearly or via
+# branching) without any per-entry identity check — see the guard's own
+# comment in create_quick_snapshot() for the full rationale (#68907
+# review, pass 5). A real Hermes state tree never comes close to this;
+# module-level (not a function-local constant) so tests can monkeypatch
+# it down to a small value instead of driving 200k synthetic iterations.
+_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES = 200_000
+
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     home = hermes_home or get_hermes_home()
@@ -830,6 +854,17 @@ def create_quick_snapshot(
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
 
+    # Protected files intentionally skipped for exceeding max_file_size. Unlike
+    # ``failed`` these are NOT capture errors — the cap is deliberate (e.g. a
+    # multi-GB state.db that must not stall an update) — so they are reported as
+    # a plain skip rather than a "corrupted or locked" failure. But a skipped
+    # protected file still leaves the snapshot INCOMPLETE, so it must block
+    # pruning of the last complete snapshot exactly as a failure does (#68907
+    # review): a pre-update run whose state.db crosses the cap would otherwise
+    # delete the previous good snapshot and reintroduce issue #68474's
+    # recovery-loss.
+    size_skipped: Dict[str, str] = {}
+
     def _too_large(path: Path, rel_name: str) -> bool:
         """True (and warn) when ``path`` exceeds the max_file_size cap."""
         if max_file_size is None:
@@ -850,71 +885,283 @@ def create_quick_snapshot(
             size,
             max_file_size,
         )
+        size_skipped[rel_name] = (
+            f"{_format_size(size)} exceeds {_format_size(max_file_size)} limit"
+        )
         return True
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     snap_id = f"{ts}-{label}" if label else ts
+
     snap_dir = root / snap_id
     snap_dir.mkdir(parents=True, exist_ok=True)
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
+    # rel_path -> reason, for files that EXISTED but could not be captured.
+    # Persisted in the manifest and reported loudly: a present-but-unreadable
+    # state.db (e.g. zeroed to null bytes, issue #68474) must not ride
+    # through an update behind an apparently-successful snapshot.
+    failed: Dict[str, str] = {}
+
+    def _record_failure(rel_name: str, reason: str) -> None:
+        failed[rel_name] = reason
+        print(f"  ⚠ Snapshot: could not capture {rel_name}: {reason}")
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
-        if not src.exists():
+
+        # Classify src through the SAME choke point the descendants use
+        # below: raw os.stat(), not Path.exists()/is_dir()/is_file().
+        # Those pathlib methods silently swallow OSError for a specific
+        # errno set (ENOENT, ENOTDIR, EBADF, ELOOP —
+        # pathlib._IGNORED_ERRNOS) and return False. A transient
+        # EBADF/EACCES/ESTALE while stat-ing a PRESENT protected
+        # top-level file (e.g. state.db) would look identical to "doesn't
+        # exist", silently dropping it with nothing recorded and letting
+        # the keep=1 prune evict the last good snapshot (#68907 review,
+        # Finding 1). Only a genuine absence (ENOENT/ENOTDIR — most
+        # _QUICK_STATE_FILES entries are optional and won't exist on a
+        # given install) is a silent skip; anything else is recorded.
+        try:
+            top_stat = os.stat(src)
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError:
+            continue
+        except OSError as exc:
+            _record_failure(rel, str(exc))
             continue
 
-        if src.is_dir():
+        if stat.S_ISDIR(top_stat.st_mode):
             # Walk the directory and record each file individually in the
             # manifest so restore can treat them uniformly.  Empty dirs are
             # skipped (nothing to snapshot).
-            for sub in src.rglob("*"):
-                if not sub.is_file():
-                    continue
-                sub_rel = sub.relative_to(home).as_posix()
-                # Skip heavy, regenerable per-board subtrees (scratch
-                # workspaces and task attachments can be large); we only need
-                # the board databases + their metadata to restore a board.
-                if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
-                    continue
-                if _too_large(sub, sub_rel):
-                    continue
-                dst = snap_dir / sub_rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
+            #
+            # Recurse via os.scandir ourselves — not Path.rglob, not
+            # os.walk(onerror=...) — so every directory-entry
+            # classification is a single choke point that funnels failures
+            # into `failed`. Both alternatives have a verified blind spot:
+            #  - Path.rglob() SILENTLY SUPPRESSES OSError raised while
+            #    scanning a subdirectory it cannot list (Python 3.13).
+            #  - os.walk()'s `onerror` only fires for scandir() open/
+            #    iteration failures. When entry.is_dir() itself raises,
+            #    os.walk catches that OSError internally and classifies
+            #    the entry as a non-directory — WITHOUT calling onerror
+            #    (CPython 3.13 Lib/os.py, walk(): the
+            #    `try: is_dir = entry.is_dir() except OSError: is_dir =
+            #    False` around line 389). The caller then sees that name in
+            #    `filenames`, and checking sub.is_file() on it either
+            #    silently returns False (errno ENOENT/ENOTDIR/EBADF/ELOOP,
+            #    ignored by pathlib) or raises unhandled (any other
+            #    errno) — either way nothing is recorded.
+            # Either blind spot lets a snapshot that silently missed part
+            # of a protected directory (pairing/, platforms/pairing/,
+            # kanban/boards/) look complete, so the keep=1 prune would
+            # then evict the last good snapshot — reintroducing #68474's
+            # recovery-loss (#68907 review).
+            def _rel_for(path: Path) -> str:
                 try:
-                    # Route SQLite DBs through the WAL-safe backup() path so a
-                    # board DB with an open WAL (the gateway may hold it at
-                    # snapshot time) is captured consistently.
-                    if sub.suffix == ".db":
-                        if not _safe_copy_db(sub, dst):
+                    return path.relative_to(home).as_posix()
+                except ValueError:
+                    return str(path)
+
+            # Guards against unbounded recursion — in particular a Windows
+            # directory junction (or a POSIX hardlink-to-directory)
+            # aliasing an ancestor, which would otherwise recurse forever,
+            # re-copying the same files under an ever-deeper path until
+            # resource exhaustion (#68907 review, Finding 2).
+            # os.path.islink() does NOT catch junctions/reparse points
+            # (they aren't POSIX symlinks).
+            #
+            # TWO prior versions of this guard were both wrong:
+            #  - An identity visited-set keyed on (st_dev, st_ino) from
+            #    DirEntry.stat(). Verified by direct measurement on this
+            #    Windows machine: DirEntry.stat() (the cached fast-path
+            #    stat, unlike os.stat()) reports st_dev=0, st_ino=0 for
+            #    EVERY entry — any two sibling directories collide on
+            #    (0, 0) and the second is silently dropped, with neither
+            #    `failed` nor `size_skipped` set. Worse than the bug it
+            #    targeted: broke every multi-subdirectory protected root
+            #    on Windows.
+            #  - A max recursion DEPTH (64). Depth only bounds path
+            #    LENGTH, not total WORK. Two junctions forming a BINARY
+            #    cycle (pairing/a -> pairing, pairing/b -> pairing) still
+            #    reach depth 64 on every path, but getting there costs
+            #    2**65-1 ~= 3.7e19 scandir calls — the snapshot hangs
+            #    long before any failure is recorded.
+            #
+            # The fix is a total-work BUDGET: platform-independent (no
+            # identity, cannot collide) and bounds branching as well as
+            # depth (a bounded-depth linear traversal is necessarily
+            # bounded in total entries too, so the budget subsumes a
+            # depth check — it is the ONLY guard here, not stacked with
+            # one). When exceeded, it goes through the same
+            # _record_failure() choke point as every other capture
+            # problem — recorded once, and the WHOLE traversal for this
+            # root aborts immediately (not just the offending branch, so
+            # a branching cycle can't keep burning budget on other
+            # branches) — blocking the keep=1 prune instead of silently
+            # dropping data. A junction looping back to an ancestor
+            # (linear or branching) burns through the budget and stops
+            # (recorded, safe). A junction pointing at an unrelated
+            # sibling causes at most a bounded redundant re-capture of
+            # already-protected files (harmless for a snapshot). A
+            # legitimate Hermes state tree (pairing/, kanban/boards/) is
+            # tiny, so the budget is never approached by real data.
+            entries_visited = 0
+            budget_exceeded = False
+
+            stack = [src]
+            while stack:
+                current = stack.pop()
+                try:
+                    scandir_it = os.scandir(current)
+                except OSError as exc:
+                    _record_failure(_rel_for(current), str(exc))
+                    continue
+
+                # Iterate the ScandirIterator directly — NOT
+                # list(os.scandir(current)) — so the budget is checked per
+                # yield, before the entry is processed. list() would
+                # eagerly materialize the WHOLE directory listing first: a
+                # lazy high-fan-out cycle (a junction whose listing itself
+                # yields thousands+ self-referential entries) would blow
+                # past the budget — or exhaust memory — inside that single
+                # list() call, before entries_visited is ever incremented
+                # (#68907 review, pass 6). Advancing via next() (instead of
+                # a plain `for entry in scandir_it:`) lets an OSError raised
+                # WHILE iterating — not just on open — be routed through
+                # _record_failure() too (scandir can fail mid-iteration on
+                # some filesystems); this mirrors CPython's own os.walk()
+                # implementation. `with` guarantees the OS handle is closed
+                # even when the budget cuts iteration short.
+                with scandir_it:
+                    while True:
+                        try:
+                            entry = next(scandir_it)
+                        except StopIteration:
+                            break
+                        except OSError as exc:
+                            _record_failure(_rel_for(current), str(exc))
+                            break
+
+                        entries_visited += 1
+                        if entries_visited > _QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES:
+                            _record_failure(
+                                _rel_for(current),
+                                f"traversal work budget exceeded "
+                                f"({_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES} "
+                                f"entries) — possible directory cycle",
+                            )
+                            budget_exceeded = True
+                            break
+
+                        entry_path = Path(entry.path)
+
+                        try:
+                            is_dir = entry.is_dir()
+                        except OSError as exc:
+                            _record_failure(_rel_for(entry_path), str(exc))
                             continue
-                    else:
-                        shutil.copy2(sub, dst)
-                    manifest[sub_rel] = dst.stat().st_size
-                except (OSError, PermissionError) as exc:
-                    logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+
+                        if is_dir:
+                            # Skip heavy, regenerable per-board subtrees
+                            # (scratch workspaces and task attachments can be
+                            # large); we only need the board databases + their
+                            # metadata to restore a board. These names are
+                            # always directory roots in this codebase (see
+                            # kanban_db.py's workspaces_root() /
+                            # attachments_root()) — never plain files — so
+                            # this check is intentionally directory-only; a
+                            # FILE literally named "workspaces"/"attachments"
+                            # is not a layout this codebase produces and is
+                            # captured normally. Pruned BEFORE descent so an
+                            # unreadable workspaces/attachments subtree can
+                            # never mark the snapshot incomplete — nothing
+                            # under it belongs in the snapshot anyway (#68907
+                            # review, Finding 2).
+                            if entry.name in ("workspaces", "attachments"):
+                                continue
+                            # Don't follow symlinked directories — matches the
+                            # followlinks=False convention every other os.walk()
+                            # call site in this file uses. os.path.islink()
+                            # never raises (swallows OSError, returns False).
+                            if os.path.islink(entry.path):
+                                continue
+                            stack.append(entry_path)
+                            continue
+
+                        try:
+                            is_file = entry.is_file()
+                        except OSError as exc:
+                            _record_failure(_rel_for(entry_path), str(exc))
+                            continue
+                        if not is_file:
+                            continue
+
+                        sub = entry_path
+                        sub_rel = _rel_for(sub)
+                        if _too_large(sub, sub_rel):
+                            continue
+                        dst = snap_dir / sub_rel
+                        try:
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            # Route SQLite DBs through the WAL-safe backup() path so a
+                            # board DB with an open WAL (the gateway may hold it at
+                            # snapshot time) is captured consistently.
+                            if sub.suffix == ".db":
+                                ok, err = _safe_copy_db(sub, dst)
+                                if not ok:
+                                    _record_failure(sub_rel, err or "SQLite safe copy failed")
+                                    continue
+                            else:
+                                shutil.copy2(sub, dst)
+                            manifest[sub_rel] = dst.stat().st_size
+                        except (OSError, PermissionError) as exc:
+                            logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+                            _record_failure(sub_rel, str(exc))
+
+                if budget_exceeded:
+                    break
             continue
 
-        if not src.is_file():
+        if not stat.S_ISREG(top_stat.st_mode):
+            # Not a regular file (socket, fifo, device, ...) — nothing to
+            # protect here. Reuses the single os.stat() already taken
+            # above instead of a second, possibly-racy Path.is_file() call.
             continue
 
         if _too_large(src, rel):
             continue
 
         dst = snap_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
             if src.suffix == ".db":
-                if not _safe_copy_db(src, dst):
+                ok, err = _safe_copy_db(src, dst)
+                if not ok:
+                    _record_failure(rel, err or "SQLite safe copy failed")
                     continue
             else:
                 shutil.copy2(src, dst)
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
+            _record_failure(rel, str(exc))
 
-    if not manifest:
+    if not manifest and not failed and not size_skipped:
+        # Nothing protected existed at all -- truly nothing to snapshot.
+        # `size_skipped` is deliberately excluded from this condition: a
+        # protected file that EXISTED but was skipped for size is still
+        # forensic content worth persisting (and it must survive long enough
+        # for the prune guard below to see it and keep the prior snapshot).
+        # Falling through this check when size_skipped is non-empty but
+        # manifest/failed are both empty (every present protected file was
+        # over the cap) used to delete snap_dir and return None here, before
+        # the manifest could ever record size_skipped -- silently discarding
+        # the "these files existed but were skipped for size" record
+        # (#68907 review, egilewski).
         shutil.rmtree(snap_dir, ignore_errors=True)
         return None
 
@@ -927,13 +1174,59 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
     }
-    with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    if failed:
+        # Forensic record: which existing files this snapshot could NOT
+        # protect, and why. Keeps the "was it already broken before the
+        # update?" question answerable after the fact (issue #68474).
+        meta["failed"] = failed
+    if size_skipped:
+        # Protected files that were present but skipped for exceeding the size
+        # cap. Recorded so the manifest shows WHY the snapshot is incomplete
+        # (and why the previous snapshot was retained instead of pruned).
+        meta["size_skipped"] = size_skipped
+    try:
+        with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except OSError as exc:
+        # A snapshot without a manifest cannot be restored — treat as a
+        # full failure rather than leaving an unusable directory behind.
+        print(f"  ⚠ Snapshot FAILED: could not write manifest: {exc}")
+        logger.warning("Quick snapshot manifest write failed: %s", exc)
+        shutil.rmtree(snap_dir, ignore_errors=True)
+        return None
+
+    if failed:
+        names = ", ".join(sorted(failed))
+        print(
+            f"  ⚠ Snapshot INCOMPLETE: {len(failed)} existing file(s) could not "
+            f"be captured ({names}) — they are NOT protected by this snapshot. "
+            f"If this is unexpected, investigate before relying on it "
+            f"(the file may be corrupted or locked)."
+        )
+        logger.warning(
+            "Quick snapshot %s incomplete: failed to capture %s", snap_id, names
+        )
 
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    #
+    # An INCOMPLETE snapshot must never evict older snapshots: with the
+    # pre-update keep=1 policy, pruning here would delete the last snapshot
+    # that may still hold a good copy of the very file this run could not
+    # capture (in issue #68474 the previous day's snapshot was the only
+    # surviving recovery source). A protected file skipped for exceeding the
+    # size cap makes the snapshot just as incomplete as a hard failure, so it
+    # blocks pruning too (#68907 review): otherwise a state.db that crosses the
+    # cap would evict the previous complete snapshot on every pre-update run.
+    if not failed and not size_skipped:
+        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    elif size_skipped and not failed:
+        names = ", ".join(sorted(size_skipped))
+        print(
+            f"  ⚠ Snapshot: keeping older snapshots — protected file(s) "
+            f"exceeded the size cap and were not captured ({names})."
+        )
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id
@@ -1247,7 +1540,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         ) as tmp:
                             tmp_db = Path(tmp.name)
                         try:
-                            if not _safe_copy_db(abs_path, tmp_db):
+                            if not _safe_copy_db(abs_path, tmp_db)[0]:
                                 logger.warning(
                                     "Full-zip backup aborted: SQLite snapshot failed for %s",
                                     rel_path,

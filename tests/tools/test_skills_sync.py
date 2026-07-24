@@ -1,6 +1,7 @@
 """Tests for tools/skills_sync.py — manifest-based skill seeding and updating."""
 
 import shutil
+import sys
 import json
 import pytest
 from pathlib import Path
@@ -186,7 +187,7 @@ class TestRmtreeWritableScopeGuard:
     ``HERMES_HOME/skills/``.
 
     The previous implementation called ``shutil.rmtree(path)`` on whatever
-    argument the caller passed. If any of the five call sites in
+    argument the caller passed. If any of the six call sites in
     ``tools/skills_sync.py`` ever computes a path outside the skills
     root — through a bad join, a missing default, a malicious
     bundled-manifest entry, or a stale path in scope after an
@@ -270,6 +271,100 @@ class TestRmtreeWritableScopeGuard:
 
         assert skills.exists()
         assert not sub.exists()
+
+    def test_allows_symlinked_subtree(self, tmp_path):
+        """A directory reached through a symlinked skills category must be
+        removable.
+
+        A user may symlink an externally-managed tree into their skills root
+        (e.g. ``~/.hermes/skills/email -> ~/.cc-switch/skills/email``). The
+        pre-fix guard used ``Path.resolve()``, which followed that link out to
+        its real location outside SKILLS_DIR and refused a routine backup
+        cleanup — raising an uncaught ``ValueError`` that aborted the whole
+        sync. The logical path the caller passed is still a strict child of
+        the skills root, so the guard must permit it.
+        """
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        external = tmp_path / "external" / "email"
+        external.mkdir(parents=True)
+        bak = external / "himalaya.bak"  # a stale backup behind the symlink
+        bak.mkdir()
+        (bak / "SKILL.md").write_text("# stale")
+        (skills / "email").symlink_to(external)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            _rmtree_writable(skills / "email" / "himalaya.bak")
+
+        assert not bak.exists()  # only the targeted child was removed
+        assert external.exists()  # the external parent survived
+        assert (skills / "email").is_symlink()  # the link is intact
+
+    def test_symlink_to_dir_does_not_wipe_target(self, tmp_path):
+        """rmtree of a symlink-to-directory must never wipe its target.
+
+        This is the security invariant the comment in ``_rmtree_writable``
+        relies on: a skills entry that is itself a symlink to an external
+        directory (not a real child reached *through* a symlinked category)
+        must not let ``shutil.rmtree`` recurse into and delete the target's
+        contents. CPython's ``shutil.rmtree`` refuses a top-level directory
+        symlink; our ``_on_error`` swallows that refusal (its retry call is
+        ``os.path.islink`` which just returns True), leaving both the link and
+        its target untouched. Pinning this empirically catches a future stdlib
+        behavior change that would silently turn the scope guard into a
+        data-loss path.
+        """
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        victim = tmp_path / "external" / "linked-cat"
+        victim.mkdir(parents=True)
+        (victim / "SKILL.md").write_text("# precious external content")
+        (victim / "main.py").write_text("print('do not delete me')")
+        (skills / "linked-cat").symlink_to(victim)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            _rmtree_writable(skills / "linked-cat")
+
+        # Target contents survive the call...
+        assert (victim / "SKILL.md").read_text() == "# precious external content"
+        assert (victim / "main.py").read_text() == "print('do not delete me')"
+        # ...and the symlink itself is left in place (rmtree refused it).
+        assert (skills / "linked-cat").is_symlink()
+
+    def test_refuses_dotdot_and_sibling_escape(self, tmp_path):
+        """A path that collapses to a sibling of (or above) the skills root via
+        ``..`` must be refused.
+
+        The guard compares ``os.path.abspath`` (which normalizes ``..``) of the
+        passed path against the skills root, so both a bare sibling and a
+        ``..`` traversal from inside skills/ collapse outside the root and are
+        rejected. This is the #48200 upward-escape case; pin it so a future
+        refactor cannot silently weaken the guard back to a naive
+        ``str.startswith`` prefix check (which ``..`` would defeat).
+        """
+        from tools.skills_sync import _rmtree_writable
+
+        home = tmp_path / "home"
+        skills = home / "skills"
+        (skills / "keep").mkdir(parents=True)
+        victim = home / "victim"  # sibling of skills/, outside it
+        victim.mkdir()
+        (victim / "secret").write_text("do not touch")
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            # A bare sibling of the skills root.
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(victim)
+            # A ``..`` traversal that collapses to the same sibling.
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(skills / "category" / ".." / ".." / "victim")
+
+        assert (victim / "secret").read_text() == "do not touch"
+        assert (skills / "keep").exists()  # nothing under skills was touched
 
 
 class TestExternalDirsIndexing:
@@ -360,6 +455,49 @@ class TestExternalDirsIndexing:
         assert "clair-qa" in result["shadowed_by_external"]
         assert not shadow.exists()
 
+    def test_symlinked_shadow_pointing_at_external_source_not_deleted(self, tmp_path):
+        """The self-heal deletion must NOT fire when the "shadow" is reached
+        through a symlinked skills category whose target IS the external_dirs
+        source.
+
+        ``sync_skills`` removes a byte-identical local shadow so it stops
+        colliding with an external_dirs-provided skill. But when the skills
+        *category* is symlinked onto the external tree (e.g.
+        ``skills/email -> ~/.cc-switch/skills/email``), the bundled skill's
+        dest resolves to the EXTERNAL source itself. ``shutil.rmtree`` happily
+        follows an intermediate symlink (only a top-level dir-symlink is
+        refused), so without the scoped check it would destroy foreign content
+        ``external_dirs`` is contractually meant to defer to (#28126). The fix
+        deletes only real local shadows — whose resolved location is a strict
+        child of SKILLS_DIR — and leaves symlinked-to-external content intact.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir(parents=True)
+        manifest_file = skills_dir / ".bundled_manifest"
+        ext_dir = self._setup_external(tmp_path)
+
+        # Make the external clair-qa byte-identical to the bundled source so
+        # the self-heal condition (dest hash == bundled hash) is satisfied.
+        (ext_dir / "devops" / "clair-qa" / "SKILL.md").write_text("# bundled clair")
+        (ext_dir / "devops" / "clair-qa" / "main.py").unlink()
+
+        # Symlink the skills CATEGORY onto the external tree so the bundled
+        # skill's dest (user_skills/devops/clair-qa) resolves into ext_dir.
+        (skills_dir / "devops").symlink_to(ext_dir / "devops")
+        manifest_file.write_text(f"clair-qa:{_dir_hash(bundled / 'devops' / 'clair-qa')}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        # CRITICAL: the external source survived — no deletion through the
+        # symlinked category. (Without the scoped check this is deleted.)
+        assert (ext_dir / "devops" / "clair-qa" / "SKILL.md").read_text() == "# bundled clair"
+        # The symlinked category is still intact.
+        assert (skills_dir / "devops").is_symlink()
+
     def test_user_customized_shadow_preserved(self, tmp_path):
         """A local skill that DIFFERS from bundled is the user's own — it must
         never be deleted even when external_dirs provides the same name."""
@@ -429,7 +567,7 @@ class TestSyncSkills:
                 patch("tools.skills_sync._read_suppressed_names", return_value={"old-skill"}):
             result = sync_skills(quiet=True)
 
-        # old-skill is suppressed → skipped, not copied.
+        # old-skill is suppressed -> skipped, not copied.
         assert "old-skill" in result["suppressed"]
         assert "old-skill" not in result["copied"]
         assert not (skills_dir / "old-skill").exists()
@@ -602,7 +740,7 @@ class TestSyncSkills:
             # Now change bundled content
             (bundled / "old-skill" / "SKILL.md").write_text("# Old v2 — improved")
 
-            # Second sync: should detect bundled changed + user unmodified → update
+            # Second sync: should detect bundled changed + user unmodified -> update
             result = sync_skills(quiet=True)
 
         assert "old-skill" in result["updated"]
@@ -986,7 +1124,7 @@ class TestResetBundledSkill:
         (dest / "SKILL.md").write_text("---\nname: google-workspace\n---\n# GW v2 (upstream)\n")
         # Stale origin_hash — from some prior bundled version. User "restored" by pasting
         # the current bundled contents, so user_hash == current bundled_hash, but manifest
-        # still points at the stale hash → treated as user_modified forever.
+        # still points at the stale hash -> treated as user_modified forever.
         manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
@@ -1164,6 +1302,45 @@ class TestResetBundledSkill:
         # User copy is still on disk (we changed nothing).
         assert (dest / "SKILL.md").exists()
 
+    def test_symlinked_user_copy_not_silently_reset(self, tmp_path):
+        """A user copy that is itself a symlink-to-dir must NOT be reported as
+        "Restored" when ``--restore`` could not wipe it.
+
+        ``_rmtree_writable`` deliberately refuses to recurse through a
+        top-level directory symlink (data-loss safety), so it returns without
+        deleting anything. Before the fix, the reset path set
+        ``deleted_user_copy = True`` unconditionally and reported success,
+        leaving the symlink on disk — so the next sync hit a name collision
+        and the user believed the reset worked. Now the caller re-checks
+        ``dest`` after the call and reports an honest "not_reset".
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # User's copy is a symlink to an external tree, not a real child.
+        external = tmp_path / "external" / "google-workspace"
+        external.mkdir(parents=True)
+        (external / "SKILL.md").write_text("---\nname: google-workspace\n---\n# linked\n")
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.parent.mkdir(parents=True)
+        dest.symlink_to(external)
+        manifest_file.write_text(
+            "google-workspace:STALEHASH000000000000000000000000\n"
+        )
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+        assert result["ok"] is False
+        assert result["action"] == "not_reset"
+        assert "symbolic link" in result["message"]
+        # The symlink (and its target) survived — nothing was wiped.
+        assert dest.is_symlink()
+        assert (external / "SKILL.md").exists()
+        # Manifest entry preserved (reset aborted before touching it).
+        assert "google-workspace" in manifest_file.read_text()
+
 
 class TestNoBundledSkillsOptOut:
     """The .no-bundled-skills marker makes sync_skills() a no-op.
@@ -1284,6 +1461,54 @@ class TestOptOutToggleAndRemove:
             # non-bundled local skill never considered
             assert (skills_dir / "mine" / "SKILL.md").exists()
 
+    def test_symlinked_pristine_skill_not_silently_removed(self, tmp_path):
+        """A pristine skill whose dest is a symlink-to-dir must be reported as
+        skipped, not silently "removed" with its manifest entry dropped.
+
+        ``_rmtree_writable`` leaves a top-level directory symlink in place
+        (refuse-to-wipe for data-loss safety). If the caller then dropped the
+        manifest entry anyway, every later sync would re-collide on the
+        still-present link. Instead the skill is reported under ``skipped``
+        and its manifest entry is preserved.
+        """
+        from tools.skills_sync import (
+            sync_skills, remove_pristine_bundled_skills,
+        )
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = tmp_path / "home"
+        home.mkdir()
+        # Seed a pristine copy, then replace the real dir with a symlink to an
+        # external tree holding byte-identical content (so it still hashes as
+        # pristine against the manifest origin).
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", home):
+            sync_skills(quiet=True)
+            dest_alpha = skills_dir / "alpha"
+            origin_hash = _read_manifest()["alpha"]
+            external = tmp_path / "external" / "alpha"
+            external.mkdir(parents=True)
+            (external / "SKILL.md").write_text(
+                (bundled / "alpha" / "SKILL.md").read_text()
+            )
+            shutil.rmtree(str(dest_alpha))
+            dest_alpha.symlink_to(external)
+
+            result = remove_pristine_bundled_skills(dry_run=False)
+
+            assert "alpha" not in result["removed"]
+            skipped_names = {s["name"] for s in result["skipped"]}
+            assert "alpha" in skipped_names
+            # The symlink and its target survived.
+            assert dest_alpha.is_symlink()
+            assert (external / "SKILL.md").exists()
+            # Manifest entry preserved (not dropped) so a later sync is consistent.
+            assert _read_manifest()["alpha"] == origin_hash
+
 
 class TestUpdateBackupRecovery:
     """Regression tests for backup handling in the bundled-update path.
@@ -1403,3 +1628,157 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestReconcileManifest:
+    """Invariants for ``scripts/reconcile_skills_manifest.py``.
+
+    The reconcile script repairs manifest drift left by a ``sync_skills()``
+    crash (#48200): a skill whose on-disk content is byte-identical to the
+    bundled source but whose manifest origin hash is stale (the crash skipped
+    the manifest write). It must re-baseline ONLY those, never touch genuine
+    user edits, and write nothing on dry-run.
+    """
+
+    @pytest.fixture(scope="module")
+    def reconcile(self):
+        """Load the standalone script (``scripts/`` is not a package)."""
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "reconcile_skills_manifest.py"
+        spec = importlib.util.spec_from_file_location(
+            "reconcile_skills_manifest_under_test", path
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _patches(self, bundled, skills_dir, manifest_file, reconcile):
+        # ``_find_drift`` resolves SKILLS_DIR and MANIFEST_FILE through the
+        # tools.skills_sync module globals (via _compute_relative_dest /
+        # _read_manifest / _write_manifest), but _get_bundled_dir was imported
+        # into the reconcile module's own namespace — so patch both.
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch.object(reconcile, "_get_bundled_dir", return_value=bundled))
+        return stack
+
+    def _setup_skill(self, tmp_path, bundled_text, disk_text, manifest_origin):
+        """One bundled skill ``drifted`` under category ``cat``.
+
+        Writes bundled + disk copies and seeds the manifest with the given
+        (possibly stale) origin hash. Returns the built paths.
+        """
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        manifest_file = skills_dir / ".bundled_manifest"
+        src = bundled / "cat" / "drifted"
+        src.mkdir(parents=True)
+        (src / "SKILL.md").write_text(bundled_text)
+        dest = skills_dir / "cat" / "drifted"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(disk_text)
+        manifest_file.write_text(f"drifted:{manifest_origin}\n")
+        return bundled, skills_dir, manifest_file, src, dest
+
+    def test_finds_drift_when_disk_matches_bundled_but_origin_stale(
+        self, tmp_path, reconcile
+    ):
+        """disk == bundled but origin hash stale -> exactly one drift entry."""
+        bundled, skills_dir, mf, src, dest = self._setup_skill(
+            tmp_path, "# bundled", "# bundled", "0" * 32
+        )
+        with self._patches(bundled, skills_dir, mf, reconcile):
+            drift, genuine, missing = reconcile._find_drift()
+        bundled_hash = _dir_hash(src)
+        assert drift == [("drifted", "0" * 32, bundled_hash)]
+        assert genuine == []
+        assert missing == []
+
+    def test_genuine_user_edit_is_never_rebaselined(self, tmp_path, reconcile):
+        """disk != bundled -> reported as genuine, never re-baselined."""
+        bundled, skills_dir, mf, src, dest = self._setup_skill(
+            tmp_path, "# bundled", "# my own edit", "0" * 32
+        )
+        with self._patches(bundled, skills_dir, mf, reconcile):
+            drift, genuine, missing = reconcile._find_drift()
+        assert drift == []
+        assert genuine == ["drifted"]
+        assert missing == []
+
+    def test_dry_run_writes_nothing(self, tmp_path, reconcile, monkeypatch):
+        """Default (no --apply) must leave the manifest byte-identical."""
+        bundled, skills_dir, mf, src, dest = self._setup_skill(
+            tmp_path, "# bundled", "# bundled", "0" * 32
+        )
+        before = mf.read_text()
+        monkeypatch.setattr(sys, "argv", ["reconcile_skills_manifest.py"])
+        with self._patches(bundled, skills_dir, mf, reconcile):
+            rc = reconcile.main()
+        assert rc == 0
+        assert mf.read_text() == before
+
+    def test_apply_rebaselines_drifted_only_and_preserves_unrelated(
+        self, tmp_path, reconcile, monkeypatch
+    ):
+        """Re-baseline only drifted entries on --apply; unrelated keys survive."""
+        bundled, skills_dir, mf, src, dest = self._setup_skill(
+            tmp_path, "# bundled", "# bundled", "0" * 32
+        )
+        # An entry with no bundled source (hub/local skill) must survive.
+        mf.write_text(f"drifted:{'0' * 32}\nlocal-only-skill:deadbeef\n")
+        monkeypatch.setattr(sys, "argv", ["reconcile_skills_manifest.py", "--apply"])
+        with self._patches(bundled, skills_dir, mf, reconcile):
+            rc = reconcile.main()
+        assert rc == 0
+        bundled_hash = _dir_hash(src)
+        manifest = mf.read_text()
+        assert f"drifted:{bundled_hash}\n" in manifest
+        assert "local-only-skill:deadbeef\n" in manifest  # untouched
+
+    def test_apply_is_idempotent(self, tmp_path, reconcile, monkeypatch):
+        """After --apply, a second find_drift reports nothing."""
+        bundled, skills_dir, mf, src, dest = self._setup_skill(
+            tmp_path, "# bundled", "# bundled", "0" * 32
+        )
+        monkeypatch.setattr(sys, "argv", ["reconcile_skills_manifest.py", "--apply"])
+        with self._patches(bundled, skills_dir, mf, reconcile):
+            reconcile.main()
+            drift, genuine, missing = reconcile._find_drift()
+        assert drift == []
+        assert genuine == []
+        assert missing == []
+
+    def test_missing_dest_reported_not_crashed(self, tmp_path, reconcile):
+        """Manifest entry whose dest was user-deleted -> missing, no crash."""
+        bundled, skills_dir, mf, src, dest = self._setup_skill(
+            tmp_path, "# bundled", "# bundled", "0" * 32
+        )
+        shutil.rmtree(dest)
+        with self._patches(bundled, skills_dir, mf, reconcile):
+            drift, genuine, missing = reconcile._find_drift()
+        assert drift == []
+        assert genuine == []
+        assert missing == ["drifted"]
+
+    def test_file_colliding_with_skill_dir_is_skipped(self, tmp_path, reconcile):
+        """A stray file where a skill dir is expected is skipped, not matched.
+
+        Without the ``is_dir()`` guard, ``_dir_hash`` on a regular file yields
+        the empty digest (its rglob finds nothing), which could falsely match
+        an empty bundled dir and re-baseline it. The guard skips it entirely.
+        """
+        bundled, skills_dir, mf, src, dest = self._setup_skill(
+            tmp_path, "# bundled", "# bundled", "0" * 32
+        )
+        shutil.rmtree(dest)
+        dest.write_text("not a dir")  # stray file colliding with the skill path
+        with self._patches(bundled, skills_dir, mf, reconcile):
+            drift, genuine, missing = reconcile._find_drift()
+        assert drift == []
+        assert genuine == []
+        assert missing == []  # exists() True so not missing; is_dir() False -> skipped

@@ -5,10 +5,13 @@ import sqlite3
 import pytest
 
 from hermes_cli.control_plane.nodes import (
+    AuthenticationFailed,
     ConcurrencyConflict,
     IdempotencyConflict,
     InvalidTransition,
     NodeRegistry,
+    PolicyConflict,
+    ReportConflict,
 )
 
 
@@ -307,3 +310,194 @@ def test_state_filter_and_unknown_node(registry):
             expected_revision=1,
             reason="not present",
         )
+
+
+def test_authenticated_observations_reject_replay_and_persist_latest(tmp_path):
+    db_path = tmp_path / "control-plane.db"
+    registry = NodeRegistry(db_path, clock=lambda: 2_000)
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    credential = issuance.credential
+    assert credential
+
+    first = registry.submit_observation(
+        "node-1",
+        credential=credential,
+        schema_version=1,
+        report_sequence=1,
+        observed_at=1_900,
+        health_state="healthy",
+        capabilities={"os": "linux", "runtime": {"docker": True}},
+    )
+    second = registry.submit_observation(
+        "node-1",
+        credential=credential,
+        schema_version=1,
+        report_sequence=3,
+        observed_at=1_800,
+        health_state="degraded",
+        capabilities={"os": "linux"},
+    )
+    assert first.report_sequence == 1
+    assert NodeRegistry(db_path).latest_observation("node-1") == second
+
+    for sequence in (3, 2):
+        with pytest.raises(ReportConflict, match="greater than 3"):
+            registry.submit_observation(
+                "node-1",
+                credential=credential,
+                schema_version=1,
+                report_sequence=sequence,
+                observed_at=2_000,
+                health_state="healthy",
+                capabilities={},
+            )
+    assert registry.latest_observation("node-1") == second
+
+
+def test_observation_auth_validation_non_disclosure_and_audit(registry):
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    credential = issuance.credential
+    assert credential
+    with pytest.raises(AuthenticationFailed):
+        registry.submit_observation(
+            "node-1",
+            credential=f"{credential}x",
+            schema_version=1,
+            report_sequence=1,
+            observed_at=900,
+            health_state="healthy",
+            capabilities={},
+        )
+    with pytest.raises(ValueError, match="unsupported observation"):
+        registry.submit_observation(
+            "node-1",
+            credential=credential,
+            schema_version=2,
+            report_sequence=1,
+            observed_at=900,
+            health_state="healthy",
+            capabilities={},
+        )
+    with pytest.raises(ValueError, match="must not contain secret field"):
+        registry.submit_observation(
+            "node-1",
+            credential=credential,
+            schema_version=1,
+            report_sequence=1,
+            observed_at=900,
+            health_state="healthy",
+            capabilities={"runtime": {"token": "must-not-persist"}},
+        )
+
+    report = registry.submit_observation(
+        "node-1",
+        credential=credential,
+        schema_version=1,
+        report_sequence=1,
+        observed_at=900,
+        health_state="healthy",
+        capabilities={"gpu": False},
+    )
+    serialized = repr((report, registry.history("node-1")))
+    assert credential not in serialized
+    with sqlite3.connect(registry.db_path) as conn:
+        assert credential not in "\n".join(conn.iterdump())
+    assert registry.history("node-1")[-1].actor == "node:node-1"
+    assert registry.verify_audit_chain()
+    registry.revoke_credential(
+        "node-1",
+        actor="operator:alice",
+        expected_credential_revision=1,
+    )
+    with pytest.raises(AuthenticationFailed):
+        registry.submit_observation(
+            "node-1",
+            credential=credential,
+            schema_version=1,
+            report_sequence=2,
+            observed_at=950,
+            health_state="healthy",
+            capabilities={},
+        )
+
+
+def test_policy_revision_and_reconciliation_drift_then_convergence(registry):
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    policy = registry.set_policy(
+        "node-1",
+        actor="operator:alice",
+        schema_version=1,
+        desired_health_state="healthy",
+        capabilities={"os": "linux", "runtime": {"docker": True}},
+        expected_revision=0,
+    )
+    assert registry.get_policy("node-1") == policy
+    with pytest.raises(PolicyConflict, match="revision 1"):
+        registry.set_policy(
+            "node-1",
+            actor="operator:bob",
+            schema_version=1,
+            desired_health_state="healthy",
+            capabilities={},
+            expected_revision=0,
+        )
+
+    credential = issuance.credential
+    assert credential
+    registry.submit_observation(
+        "node-1",
+        credential=credential,
+        schema_version=1,
+        report_sequence=1,
+        observed_at=900,
+        health_state="degraded",
+        capabilities={"os": "linux"},
+    )
+    drifted = registry.reconcile("node-1")
+    assert not drifted.in_sync
+    assert [item["path"] for item in drifted.drift] == [
+        "health_state",
+        "capabilities.runtime",
+    ]
+
+    registry.submit_observation(
+        "node-1",
+        credential=credential,
+        schema_version=1,
+        report_sequence=2,
+        observed_at=950,
+        health_state="healthy",
+        capabilities={
+            "os": "linux",
+            "runtime": {"docker": True},
+            "extra": "allowed",
+        },
+    )
+    converged = registry.reconcile("node-1")
+    assert converged.in_sync
+    assert converged.drift == []
+    assert [event.event_type for event in registry.history("node-1")] == [
+        "node.enrolled",
+        "node.policy_updated",
+        "node.observation_accepted",
+        "node.observation_accepted",
+    ]
+    assert registry.verify_audit_chain()

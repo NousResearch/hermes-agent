@@ -91,7 +91,7 @@ changes.
 - [x] Add an operator CLI over the shared node registry.
 - [x] Expose the same contracts through a versioned control-plane API.
 - [x] Add authenticated enrollment and revocable node credentials.
-- [ ] Add observed-state reporting and desired-policy reconciliation.
+- [x] Add observed-state reporting and desired-policy reconciliation.
 
 ## Evidence log
 
@@ -202,3 +202,27 @@ changes.
   consistency, legacy migration, and audit integrity. The focused suite passes
   18 tests; Ruff, Ruff format, `git diff --check`, isolated CLI help, and live
   web-app OpenAPI route registration checks pass.
+- 2026-07-24: Added schema-version 1 observed health/capability reports,
+  authenticated atomically with the existing node credential and persisted in
+  the shared authoritative `control-plane.db`. Strict increasing per-node
+  report sequences deterministically reject stale/replayed submissions; latest
+  observation follows accepted sequence rather than node-supplied time. Added
+  revisioned schema-version 1 desired health/capability policy and read-only,
+  field-level reconciliation with no remediation or command execution. API and
+  `hermes harness nodes` expose matching report/latest/policy/reconciliation
+  views and stable authentication, replay, policy-revision, validation, and
+  missing-node statuses. Observation/policy audit events contain no raw
+  credential or capability document, only non-secret metadata and canonical
+  capability digests; secret-shaped capability fields are rejected. Real-path
+  tests cover authentication, replay rejection, reopen persistence,
+  sequence-authoritative latest semantics, policy concurrency, drift and
+  convergence, API/CLI consistency, credential non-disclosure, and audit-chain
+  integrity. The CLI security correction removed the raw `--credential`
+  argument and reads report credentials only from the non-persistent
+  `HERMES_NODE_CREDENTIAL` process environment. Exact verification: 26 focused
+  tests passed in 1.87 seconds; Ruff
+  format check and Ruff lint passed on all seven changed Python/test files;
+  `git diff --check` passed; isolated `hermes harness nodes --help` exposed the
+  four new operator surfaces; live application OpenAPI verified all four new
+  path groups, `writeOnly` submission credential metadata, and no credential
+  field in observation responses.

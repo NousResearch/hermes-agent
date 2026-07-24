@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 04:14 PDT (UTC-07:00)
+Last verification time: 2026-07-24 04:24 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -135,6 +135,22 @@ the snapshot is stale; reconcile any discovered drift back into this file.
   inventory while excluding raw credentials and verifiers from node views,
   list/show/history/audit output, and audit event details. Legacy nodes migrate
   to revoked credentials and require an explicit audited rotation.
+- Added versioned, schema-validated managed-node observed reports with strict
+  per-node sequences, observed/received timestamps, health, and capabilities.
+  Submission authenticates against the existing verifier-only node credential;
+  stale/replayed reports are rejected and the highest accepted sequence is the
+  authoritative latest observation.
+- Added revisioned declarative desired policy for health and required
+  capabilities plus read-only reconciliation. Reconciliation reports
+  deterministic field-level drift and never dispatches work, runs commands, or
+  remediates state.
+- Added consistent API and `hermes harness nodes` views for report submission,
+  latest observation, policy updates/views, and reconciliation over the same
+  `control-plane.db`. Accepted observations and policy changes extend the
+  existing hash chain with credential-free metadata and capability digests.
+- Secured non-interactive CLI report submission by reading the raw node
+  credential only from `HERMES_NODE_CREDENTIAL`; the report command has no raw
+  credential argument and does not store or emit the secret.
 
 ### Packaging, security, and operations
 
@@ -162,15 +178,15 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 ## Active priorities
 
-1. Add observed health/capability reports and desired-policy reconciliation.
-2. Review the local commit series and decide whether to push it or open a pull
+1. Review the local commit series and decide whether to push it or open a pull
    request against the desired remote branch.
-3. Select and configure an inference backend only when deployment work requires
+2. Select and configure an inference backend only when deployment work requires
    one, then run its backend contract smoke tests.
 
 ## Next recommended task
 
-Add observed health/capability reports and desired-policy reconciliation.
+Review the local commit series and decide whether to push it or open a pull
+request against the desired remote branch.
 
 ## References
 

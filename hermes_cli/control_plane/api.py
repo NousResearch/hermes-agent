@@ -7,15 +7,18 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .nodes import (
+    AuthenticationFailed,
     ConcurrencyConflict,
     CredentialConflict,
     CredentialIssuance,
     IdempotencyConflict,
     InvalidTransition,
     NodeRegistry,
+    PolicyConflict,
+    ReportConflict,
 )
 
 router = APIRouter(prefix="/api/control-plane/v1", tags=["control-plane"])
@@ -45,6 +48,29 @@ class NodeAuthentication(BaseModel):
 class CredentialMutation(BaseModel):
     actor: str
     expected_credential_revision: int
+
+
+class ObservationSubmission(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    schema_version: Literal[1]
+    report_sequence: int = Field(ge=1)
+    observed_at: int = Field(ge=0)
+    health_state: Literal["healthy", "degraded", "unhealthy", "unknown"]
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    credential: str = Field(json_schema_extra={"writeOnly": True})
+
+
+class DesiredPolicyUpdate(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    schema_version: Literal[1]
+    desired_health_state: (
+        Literal["healthy", "degraded", "unhealthy", "unknown"] | None
+    ) = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    expected_revision: int = Field(ge=0)
+    actor: str
 
 
 class NodeView(BaseModel):
@@ -99,6 +125,33 @@ class NodeHistory(BaseModel):
 
 class AuditResult(BaseModel):
     valid: bool
+
+
+class ObservationView(BaseModel):
+    node_id: str
+    schema_version: Literal[1]
+    report_sequence: int
+    observed_at: int
+    received_at: int
+    health_state: Literal["healthy", "degraded", "unhealthy", "unknown"]
+    capabilities: dict[str, Any]
+
+
+class DesiredPolicyView(BaseModel):
+    node_id: str
+    schema_version: Literal[1]
+    desired_health_state: Literal["healthy", "degraded", "unhealthy", "unknown"] | None
+    capabilities: dict[str, Any]
+    revision: int
+    updated_at: int
+
+
+class ReconciliationView(BaseModel):
+    node_id: str
+    policy: DesiredPolicyView | None
+    observation: ObservationView | None
+    in_sync: bool
+    drift: list[dict[str, Any]]
 
 
 class ErrorDetail(BaseModel):
@@ -158,6 +211,81 @@ async def authenticate_node(node_id: str, body: NodeAuthentication):
     if not authenticated:
         return _error(401, "invalid_node_credential", "node authentication failed")
     return {"authenticated": True}
+
+
+@router.post(
+    "/nodes/{node_id}/observations",
+    response_model=ObservationView,
+    responses=ERROR_RESPONSES,
+)
+async def submit_observation(node_id: str, body: ObservationSubmission):
+    try:
+        report = _registry().submit_observation(node_id, **body.model_dump())
+    except KeyError:
+        return _error(404, "node_not_found", f"managed node not found: {node_id}")
+    except AuthenticationFailed:
+        return _error(401, "invalid_node_credential", "node authentication failed")
+    except ReportConflict as exc:
+        return _error(409, "report_sequence_conflict", str(exc))
+    except ValueError as exc:
+        return _error(400, "invalid_request", str(exc))
+    return asdict(report)
+
+
+@router.get(
+    "/nodes/{node_id}/observations/latest",
+    response_model=ObservationView | None,
+    responses=ERROR_RESPONSES,
+)
+async def latest_observation(node_id: str):
+    try:
+        report = _registry().latest_observation(node_id)
+    except KeyError:
+        return _error(404, "node_not_found", f"managed node not found: {node_id}")
+    return asdict(report) if report is not None else None
+
+
+@router.put(
+    "/nodes/{node_id}/policy",
+    response_model=DesiredPolicyView,
+    responses=ERROR_RESPONSES,
+)
+async def update_policy(node_id: str, body: DesiredPolicyUpdate):
+    try:
+        policy = _registry().set_policy(node_id, **body.model_dump())
+    except KeyError:
+        return _error(404, "node_not_found", f"managed node not found: {node_id}")
+    except PolicyConflict as exc:
+        return _error(409, "policy_revision_conflict", str(exc))
+    except ValueError as exc:
+        return _error(400, "invalid_request", str(exc))
+    return asdict(policy)
+
+
+@router.get(
+    "/nodes/{node_id}/policy",
+    response_model=DesiredPolicyView | None,
+    responses=ERROR_RESPONSES,
+)
+async def get_policy(node_id: str):
+    try:
+        policy = _registry().get_policy(node_id)
+    except KeyError:
+        return _error(404, "node_not_found", f"managed node not found: {node_id}")
+    return asdict(policy) if policy is not None else None
+
+
+@router.get(
+    "/nodes/{node_id}/reconciliation",
+    response_model=ReconciliationView,
+    responses=ERROR_RESPONSES,
+)
+async def reconcile_node(node_id: str):
+    try:
+        result = _registry().reconcile(node_id)
+    except KeyError:
+        return _error(404, "node_not_found", f"managed node not found: {node_id}")
+    return asdict(result)
 
 
 @router.post(

@@ -60,6 +60,26 @@ CREATE TABLE IF NOT EXISTS managed_node_credentials (
     rotated_at     INTEGER,
     revoked_at     INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS managed_node_observations (
+    node_id          TEXT NOT NULL REFERENCES managed_nodes(id),
+    report_sequence  INTEGER NOT NULL,
+    schema_version   INTEGER NOT NULL,
+    observed_at      INTEGER NOT NULL,
+    received_at      INTEGER NOT NULL,
+    health_state     TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL,
+    PRIMARY KEY (node_id, report_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS managed_node_policies (
+    node_id          TEXT PRIMARY KEY REFERENCES managed_nodes(id),
+    schema_version   INTEGER NOT NULL,
+    desired_health_state TEXT,
+    capabilities_json TEXT NOT NULL,
+    revision         INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
 """
 
 INITIAL_STATE = "enrolled"
@@ -77,6 +97,17 @@ ALLOWED_TRANSITIONS = {
     "recovering": frozenset({"active", "quarantined", "retired"}),
     "retired": frozenset(),
 }
+OBSERVATION_SCHEMA_VERSION = 1
+POLICY_SCHEMA_VERSION = 1
+HEALTH_STATES = frozenset({"healthy", "degraded", "unhealthy", "unknown"})
+SECRET_FIELD_NAMES = frozenset({
+    "api_key",
+    "credential",
+    "credentials",
+    "password",
+    "secret",
+    "token",
+})
 
 
 class IdempotencyConflict(ValueError):
@@ -93,6 +124,18 @@ class InvalidTransition(ValueError):
 
 class CredentialConflict(RuntimeError):
     """The caller acted on a stale credential revision."""
+
+
+class ReportConflict(RuntimeError):
+    """An observed report sequence is stale or has already been accepted."""
+
+
+class PolicyConflict(RuntimeError):
+    """The caller acted on a stale desired-policy revision."""
+
+
+class AuthenticationFailed(PermissionError):
+    """A managed node did not present its active credential."""
 
 
 @dataclass(frozen=True)
@@ -136,6 +179,36 @@ class NodeEvent:
     event_hash: str
 
 
+@dataclass(frozen=True)
+class ObservedReport:
+    node_id: str
+    schema_version: int
+    report_sequence: int
+    observed_at: int
+    received_at: int
+    health_state: str
+    capabilities: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DesiredPolicy:
+    node_id: str
+    schema_version: int
+    desired_health_state: str | None
+    capabilities: dict[str, Any]
+    revision: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    node_id: str
+    policy: DesiredPolicy | None
+    observation: ObservedReport | None
+    in_sync: bool
+    drift: list[dict[str, Any]]
+
+
 def control_plane_db_path() -> Path:
     return get_hermes_home() / "control-plane.db"
 
@@ -149,6 +222,35 @@ def _required_text(value: str, field: str) -> str:
     if not normalized:
         raise ValueError(f"{field} must not be empty")
     return normalized
+
+
+def _json_object(value: Mapping[str, Any], field: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be a JSON object")
+    result = dict(value)
+    try:
+        _canonical_json(result)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must contain JSON values") from exc
+    return result
+
+
+def _required_int(value: int, field: str, *, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        qualifier = "positive" if minimum == 1 else "non-negative"
+        raise ValueError(f"{field} must be a {qualifier} integer")
+    return value
+
+
+def _reject_secret_fields(value: Any, field: str) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key).lower() in SECRET_FIELD_NAMES:
+                raise ValueError(f"{field} must not contain secret field {key!r}")
+            _reject_secret_fields(child, field)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_secret_fields(child, field)
 
 
 class NodeRegistry:
@@ -348,6 +450,269 @@ class NodeRegistry:
         return hmac.compare_digest(
             row["verifier"],
             self._credential_verifier(candidate),
+        )
+
+    def submit_observation(
+        self,
+        node_id: str,
+        *,
+        credential: str,
+        schema_version: int,
+        report_sequence: int,
+        observed_at: int,
+        health_state: str,
+        capabilities: Mapping[str, Any],
+    ) -> ObservedReport:
+        """Authenticate and append a strictly newer immutable observed report."""
+        node_id = _required_text(node_id, "node_id")
+        candidate = _required_text(credential, "credential")
+        _required_int(schema_version, "schema_version", minimum=1)
+        if schema_version != OBSERVATION_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported observation schema_version: {schema_version}"
+            )
+        _required_int(report_sequence, "report_sequence", minimum=1)
+        _required_int(observed_at, "observed_at", minimum=0)
+        health_state = _required_text(health_state, "health_state")
+        if health_state not in HEALTH_STATES:
+            raise ValueError(f"unknown health_state: {health_state}")
+        capabilities_value = _json_object(capabilities, "capabilities")
+        _reject_secret_fields(capabilities_value, "capabilities")
+        capabilities_json = _canonical_json(capabilities_value)
+        received_at = int(self._clock())
+
+        with self.connect() as conn, write_txn(conn):
+            node = conn.execute(
+                "SELECT * FROM managed_nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            if node is None:
+                raise KeyError(node_id)
+            auth = conn.execute(
+                "SELECT verifier, revoked_at FROM managed_node_credentials WHERE node_id = ?",
+                (node_id,),
+            ).fetchone()
+            if (
+                auth is None
+                or auth["revoked_at"] is not None
+                or not hmac.compare_digest(
+                    auth["verifier"], self._credential_verifier(candidate)
+                )
+            ):
+                raise AuthenticationFailed("node authentication failed")
+            latest = conn.execute(
+                """
+                SELECT report_sequence FROM managed_node_observations
+                WHERE node_id = ? ORDER BY report_sequence DESC LIMIT 1
+                """,
+                (node_id,),
+            ).fetchone()
+            if latest is not None and report_sequence <= latest["report_sequence"]:
+                raise ReportConflict(
+                    f"report_sequence must be greater than {latest['report_sequence']}"
+                )
+            conn.execute(
+                """
+                INSERT INTO managed_node_observations (
+                    node_id, report_sequence, schema_version, observed_at,
+                    received_at, health_state, capabilities_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    node_id,
+                    report_sequence,
+                    schema_version,
+                    observed_at,
+                    received_at,
+                    health_state,
+                    capabilities_json,
+                ),
+            )
+            self._append_event(
+                conn,
+                node_id=node_id,
+                event_type="node.observation_accepted",
+                actor=f"node:{node_id}",
+                from_state=node["state"],
+                to_state=node["state"],
+                revision=node["revision"],
+                occurred_at=received_at,
+                details={
+                    "schema_version": schema_version,
+                    "report_sequence": report_sequence,
+                    "observed_at": observed_at,
+                    "health_state": health_state,
+                    "capabilities_hash": hashlib.sha256(
+                        capabilities_json.encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+        return ObservedReport(
+            node_id=node_id,
+            schema_version=schema_version,
+            report_sequence=report_sequence,
+            observed_at=observed_at,
+            received_at=received_at,
+            health_state=health_state,
+            capabilities=capabilities_value,
+        )
+
+    def latest_observation(self, node_id: str) -> ObservedReport | None:
+        node_id = _required_text(node_id, "node_id")
+        with self.connect() as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM managed_nodes WHERE id = ?", (node_id,)
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(node_id)
+            row = conn.execute(
+                """
+                SELECT * FROM managed_node_observations
+                WHERE node_id = ? ORDER BY report_sequence DESC LIMIT 1
+                """,
+                (node_id,),
+            ).fetchone()
+            return self._observation(row) if row is not None else None
+
+    def set_policy(
+        self,
+        node_id: str,
+        *,
+        actor: str,
+        schema_version: int,
+        desired_health_state: str | None,
+        capabilities: Mapping[str, Any],
+        expected_revision: int,
+    ) -> DesiredPolicy:
+        """Create or replace the declarative policy using optimistic concurrency."""
+        node_id = _required_text(node_id, "node_id")
+        actor = _required_text(actor, "actor")
+        _required_int(schema_version, "schema_version", minimum=1)
+        if schema_version != POLICY_SCHEMA_VERSION:
+            raise ValueError(f"unsupported policy schema_version: {schema_version}")
+        if desired_health_state is not None:
+            desired_health_state = _required_text(
+                desired_health_state, "desired_health_state"
+            )
+            if desired_health_state not in HEALTH_STATES:
+                raise ValueError(
+                    f"unknown desired_health_state: {desired_health_state}"
+                )
+        capabilities_value = _json_object(capabilities, "capabilities")
+        _reject_secret_fields(capabilities_value, "capabilities")
+        capabilities_json = _canonical_json(capabilities_value)
+        _required_int(expected_revision, "expected_revision", minimum=0)
+        now = int(self._clock())
+        with self.connect() as conn, write_txn(conn):
+            node = conn.execute(
+                "SELECT * FROM managed_nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            if node is None:
+                raise KeyError(node_id)
+            current = conn.execute(
+                "SELECT * FROM managed_node_policies WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            current_revision = current["revision"] if current is not None else 0
+            if expected_revision != current_revision:
+                raise PolicyConflict(
+                    f"node {node_id} policy is at revision {current_revision}, "
+                    f"not {expected_revision}"
+                )
+            revision = current_revision + 1
+            conn.execute(
+                """
+                INSERT INTO managed_node_policies (
+                    node_id, schema_version, desired_health_state,
+                    capabilities_json, revision, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                    schema_version=excluded.schema_version,
+                    desired_health_state=excluded.desired_health_state,
+                    capabilities_json=excluded.capabilities_json,
+                    revision=excluded.revision,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    node_id,
+                    schema_version,
+                    desired_health_state,
+                    capabilities_json,
+                    revision,
+                    now,
+                ),
+            )
+            self._append_event(
+                conn,
+                node_id=node_id,
+                event_type="node.policy_updated",
+                actor=actor,
+                from_state=node["state"],
+                to_state=node["state"],
+                revision=node["revision"],
+                occurred_at=now,
+                details={
+                    "schema_version": schema_version,
+                    "policy_revision": revision,
+                    "desired_health_state": desired_health_state,
+                    "capabilities_hash": hashlib.sha256(
+                        capabilities_json.encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+        return DesiredPolicy(
+            node_id=node_id,
+            schema_version=schema_version,
+            desired_health_state=desired_health_state,
+            capabilities=capabilities_value,
+            revision=revision,
+            updated_at=now,
+        )
+
+    def get_policy(self, node_id: str) -> DesiredPolicy | None:
+        node_id = _required_text(node_id, "node_id")
+        with self.connect() as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM managed_nodes WHERE id = ?", (node_id,)
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(node_id)
+            row = conn.execute(
+                "SELECT * FROM managed_node_policies WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            return self._policy(row) if row is not None else None
+
+    def reconcile(self, node_id: str) -> ReconciliationResult:
+        """Compare desired policy with the latest report without taking action."""
+        policy = self.get_policy(node_id)
+        observation = self.latest_observation(node_id)
+        drift: list[dict[str, Any]] = []
+        if policy is None:
+            drift.append({"path": "policy", "reason": "missing_policy"})
+        elif observation is None:
+            drift.append({"path": "observation", "reason": "missing_observation"})
+        else:
+            if (
+                policy.desired_health_state is not None
+                and policy.desired_health_state != observation.health_state
+            ):
+                drift.append({
+                    "path": "health_state",
+                    "reason": "value_mismatch",
+                    "desired": policy.desired_health_state,
+                    "observed": observation.health_state,
+                })
+            self._capability_drift(
+                policy.capabilities, observation.capabilities, "capabilities", drift
+            )
+        return ReconciliationResult(
+            node_id=node_id,
+            policy=policy,
+            observation=observation,
+            in_sync=not drift,
+            drift=drift,
         )
 
     def rotate_credential(
@@ -627,6 +992,55 @@ class NodeRegistry:
             previous_hash=row["previous_hash"],
             event_hash=row["event_hash"],
         )
+
+    @staticmethod
+    def _observation(row: sqlite3.Row) -> ObservedReport:
+        return ObservedReport(
+            node_id=row["node_id"],
+            schema_version=row["schema_version"],
+            report_sequence=row["report_sequence"],
+            observed_at=row["observed_at"],
+            received_at=row["received_at"],
+            health_state=row["health_state"],
+            capabilities=json.loads(row["capabilities_json"]),
+        )
+
+    @staticmethod
+    def _policy(row: sqlite3.Row) -> DesiredPolicy:
+        return DesiredPolicy(
+            node_id=row["node_id"],
+            schema_version=row["schema_version"],
+            desired_health_state=row["desired_health_state"],
+            capabilities=json.loads(row["capabilities_json"]),
+            revision=row["revision"],
+            updated_at=row["updated_at"],
+        )
+
+    @classmethod
+    def _capability_drift(
+        cls,
+        desired: Mapping[str, Any],
+        observed: Mapping[str, Any],
+        prefix: str,
+        drift: list[dict[str, Any]],
+    ) -> None:
+        for key in sorted(desired):
+            path = f"{prefix}.{key}"
+            if key not in observed:
+                drift.append({
+                    "path": path,
+                    "reason": "missing",
+                    "desired": desired[key],
+                })
+            elif isinstance(desired[key], dict) and isinstance(observed[key], dict):
+                cls._capability_drift(desired[key], observed[key], path, drift)
+            elif desired[key] != observed[key]:
+                drift.append({
+                    "path": path,
+                    "reason": "value_mismatch",
+                    "desired": desired[key],
+                    "observed": observed[key],
+                })
 
     def _append_event(
         self,

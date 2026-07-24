@@ -243,3 +243,121 @@ async def test_api_authentication_rotation_revocation_and_non_disclosure(
     assert raw not in public_output
     assert replacement not in public_output
     assert audit.json() == {"valid": True}
+
+
+@pytest.mark.asyncio
+async def test_observation_policy_reconciliation_api_cli_consistency(
+    tmp_path, monkeypatch, capsys, client
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    enrolled = await client.post("/api/control-plane/v1/nodes", json=_enrollment())
+    credential = enrolled.json()["credential"]
+
+    observed = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations",
+        json={
+            "credential": credential,
+            "schema_version": 1,
+            "report_sequence": 1,
+            "observed_at": 100,
+            "health_state": "healthy",
+            "capabilities": {"os": "linux", "gpu": False},
+        },
+    )
+    assert observed.status_code == 200
+    assert "credential" not in observed.json()
+
+    args = _parser().parse_args(["harness", "nodes", "observation", "node-1"])
+    args.func(args)
+    assert json.loads(capsys.readouterr().out) == observed.json()
+
+    policy = await client.put(
+        "/api/control-plane/v1/nodes/node-1/policy",
+        json={
+            "schema_version": 1,
+            "desired_health_state": "healthy",
+            "capabilities": {"os": "linux"},
+            "expected_revision": 0,
+            "actor": "operator:alice",
+        },
+    )
+    assert policy.status_code == 200
+    args = _parser().parse_args(["harness", "nodes", "policy", "show", "node-1"])
+    args.func(args)
+    assert json.loads(capsys.readouterr().out) == policy.json()
+
+    reconciled = await client.get("/api/control-plane/v1/nodes/node-1/reconciliation")
+    assert reconciled.status_code == 200
+    assert reconciled.json()["in_sync"] is True
+    args = _parser().parse_args(["harness", "nodes", "reconcile", "node-1"])
+    args.func(args)
+    assert json.loads(capsys.readouterr().out) == reconciled.json()
+
+    history = await client.get("/api/control-plane/v1/nodes/node-1/history")
+    public_output = json.dumps([
+        observed.json(),
+        policy.json(),
+        reconciled.json(),
+        history.json(),
+    ])
+    assert credential not in public_output
+    assert (await client.get("/api/control-plane/v1/audit")).json() == {"valid": True}
+
+
+@pytest.mark.asyncio
+async def test_observation_and_policy_stable_error_mappings(
+    tmp_path, monkeypatch, client
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    enrolled = await client.post("/api/control-plane/v1/nodes", json=_enrollment())
+    credential = enrolled.json()["credential"]
+    body = {
+        "credential": credential,
+        "schema_version": 1,
+        "report_sequence": 1,
+        "observed_at": 100,
+        "health_state": "healthy",
+        "capabilities": {},
+    }
+    wrong = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations",
+        json={**body, "credential": "wrong"},
+    )
+    assert wrong.status_code == 401
+    assert wrong.json()["error"]["code"] == "invalid_node_credential"
+
+    accepted = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations", json=body
+    )
+    assert accepted.status_code == 200
+    replay = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations", json=body
+    )
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "report_sequence_conflict"
+
+    invalid = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations",
+        json={**body, "schema_version": 2, "report_sequence": 2},
+    )
+    assert invalid.status_code == 422
+
+    policy_body = {
+        "schema_version": 1,
+        "desired_health_state": "healthy",
+        "capabilities": {},
+        "expected_revision": 0,
+        "actor": "operator:alice",
+    }
+    assert (
+        await client.put("/api/control-plane/v1/nodes/node-1/policy", json=policy_body)
+    ).status_code == 200
+    stale = await client.put(
+        "/api/control-plane/v1/nodes/node-1/policy", json=policy_body
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "policy_revision_conflict"
+
+    missing = await client.get("/api/control-plane/v1/nodes/missing/reconciliation")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "node_not_found"

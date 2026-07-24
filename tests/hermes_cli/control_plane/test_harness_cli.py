@@ -137,3 +137,133 @@ def test_cli_rotation_and_revocation_share_registry(tmp_path, monkeypatch, capsy
     revoked = json.loads(capsys.readouterr().out)
     assert revoked["credential_status"] == "revoked"
     assert "credential" not in revoked
+
+
+def test_cli_report_policy_and_reconciliation_views(tmp_path, monkeypatch, capsys):
+    registry = NodeRegistry(tmp_path / "control-plane.db", clock=lambda: 1_000)
+    monkeypatch.setattr(harness, "_registry", lambda: registry)
+    top = parser()
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    credential = issuance.credential
+    assert credential
+    monkeypatch.setenv("HERMES_NODE_CREDENTIAL", credential)
+
+    commands = [
+        [
+            "harness",
+            "nodes",
+            "report",
+            "node-1",
+            "--report-sequence",
+            "1",
+            "--observed-at",
+            "900",
+            "--health-state",
+            "healthy",
+            "--capabilities",
+            '{"os":"linux"}',
+        ],
+        [
+            "harness",
+            "nodes",
+            "policy",
+            "set",
+            "node-1",
+            "--actor",
+            "operator:alice",
+            "--health-state",
+            "healthy",
+            "--capabilities",
+            '{"os":"linux"}',
+            "--expected-revision",
+            "0",
+        ],
+        ["harness", "nodes", "reconcile", "node-1"],
+    ]
+    results = []
+    for command in commands:
+        assert credential not in command
+        args = top.parse_args(command)
+        args.func(args)
+        results.append(json.loads(capsys.readouterr().out))
+
+    assert results[0]["report_sequence"] == 1
+    assert results[1]["revision"] == 1
+    assert results[2]["in_sync"] is True
+    assert credential not in json.dumps(results)
+
+
+def test_cli_report_help_and_output_do_not_expose_credential(
+    tmp_path, monkeypatch, capsys
+):
+    registry = NodeRegistry(tmp_path / "control-plane.db", clock=lambda: 1_000)
+    monkeypatch.setattr(harness, "_registry", lambda: registry)
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    credential = issuance.credential
+    assert credential
+    monkeypatch.setenv("HERMES_NODE_CREDENTIAL", credential)
+    top = parser()
+    report = top.parse_args([
+        "harness",
+        "nodes",
+        "report",
+        "node-1",
+        "--report-sequence",
+        "1",
+        "--observed-at",
+        "900",
+        "--health-state",
+        "healthy",
+    ])
+
+    assert not hasattr(report, "credential")
+    assert credential not in [value for _, value in report._get_kwargs()]
+    report.func(report)
+    assert credential not in capsys.readouterr().out
+
+    report_parser = parser()
+    try:
+        report_parser.parse_args(["harness", "nodes", "report", "--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    help_output = capsys.readouterr().out
+    assert "HERMES_NODE_CREDENTIAL" in help_output
+    assert "--credential" not in help_output
+    assert credential not in help_output
+
+
+def test_cli_report_requires_credential_environment_variable(monkeypatch):
+    monkeypatch.delenv("HERMES_NODE_CREDENTIAL", raising=False)
+    args = parser().parse_args([
+        "harness",
+        "nodes",
+        "report",
+        "node-1",
+        "--report-sequence",
+        "1",
+        "--observed-at",
+        "900",
+        "--health-state",
+        "healthy",
+    ])
+
+    try:
+        args.func(args)
+    except SystemExit as exc:
+        assert str(exc) == (
+            "HERMES_NODE_CREDENTIAL must contain the managed-node credential"
+        )
+    else:
+        raise AssertionError("missing managed-node credential should fail closed")

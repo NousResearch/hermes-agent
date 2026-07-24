@@ -791,3 +791,116 @@ def test_multiplex_heartbeat_scoped_per_profile(tmp_path, monkeypatch):
         "default profile heartbeat file missing"
     assert (p_sec / "cron" / "ticker_heartbeat").exists(), \
         "secondary profile heartbeat file missing"
+
+
+def test_multiplex_ticker_isolates_profile_failures(tmp_path):
+    """One broken profile must not starve later profiles in the same cycle."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
+
+    stop = threading.Event()
+    tick_homes: list[str] = []
+    heartbeat_results: list[tuple[str, bool]] = []
+    failing_attempts = 0
+
+    def _tick(*args, **kwargs):
+        nonlocal failing_attempts
+        home = str(get_hermes_home())
+        if not tick_homes:
+            # Ignore the startup heartbeats; assertions below cover one tick
+            # cycle's per-profile success values.
+            heartbeat_results.clear()
+        tick_homes.append(home)
+        if home == str(failing_home):
+            failing_attempts += 1
+            if failing_attempts >= 2:
+                stop.set()
+            raise RuntimeError("profile-local failure")
+        stop.set()
+        return 0
+
+    def _heartbeat(*, success=False):
+        heartbeat_results.append((str(get_hermes_home()), success))
+
+    provider = InProcessCronScheduler()
+    with (
+        patch("cron.scheduler.tick", side_effect=_tick),
+        patch("cron.jobs.record_ticker_heartbeat", side_effect=_heartbeat),
+    ):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [
+                    ("failing", failing_home),
+                    ("healthy", healthy_home),
+                ],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert str(healthy_home) in tick_homes
+    assert (str(failing_home), False) in heartbeat_results
+    assert (str(healthy_home), True) in heartbeat_results
+
+
+def test_multiplex_recovery_isolates_profile_failures(tmp_path):
+    """A recovery error in one profile must not abort scheduler startup."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    failing_home = tmp_path / "failing"
+    healthy_home = tmp_path / "healthy"
+    for home in (failing_home, healthy_home):
+        (home / "cron").mkdir(parents=True)
+
+    stop = threading.Event()
+    recovery_homes: list[str] = []
+
+    def _recover():
+        home = str(get_hermes_home())
+        recovery_homes.append(home)
+        if home == str(failing_home):
+            raise RuntimeError("profile-local recovery failure")
+        return 0
+
+    def _tick(*args, **kwargs):
+        stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with (
+        patch.object(provider, "recover_interrupted", side_effect=_recover),
+        patch("cron.scheduler.tick", side_effect=_tick),
+        patch("cron.jobs.record_ticker_heartbeat", lambda **kwargs: None),
+    ):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [
+                    ("failing", failing_home),
+                    ("healthy", healthy_home),
+                ],
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert recovery_homes == [str(failing_home), str(healthy_home)]

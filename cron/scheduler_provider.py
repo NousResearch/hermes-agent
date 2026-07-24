@@ -280,50 +280,79 @@ class InProcessCronScheduler(CronScheduler):
         # Recovery + initial heartbeat for every profile.
         for entry in profile_homes:
             home = entry[1] if isinstance(entry, tuple) else entry
-            home_token = set_hermes_home_override(str(home))
             try:
-                with use_cron_store(home):
-                    recovered = self.recover_interrupted()
-                    if recovered:
-                        logger.warning(
-                            "Marked %d interrupted cron execution(s) for profile at %s",
-                            recovered,
-                            home,
-                        )
-                    record_ticker_heartbeat()
-            finally:
-                reset_hermes_home_override(home_token)
-
-        while not stop_event.is_set():
-            ok = False
-            try:
-                if can_dispatch is not None and not can_dispatch():
-                    logger.debug("Cron dispatch paused while gateway drains existing work")
-                else:
-                    for entry in profile_homes:
-                        home = entry[1] if isinstance(entry, tuple) else entry
-                        home_token = set_hermes_home_override(str(home))
-                        try:
-                            with use_cron_store(home):
-                                cron_tick(
-                                    verbose=False,
-                                    adapters=adapters,
-                                    loop=loop,
-                                    sync=False,
-                                    can_dispatch=can_dispatch,
-                                )
-                        finally:
-                            reset_hermes_home_override(home_token)
-                ok = True
-            except BaseException as e:
-                logger.error("Cron tick error: %s", e, exc_info=True)
-            # Record per-profile heartbeat after each tick cycle.
-            for entry in profile_homes:
-                home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:
                     with use_cron_store(home):
-                        record_ticker_heartbeat(success=ok)
+                        recovered = self.recover_interrupted()
+                        if recovered:
+                            logger.warning(
+                                "Marked %d interrupted cron execution(s) for profile at %s",
+                                recovered,
+                                home,
+                            )
+                        record_ticker_heartbeat()
                 finally:
                     reset_hermes_home_override(home_token)
+            except BaseException as e:
+                logger.error(
+                    "Cron startup recovery error for profile at %s: %s",
+                    home,
+                    e,
+                    exc_info=True,
+                )
+
+        while not stop_event.is_set():
+            profile_success = [False] * len(profile_homes)
+            try:
+                if can_dispatch is not None and not can_dispatch():
+                    logger.debug("Cron dispatch paused while gateway drains existing work")
+                    profile_success = [True] * len(profile_homes)
+                else:
+                    for index, entry in enumerate(profile_homes):
+                        home = entry[1] if isinstance(entry, tuple) else entry
+                        try:
+                            home_token = set_hermes_home_override(str(home))
+                            try:
+                                with use_cron_store(home):
+                                    cron_tick(
+                                        verbose=False,
+                                        adapters=adapters,
+                                        loop=loop,
+                                        sync=False,
+                                        can_dispatch=can_dispatch,
+                                    )
+                            finally:
+                                reset_hermes_home_override(home_token)
+                        except BaseException as e:
+                            logger.error(
+                                "Cron tick error for profile at %s: %s",
+                                home,
+                                e,
+                                exc_info=True,
+                            )
+                        else:
+                            profile_success[index] = True
+            except BaseException as e:
+                logger.error("Cron tick cycle error: %s", e, exc_info=True)
+            # Record each profile's result independently. A broken profile must
+            # not mark healthy siblings failed or stop their heartbeat writes.
+            for index, entry in enumerate(profile_homes):
+                home = entry[1] if isinstance(entry, tuple) else entry
+                try:
+                    home_token = set_hermes_home_override(str(home))
+                    try:
+                        with use_cron_store(home):
+                            record_ticker_heartbeat(
+                                success=profile_success[index],
+                            )
+                    finally:
+                        reset_hermes_home_override(home_token)
+                except BaseException as e:
+                    logger.error(
+                        "Cron heartbeat error for profile at %s: %s",
+                        home,
+                        e,
+                        exc_info=True,
+                    )
             stop_event.wait(interval)

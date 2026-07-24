@@ -326,6 +326,62 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+# Vars forwarded into spawned subprocesses (e.g. kanban workers) by
+# build_session_subprocess_env(). Deliberately NARROW: limited to exactly what
+# tools/send_message_tool.py's origin-target resolution consumes (platform +
+# chat_id + thread_id). _VAR_MAP carries additional session identity (key,
+# id, profile, user, cron auto-deliver targets) that has no demonstrated
+# subprocess consumer -- forwarding those would broaden a worker's inherited
+# session identity for no reason. Widen this tuple only alongside a new
+# consumer AND a test exercising it.
+_SUBPROCESS_FORWARD_VARS = (
+    "HERMES_SESSION_PLATFORM",
+    "HERMES_SESSION_CHAT_ID",
+    "HERMES_SESSION_THREAD_ID",
+)
+
+
+def build_session_subprocess_env(base_env: "dict | None" = None) -> dict:
+    """Build a subprocess env with current session ContextVar values overlaid.
+
+    Use when spawning subprocesses (e.g. kanban workers) that need
+    ``HERMES_SESSION_*`` vars.  ContextVars are task-local and do not cross
+    into child processes; this bridges them explicitly so workers inherit the
+    originating platform and chat/thread from the dispatching gateway session.
+
+    Only forwards ``_SUBPROCESS_FORWARD_VARS`` -- see that tuple's docstring
+    for why the set is narrow rather than all of ``_VAR_MAP``.
+
+    Resolution per var:
+    1. ContextVar value (set by ``set_session_vars``) -- overrides os.environ.
+    2. ``os.environ`` fallback -- consulted whenever the ContextVar was never
+       bound in this context (CLI / cron / non-gateway paths, or a test that
+       passes an explicit but empty ``base_env``).
+    3. Omitted if absent from both.
+
+    Returns a new dict; does not mutate the caller's env.
+    """
+    import os as _os
+
+    env = dict(base_env) if base_env is not None else dict(_os.environ)
+    for var_name in _SUBPROCESS_FORWARD_VARS:
+        var = _VAR_MAP[var_name]
+        value = var.get()
+        if value is _UNSET:
+            # Never set in this context. Fall back to os.environ only if the
+            # caller's base_env didn't already supply this var explicitly —
+            # an explicit base_env value is authoritative and must not be
+            # clobbered by a stale process-level os.environ value.
+            if var_name not in env:
+                oval = _os.environ.get(var_name, "")
+                if oval:
+                    env[var_name] = oval
+        else:
+            # Explicitly set (even to "") -- trust the ContextVar.
+            env[var_name] = value
+    return env
+
+
 def declare_stateless_channel() -> None:
     """Declare that this session cannot receive an async background completion.
 

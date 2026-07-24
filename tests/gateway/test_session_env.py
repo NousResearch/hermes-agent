@@ -10,6 +10,7 @@ from gateway.session_context import (
     get_session_env,
     set_session_vars,
     clear_session_vars,
+    build_session_subprocess_env,
     _VAR_MAP,
     _UNSET,
 )
@@ -372,6 +373,65 @@ async def test_run_in_executor_with_context_survives_default_executor_shutdown()
         runner._shutdown_executor()
 
     assert result == "ok"
+
+
+# ---------------------------------------------------------------------------
+# build_session_subprocess_env tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_session_subprocess_env_no_base_env_uses_os_environ_fallback(monkeypatch):
+    """With no explicit base_env, unset ContextVars fall back to os.environ."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+
+    env = build_session_subprocess_env()
+
+    assert env["HERMES_SESSION_PLATFORM"] == "discord"
+    assert "HERMES_SESSION_CHAT_ID" not in env
+
+
+def test_build_session_subprocess_env_contextvar_overrides_os_environ(monkeypatch):
+    """A set ContextVar always wins over os.environ, with or without base_env."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    tokens = set_session_vars(platform="telegram")
+    try:
+        env = build_session_subprocess_env()
+        assert env["HERMES_SESSION_PLATFORM"] == "telegram"
+
+        env2 = build_session_subprocess_env({"HERMES_SESSION_PLATFORM": "slack"})
+        assert env2["HERMES_SESSION_PLATFORM"] == "telegram"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_build_session_subprocess_env_explicit_base_env_not_overridden_by_os_environ(monkeypatch):
+    """Caller-supplied base_env is authoritative; unset ContextVars must not
+    let a stale process-level os.environ value leak in and override it.
+
+    Regression guard: previously, when base_env was explicitly passed and a
+    ContextVar was unset, the function fell back to os.environ and clobbered
+    the caller's explicit value.
+    """
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+
+    base_env = {"HERMES_SESSION_PLATFORM": "telegram", "SOME_OTHER_VAR": "x"}
+    env = build_session_subprocess_env(base_env)
+
+    assert env["HERMES_SESSION_PLATFORM"] == "telegram"
+    assert env["SOME_OTHER_VAR"] == "x"
+
+
+def test_build_session_subprocess_env_explicit_base_env_preserves_unrelated_keys(monkeypatch):
+    """build_session_subprocess_env must not drop unrelated base_env keys."""
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+    base_env = {"PATH": "/usr/bin", "HOME": "/home/hermes"}
+    env = build_session_subprocess_env(base_env)
+
+    assert env["PATH"] == "/usr/bin"
+    assert env["HOME"] == "/home/hermes"
+    assert "HERMES_SESSION_PLATFORM" not in env
 
 
 @pytest.mark.asyncio

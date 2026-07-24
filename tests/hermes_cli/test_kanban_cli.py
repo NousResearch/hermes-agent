@@ -159,6 +159,27 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_dependency_block_rejection_does_not_comment(kanban_home):
+    parent_out = kc.run_slash("create 'parent' --assignee alice")
+    child_out = kc.run_slash("create 'child' --assignee qa")
+    import re
+    parent_match = re.search(r"(t_[a-f0-9]+)", parent_out)
+    child_match = re.search(r"(t_[a-f0-9]+)", child_out)
+    assert parent_match is not None
+    assert child_match is not None
+    parent = parent_match.group(1)
+    child = child_match.group(1)
+    kc.run_slash(f"claim {parent}")
+    kc.run_slash(f"link {parent} {child}")
+
+    out = kc.run_slash(f"block {parent} QA-successor-exists --kind dependency")
+
+    assert "dependency block is invalid after successor creation" in out
+    show = kc.run_slash(f"show {parent}")
+    assert "status:    running" in show
+    assert "BLOCKED:" not in show
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

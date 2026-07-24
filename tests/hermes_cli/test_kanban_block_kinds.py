@@ -162,6 +162,47 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_dependency_block_after_successor_creation_is_rejected(kanban_home: Path) -> None:
+    """Once a successor exists with no incoming wait, the parent should finish."""
+    with kb.connect_closing() as conn:
+        parent = _running_task(conn, title="implemented ACL change")
+        successor = kb.create_task(conn, title="QA successor", assignee="qa")
+        kb.link_tasks(conn, parent_id=parent, child_id=successor)
+
+        with pytest.raises(ValueError, match="dependency block is invalid after successor creation"):
+            kb.block_task(conn, parent, reason="QA successor exists", kind="dependency")
+
+        task = kb.get_task(conn, parent)
+        assert task is not None
+        assert task.status == "running"
+
+        kb.complete_task(conn, parent, result="done")
+        kb.recompute_ready(conn)
+        successor_task = kb.get_task(conn, successor)
+        assert successor_task is not None
+        assert successor_task.status == "ready"
+
+
+def test_dependency_block_with_successor_allowed_when_parent_unsatisfied(kanban_home: Path) -> None:
+    """A valid P->A->C graph may park A while A waits for unfinished P."""
+    with kb.connect_closing() as conn:
+        upstream = kb.create_task(conn, title="upstream prerequisite", assignee="worker")
+        active = _running_task(conn, title="active middle task")
+        successor = kb.create_task(conn, title="downstream successor", assignee="qa")
+        kb.link_tasks(conn, parent_id=upstream, child_id=active)
+        kb.link_tasks(conn, parent_id=active, child_id=successor)
+
+        assert kb.block_task(conn, active, reason="wait for upstream", kind="dependency")
+
+        active_task = kb.get_task(conn, active)
+        successor_task = kb.get_task(conn, successor)
+        assert active_task is not None
+        assert successor_task is not None
+        assert active_task.status == "todo"
+        assert active_task.block_kind == "dependency"
+        assert successor_task.status == "todo"
+
+
 # ---------------------------------------------------------------------------
 # Completion resets loop memory
 # ---------------------------------------------------------------------------

@@ -1,0 +1,13 @@
+name: plugin-doctor
+version: 0.1.0
+description: Validate Hermes plugin manifests, imports, and duplicate tool/CLI names.
+author: HermesAgent
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_tools:
+  - plugin_doctor_scan
+provides_cli:
+  - plugin-doctor

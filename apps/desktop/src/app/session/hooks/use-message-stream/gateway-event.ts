@@ -889,8 +889,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)
         } else if (sessionId && payload?.kind === 'process') {
-          // The gateway's notification poller announces background process
-          // completions / watch matches here — re-sync the status stack.
+          // Completions / watch matches only refresh the process status stack.
+          // Durable transcript rows for user-visible outcomes are emitted by
+          // tui_gateway as review.summary (handled below). Appending here too
+          // double-paints the same text (#64094 review).
           void refreshBackgroundProcesses(sessionId)
         }
       } else if (event.type === 'review.summary') {

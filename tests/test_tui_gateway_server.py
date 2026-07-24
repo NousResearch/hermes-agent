@@ -10600,6 +10600,23 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     assert ["Max Turns", "120"] in agent_rows
 
 
+
+
+def test_is_user_visible_process_result():
+    """Only durable/async outcomes mirror to review.summary."""
+    assert server._is_user_visible_process_result(
+        "[IMPORTANT: Background process abc completed normally]"
+    )
+    assert server._is_user_visible_process_result(
+        "[ASYNC DELEGATION COMPLETE — heph_task-1]\nRESULT"
+    )
+    assert server._is_user_visible_process_result(
+        "Hephaestus task task-1: completed\nverdict=PASS"
+    )
+    assert not server._is_user_visible_process_result("random status text")
+    assert not server._is_user_visible_process_result("")
+
+
 def test_notification_poller_delivers_completion(monkeypatch):
     """Poller picks up completion events and triggers agent turns."""
     import queue as _queue_mod
@@ -10662,6 +10679,13 @@ def test_notification_poller_delivers_completion(monkeypatch):
         status_calls = [a for a in emitted if a[0] == "status.update"]
         assert len(status_calls) >= 1
         assert status_calls[0][2]["kind"] == "process"
+
+        # User-visible process results also emit review.summary so packaged
+        # Desktop paints a durable transcript system line (not only the
+        # process status stack).
+        summary_calls = [a for a in emitted if a[0] == "review.summary"]
+        assert len(summary_calls) >= 1
+        assert "[IMPORTANT: Background process" in summary_calls[0][2]["text"]
 
         # Should have triggered an agent turn
         assert len(turns) == 1

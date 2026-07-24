@@ -29,14 +29,50 @@ SCRIPT = REPO_ROOT / "scripts" / "factory_lane.py"
 HOOK = REPO_ROOT / "scripts" / "factory_admission_hook.py"
 
 
-def run_lane(registry, *args, check=False):
+def run_lane(registry, *args, check=False, cwd=None, env=None):
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--registry", str(registry), *args],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=str(cwd) if cwd else None,
+        env=env,
     )
     if check and result.returncode != 0:
         raise AssertionError(result.stderr or result.stdout)
     return result
+
+
+def test_factory_lane_absolute_script_runs_outside_repo_root(tmp_path):
+    """The documented absolute-path CLI must resolve its repo-local imports."""
+    clean_env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
+    bootstrap = (
+        "import runpy, sys; "
+        "script = sys.argv[1]; "
+        "root = str(__import__('pathlib').Path(script).parent.parent); "
+        "sys.path[:] = [p for p in sys.path if p not in ('', root, root + '/scripts')]; "
+        "sys.argv = [script, *sys.argv[2:]]; "
+        "runpy.run_path(script, run_name='__main__')"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            bootstrap,
+            str(SCRIPT),
+            "--registry",
+            str(tmp_path / "registry"),
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=tmp_path,
+        env=clean_env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "registry core cross-agent" not in result.stderr
 
 
 def make_git_worktree(path: Path):

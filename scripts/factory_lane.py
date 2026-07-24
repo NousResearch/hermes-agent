@@ -23,6 +23,13 @@ import tempfile
 import time
 from pathlib import Path
 
+# The admission hook invokes this script by its absolute path from arbitrary
+# worktrees. Make the repository package root importable before loading cron's
+# shared redaction boundary; relying on the caller's cwd/PYTHONPATH makes the
+# documented CLI and the real pre-tool hook fail before they can veto a write.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
+
 from cron.redaction import contains_credential, redact_credential_text
 
 # --------------------------------------------------------------------------

@@ -563,6 +563,24 @@ class TestResolveJobRef:
 
 
 class TestMarkJobRun:
+    def test_credential_shaped_errors_are_redacted_before_persistence(self, tmp_cron_dir):
+        """Durable job state must not retain provider-shaped credentials."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+
+        mark_job_run(
+            job["id"],
+            success=False,
+            error=f"model rejected {credential}",
+            delivery_error=f"delivery rejected {credential}",
+        )
+
+        updated = get_job(job["id"])
+        assert credential not in updated["last_error"]
+        assert credential not in updated["last_delivery_error"]
+        assert "[redacted credential]" in updated["last_error"]
+        assert "[redacted credential]" in updated["last_delivery_error"]
+
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")
         mark_job_run(job["id"], success=True)

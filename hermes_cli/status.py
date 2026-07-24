@@ -279,7 +279,7 @@ def show_status(args):
     qwen_logged_in = bool(qwen_status.get("logged_in"))
     print(
         f"  {'Qwen OAuth':<12}  {check_mark(qwen_logged_in)} "
-        f"{'logged in' if qwen_logged_in else 'not logged in (run: qwen auth qwen-oauth)'}"
+        f"{'logged in' if qwen_logged_in else 'not logged in (set DASHSCOPE_API_KEY or configure Qwen CLI)'}"
     )
     qwen_auth_file = qwen_status.get("auth_file")
     if qwen_auth_file:

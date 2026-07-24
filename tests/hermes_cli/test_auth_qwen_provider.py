@@ -416,7 +416,7 @@ def test_get_qwen_auth_status_expired_unrefreshable_token_is_not_logged_in(qwen_
     with patch(
         "hermes_cli.auth._refresh_qwen_cli_tokens",
         side_effect=AuthError(
-            "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
+            "Qwen refresh rejected. Re-authenticate or set DASHSCOPE_API_KEY.",
             provider="qwen-oauth",
             code="qwen_refresh_failed",
         ),
@@ -425,7 +425,7 @@ def test_get_qwen_auth_status_expired_unrefreshable_token_is_not_logged_in(qwen_
 
     mock_refresh.assert_called_once()
     assert status["logged_in"] is False
-    assert "qwen auth qwen-oauth" in status["error"]
+    assert "DASHSCOPE_API_KEY" in status["error"]
 
 
 def test_get_qwen_auth_status_not_logged_in(qwen_env):
@@ -433,6 +433,167 @@ def test_get_qwen_auth_status_not_logged_in(qwen_env):
     status = get_qwen_auth_status()
     assert status["logged_in"] is False
     assert "error" in status
+
+
+# ---------------------------------------------------------------------------
+# _try_read_qwen_settings_api_key  (modern Qwen CLI v0.18+)
+# ---------------------------------------------------------------------------
+
+
+def _write_qwen_settings(tmp_path, settings):
+    """Write a Qwen settings.json file and return the path."""
+    qwen_dir = tmp_path / ".qwen"
+    qwen_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = qwen_dir / "settings.json"
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    return settings_path
+
+
+def test_try_read_qwen_settings_api_key_nested_security_auth(qwen_env, monkeypatch):
+    """settings.json with security.auth.apiKey returns credentials."""
+    from hermes_cli.auth import _try_read_qwen_settings_api_key
+
+    settings = {
+        "security": {
+            "auth": {
+                "selectedType": "openai",
+                "apiKey": "sk-test-key-123",
+            }
+        }
+    }
+    settings_path = _write_qwen_settings(qwen_env, settings)
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    result = _try_read_qwen_settings_api_key()
+    assert result is not None
+    assert result["access_token"] == "sk-test-key-123"
+    assert result["source"] == "qwen-settings-json"
+    assert result["token_type"] == "Bearer"
+
+
+def test_try_read_qwen_settings_api_key_top_level(qwen_env, monkeypatch):
+    """settings.json with top-level apiKey returns credentials."""
+    from hermes_cli.auth import _try_read_qwen_settings_api_key
+
+    settings = {"apiKey": "sk-top-level-key"}
+    settings_path = _write_qwen_settings(qwen_env, settings)
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    result = _try_read_qwen_settings_api_key()
+    assert result is not None
+    assert result["access_token"] == "sk-top-level-key"
+
+
+def test_try_read_qwen_settings_api_key_dashscope_env(qwen_env, monkeypatch):
+    """settings.json with DASHSCOPE_API_KEY in auth section."""
+    from hermes_cli.auth import _try_read_qwen_settings_api_key
+
+    settings = {"security": {"auth": {"DASHSCOPE_API_KEY": "sk-dashscope"}}}
+    settings_path = _write_qwen_settings(qwen_env, settings)
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    result = _try_read_qwen_settings_api_key()
+    assert result is not None
+    assert result["access_token"] == "sk-dashscope"
+
+
+def test_try_read_qwen_settings_api_key_missing_file(qwen_env, monkeypatch):
+    """Returns None when settings.json does not exist."""
+    from hermes_cli.auth import _try_read_qwen_settings_api_key
+
+    missing = qwen_env / ".qwen" / "settings.json"
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: missing
+    )
+
+    assert _try_read_qwen_settings_api_key() is None
+
+
+def test_try_read_qwen_settings_api_key_no_api_key(qwen_env, monkeypatch):
+    """Returns None when settings.json exists but has no API key."""
+    from hermes_cli.auth import _try_read_qwen_settings_api_key
+
+    settings = {"security": {"auth": {"selectedType": "openai"}}}
+    settings_path = _write_qwen_settings(qwen_env, settings)
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    assert _try_read_qwen_settings_api_key() is None
+
+
+def test_try_read_qwen_settings_api_key_invalid_json(qwen_env, monkeypatch):
+    """Returns None when settings.json is not valid JSON."""
+    from hermes_cli.auth import _try_read_qwen_settings_api_key
+
+    qwen_dir = qwen_env / ".qwen"
+    qwen_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = qwen_dir / "settings.json"
+    settings_path.write_text("not json{{{", encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    assert _try_read_qwen_settings_api_key() is None
+
+
+def test_read_qwen_cli_tokens_fallback_to_settings_json(qwen_env, monkeypatch):
+    """When oauth_creds.json is missing, falls back to settings.json."""
+    from hermes_cli.auth import _try_read_qwen_settings_api_key
+
+    settings = {"security": {"auth": {"apiKey": "sk-fallback-key"}}}
+    settings_path = _write_qwen_settings(qwen_env, settings)
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    # oauth_creds.json doesn't exist (default qwen_env), so it should fall back
+    result = _read_qwen_cli_tokens()
+    assert result["access_token"] == "sk-fallback-key"
+    assert result["source"] == "qwen-settings-json"
+
+
+def test_resolve_qwen_with_settings_json_skips_refresh(qwen_env, monkeypatch):
+    """API-key auth from settings.json skips OAuth refresh logic."""
+    settings = {"security": {"auth": {"apiKey": "sk-no-refresh"}}}
+    settings_path = _write_qwen_settings(qwen_env, settings)
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    refresh_called = {"value": False}
+    original_refresh = _refresh_qwen_cli_tokens
+
+    def mock_refresh(*args, **kwargs):
+        refresh_called["value"] = True
+        return original_refresh(*args, **kwargs)
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_qwen_cli_tokens", mock_refresh)
+
+    creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
+    assert creds["api_key"] == "sk-no-refresh"
+    assert creds["source"] == "qwen-settings-json"
+    assert refresh_called["value"] is False
+
+
+def test_get_qwen_auth_status_with_settings_json(qwen_env, monkeypatch):
+    """get_qwen_auth_status returns logged_in for settings.json API key."""
+    settings = {"security": {"auth": {"apiKey": "sk-status-key"}}}
+    settings_path = _write_qwen_settings(qwen_env, settings)
+    monkeypatch.setattr(
+        "hermes_cli.auth._qwen_settings_json_path", lambda: settings_path
+    )
+
+    status = get_qwen_auth_status()
+    assert status["logged_in"] is True
+    assert status["api_key"] == "sk-status-key"
+    assert status["source"] == "qwen-settings-json"
 
 
 def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monkeypatch, capsys):
@@ -446,7 +607,7 @@ def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monke
         "hermes_cli.auth._refresh_qwen_cli_tokens",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AuthError(
-                "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
+                "Qwen refresh rejected. Re-authenticate or set DASHSCOPE_API_KEY.",
                 provider="qwen-oauth",
                 code="qwen_refresh_failed",
             )
@@ -468,7 +629,7 @@ def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monke
     _model_flow_qwen_oauth({}, current_model="qwen3-coder-plus")
 
     out = capsys.readouterr().out
-    assert "Run: qwen auth qwen-oauth" in out
+    assert "Set DASHSCOPE_API_KEY" in out
     assert "Qwen refresh rejected" in out
     assert prompt_called["value"] is False
     assert update_called["value"] is False

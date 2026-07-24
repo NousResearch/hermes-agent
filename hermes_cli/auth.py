@@ -2429,11 +2429,65 @@ def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
 
 
+def _qwen_settings_json_path() -> Path:
+    """Path to the modern Qwen CLI settings file (v0.18+)."""
+    return Path.home() / ".qwen" / "settings.json"
+
+
+def _try_read_qwen_settings_api_key() -> Optional[Dict[str, Any]]:
+    """Try to read an API key from modern Qwen CLI settings.json (v0.18+).
+
+    Returns a synthetic credential dict with ``source`` set to
+    ``"qwen-settings-json"`` so the caller can distinguish API-key auth
+    from OAuth auth and skip token-refresh logic.  Returns *None* when
+    the file is absent, unreadable, or does not contain an API key.
+    """
+    settings_path = _qwen_settings_json_path()
+    if not settings_path.exists():
+        return None
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Walk the nested dict looking for an API key.
+    # Qwen v0.18+: {"security": {"auth": {"selectedType": "openai", "apiKey": "..."}}}
+    api_key = None
+    auth_section = data.get("security", {})
+    if isinstance(auth_section, dict):
+        auth_section = auth_section.get("auth", {})
+    if isinstance(auth_section, dict):
+        for key_name in ("apiKey", "api_key", "DASHSCOPE_API_KEY"):
+            val = auth_section.get(key_name)
+            if isinstance(val, str) and val.strip():
+                api_key = val.strip()
+                break
+    if not api_key:
+        for key_name in ("apiKey", "api_key", "DASHSCOPE_API_KEY"):
+            val = data.get(key_name)
+            if isinstance(val, str) and val.strip():
+                api_key = val.strip()
+                break
+    if not api_key:
+        return None
+    return {
+        "access_token": api_key,
+        "token_type": "Bearer",
+        "source": "qwen-settings-json",
+    }
+
+
 def _read_qwen_cli_tokens() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     if not auth_path.exists():
+        # Fallback: try modern Qwen CLI settings.json (v0.18+)
+        settings_creds = _try_read_qwen_settings_api_key()
+        if settings_creds is not None:
+            return settings_creds
         raise AuthError(
-            "Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.",
+            "Qwen CLI credentials not found. "
+            "Set DASHSCOPE_API_KEY or configure Qwen CLI interactively.",
             provider="qwen-oauth",
             code="qwen_auth_missing",
         )
@@ -2497,7 +2551,7 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     refresh_token = str(tokens.get("refresh_token", "") or "").strip()
     if not refresh_token:
         raise AuthError(
-            "Qwen OAuth refresh token missing. Re-run 'qwen auth qwen-oauth'.",
+            "Qwen OAuth refresh token missing. Re-authenticate or set DASHSCOPE_API_KEY.",
             provider="qwen-oauth",
             code="qwen_refresh_token_missing",
         )
@@ -2526,7 +2580,7 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     if response.status_code >= 400:
         body = response.text.strip()
         raise AuthError(
-            "Qwen OAuth refresh failed. Re-run 'qwen auth qwen-oauth'."
+            "Qwen OAuth refresh failed. Re-authenticate or set DASHSCOPE_API_KEY."
             + (f" Response: {body}" if body else ""),
             provider="qwen-oauth",
             code="qwen_refresh_failed",
@@ -2592,15 +2646,18 @@ def resolve_qwen_runtime_credentials(
 ) -> Dict[str, Any]:
     tokens = _read_qwen_cli_tokens()
     access_token = str(tokens.get("access_token", "") or "").strip()
+    # API-key auth (from settings.json) has no expiry or refresh token —
+    # skip OAuth refresh logic entirely.
+    is_api_key_auth = tokens.get("source") == "qwen-settings-json"
     should_refresh = bool(force_refresh)
-    if not should_refresh and refresh_if_expiring:
+    if not should_refresh and refresh_if_expiring and not is_api_key_auth:
         should_refresh = _qwen_access_token_is_expiring(tokens.get("expiry_date"), refresh_skew_seconds)
     if should_refresh:
         tokens = _refresh_qwen_cli_tokens(tokens)
         access_token = str(tokens.get("access_token", "") or "").strip()
     if not access_token:
         raise AuthError(
-            "Qwen OAuth access token missing. Re-run 'qwen auth qwen-oauth'.",
+            "Qwen access token missing. Set DASHSCOPE_API_KEY or configure Qwen CLI.",
             provider="qwen-oauth",
             code="qwen_access_token_missing",
         )
@@ -2610,7 +2667,7 @@ def resolve_qwen_runtime_credentials(
         "provider": "qwen-oauth",
         "base_url": base_url,
         "api_key": access_token,
-        "source": "qwen-cli",
+        "source": tokens.get("source", "qwen-cli"),
         "expires_at_ms": tokens.get("expiry_date"),
         "auth_file": str(_qwen_cli_auth_path()),
     }

@@ -739,7 +739,7 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     status = get_qwen_auth_status()
     if not status.get("logged_in"):
         print("Not logged into Qwen CLI OAuth.")
-        print("Run: qwen auth qwen-oauth")
+        print("Set DASHSCOPE_API_KEY or configure Qwen CLI interactively.")
         auth_file = status.get("auth_file")
         if auth_file:
             print(f"Expected credentials file: {auth_file}")

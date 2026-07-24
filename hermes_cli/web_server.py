@@ -823,6 +823,25 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Modal sandbox mode",
         "options": ["sandbox", "function"],
     },
+    "proxy.enabled": {
+        "type": "boolean",
+        "description": (
+            "Docker-only egress credential firewall. Requires `hermes egress setup` "
+            "and `hermes egress start`; Modal/SSH/Daytona are not wired yet."
+        ),
+        "category": "security",
+    },
+    "proxy.credential_source": {
+        "type": "select",
+        "description": "Where iron-proxy loads real upstream secrets at start time",
+        "options": ["env", "bitwarden"],
+        "category": "security",
+    },
+    "proxy.enforce_on_docker": {
+        "type": "boolean",
+        "description": "Refuse Docker sandboxes when egress is enabled but not configured/running",
+        "category": "security",
+    },
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",
@@ -6493,6 +6512,14 @@ async def get_schema(profile: Optional[str] = None):
     with _config_profile_scope(profile):
         fields = _schema_with_dynamic_provider_options()
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
+
+
+@app.get("/api/egress/status")
+async def get_egress_status():
+    """Dashboard/Desktop-readable egress proxy status and remediation text."""
+    from hermes_cli.proxy_cli import format_status_text
+
+    return {"text": format_status_text()}
 
 
 _EMPTY_MODEL_INFO: dict = {

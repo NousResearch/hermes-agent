@@ -7380,6 +7380,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        # Plugin hook: session_switch_starting — fires before session rotation.
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if has_hook("session_switch_starting"):
+                invoke_hook(
+                    "session_switch_starting",
+                    old_session_id=old_session_id,
+                    cli=self,
+                )
+        except Exception:
+            pass
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back
@@ -7522,28 +7533,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self.agent._session_db_created = True
                 except Exception:
                     pass
-                if title and self._session_db:
-                    from hermes_state import SessionDB
+            # Plugin hook: session_switched — fires after session rotation
+            # and fresh SessionDB row have completed, so callbacks can
+            # observe the new session state.
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("session_switched"):
+                    invoke_hook(
+                        "session_switched",
+                        old_session_id=old_session_id,
+                        new_session_id=self.session_id,
+                        cli=self,
+                    )
+            except Exception:
+                pass
+
+            if title and self._session_db:
+                from hermes_state import SessionDB
+                try:
+                    sanitized = SessionDB.sanitize_title(title)
+                except ValueError as e:
+                    _cprint(f"  Title rejected: {e}")
+                    sanitized = None
+                    title = None
+                if sanitized:
                     try:
-                        sanitized = SessionDB.sanitize_title(title)
+                        self._session_db.set_session_title(self.session_id, sanitized)
+                        self._pending_title = None
+                        title = sanitized
                     except ValueError as e:
-                        _cprint(f"  Title rejected: {e}")
-                        sanitized = None
+                        _cprint(f"  {e} — session started untitled.")
                         title = None
-                    if sanitized:
-                        try:
-                            self._session_db.set_session_title(self.session_id, sanitized)
-                            self._pending_title = None
-                            title = sanitized
-                        except ValueError as e:
-                            _cprint(f"  {e} — session started untitled.")
-                            title = None
-                        except Exception:
-                            title = None
-                    elif title is not None:
-                        # sanitize_title returned empty (whitespace-only / unprintable)
-                        _cprint("  Title is empty after cleanup — session started untitled.")
+                    except Exception:
                         title = None
+                elif title is not None:
+                    # sanitize_title returned empty (whitespace-only / unprintable)
+                    _cprint("  Title is empty after cleanup — session started untitled.")
+                    title = None
             # Notify memory providers that session_id rotated to a fresh
             # conversation. reset=True signals providers to flush accumulated
             # per-session state (_session_turns, _turn_counter, _document_id).

@@ -118,16 +118,16 @@ def _source_store(
 
 
 def _collector_package() -> dict:
+    dependency_paths = {
+        path
+        for spec in rail.COLLECTOR_SPECS
+        for path in spec.dependency_paths
+    }
+    dependency_paths.add(str(rail.SETPRIV))
     dependencies = {
         path: f"{index + 1:064x}"
         for index, path in enumerate(
-            sorted(
-                {
-                    path
-                    for spec in rail.COLLECTOR_SPECS
-                    for path in spec.dependency_paths
-                }
-            )
+            sorted(dependency_paths)
         )
     }
     return rail.build_package_manifest(
@@ -138,16 +138,19 @@ def _collector_package() -> dict:
 
 
 def _collector_execution_readiness() -> dict:
+    account_ids = {
+        rail.ISOLATED_SERVICE_USER: 1000,
+        rail.SCOPED_SERVICE_USER: 2004,
+    }
+    group_ids = {
+        rail.ISOLATED_SERVICE_GROUP: 1000,
+        rail.SCOPED_SERVICE_GROUP: 2004,
+    }
     return rail.collect_execution_readiness(
         _collector_package(),
         operational_edge_receipt=None,
-        account_lookup=lambda _name: SimpleNamespace(pw_uid=2003),
-        group_lookup=lambda _name: SimpleNamespace(gr_gid=2004),
-        stat_reader=lambda _path: SimpleNamespace(
-            st_mode=stat.S_IFDIR | 0o755,
-            st_uid=0,
-            st_gid=0,
-        ),
+        account_lookup=lambda name: SimpleNamespace(pw_uid=account_ids[name]),
+        group_lookup=lambda name: SimpleNamespace(gr_gid=group_ids[name]),
     )
 
 
@@ -191,6 +194,27 @@ def test_plan_is_exhaustive_primary_model_authored_and_owner_complete(
     assert plan["byte_exact_source_archive_required"] is True
     assert plan["execute_job_during_packaging"] is False
     assert plan["collector_execution_readiness"]["activation_ready"] is False
+    assert plan["collector_execution_readiness"][
+        "unit_namespace_readiness_packaged"
+    ] is False
+    assert plan["collector_execution_readiness"][
+        "unit_namespace_readiness_receipt_sha256"
+    ] is None
+    assert plan["collector_execution_readiness"][
+        "unit_namespace_readiness_job_count"
+    ] == 0
+    assert plan["collector_execution_readiness"][
+        "unit_namespace_readiness_boot_id_sha256"
+    ] is None
+    assert plan["collector_execution_readiness"][
+        "unit_namespace_readiness_observed_at_unix"
+    ] is None
+    assert plan["collector_execution_readiness"][
+        "unit_namespace_readiness_maximum_age_seconds"
+    ] == 0
+    assert plan["collector_execution_readiness"][
+        "direct_dependencies_ready"
+    ] is False
     assert (
         plan["collector_execution_readiness"][
             "scoped_execution_edge_packaged"
@@ -513,6 +537,36 @@ def test_plan_or_bundle_tamper_fails_closed(
     ):
         package.validate_packaged_continuity_plan(
             drifted_requirements,
+            inventory=inventory,
+            require_executable=True,
+        )
+
+    drifted_namespace = copy.deepcopy(build.plan)
+    readiness = drifted_namespace["collector_execution_readiness"]
+    readiness["unit_namespace_readiness_packaged"] = True
+    readiness["unit_namespace_readiness_receipt_sha256"] = "9" * 64
+    readiness["unit_namespace_readiness_job_count"] = 21
+    readiness["direct_dependencies_ready"] = True
+    readiness["readiness_sha256"] = package._sha256(
+        package._canonical({
+            key: value
+            for key, value in readiness.items()
+            if key != "readiness_sha256"
+        })
+    )
+    drifted_namespace["plan_sha256"] = package._sha256(
+        package._canonical({
+            key: value
+            for key, value in drifted_namespace.items()
+            if key != "plan_sha256"
+        })
+    )
+    with pytest.raises(
+        package.ProductionCronContinuityPackageError,
+        match="packaged_plan_readiness_invalid",
+    ):
+        package.validate_packaged_continuity_plan(
+            drifted_namespace,
             inventory=inventory,
             require_executable=True,
         )

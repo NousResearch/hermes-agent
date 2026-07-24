@@ -779,7 +779,9 @@ def _validate_cron_continuity_authority(
                 "schema", "rail_schema", "release_revision", "release_root",
                 "rail_path", "rail_sha256", "package_binding_sha256",
                 "collector_contract", "dependency_sha256", "units",
-                "service_user", "service_group", "reader_group", "packet_root",
+                "isolated_service_user", "isolated_service_group",
+                "scoped_service_user", "scoped_service_group",
+                "reader_group", "packet_root",
                 "provider_or_model_dependency", "gateway_credential_dependency",
                 "discord_credential_dependency", "semantic_judgment_allowed",
                 "direct_delivery_allowed", "timer_enabled_by_package",
@@ -792,9 +794,17 @@ def _validate_cron_continuity_authority(
             plan.get("collector_execution_readiness"),
             {
                 "schema", "release_revision",
-                "collector_manifest_sha256", "service_user", "service_uid",
-                "service_group", "service_gid", "checked_path_count",
-                "blocked_paths", "blocked_path_count",
+                "collector_manifest_sha256",
+                "isolated_service_user", "isolated_service_uid",
+                "isolated_service_group", "isolated_service_gid",
+                "scoped_service_user", "scoped_service_uid",
+                "scoped_service_group", "scoped_service_gid",
+                "unit_namespace_readiness_packaged",
+                "unit_namespace_readiness_receipt_sha256",
+                "unit_namespace_readiness_job_count",
+                "unit_namespace_readiness_boot_id_sha256",
+                "unit_namespace_readiness_observed_at_unix",
+                "unit_namespace_readiness_maximum_age_seconds",
                 "direct_dependencies_ready",
                 "scoped_execution_edge_required_job_ids",
                 "scoped_execution_edge_required_count",
@@ -870,16 +880,65 @@ def _validate_cron_continuity_authority(
             if collector_execution_readiness is not None
             else None
         )
+        transition = authority.get("host_transition")
+        identity_foundation = (
+            transition.get("identity_foundation")
+            if isinstance(transition, Mapping)
+            else None
+        )
+        identity_users = (
+            identity_foundation.get("users")
+            if isinstance(identity_foundation, Mapping)
+            else None
+        )
+        identity_groups = (
+            identity_foundation.get("groups")
+            if isinstance(identity_foundation, Mapping)
+            else None
+        )
+        gateway_user = (
+            identity_users.get("gateway")
+            if isinstance(identity_users, Mapping)
+            else None
+        )
+        gateway_group = (
+            identity_groups.get("gateway")
+            if isinstance(identity_groups, Mapping)
+            else None
+        )
+        projector_user = (
+            identity_users.get("projector")
+            if isinstance(identity_users, Mapping)
+            else None
+        )
+        projector_group = (
+            identity_groups.get("projector")
+            if isinstance(identity_groups, Mapping)
+            else None
+        )
         packaged_invalid = (
             collector_package is None
             or collector_execution_readiness is None
             or operational_edge_requirements is None
+            or not isinstance(gateway_user, Mapping)
+            or not isinstance(gateway_group, Mapping)
+            or not isinstance(projector_user, Mapping)
+            or not isinstance(projector_group, Mapping)
             or collector_package.get("schema")
             != "muncho-trusted-cron-collector-package.v1"
             or collector_package.get("rail_schema")
             != "muncho-trusted-cron-collector-rail.v1"
             or collector_package.get("release_revision") != revision
             or collector_package.get("release_root") != expected_release
+            or collector_package.get("isolated_service_user")
+            != "ai-platform-brain"
+            or collector_package.get("isolated_service_group")
+            != "ai-platform-brain"
+            or collector_package.get("scoped_service_user")
+            != "muncho-projector"
+            or collector_package.get("scoped_service_group")
+            != "muncho-projector"
+            or collector_package.get("reader_group") != "ai-platform-brain"
             or collector_package.get("provider_or_model_dependency") is not False
             or collector_package.get("gateway_credential_dependency") is not False
             or collector_package.get("discord_credential_dependency") is not False
@@ -892,10 +951,42 @@ def _validate_cron_continuity_authority(
             or collector_execution_readiness.get("release_revision") != revision
             or collector_execution_readiness.get("collector_manifest_sha256")
             != collector_package.get("manifest_sha256")
-            or collector_execution_readiness.get("blocked_paths") != []
-            or collector_execution_readiness.get("blocked_path_count") != 0
+            or collector_execution_readiness.get("isolated_service_user")
+            != gateway_user.get("name")
+            or collector_execution_readiness.get("isolated_service_uid")
+            != gateway_user.get("uid")
+            or collector_execution_readiness.get("isolated_service_group")
+            != gateway_group.get("name")
+            or collector_execution_readiness.get("isolated_service_gid")
+            != gateway_group.get("gid")
+            or collector_execution_readiness.get("scoped_service_user")
+            != projector_user.get("name")
+            or collector_execution_readiness.get("scoped_service_uid")
+            != projector_user.get("uid")
+            or collector_execution_readiness.get("scoped_service_group")
+            != projector_group.get("name")
+            or collector_execution_readiness.get("scoped_service_gid")
+            != projector_group.get("gid")
+            or collector_execution_readiness.get(
+                "unit_namespace_readiness_packaged"
+            ) is not False
+            or collector_execution_readiness.get(
+                "unit_namespace_readiness_receipt_sha256"
+            ) is not None
+            or collector_execution_readiness.get(
+                "unit_namespace_readiness_job_count"
+            ) != 0
+            or collector_execution_readiness.get(
+                "unit_namespace_readiness_boot_id_sha256"
+            ) is not None
+            or collector_execution_readiness.get(
+                "unit_namespace_readiness_observed_at_unix"
+            ) is not None
+            or collector_execution_readiness.get(
+                "unit_namespace_readiness_maximum_age_seconds"
+            ) != 0
             or collector_execution_readiness.get("direct_dependencies_ready")
-            is not True
+            is not False
             or collector_execution_readiness.get(
                 "scoped_execution_edge_required_count"
             ) != 14
@@ -7190,6 +7281,10 @@ def _operational_edge_bundle(
         for domain in sorted(OPERATIONAL_EDGE_DOMAINS)
     }
     mutation_user = identity["users"]["gateway"]
+    projector_user = identity["users"]["projector"]
+    expected_read_peer_uids = sorted(
+        {mutation_user["uid"], projector_user["uid"]}
+    )
     contract = _exact(
         raw["identity_contract"],
         {
@@ -7268,7 +7363,7 @@ def _operational_edge_bundle(
             "distinct_from_services": True,
         }
         or contract["allowed_read_peer_uids_by_domain"] != {
-            domain: [mutation_user["uid"]]
+            domain: expected_read_peer_uids
             for domain in sorted(OPERATIONAL_EDGE_DOMAINS)
         }
         or contract["cross_domain_service_access"] is not False

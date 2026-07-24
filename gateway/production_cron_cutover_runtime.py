@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -832,7 +833,14 @@ def _legacy_auto_sync_prestate(source: Mapping[str, Any]) -> dict[str, bool]:
 def _collect_runtime_execution_readiness(
     context: RuntimeContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    temporary_spool = not collector_rail.STATE_ROOT.exists()
     try:
+        if temporary_spool:
+            _ensure_service_identity_and_spool(context)
+        elif not _packet_root_gateway_readable():
+            raise ProductionCronCutoverRuntimeError(
+                "production_cron_cutover_spool_invalid"
+            )
         from gateway import operational_edge_readiness as edge_readiness
         from gateway.operational_edge_catalog import required_cron_operations
 
@@ -840,19 +848,30 @@ def _collect_runtime_execution_readiness(
             revision=context.collector_package["release_revision"],
             required_jobs=required_cron_operations(),
         )
+        namespace = collector_rail.collect_unit_namespace_readiness(
+            context.collector_package
+        )
         execution = collector_rail.collect_execution_readiness(
             context.collector_package,
+            unit_namespace_receipt=namespace,
             operational_edge_receipt=operational,
         )
         execution = collector_rail.validate_execution_readiness(
             execution,
             manifest=context.collector_package,
+            unit_namespace_receipt=namespace,
             operational_edge_receipt=operational,
         )
     except (AttributeError, KeyError, TypeError, ValueError, RuntimeError) as exc:
         raise ProductionCronCutoverRuntimeError(
             "production_cron_execution_readiness_unavailable"
         ) from exc
+    finally:
+        if temporary_spool and (
+            collector_rail.STATE_ROOT.exists()
+            or collector_rail.STATE_ROOT.is_symlink()
+        ):
+            _remove_empty_probe_spool()
     if execution["activation_ready"] is not True:
         raise ProductionCronCutoverRuntimeError(
             "production_cron_execution_readiness_incomplete"
@@ -875,7 +894,15 @@ def _validate_runtime_execution_readiness_pair(
         )
 
         required_count = len(required_cron_operations())
-    except (ImportError, TypeError, ValueError) as exc:
+        now_unix = int(time.time())
+        foundation = context.cutover_plan["host_transition"][
+            "identity_foundation"
+        ]
+        isolated_user = foundation["users"]["gateway"]
+        isolated_group = foundation["groups"]["gateway"]
+        scoped_user = foundation["users"]["projector"]
+        scoped_group = foundation["groups"]["projector"]
+    except (ImportError, KeyError, TypeError, ValueError) as exc:
         raise ProductionCronCutoverRuntimeError(
             "production_cron_execution_readiness_incomplete"
         ) from exc
@@ -888,6 +915,43 @@ def _validate_runtime_execution_readiness_pair(
         != operational.get("receipt_sha256")
         or execution.get("scoped_execution_edge_meaningful_packet_count")
         != required_count
+        or execution.get("isolated_service_user")
+        != isolated_user.get("name")
+        or execution.get("isolated_service_uid") != isolated_user.get("uid")
+        or execution.get("isolated_service_group")
+        != isolated_group.get("name")
+        or execution.get("isolated_service_gid") != isolated_group.get("gid")
+        or execution.get("scoped_service_user") != scoped_user.get("name")
+        or execution.get("scoped_service_uid") != scoped_user.get("uid")
+        or execution.get("scoped_service_group") != scoped_group.get("name")
+        or execution.get("scoped_service_gid") != scoped_group.get("gid")
+        or execution.get("unit_namespace_readiness_packaged") is not True
+        or _SHA256.fullmatch(
+            str(
+                execution.get(
+                    "unit_namespace_readiness_receipt_sha256"
+                )
+                or ""
+            )
+        )
+        is None
+        or execution.get("unit_namespace_readiness_job_count")
+        != len(collector_rail.COLLECTOR_SPECS)
+        or execution.get("unit_namespace_readiness_boot_id_sha256")
+        != operational.get("boot_id_sha256")
+        or type(
+            execution.get("unit_namespace_readiness_observed_at_unix")
+        )
+        is not int
+        or not 0
+        <= now_unix
+        - execution.get("unit_namespace_readiness_observed_at_unix", 0)
+        <= collector_rail.UNIT_NAMESPACE_READINESS_MAXIMUM_AGE_SECONDS
+        or execution.get(
+            "unit_namespace_readiness_maximum_age_seconds"
+        )
+        != collector_rail.UNIT_NAMESPACE_READINESS_MAXIMUM_AGE_SECONDS
+        or execution.get("direct_dependencies_ready") is not True
         or operational.get("schema") != OPERATIONAL_EDGE_READINESS_SCHEMA
         or operational.get("release_revision")
         != context.collector_package.get("release_revision")
@@ -900,7 +964,9 @@ def _validate_runtime_execution_readiness_pair(
             str(operational.get("boot_id_sha256") or "")
         ) is None
         or type(operational.get("observed_at_unix")) is not int
-        or operational.get("observed_at_unix", 0) < 1
+        or not 0
+        <= now_unix - operational.get("observed_at_unix", 0)
+        <= READINESS_MAXIMUM_AGE_SECONDS
         or operational.get("maximum_age_seconds")
         != READINESS_MAXIMUM_AGE_SECONDS
         or _UUID4.fullmatch(str(operational.get("collector_nonce") or ""))
@@ -1190,68 +1256,159 @@ def _validate_snapshot(
     return copy.deepcopy(dict(value))
 
 
-def _gateway_group() -> grp.struct_group:
-    try:
-        return grp.getgrnam(collector_rail.READER_GROUP)
-    except KeyError as exc:
-        raise ProductionCronCutoverRuntimeError(
-            "production_cron_cutover_gateway_group_missing"
-        ) from exc
-
-
-def _ensure_service_identity_and_spool(
+def _runtime_identity_records(
     context: RuntimeContext,
-) -> tuple[int, int]:
+) -> tuple[
+    pwd.struct_passwd,
+    grp.struct_group,
+    pwd.struct_passwd,
+    grp.struct_group,
+]:
     foundation = context.cutover_plan["host_transition"]["identity_foundation"]
-    expected_user = foundation["users"]["projector"]
-    expected_primary_group = foundation["groups"]["projector"]
-    expected_reader_group = foundation["groups"]["gateway"]
-    group = _gateway_group()
+    expected_isolated_user = foundation["users"]["gateway"]
+    expected_isolated_group = foundation["groups"]["gateway"]
+    expected_scoped_user = foundation["users"]["projector"]
+    expected_scoped_group = foundation["groups"]["projector"]
     try:
-        account = pwd.getpwnam(collector_rail.SERVICE_USER)
-        primary = grp.getgrnam(expected_primary_group["name"])
+        isolated_account = pwd.getpwnam(collector_rail.ISOLATED_SERVICE_USER)
+        isolated_group = grp.getgrnam(collector_rail.ISOLATED_SERVICE_GROUP)
+        scoped_account = pwd.getpwnam(collector_rail.SCOPED_SERVICE_USER)
+        scoped_group = grp.getgrnam(collector_rail.SCOPED_SERVICE_GROUP)
     except KeyError as exc:
         raise ProductionCronCutoverRuntimeError(
             "production_cron_cutover_service_identity_missing"
         ) from exc
     if (
-        collector_rail.SERVICE_USER != expected_user["name"]
-        or account.pw_uid != expected_user["uid"]
-        or account.pw_gid != expected_primary_group["gid"]
-        or primary.gr_gid != expected_primary_group["gid"]
-        or group.gr_gid != expected_reader_group["gid"]
-        or account.pw_dir != expected_user["home"]
-        or account.pw_shell != expected_user["shell"]
-        or account.pw_dir != "/nonexistent"
-        or account.pw_shell != NOLOGIN
+        collector_rail.ISOLATED_SERVICE_USER
+        != expected_isolated_user["name"]
+        or isolated_account.pw_uid != expected_isolated_user["uid"]
+        or isolated_account.pw_gid != expected_isolated_group["gid"]
+        or isolated_group.gr_gid != expected_isolated_group["gid"]
+        or isolated_account.pw_dir != expected_isolated_user["home"]
+        or isolated_account.pw_shell != expected_isolated_user["shell"]
+        or collector_rail.SCOPED_SERVICE_USER != expected_scoped_user["name"]
+        or scoped_account.pw_uid != expected_scoped_user["uid"]
+        or scoped_account.pw_gid != expected_scoped_group["gid"]
+        or scoped_group.gr_gid != expected_scoped_group["gid"]
+        or scoped_account.pw_dir != expected_scoped_user["home"]
+        or scoped_account.pw_shell != expected_scoped_user["shell"]
+        or scoped_account.pw_dir != "/nonexistent"
+        or scoped_account.pw_shell != NOLOGIN
     ):
         raise ProductionCronCutoverRuntimeError(
             "production_cron_cutover_service_user_invalid"
         )
-    collector_rail.STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o2750)
-    os.chown(collector_rail.STATE_ROOT, account.pw_uid, group.gr_gid)
-    os.chmod(collector_rail.STATE_ROOT, 0o2750)
-    return account.pw_uid, group.gr_gid
+    return (
+        isolated_account,
+        isolated_group,
+        scoped_account,
+        scoped_group,
+    )
+
+
+def _spool_directories() -> list[tuple[Path, int, int, int]]:
+    try:
+        isolated_account = pwd.getpwnam(collector_rail.ISOLATED_SERVICE_USER)
+        isolated_group = grp.getgrnam(collector_rail.ISOLATED_SERVICE_GROUP)
+        scoped_account = pwd.getpwnam(collector_rail.SCOPED_SERVICE_USER)
+    except KeyError as exc:
+        raise ProductionCronCutoverRuntimeError(
+            "production_cron_cutover_service_identity_missing"
+        ) from exc
+    directories: list[tuple[Path, int, int, int]] = [
+        (collector_rail.STATE_ROOT, 0, isolated_group.gr_gid, 0o750),
+        (collector_rail.PACKET_ROOT, 0, isolated_group.gr_gid, 0o750),
+        (
+            collector_rail.VOICE_ROOT,
+            isolated_account.pw_uid,
+            isolated_group.gr_gid,
+            0o750,
+        ),
+    ]
+    for item in collector_rail.COLLECTOR_SPECS:
+        if item.execution_boundary == collector_rail.EXECUTION_BOUNDARY_ISOLATED:
+            uid = isolated_account.pw_uid
+            mode = 0o750
+        else:
+            uid = scoped_account.pw_uid
+            mode = 0o2750
+        directories.append(
+            (
+                collector_rail.PACKET_ROOT / item.source_job_id,
+                uid,
+                isolated_group.gr_gid,
+                mode,
+            )
+        )
+    return directories
+
+
+def _ensure_service_identity_and_spool(
+    context: RuntimeContext,
+) -> tuple[int, int]:
+    (
+        isolated_account,
+        isolated_group,
+        scoped_account,
+        _scoped_group,
+    ) = _runtime_identity_records(context)
+    for path, uid, gid, mode in _spool_directories():
+        if path.is_symlink():
+            raise ProductionCronCutoverRuntimeError(
+                "production_cron_cutover_spool_symlink_forbidden"
+            )
+        path.mkdir(parents=True, exist_ok=True, mode=mode)
+        os.chown(path, uid, gid)
+        os.chmod(path, mode)
+    return scoped_account.pw_uid, isolated_group.gr_gid
+
+
+def _remove_empty_probe_spool() -> None:
+    """Remove only the exact empty directory skeleton created for probes."""
+
+    try:
+        for path, _uid, _gid, _mode in reversed(_spool_directories()):
+            if path.is_symlink():
+                raise OSError("symlinked probe spool")
+            if path.exists():
+                path.rmdir()
+    except OSError as exc:
+        raise ProductionCronCutoverRuntimeError(
+            "production_cron_cutover_probe_spool_not_empty"
+        ) from exc
+
+
+def _restore_spool_prestate(value: Mapping[str, Any]) -> None:
+    trusted = _validate_directory_prestate(
+        value,
+        path=collector_rail.STATE_ROOT,
+    )
+    if trusted["state"] == "absent":
+        _remove_empty_probe_spool()
+        return
+    _restore_directory_prestate(
+        trusted,
+        path=collector_rail.STATE_ROOT,
+    )
 
 
 def _install_package_files(
     context: RuntimeContext,
     *,
     artifact_root: Path,
-    gateway_gid: int,
 ) -> None:
     manifest_source = artifact_root / continuity.COLLECTOR_MANIFEST_RELATIVE_PATH
     collector_rail.MANIFEST_PATH.parent.mkdir(
-        parents=True, exist_ok=True, mode=0o750
+        parents=True, exist_ok=True, mode=0o755
     )
-    os.chown(collector_rail.MANIFEST_PATH.parent, 0, gateway_gid)
-    os.chmod(collector_rail.MANIFEST_PATH.parent, 0o750)
+    os.chown(collector_rail.MANIFEST_PATH.parent, 0, 0)
+    os.chmod(collector_rail.MANIFEST_PATH.parent, 0o755)
     _atomic_write(
         collector_rail.MANIFEST_PATH,
         _stable_read(manifest_source),
-        mode=0o640,
+        mode=0o444,
         uid=0,
-        gid=gateway_gid,
+        gid=0,
     )
     rendered = _unit_paths(context)
     for target, expected in rendered.items():
@@ -1285,7 +1442,6 @@ def _timers_match(
 
 def _installed_package_files_match(context: RuntimeContext) -> bool:
     try:
-        group = _gateway_group()
         manifest_metadata = collector_rail.MANIFEST_PATH.stat(
             follow_symlinks=False
         )
@@ -1296,11 +1452,11 @@ def _installed_package_files_match(context: RuntimeContext) -> bool:
             _json_file(collector_rail.MANIFEST_PATH)
             != context.collector_package
             or (manifest_metadata.st_uid, manifest_metadata.st_gid)
-            != (0, group.gr_gid)
-            or stat.S_IMODE(manifest_metadata.st_mode) != 0o640
+            != (0, 0)
+            or stat.S_IMODE(manifest_metadata.st_mode) != 0o444
             or (directory_metadata.st_uid, directory_metadata.st_gid)
-            != (0, group.gr_gid)
-            or stat.S_IMODE(directory_metadata.st_mode) != 0o750
+            != (0, 0)
+            or stat.S_IMODE(directory_metadata.st_mode) != 0o755
         ):
             return False
         for path, raw in _unit_paths(context).items():
@@ -1318,19 +1474,22 @@ def _installed_package_files_match(context: RuntimeContext) -> bool:
 
 def _packet_root_gateway_readable() -> bool:
     try:
-        account = pwd.getpwnam(collector_rail.SERVICE_USER)
-        group = _gateway_group()
-        metadata = collector_rail.STATE_ROOT.stat(follow_symlinks=False)
+        expected = _spool_directories()
     except (KeyError, OSError):
         return False
-    return (
-        account.pw_name == collector_rail.SERVICE_USER
-        and metadata.st_gid == group.gr_gid
-        and stat.S_IMODE(metadata.st_mode) == 0o2750
-        and bool(metadata.st_mode & stat.S_IRGRP)
-        and bool(metadata.st_mode & stat.S_IXGRP)
-        and get_read_block_error(str(collector_rail.PACKET_ROOT)) is None
-    )
+    try:
+        for path, uid, gid, mode in expected:
+            metadata = path.stat(follow_symlinks=False)
+            if (
+                path.is_symlink()
+                or not stat.S_ISDIR(metadata.st_mode)
+                or (metadata.st_uid, metadata.st_gid) != (uid, gid)
+                or stat.S_IMODE(metadata.st_mode) != mode
+            ):
+                return False
+    except OSError:
+        return False
+    return get_read_block_error(str(collector_rail.PACKET_ROOT)) is None
 
 
 def _load_prepared(
@@ -1703,13 +1862,12 @@ def apply(
         raise ProductionCronCutoverRuntimeError(
             "production_cron_cutover_host_prestate_drifted"
         )
-    _service_uid, gateway_gid = (
+    _service_uid, _reader_gid = (
         _ensure_service_identity_and_spool(context)
     )
     _install_package_files(
         context,
         artifact_root=artifact_root,
-        gateway_gid=gateway_gid,
     )
     metadata = jobs_path.stat(follow_symlinks=False)
     _atomic_write(
@@ -2070,9 +2228,8 @@ def rollback(
         _json_file(snapshot_path),
         expected_paths=expected_snapshot_paths,
     )
-    _restore_directory_prestate(
+    _restore_spool_prestate(
         prepared["spool_prestate"],
-        path=collector_rail.STATE_ROOT,
     )
     _restore_directory_prestate(
         prepared["manifest_directory_prestate"],

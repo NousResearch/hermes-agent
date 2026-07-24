@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -1492,6 +1493,261 @@ def test_verify_rejects_symlinked_release_root(tmp_path: Path) -> None:
             alias,
             REVISION,
             unit_inputs=_unit_inputs(),
+        )
+
+
+def test_operational_edges_grant_projector_read_without_mutation_authority():
+    inputs = _unit_inputs()
+    request, descriptor = package._sealed_runtime_artifact_request(
+        revision=REVISION,
+        runtime_dependency=_runtime_dependency_for_units(),
+        unit_inputs=inputs,
+        operational_asset_verification=_operational_asset_verification(),
+    )
+
+    contract = descriptor["operational_edge_bundle"]["identity_contract"]
+    expected_readers = sorted(
+        {inputs["gateway"]["uid"], inputs["projector"]["uid"]}
+    )
+    assert contract["allowed_read_peer_uids_by_domain"] == {
+        domain: expected_readers
+        for domain in sorted(_operational_receipt_key_ids())
+    }
+    assert contract["mutation_peer"] == {
+        "user": inputs["gateway"]["user"],
+        "uid": inputs["gateway"]["uid"],
+        "gid": inputs["gateway"]["gid"],
+        "distinct_from_services": True,
+    }
+    for domain in sorted(_operational_receipt_key_ids()):
+        config = json.loads(
+            request["payloads"][f"operational_edge_config_{domain}"]
+        )
+        assert config["allowed_read_peer_uids"] == expected_readers
+        assert config["mutation_peer_uid"] == inputs["gateway"]["uid"]
+
+
+def test_generated_runtime_requires_exact_projector_read_and_gateway_mutation(
+    tmp_path,
+    monkeypatch,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    runtime = _load_artifact(
+        Path(manifest["artifacts"]["production-host-rollback"]["path"]),
+        "production_host_operational_edge_identity_artifact",
+    )
+    sealed = copy.deepcopy(runtime._sealed_runtime_artifacts())
+    bundle = sealed["operational_edge_bundle"]
+    host_manifest = {
+        "identity_foundation": _identity_foundation(),
+        "files": sealed["files"],
+        "release_owner_uid": RELEASE_OWNER_UID,
+        "release_owner_gid": RELEASE_OWNER_GID,
+        "operational_edge_receipt_public_key_ids": (
+            _operational_receipt_key_ids()
+        ),
+    }
+
+    assert runtime._operational_edge_bundle(host_manifest) == bundle
+
+    domain = sorted(_operational_receipt_key_ids())[0]
+    bundle["identity_contract"]["allowed_read_peer_uids_by_domain"][
+        domain
+    ] = [RELEASE_OWNER_UID]
+    unsigned = {
+        key: value for key, value in bundle.items() if key != "bundle_sha256"
+    }
+    bundle["bundle_sha256"] = _sha_json(unsigned)
+    monkeypatch.setattr(runtime, "_sealed_runtime_artifacts", lambda: sealed)
+    with pytest.raises(
+        runtime.ArtifactError,
+        match="artifact_operational_edge_bundle_invalid",
+    ):
+        runtime._operational_edge_bundle(host_manifest)
+
+    sealed = copy.deepcopy(runtime.SEALED_RUNTIME_ARTIFACT_REQUEST)
+    bundle = sealed["operational_edge_bundle"]
+    bundle["identity_contract"]["mutation_peer"] = {
+        "user": "muncho-projector",
+        "uid": _unit_inputs()["projector"]["uid"],
+        "gid": _unit_inputs()["projector"]["gid"],
+        "distinct_from_services": True,
+    }
+    unsigned = {
+        key: value for key, value in bundle.items() if key != "bundle_sha256"
+    }
+    bundle["bundle_sha256"] = _sha_json(unsigned)
+    monkeypatch.setattr(runtime, "_sealed_runtime_artifacts", lambda: sealed)
+    with pytest.raises(
+        runtime.ArtifactError,
+        match="artifact_operational_edge_bundle_invalid",
+    ):
+        runtime._operational_edge_bundle(host_manifest)
+
+
+def test_generated_runtime_binds_split_cron_identities_and_inert_namespace(
+    tmp_path,
+    monkeypatch,
+):
+    from ops.muncho.runtime import trusted_cron_collector_rail as cron_rail
+    from tests.scripts.canary import test_production_cutover_initial_observe
+
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    runtime = _load_artifact(
+        Path(manifest["artifacts"]["production-database-apply"]["path"]),
+        "production_database_cron_identity_artifact",
+    )
+    plan = _cutover_plan("f" * 64, direct_mvp_waiver=True)
+    authority = plan["freeze_plan"]["cutover_authority"]
+    _old_inventory, _old_cron, host_facts, mechanical = _cron_authority()
+    inputs = _unit_inputs()
+    dependency_paths = {
+        path
+        for spec in cron_rail.COLLECTOR_SPECS
+        for path in spec.dependency_paths
+    }
+    dependency_paths.add(str(cron_rail.SETPRIV))
+    collector_package = cron_rail.build_package_manifest(
+        revision=REVISION,
+        rail_sha256="b" * 64,
+        dependency_facts={
+            path: f"{index + 1:064x}"
+            for index, path in enumerate(sorted(dependency_paths))
+        },
+    )
+    account_ids = {
+        inputs["gateway"]["user"]: inputs["gateway"]["uid"],
+        inputs["projector"]["user"]: inputs["projector"]["uid"],
+    }
+    group_ids = {
+        inputs["gateway"]["group"]: inputs["gateway"]["gid"],
+        inputs["projector"]["group"]: inputs["projector"]["gid"],
+    }
+    collector_readiness = cron_rail.collect_execution_readiness(
+        collector_package,
+        account_lookup=lambda name: SimpleNamespace(pw_uid=account_ids[name]),
+        group_lookup=lambda name: SimpleNamespace(gr_gid=group_ids[name]),
+    )
+    monkeypatch.setattr(
+        test_production_cutover_initial_observe,
+        "_collector_package",
+        lambda: collector_package,
+    )
+    monkeypatch.setattr(
+        test_production_cutover_initial_observe,
+        "_collector_execution_readiness",
+        lambda: collector_readiness,
+    )
+    _observed_inventory, derivation = (
+        test_production_cutover_initial_observe._cron_continuity_fixture(
+            monkeypatch,
+            now=1_800_000_000,
+            mechanical_package=mechanical,
+        )
+    )
+    inventory = derivation.inventory
+    authority["cron_inventory"] = inventory
+    authority["cron_continuity_plan"] = derivation.build.plan
+    authority["mechanical_job_host_facts"] = host_facts
+    authority["mechanical_job_package"] = mechanical
+    cron = authority["cron_continuity_plan"]
+    collector = cron["trusted_collector_package"]
+    readiness = cron["collector_execution_readiness"]
+    identity = authority["host_transition"]["identity_foundation"]
+    gateway_user = identity["users"]["gateway"]
+    gateway_group = identity["groups"]["gateway"]
+    projector_user = identity["users"]["projector"]
+    projector_group = identity["groups"]["projector"]
+
+    assert {
+        "isolated_service_user": collector["isolated_service_user"],
+        "isolated_service_group": collector["isolated_service_group"],
+        "scoped_service_user": collector["scoped_service_user"],
+        "scoped_service_group": collector["scoped_service_group"],
+        "reader_group": collector["reader_group"],
+    } == {
+        "isolated_service_user": gateway_user["name"],
+        "isolated_service_group": gateway_group["name"],
+        "scoped_service_user": projector_user["name"],
+        "scoped_service_group": projector_group["name"],
+        "reader_group": gateway_group["name"],
+    }
+    assert {
+        "isolated_service_user": readiness["isolated_service_user"],
+        "isolated_service_uid": readiness["isolated_service_uid"],
+        "isolated_service_group": readiness["isolated_service_group"],
+        "isolated_service_gid": readiness["isolated_service_gid"],
+        "scoped_service_user": readiness["scoped_service_user"],
+        "scoped_service_uid": readiness["scoped_service_uid"],
+        "scoped_service_group": readiness["scoped_service_group"],
+        "scoped_service_gid": readiness["scoped_service_gid"],
+    } == {
+        "isolated_service_user": gateway_user["name"],
+        "isolated_service_uid": gateway_user["uid"],
+        "isolated_service_group": gateway_group["name"],
+        "isolated_service_gid": gateway_group["gid"],
+        "scoped_service_user": projector_user["name"],
+        "scoped_service_uid": projector_user["uid"],
+        "scoped_service_group": projector_group["name"],
+        "scoped_service_gid": projector_group["gid"],
+    }
+    assert readiness["unit_namespace_readiness_packaged"] is False
+    assert readiness["unit_namespace_readiness_receipt_sha256"] is None
+    assert readiness["unit_namespace_readiness_job_count"] == 0
+    assert readiness["unit_namespace_readiness_boot_id_sha256"] is None
+    assert readiness["unit_namespace_readiness_observed_at_unix"] is None
+    assert readiness["unit_namespace_readiness_maximum_age_seconds"] == 0
+    assert readiness["direct_dependencies_ready"] is False
+    assert readiness["activation_ready"] is False
+    runtime._validate_cron_continuity_authority(authority, revision=REVISION)
+
+    tampered = copy.deepcopy(authority)
+    tampered_cron = tampered["cron_continuity_plan"]
+    tampered_readiness = tampered_cron["collector_execution_readiness"]
+    tampered_readiness["isolated_service_uid"] = projector_user["uid"]
+    tampered_readiness["readiness_sha256"] = _sha_json({
+        key: item
+        for key, item in tampered_readiness.items()
+        if key != "readiness_sha256"
+    })
+    tampered_cron["plan_sha256"] = _sha_json({
+        key: item
+        for key, item in tampered_cron.items()
+        if key != "plan_sha256"
+    })
+    with pytest.raises(runtime.ArtifactError, match="artifact_plan_invalid"):
+        runtime._validate_cron_continuity_authority(
+            tampered,
+            revision=REVISION,
+        )
+
+    tampered = copy.deepcopy(authority)
+    tampered_cron = tampered["cron_continuity_plan"]
+    tampered_readiness = tampered_cron["collector_execution_readiness"]
+    tampered_readiness["unit_namespace_readiness_packaged"] = True
+    tampered_readiness["unit_namespace_readiness_receipt_sha256"] = "9" * 64
+    tampered_readiness["unit_namespace_readiness_job_count"] = 21
+    tampered_readiness["direct_dependencies_ready"] = True
+    tampered_readiness["readiness_sha256"] = _sha_json({
+        key: item
+        for key, item in tampered_readiness.items()
+        if key != "readiness_sha256"
+    })
+    tampered_cron["plan_sha256"] = _sha_json({
+        key: item
+        for key, item in tampered_cron.items()
+        if key != "plan_sha256"
+    })
+    with pytest.raises(runtime.ArtifactError, match="artifact_plan_invalid"):
+        runtime._validate_cron_continuity_authority(
+            tampered,
+            revision=REVISION,
         )
 
 

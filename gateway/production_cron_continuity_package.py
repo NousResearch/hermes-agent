@@ -487,8 +487,23 @@ def build_packaged_continuity_plan(
             "production_cron_execution_readiness_invalid"
         ) from exc
     if (
-        execution_readiness["direct_dependencies_ready"] is not True
-        or execution_readiness["blocked_paths"] != []
+        execution_readiness["unit_namespace_readiness_packaged"] is not False
+        or execution_readiness["unit_namespace_readiness_receipt_sha256"]
+        is not None
+        or execution_readiness["unit_namespace_readiness_job_count"] != 0
+        or execution_readiness[
+            "unit_namespace_readiness_boot_id_sha256"
+        ]
+        is not None
+        or execution_readiness[
+            "unit_namespace_readiness_observed_at_unix"
+        ]
+        is not None
+        or execution_readiness[
+            "unit_namespace_readiness_maximum_age_seconds"
+        ]
+        != 0
+        or execution_readiness["direct_dependencies_ready"] is not False
         or execution_readiness["scoped_execution_edge_packaged"] is not False
         or execution_readiness["scoped_execution_edge_receipt_sha256"]
         is not None
@@ -737,8 +752,32 @@ def validate_packaged_continuity_plan(
             "production_cron_packaged_plan_readiness_invalid"
         ) from exc
     if (
-        embedded_execution_readiness["direct_dependencies_ready"] is not True
-        or embedded_execution_readiness["blocked_paths"] != []
+        embedded_execution_readiness[
+            "unit_namespace_readiness_packaged"
+        ]
+        is not False
+        or embedded_execution_readiness[
+            "unit_namespace_readiness_receipt_sha256"
+        ]
+        is not None
+        or embedded_execution_readiness[
+            "unit_namespace_readiness_job_count"
+        ]
+        != 0
+        or embedded_execution_readiness[
+            "unit_namespace_readiness_boot_id_sha256"
+        ]
+        is not None
+        or embedded_execution_readiness[
+            "unit_namespace_readiness_observed_at_unix"
+        ]
+        is not None
+        or embedded_execution_readiness[
+            "unit_namespace_readiness_maximum_age_seconds"
+        ]
+        != 0
+        or embedded_execution_readiness["direct_dependencies_ready"]
+        is not False
         or embedded_execution_readiness[
             "scoped_execution_edge_required_job_ids"
         ]
@@ -1321,6 +1360,7 @@ def derive_packaged_continuity_from_host(
                 for spec in collector_rail.COLLECTOR_SPECS
                 for path in spec.dependency_paths
             }
+            | {str(collector_rail.SETPRIV)}
         )
     }
     package = collector_rail.build_package_manifest(

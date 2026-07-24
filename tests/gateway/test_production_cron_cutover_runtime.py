@@ -8,7 +8,9 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,8 +23,44 @@ from gateway.operational_edge_readiness import (
 PLAN_SHA = "1" * 64
 RELEASE_REVISION = "a" * 40
 EDGE_BOOT_ID_SHA256 = "c" * 64
-EDGE_OBSERVED_AT_UNIX = 1_800_000_000
+EDGE_OBSERVED_AT_UNIX = int(time.time())
 EDGE_COLLECTOR_NONCE = "12345678-1234-4123-8123-123456789abc"
+
+
+def _cutover_plan() -> dict:
+    return {
+        "plan_sha256": PLAN_SHA,
+        "host_transition": {
+            "identity_foundation": {
+                "users": {
+                    "gateway": {
+                        "name": "ai-platform-brain",
+                        "uid": 999,
+                        "home": (
+                            "/opt/adventico-ai-platform/canonical-brain"
+                        ),
+                        "shell": runtime.NOLOGIN,
+                    },
+                    "projector": {
+                        "name": "muncho-projector",
+                        "uid": 2004,
+                        "home": "/nonexistent",
+                        "shell": runtime.NOLOGIN,
+                    },
+                },
+                "groups": {
+                    "gateway": {
+                        "name": "ai-platform-brain",
+                        "gid": 994,
+                    },
+                    "projector": {
+                        "name": "muncho-projector",
+                        "gid": 2004,
+                    },
+                },
+            },
+        },
+    }
 
 
 def _runtime_readiness(_context: runtime.RuntimeContext) -> tuple[dict, dict]:
@@ -41,6 +79,25 @@ def _runtime_readiness(_context: runtime.RuntimeContext) -> tuple[dict, dict]:
         {
             "readiness_sha256": "b" * 64,
             "activation_ready": True,
+            "isolated_service_user": "ai-platform-brain",
+            "isolated_service_uid": 999,
+            "isolated_service_group": "ai-platform-brain",
+            "isolated_service_gid": 994,
+            "scoped_service_user": "muncho-projector",
+            "scoped_service_uid": 2004,
+            "scoped_service_group": "muncho-projector",
+            "scoped_service_gid": 2004,
+            "unit_namespace_readiness_packaged": True,
+            "unit_namespace_readiness_receipt_sha256": "d" * 64,
+            "unit_namespace_readiness_job_count": 21,
+            "unit_namespace_readiness_boot_id_sha256": (
+                EDGE_BOOT_ID_SHA256
+            ),
+            "unit_namespace_readiness_observed_at_unix": (
+                EDGE_OBSERVED_AT_UNIX
+            ),
+            "unit_namespace_readiness_maximum_age_seconds": 120,
+            "direct_dependencies_ready": True,
             "scoped_execution_edge_receipt_sha256": "a" * 64,
             "scoped_execution_edge_meaningful_packet_count": 14,
         },
@@ -117,11 +174,12 @@ def test_receipt_validator_is_exact_self_digesting_and_semantic_free() -> None:
 
 def test_runtime_readiness_collects_and_publishes_live_instead_of_loading_stale(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     from gateway import operational_edge_readiness as edge_readiness
 
     context = runtime.RuntimeContext(
-        cutover_plan={"plan_sha256": PLAN_SHA},
+        cutover_plan=_cutover_plan(),
         inventory={},
         continuity_plan={},
         replacement_bundle={},
@@ -148,14 +206,27 @@ def test_runtime_readiness_collects_and_publishes_live_instead_of_loading_stale(
     )
     monkeypatch.setattr(
         runtime.collector_rail,
+        "collect_unit_namespace_readiness",
+        lambda *_args, **_kwargs: {"receipt_sha256": "d" * 64},
+    )
+    monkeypatch.setattr(
+        runtime.collector_rail,
         "collect_execution_readiness",
-        lambda *_args, **_kwargs: execution,
+        lambda *_args, **kwargs: (
+            execution
+            if kwargs["unit_namespace_receipt"]["receipt_sha256"] == "d" * 64
+            else pytest.fail("namespace receipt not forwarded")
+        ),
     )
     monkeypatch.setattr(
         runtime.collector_rail,
         "validate_execution_readiness",
         lambda value, **_kwargs: value,
     )
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    monkeypatch.setattr(runtime.collector_rail, "STATE_ROOT", state_root)
+    monkeypatch.setattr(runtime, "_packet_root_gateway_readable", lambda: True)
 
     assert runtime._collect_runtime_execution_readiness(context) == (
         operational,
@@ -163,6 +234,36 @@ def test_runtime_readiness_collects_and_publishes_live_instead_of_loading_stale(
     )
     assert len(calls) == 1
     assert len(calls[0][1]) == 14
+
+
+def test_runtime_readiness_pair_rejects_stale_namespace_or_edge() -> None:
+    context = runtime.RuntimeContext(
+        cutover_plan=_cutover_plan(),
+        inventory={},
+        continuity_plan={},
+        replacement_bundle={},
+        collector_package={"release_revision": RELEASE_REVISION},
+        artifact_index={},
+    )
+    operational, execution = _runtime_readiness(context)
+    runtime._validate_runtime_execution_readiness_pair(
+        context,
+        operational,
+        execution,
+    )
+
+    stale = int(time.time()) - 121
+    operational["observed_at_unix"] = stale
+    execution["unit_namespace_readiness_observed_at_unix"] = stale
+    with pytest.raises(
+        runtime.ProductionCronCutoverRuntimeError,
+        match="execution_readiness_incomplete",
+    ):
+        runtime._validate_runtime_execution_readiness_pair(
+            context,
+            operational,
+            execution,
+        )
 
 
 def test_activation_authority_binds_terminal_forward_only_journal() -> None:
@@ -219,12 +320,82 @@ def test_directory_prestate_restores_absence_or_exact_metadata(
     assert metadata.st_gid == present_state["gid"]
 
 
+def test_collector_identity_keeps_projector_primary_and_gateway_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    context = runtime.RuntimeContext(
+        cutover_plan=_cutover_plan(),
+        inventory={},
+        continuity_plan={},
+        replacement_bundle={},
+        collector_package={},
+        artifact_index={},
+    )
+
+    monkeypatch.setattr(
+        runtime.pwd,
+        "getpwnam",
+        lambda name: (
+            SimpleNamespace(
+                pw_name=name,
+                pw_uid=999,
+                pw_gid=994,
+                pw_dir="/opt/adventico-ai-platform/canonical-brain",
+                pw_shell=runtime.NOLOGIN,
+            )
+            if name == "ai-platform-brain"
+            else SimpleNamespace(
+                pw_name=name,
+                pw_uid=2004,
+                pw_gid=2004,
+                pw_dir="/nonexistent",
+                pw_shell=runtime.NOLOGIN,
+            )
+        ),
+    )
+    groups = {
+        "muncho-projector": SimpleNamespace(gr_gid=2004),
+        "ai-platform-brain": SimpleNamespace(gr_gid=994),
+    }
+    monkeypatch.setattr(runtime.grp, "getgrnam", groups.__getitem__)
+    monkeypatch.setattr(runtime.collector_rail, "STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(
+        runtime.collector_rail,
+        "PACKET_ROOT",
+        tmp_path / "state/packets",
+    )
+    monkeypatch.setattr(
+        runtime.collector_rail,
+        "VOICE_ROOT",
+        tmp_path / "state/voice-context",
+    )
+    monkeypatch.setattr(runtime.os, "chown", lambda *_args: None)
+
+    spool_prestate = runtime._directory_prestate(
+        runtime.collector_rail.STATE_ROOT
+    )
+    assert runtime._ensure_service_identity_and_spool(context) == (2004, 994)
+    assert stat.S_IMODE(
+        runtime.collector_rail.STATE_ROOT.stat().st_mode
+    ) == 0o750
+    assert stat.S_IMODE(
+        runtime.collector_rail.PACKET_ROOT.stat().st_mode
+    ) == 0o750
+    assert stat.S_IMODE(
+        runtime.collector_rail.VOICE_ROOT.stat().st_mode
+    ) == 0o750
+    assert len(list(runtime.collector_rail.PACKET_ROOT.iterdir())) == 21
+    runtime._restore_spool_prestate(spool_prestate)
+    assert not runtime.collector_rail.STATE_ROOT.exists()
+
+
 def test_rollback_is_forward_only_as_soon_as_activation_authority_exists(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     context = runtime.RuntimeContext(
-        cutover_plan={"plan_sha256": PLAN_SHA},
+        cutover_plan=_cutover_plan(),
         inventory={},
         continuity_plan={},
         replacement_bundle={},
@@ -282,7 +453,7 @@ def test_preflight_replay_revalidates_source_and_prepared_host_state(
         "host_snapshot_path": str(snapshot_path),
     }
     context = runtime.RuntimeContext(
-        cutover_plan={"plan_sha256": PLAN_SHA},
+        cutover_plan=_cutover_plan(),
         inventory={},
         continuity_plan={},
         replacement_bundle={},
@@ -358,7 +529,7 @@ def test_apply_refuses_unexplained_host_drift_before_any_target_write(
         "host_snapshot_sha256": snapshot["snapshot_sha256"],
     }
     context = runtime.RuntimeContext(
-        cutover_plan={"plan_sha256": PLAN_SHA},
+        cutover_plan=_cutover_plan(),
         inventory={},
         continuity_plan={},
         replacement_bundle={},

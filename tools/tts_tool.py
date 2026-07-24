@@ -782,6 +782,10 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        # Lossy UTF-8 decode — locale-mismatched bytes from the TTS command
+        # must not raise in the reader threads on non-UTF-8 Windows (#45099).
+        "encoding": "utf-8",
+        "errors": "replace",
         "env": delegated_child_subprocess_env(),
     }
     if os.name == "nt":

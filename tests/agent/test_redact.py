@@ -266,6 +266,29 @@ class TestAuthHeaders:
         text = "the authorization model is fully open"
         assert redact_sensitive_text(text) == text
 
+    def test_authorization_equals_bearer_masks_credential_not_scheme(self):
+        # CFG/ENV assignment path used to stop at the first whitespace-free
+        # token, so ``authorization=Bearer <token>`` masked only "Bearer"
+        # and left the real credential in logs.
+        text = "authorization=Bearer opaqueTokenValue12345&foo=bar"
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueTokenValue12345" not in result
+        assert "authorization=" in result.lower()
+        assert "Bearer" in result
+        assert "foo=bar" in result
+
+    def test_authorization_equals_bearer_single_pair(self):
+        text = "authorization=Bearer opaqueTokenValue12345"
+        result = redact_sensitive_text(text, force=True)
+        assert "opaqueTokenValue12345" not in result
+        assert "Bearer" in result
+
+    def test_uppercase_authorization_equals_bearer(self):
+        text = "AUTHORIZATION=Bearer OpaqueUpperTokenValue999"
+        result = redact_sensitive_text(text, force=True)
+        assert "OpaqueUpperTokenValue999" not in result
+        assert "Bearer" in result
+
     def test_token_flush_against_double_quote_preserves_quote(self):
         # Regression for #43083: a token sitting flush against a closing
         # double quote must NOT pull that quote into the mask. Greedy \S+

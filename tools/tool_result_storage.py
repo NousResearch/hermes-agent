@@ -28,7 +28,9 @@ import os
 import re
 import shlex
 import uuid
+from dataclasses import dataclass
 
+from agent.redact import redact_sensitive_text
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
@@ -42,7 +44,18 @@ STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
+_SAFE_ARTIFACT_EXTENSION = re.compile(r"(?:\.[A-Za-z0-9_-]+)+")
 _MAX_RESULT_FILENAME_STEM = 120
+
+
+@dataclass(frozen=True)
+class PersistedToolArtifact:
+    kind: str
+    path: str
+    chars: int
+    sha256: str
+    redacted: bool
+    created: bool
 
 
 def _resolve_storage_dir(env) -> str:
@@ -113,6 +126,172 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     storage_dir = os.path.dirname(remote_path)
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
     result = env.execute(cmd, timeout=30, stdin_data=content)
+    return result.get("returncode", 1) == 0
+
+
+def _publish_immutable_to_sandbox(
+    content: str,
+    remote_path: str,
+    env,
+) -> bool | None:
+    """Publish verified bytes without replacing an existing artifact.
+
+    Returns ``True`` when this call created the path, ``False`` when an
+    identical content-addressed artifact already existed, and ``None`` on any
+    transport, integrity, or collision failure.
+    """
+    storage_dir = os.path.dirname(remote_path)
+    artifact_root = os.path.dirname(storage_dir)
+    temp_path = f"{remote_path}.tmp-{uuid.uuid4().hex}"
+    quoted_artifact_root = shlex.quote(artifact_root)
+    quoted_storage_dir = shlex.quote(storage_dir)
+    quoted_temp_path = shlex.quote(temp_path)
+    quoted_remote_path = shlex.quote(remote_path)
+    payload = content.encode("utf-8")
+    payload_size = len(payload)
+    expected_sha256 = hashlib.sha256(payload).hexdigest()
+    created_marker = "HERMES_ARTIFACT_CREATED"
+    reused_marker = "HERMES_ARTIFACT_REUSED"
+    cmd = (
+        "{ __hermes_sha256() { "
+        "if command -v sha256sum >/dev/null 2>&1; then sha256sum; "
+        "elif command -v shasum >/dev/null 2>&1; then shasum -a 256; "
+        "else return 127; fi; }; "
+        "__hermes_matches() { "
+        f"test -f {quoted_remote_path} && test ! -L {quoted_remote_path} && "
+        f"__hermes_sha=$(__hermes_sha256 < {quoted_remote_path} 2>/dev/null) && "
+        f"test \"${{__hermes_sha%%[[:space:]]*}}\" = {expected_sha256}; }}; "
+        f"umask 077 && mkdir -p {quoted_artifact_root} && "
+        f"test -d {quoted_artifact_root} && test ! -L {quoted_artifact_root} && "
+        f"chmod 700 {quoted_artifact_root} && mkdir -p {quoted_storage_dir} && "
+        f"test -d {quoted_storage_dir} && test ! -L {quoted_storage_dir} && "
+        f"chmod 700 {quoted_storage_dir} && "
+        f"head -c {payload_size} > {quoted_temp_path} && "
+        f"test \"$(wc -c < {quoted_temp_path})\" -eq {payload_size} && "
+        f"__hermes_temp_sha=$(__hermes_sha256 < {quoted_temp_path} 2>/dev/null) && "
+        f"test \"${{__hermes_temp_sha%%[[:space:]]*}}\" = {expected_sha256} && "
+        f"chmod 600 {quoted_temp_path} && "
+        "__hermes_created=0 && "
+        f"if test -e {quoted_remote_path} || test -L {quoted_remote_path}; then "
+        f"__hermes_matches && rm -f -- {quoted_temp_path} && "
+        f"printf '%s\\n' {reused_marker}; "
+        f"elif ln {quoted_temp_path} {quoted_remote_path} 2>/dev/null; then "
+        f"__hermes_created=1 && chmod 600 {quoted_remote_path} && __hermes_matches && "
+        f"rm -f -- {quoted_temp_path} && printf '%s\\n' {created_marker}; "
+        f"else __hermes_matches && rm -f -- {quoted_temp_path} && "
+        f"printf '%s\\n' {reused_marker}; fi; "
+        f"__hermes_ec=$?; if test \"$__hermes_ec\" -ne 0; then "
+        f"rm -f -- {quoted_temp_path} 2>/dev/null || true; "
+        f"if test \"$__hermes_created\" -eq 1; then "
+        f"rm -f -- {quoted_remote_path} 2>/dev/null || true; fi; fi; "
+        f"(exit \"$__hermes_ec\"); }}"
+    )
+    cleanup_cmd = f"rm -f -- {quoted_temp_path} 2>/dev/null || true"
+
+    try:
+        result = env.execute(cmd, timeout=30, stdin_data=content)
+    except Exception:
+        try:
+            env.execute(cleanup_cmd, timeout=30)
+        except Exception:
+            pass
+        return None
+    if result.get("returncode", 1) != 0:
+        try:
+            env.execute(cleanup_cmd, timeout=30)
+        except Exception:
+            pass
+        return None
+    output = str(result.get("output", ""))
+    if reused_marker in output:
+        return False
+    if created_marker in output:
+        return True
+    return None
+
+
+def persist_tool_artifact(
+    content: str,
+    *,
+    kind: str,
+    tool_name: str,
+    tool_use_id: str,
+    task_scope: str,
+    env,
+    extension: str,
+) -> PersistedToolArtifact | None:
+    """Persist a redacted, immutable artifact in the active sandbox."""
+    if not _SAFE_ARTIFACT_EXTENSION.fullmatch(extension):
+        raise ValueError(f"Unsafe artifact extension: {extension!r}")
+    if env is None or not isinstance(task_scope, str) or not task_scope.strip():
+        return None
+
+    remote_path = "<unresolved>"
+    try:
+        persisted_content = redact_sensitive_text(content, force=True)
+        if not isinstance(persisted_content, str):
+            return None
+        payload = persisted_content.encode("utf-8")
+        content_sha256 = hashlib.sha256(payload).hexdigest()
+        scope_hash = hashlib.sha256(task_scope.encode("utf-8")).hexdigest()
+        safe_stem = _safe_result_filename(tool_use_id).removesuffix(".txt")
+        # Attempt-unique publication prevents a failed concurrent prune from
+        # deleting bytes already referenced by another successful prune. The
+        # scope and content digests still make provenance and integrity
+        # explicit, while the nonce gives each rollback exclusive ownership.
+        attempt_token = uuid.uuid4().hex
+        remote_path = (
+            f"{_resolve_storage_dir(env)}/{scope_hash}/"
+            f"{content_sha256}_{safe_stem}_{attempt_token}{extension}"
+        )
+        created = _publish_immutable_to_sandbox(persisted_content, remote_path, env)
+        if created is None:
+            logger.warning(
+                "Sandbox artifact write failed: kind=%s tool=%s path=%s",
+                kind,
+                tool_name,
+                remote_path,
+            )
+            return None
+    except Exception:
+        logger.warning(
+            "Sandbox artifact write failed: kind=%s tool=%s path=%s",
+            kind,
+            tool_name,
+            remote_path,
+        )
+        return None
+
+    return PersistedToolArtifact(
+        kind=kind,
+        path=remote_path,
+        chars=len(persisted_content),
+        sha256=content_sha256,
+        redacted=persisted_content != content,
+        created=created,
+    )
+
+
+def remove_created_tool_artifact(artifact: PersistedToolArtifact, env) -> bool:
+    """Remove only a verified artifact created by the current prune attempt."""
+    if not artifact.created:
+        return True
+    quoted_path = shlex.quote(artifact.path)
+    expected_sha256 = artifact.sha256
+    cmd = (
+        "{ __hermes_sha256() { "
+        "if command -v sha256sum >/dev/null 2>&1; then sha256sum; "
+        "elif command -v shasum >/dev/null 2>&1; then shasum -a 256; "
+        "else return 127; fi; }; "
+        f"test -f {quoted_path} && test ! -L {quoted_path} && "
+        f"__hermes_sha=$(__hermes_sha256 < {quoted_path} 2>/dev/null) && "
+        f"test \"${{__hermes_sha%%[[:space:]]*}}\" = {expected_sha256} && "
+        f"rm -f -- {quoted_path} && test ! -e {quoted_path} && test ! -L {quoted_path}; }}"
+    )
+    try:
+        result = env.execute(cmd, timeout=30)
+    except Exception:
+        return False
     return result.get("returncode", 1) == 0
 
 

@@ -116,7 +116,7 @@ def agent():
     return a
 
 
-def _run_tool_loop(agent, n_tool_iterations: int):
+def _run_tool_loop(agent, n_tool_iterations: int, *, task_id: str | None = None):
     responses = [_tool_response(i) for i in range(n_tool_iterations)]
     responses.append(_stop_response())
     agent.client.chat.completions.create.side_effect = responses
@@ -130,12 +130,27 @@ def _run_tool_loop(agent, n_tool_iterations: int):
             lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
         ),
     ):
-        result = agent.run_conversation("do a lot of tool work")
+        result = agent.run_conversation("do a lot of tool work", task_id=task_id)
 
     return result
 
 
 class TestProactivePruneLoopWiring:
+    def test_capable_builtin_receives_effective_task_scope(self, agent):
+        task_ids = []
+
+        def _prune(messages, current_tokens=None, task_id=None):
+            task_ids.append(task_id)
+            return messages, 0
+
+        agent.context_compressor.supports_proactive_prune_artifacts = True
+        agent.context_compressor.prune_tool_results_only = _prune
+
+        result = _run_tool_loop(agent, n_tool_iterations=2, task_id="active-task")
+
+        assert result["completed"] is True
+        assert task_ids == ["active-task", "active-task"]
+
     def test_prune_consulted_when_compression_stands_down(self, agent):
         calls = []
 

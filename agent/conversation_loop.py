@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ import ssl
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import (
@@ -86,6 +87,31 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _run_proactive_tool_result_prune(
+    compressor: Any,
+    messages: List[Dict[str, Any]],
+    current_tokens: int,
+    effective_task_id: str,
+) -> tuple[List[Dict[str, Any]], int]:
+    """Invoke the optional prune hook without widening plugin signatures."""
+    prune = getattr(compressor, "prune_tool_results_only", None)
+    if not callable(prune):
+        return messages, 0
+    kwargs: Dict[str, Any] = {"current_tokens": current_tokens}
+    if getattr(compressor, "supports_proactive_prune_artifacts", False) is True:
+        try:
+            parameters = inspect.signature(prune).parameters.values()
+        except (TypeError, ValueError):
+            parameters = ()
+        if any(
+            parameter.name == "task_id"
+            or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        ):
+            kwargs["task_id"] = effective_task_id
+    return cast(tuple[List[Dict[str, Any]], int], prune(messages, **kwargs))
 
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
@@ -5835,8 +5861,11 @@ def run_conversation(
                     _prune = getattr(_compressor, "prune_tool_results_only", None)
                     if callable(_prune):
                         try:
-                            _pruned_msgs, _pruned_n = _prune(
-                                messages, current_tokens=_real_tokens
+                            _pruned_msgs, _pruned_n = _run_proactive_tool_result_prune(
+                                _compressor,
+                                messages,
+                                _real_tokens,
+                                effective_task_id,
                             )
                         except Exception:
                             logger.debug(

@@ -1901,6 +1901,14 @@ def init_agent(
             _compression_cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096
         ),
     )
+    _raw_proactive_prune_artifacts = _compression_cfg.get(
+        "proactive_prune_artifacts", False
+    )
+    compression_proactive_prune_artifacts = (
+        _raw_proactive_prune_artifacts
+        if isinstance(_raw_proactive_prune_artifacts, bool)
+        else False
+    )
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
@@ -2378,6 +2386,7 @@ def init_agent(
             proactive_prune_tokens=compression_proactive_prune_tokens,
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
+            proactive_prune_artifacts=compression_proactive_prune_artifacts,
             min_tail_user_messages=compression_min_tail_users,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)

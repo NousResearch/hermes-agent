@@ -216,6 +216,22 @@ hermes config set model.provider xai
 
 Or upgrade your subscription at [x.ai/grok](https://x.ai/grok) if the OAuth route is required.
 
+### Tool calls drop optional multiline string args (blank emails / empty bodies)
+
+xAI Grok (`grok-4.3` and adjacent variants) silently drops **optional** string function-call arguments whose values contain newlines. The tool call succeeds (no HTTP 400), but the dropped parameter is absent from the call — for MCP tools whose schema only marks a few fields `required`, this means content is lost with no error.
+
+Most commonly hit with the AgentMail MCP server (`agentmail-mcp`), where `send_message` only marks `inboxId` / `to` as required: `subject` and `text` are optional, so a multiline body is stripped and the email goes out blank. Single-line values survive; only multiline values are dropped. The model also tends to emit 2–3 duplicate calls when this happens.
+
+This is a provider-side behavior, not a Hermes bug — it reproduces against `api.x.ai/v1/responses` directly with no Hermes in the loop. The same family of xAI schema quirks already worked around in Hermes (`pattern`/`format` stripping for HTTP 400s) doesn't catch this case because the request succeeds.
+
+**Workarounds** (in order of appeal):
+
+1. **Mark the affected fields `required` in the tool schema.** For the AgentMail MCP server, patch `send_message.subject` / `.text` and `reply_to_message.text` by unwrapping the zod `.optional()` — grok emits required fields correctly every time. See [agentmail-mcp#18](https://github.com/agentmail-to/agentmail-mcp/issues/18).
+2. **Avoid multiline string values in optional args.** Concatenate into a single line (e.g. replace `\n` with `\\n` or spaces) and let the tool handler normalize back, or split into multiple shorter args if the schema allows.
+3. **Switch the model.** `grok-build-0.1` (the OAuth default) is not affected; only `grok-4.3` exhibits the drop. Use `hermes model` to pick a non-affected variant.
+
+The AgentMail skill docs call this out in its Pitfalls section. Any MCP tool with optional multiline string params under grok-4.3 can hit the same silent content loss — the diagnosis is the same.
+
 ### "No xAI credentials found" error at runtime
 
 The auth store has no `xai-oauth` entry and no `XAI_API_KEY` is set. You haven't logged in yet, or the credential file was deleted.

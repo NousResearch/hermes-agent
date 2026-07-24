@@ -210,6 +210,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // refresh. `ptyState === "ended"` renders an explicit "Start new session"
   // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
   // the connect effect, so a fresh PTY spawns in place.
+  // ptyActive is derived from the existing PTY connection state machine
+  // (ptyState === "open") rather than tracked as a parallel lifecycle flag.
+  const ptyActive = ptyState === "open" || ptyState === "reconnecting";
   const [reconnectNonce, setReconnectNonce] = useState(0);
   useEffect(() => {
     ptyStateRef.current = ptyState;
@@ -1391,6 +1394,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                ptyActive={ptyActive}
               />
             </div>
             <ChatSessionList
@@ -1511,6 +1515,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                ptyActive={ptyActive}
               />
             </div>
 

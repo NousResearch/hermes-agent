@@ -1937,6 +1937,27 @@ _KNOWN_PROVIDER_NAMES: set[str] = (
 )
 
 
+def _configured_custom_provider_slug(provider_name: str) -> Optional[str]:
+    """Return the canonical slug for a configured custom provider name."""
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+        from hermes_cli.providers import custom_provider_slug
+
+        target = provider_name.strip().lower()
+        for entry in get_compatible_custom_providers():
+            if not isinstance(entry, dict):
+                continue
+            provider_key = str(entry.get("provider_key", "") or "").strip()
+            display_name = str(entry.get("name", "") or "").strip()
+            candidates = {value.lower() for value in (provider_key, display_name) if value}
+            if target in candidates:
+                return custom_provider_slug(provider_key or display_name)
+    except Exception:
+        pass
+
+    return None
+
+
 def list_available_providers() -> list[dict[str, str]]:
     """Return info about all providers the user could use with ``provider:model``.
 
@@ -2014,6 +2035,10 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
                 if custom_name and actual_model:
                     return (f"custom:{custom_name}", actual_model)
             return (normalize_provider(provider_part), model_part)
+        if provider_part and model_part:
+            configured_provider = _configured_custom_provider_slug(provider_part)
+            if configured_provider:
+                return (configured_provider, model_part)
     return (current_provider, stripped)
 
 

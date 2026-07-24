@@ -398,6 +398,68 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     return resolved.resolve()
 
 
+# Message prefix distinguishing the doubled-path warning (#67185) from the
+# plain out-of-workspace warning, so callers can prioritize it over staleness
+# (matched with str.startswith — path contents can't spoof it).
+_DOUBLED_PATH_MARKER = "Doubled path:"
+
+
+def _cwd_echo_warning(
+    filepath: str,
+    resolved: Path | PurePosixPath,
+    root: Path | PurePosixPath,
+) -> str | None:
+    """Warn when a relative input replays the workspace root's own directories.
+
+    Models sometimes echo an absolute path without its leading separator
+    (``home/user/dev/notes/x.md`` for ``/home/user/dev/notes/x.md``). Joined
+    onto the base, that resolves to a silently doubled tree
+    (``/home/user/dev/home/user/dev/notes/x.md``). The write succeeds (parents
+    are created) and the doubled path lands INSIDE the workspace, so the
+    out-of-workspace warning below never fires. Detect the replayed prefix and
+    name the absolute path the model most likely intended.
+    """
+    # Lexically collapse '.'/'..' first so 'junk/../home/user/dev/x' is still
+    # detected and 'home/user/dev/../../..' (which un-doubles itself) is not.
+    if isinstance(root, Path):
+        input_parts = Path(os.path.normpath(filepath)).parts
+    else:  # container mode — sandbox-local POSIX semantics
+        input_parts = PurePosixPath(posixpath.normpath(filepath)).parts
+    drive = getattr(root, "drive", "")
+    is_unc = drive.startswith("\\\\")
+    if is_unc:
+        # A UNC anchor holds server+share; an echoed UNC path replays them as
+        # ordinary segments, so include them in the comparison.
+        root_parts = tuple(s for s in drive.strip("\\").split("\\") if s) + root.parts[1:]
+    else:
+        root_parts = root.parts[1:]  # root is always absolute; drop the anchor
+    if not root_parts or len(input_parts) < len(root_parts):
+        return None
+    echo = input_parts[: len(root_parts)]
+    if isinstance(root, Path) and os.name == "nt":
+        # Match the filesystem's case-insensitivity rules, not casefold().
+        matches = tuple(os.path.normcase(p) for p in echo) == tuple(
+            os.path.normcase(p) for p in root_parts
+        )
+    else:
+        matches = echo == root_parts
+    if not matches:
+        return None
+    if not isinstance(root, Path):
+        suggested = str(PurePosixPath("/").joinpath(*input_parts))
+    elif is_unc:
+        suggested = "\\\\" + "\\".join(input_parts)
+    else:
+        suggested = str(Path(root.anchor).joinpath(*input_parts))
+    return (
+        f"{_DOUBLED_PATH_MARKER} relative input {filepath!r} repeats the "
+        f"active workspace's own directories ({str(root)!r}), so it resolved "
+        f"to {str(resolved)!r}. This usually means an absolute path missing "
+        f"its leading separator. If you meant {suggested!r}, pass that "
+        f"absolute path instead."
+    )
+
+
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
     """Warn when a relative path resolved OUTSIDE the task's workspace root.
 
@@ -407,6 +469,10 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     than the one the agent is working in), return a message naming the absolute
     target. ``None`` when the path is absolute, the base is unknown, or the
     resolved path is correctly under the workspace root.
+
+    Also covers the inverse failure mode (#67185): a relative input that
+    replays the workspace root's own directories resolves to a doubled path
+    INSIDE the workspace — see :func:`_cwd_echo_warning`.
 
     The workspace root is the live terminal cwd when known, else a registered
     task/session cwd override, else a sentinel-free absolute ``$TERMINAL_CWD``
@@ -421,8 +487,21 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             return None  # No authoritative workspace root to compare against.
         if _uses_container_paths(task_id):
             root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+            display_root: Path | PurePosixPath = root
         else:
-            root = Path(_expand_tilde(workspace_root)).resolve()
+            display_root = Path(_expand_tilde(workspace_root))
+            root = display_root.resolve()
+        # Doubled-path guard first: a cwd-shaped relative input (absolute path
+        # missing its leading separator) resolves INSIDE the workspace, so the
+        # containment check below would wrongly stay silent (#67185). Check
+        # the pre-resolve() root too: when the workspace cwd is reached via a
+        # symlink, the model echoes the symlinked (display) form, whose parts
+        # don't match the resolved root's.
+        echo_warning = _cwd_echo_warning(filepath, resolved, root)
+        if echo_warning is None and display_root != root:
+            echo_warning = _cwd_echo_warning(filepath, resolved, display_root)
+        if echo_warning:
+            return echo_warning
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)
@@ -1628,7 +1707,13 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
-            effective_warning = cross_warning or stale_warning or cwd_warning
+            if cwd_warning and cwd_warning.startswith(_DOUBLED_PATH_MARKER):
+                # A doubled-path resolution (#67185) means the write itself is
+                # misdirected — staleness info about the wrong file would mask
+                # the real problem, so the misdirection warning wins.
+                effective_warning = cwd_warning
+            else:
+                effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
             # Always report the ABSOLUTE path actually written, so a wrong-cwd
@@ -1750,11 +1835,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = None
                 _path_to_resolved[_p] = _r
                 _cross = file_state.check_stale(task_id, _r) if _r else None
-                _sw = _cross or _check_file_staleness(_p, task_id)
-                if not _sw and _r:
-                    # Workspace-divergence warning (worktree-cwd bug): relative
-                    # path resolving outside the terminal's cwd.
-                    _sw = _path_resolution_warning(_p, Path(_r), task_id)
+                # Workspace-divergence warning (worktree-cwd bug / doubled
+                # path, #67185): relative path resolving somewhere other than
+                # the terminal's cwd.
+                _pw = _path_resolution_warning(_p, Path(_r), task_id) if _r else None
+                if _pw and _pw.startswith(_DOUBLED_PATH_MARKER):
+                    # Misdirected edit (#67185) beats staleness of the wrong
+                    # file — same precedence as write_file_tool.
+                    _sw = _pw
+                else:
+                    _sw = _cross or _check_file_staleness(_p, task_id) or _pw
                 if _sw:
                     stale_warnings.append(_sw)
 

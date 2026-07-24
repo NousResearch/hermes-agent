@@ -442,7 +442,7 @@ def cmd_plan(args) -> None:
     dossier_mod.require_authorized(d)
     cfg = config_mod.load_config()
     bl = brokers_mod.by_priority(*(args.priority or [])) if args.priority else brokers_mod.load_all()
-    bcc = config_mod.browser_clears_captcha(cfg)
+    bcc = config_mod.browser_clears_captcha(cfg, config_mod.dotenv_env())
     if getattr(args, "batch", False):
         _out(tiers.batch_plan(d, bl, cfg, ledger_mod.load(args.subject), bcc))
     else:
@@ -608,7 +608,7 @@ def cmd_send_email(args) -> None:
               "note": "recipient is locked to the broker's declared address"})
         return
 
-    result = emailer.send(b, body, to=args.to,
+    result = emailer.send(b, body, to=args.to, env=config_mod.dotenv_env(),
                           min_interval=float(cfg.get("email_min_interval_seconds", 0) or 0))
     ledger_mod.log_disclosure(args.subject, args.broker, list(disclosed), f"email_sent:{kind}")
     case = ledger_mod.transition(args.subject, args.broker, "submitted",
@@ -667,7 +667,7 @@ def cmd_poll_verification(args) -> None:
         return
     results = []
     for bid, case, b in targets:
-        hit = emailer.find_verification_link(b, since_days=args.since_days)
+        hit = emailer.find_verification_link(b, env=config_mod.dotenv_env(), since_days=args.since_days)
         if hit:
             if case.get("state") == "submitted":
                 ledger_mod.transition(args.subject, bid, "verification_pending",
@@ -688,7 +688,7 @@ def cmd_next(args) -> None:
     dossier_mod.require_authorized(d)
     cfg = config_mod.load_config()
     bl = brokers_mod.by_priority(*(args.priority or [])) if args.priority else brokers_mod.load_all()
-    _out(autopilot.next_actions(d, bl, cfg, ledger_mod.load(args.subject)))
+    _out(autopilot.next_actions(d, bl, cfg, ledger_mod.load(args.subject), env=config_mod.dotenv_env()))
 
 
 def cmd_tasks(args) -> None:

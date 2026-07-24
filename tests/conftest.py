@@ -377,6 +377,40 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # ``cron.jobs`` may already be imported during test collection, before
+    # this fixture redirects HERMES_HOME. Rebind its cached default store.
+    cron_jobs = sys.modules.get("cron.jobs")
+    if cron_jobs is not None:
+        cron_dir = fake_hermes_home / "cron"
+        monkeypatch.setattr(cron_jobs, "HERMES_DIR", fake_hermes_home, raising=False)
+        monkeypatch.setattr(cron_jobs, "CRON_DIR", cron_dir, raising=False)
+        monkeypatch.setattr(cron_jobs, "JOBS_FILE", cron_dir / "jobs.json", raising=False)
+        monkeypatch.setattr(
+            cron_jobs,
+            "TICKER_HEARTBEAT_FILE",
+            cron_dir / "ticker_heartbeat",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            cron_jobs,
+            "TICKER_SUCCESS_FILE",
+            cron_dir / "ticker_last_success",
+            raising=False,
+        )
+        monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", cron_dir / "output", raising=False)
+        # Newer cron.jobs compares compatibility constants with an import snapshot;
+        # align it so this fixture rebind is not mistaken for a caller override.
+        if hasattr(cron_jobs, "_CronStorePaths") and hasattr(cron_jobs, "_IMPORT_STORE"):
+            monkeypatch.setattr(
+                cron_jobs,
+                "_IMPORT_STORE",
+                cron_jobs._CronStorePaths(
+                    cron_dir,
+                    cron_dir / "jobs.json",
+                    cron_dir / "output",
+                ),
+            )
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

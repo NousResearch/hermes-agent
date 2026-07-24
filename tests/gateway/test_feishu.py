@@ -2245,6 +2245,71 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_without_topic_metadata_creates_group_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_group_send"),
+                )
+
+            def reply(self, request):  # pragma: no cover - defensive assertion path
+                raise AssertionError("group sends should not use reply API outside Feishu topics")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_group",
+                    content="hello group",
+                    reply_to=None,
+                    metadata=None,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_group_send")
+        self.assertEqual(captured["request"].receive_id_type, "chat_id")
+        self.assertEqual(captured["request"].request_body.receive_id, "oc_group")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_feishu_group_events_do_not_request_reply_anchor(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _reply_anchor_for_event
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.FEISHU,
+                chat_id="oc_group",
+                chat_name="Group",
+                chat_type="group",
+                user_id="ou_user",
+                user_name="Alice",
+                thread_id=None,
+            ),
+            message_id="om_group_message",
+        )
+
+        self.assertIsNone(_reply_anchor_for_event(event))
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

@@ -516,7 +516,11 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 
     current_provider = config.get("llm_provider", "")
     current_model = config.get("llm_model", "")
-    current_base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    # Use the profile config as the source of truth. The profile env file is
+    # materialized from Hermes setup/runtime config; inheriting a process-wide
+    # HINDSIGHT_API_LLM_BASE_URL here lets the operator's current environment
+    # leak into unrelated profiles (for example, OpenRouter into native OpenAI).
+    current_base_url = config.get("llm_base_url", "")
 
     # The embedded daemon expects OpenAI wire format for these providers.
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider

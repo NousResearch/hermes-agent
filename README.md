@@ -102,6 +102,14 @@ For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://
 
 ---
 
+## Deploy on Railway
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/deploy/hermes-agent-1)
+
+One-click deploy; complete the web setup, then chat with Hermes on Telegram.
+
+---
+
 ## Getting Started
 
 ```bash

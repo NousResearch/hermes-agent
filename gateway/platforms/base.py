@@ -123,8 +123,14 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
+    if platform == "feishu":
+        # Feishu topic replies must use reply semantics to stay inside the
+        # topic, but ordinary group messages should be sent directly to the
+        # group chat. Replying to a non-topic group @mention can route the
+        # response into the sender's DM instead of the group.
+        if thread_id and getattr(event, "reply_to_message_id", None):
+            return getattr(event, "reply_to_message_id", None)
+        return None
     return getattr(event, "message_id", None)
 
 

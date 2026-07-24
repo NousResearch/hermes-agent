@@ -899,3 +899,61 @@ def test_cmd_proxy_start_refuses_when_unauthenticated(capsys, tmp_path, monkeypa
     assert rc == 2
     err = capsys.readouterr().err
     assert "hermes auth add nous" in err
+
+
+def test_cmd_proxy_start_refuses_network_bind_without_opt_in(capsys, monkeypatch):
+    from hermes_cli.proxy import cli
+    from hermes_cli.proxy.cli import cmd_proxy_start
+
+    class FakeAdapter:
+        name = "fake"
+        display_name = "Fake Provider"
+
+        def is_authenticated(self):
+            return True
+
+    monkeypatch.setattr(cli, "get_adapter", lambda provider: FakeAdapter())
+
+    args = MagicMock()
+    args.provider = "fake"
+    args.host = "0.0.0.0"
+    args.port = 8645
+    args.allow_network = False
+
+    rc = cmd_proxy_start(args)
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Refusing to expose" in err
+    assert "--allow-network" in err
+
+
+def test_cmd_proxy_start_allows_network_bind_with_opt_in(monkeypatch):
+    from hermes_cli.proxy import cli
+    from hermes_cli.proxy.cli import cmd_proxy_start
+
+    class FakeAdapter:
+        name = "fake"
+        display_name = "Fake Provider"
+
+        def is_authenticated(self):
+            return True
+
+    calls = []
+
+    async def fake_run_server(adapter, *, host, port):
+        calls.append((adapter.display_name, host, port))
+
+    monkeypatch.setattr(cli, "get_adapter", lambda provider: FakeAdapter())
+    monkeypatch.setattr(cli, "run_server", fake_run_server)
+
+    args = MagicMock()
+    args.provider = "fake"
+    args.host = "0.0.0.0"
+    args.port = 8645
+    args.allow_network = True
+
+    rc = cmd_proxy_start(args)
+
+    assert rc == 0
+    assert calls == [("Fake Provider", "0.0.0.0", 8645)]

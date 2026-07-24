@@ -143,6 +143,7 @@ _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
 # with ``model=deepseek/deepseek-v4-flash``, so these names are not aliases
 # of ``deepseek-chat`` and must not be folded into it.
 _DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
+_KIMI_SHORT_ALIAS_RE = re.compile(r"^k2p(\d+)$", re.IGNORECASE)
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
@@ -241,6 +242,27 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     normalized_target = _normalize_provider_alias(target_provider)
     if normalized_prefix and normalized_prefix == normalized_target:
         return remainder.strip()
+    return model_name
+
+
+def _expand_known_provider_aliases(model_name: str, target_provider: str) -> str:
+    """Expand provider-specific shorthand aliases into canonical model IDs.
+
+    Some user configs reuse short aliases like ``k2p6`` for Kimi models.
+    Native Kimi providers reject those aliases, and aggregators cannot
+    infer the vendor prefix from them, so expand the shorthand before the
+    provider-specific normalization rules run.
+    """
+    normalized_target = _normalize_provider_alias(target_provider)
+    match = _KIMI_SHORT_ALIAS_RE.fullmatch(model_name.strip())
+    if (
+        match
+        and (
+            normalized_target in _AGGREGATOR_PROVIDERS
+            or normalized_target in {"kimi-coding", "kimi-coding-cn", "moonshot"}
+        )
+    ):
+        return f"kimi-k2.{match.group(1)}"
     return model_name
 
 
@@ -388,6 +410,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         return name
 
     provider = _normalize_provider_alias(target_provider)
+    name = _expand_known_provider_aliases(name, provider)
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
@@ -470,4 +493,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-

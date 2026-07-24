@@ -22,10 +22,13 @@ Design rationale lives in ``docs/design/multiplexing-gateway.md`` (Workstream A)
 """
 from __future__ import annotations
 
+import logging
 import os
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ── multiplex-active flag ────────────────────────────────────────────────
@@ -236,6 +239,12 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(home)
     except Exception:
+        logger.debug(
+            "external secret source values load failed for %s; "
+            "continuing with profile .env only",
+            hermes_home,
+            exc_info=True,
+        )
         external_secrets = {}
 
     for key, value in external_secrets.items():

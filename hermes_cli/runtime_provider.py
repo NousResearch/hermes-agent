@@ -1833,9 +1833,14 @@ def resolve_runtime_provider(
     if provider == "openai-codex":
         try:
             creds = resolve_codex_runtime_credentials()
+            api_mode = _maybe_apply_codex_app_server_runtime(
+                provider="openai-codex",
+                api_mode="codex_responses",
+                model_cfg=model_cfg,
+            )
             return {
                 "provider": "openai-codex",
-                "api_mode": "codex_responses",
+                "api_mode": api_mode,
                 "base_url": creds.get("base_url", "").rstrip("/"),
                 "api_key": creds.get("api_key", ""),
                 "source": creds.get("source", "hermes-auth-store"),

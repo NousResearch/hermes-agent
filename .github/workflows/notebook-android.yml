@@ -1,0 +1,38 @@
+name: Notebook Android APK
+
+on:
+  pull_request:
+    paths:
+      - "apps/notebook-android/**"
+      - ".github/workflows/notebook-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/notebook-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: yes | sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-Notebook-debug
+          path: apps/notebook-android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

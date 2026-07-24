@@ -1465,8 +1465,28 @@ class TelegramAdapter(BasePlatformAdapter):
         return parsed
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
-        if not getattr(self, "_disable_link_previews", False):
+        """Return kwargs to disable link previews by default.
+
+        Tool-progress messages often contain URLs (web_extract, browser_navigate)
+        that would otherwise generate large Telegram web preview cards (#70857).
+        Disabling by default keeps messages compact.  Users can opt into link
+        previews via the platform config ``link_previews: true`` (the inverse
+        of the legacy ``disable_link_previews`` key).
+        """
+        # Legacy ``disable_link_previews: true`` → disable previews.
+        # Default (no config or ``disable_link_previews: false``) → also
+        # disable by default.  Opt-in: set ``link_previews: true`` in the
+        # platform's extra config.
+        _legacy_disable = getattr(self, "_disable_link_previews", False)
+        if _legacy_disable:
+            if LinkPreviewOptions is not None:
+                return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+            return {"disable_web_page_preview": True}
+        # Check for explicit opt-in: link_previews: true in platform config.
+        _explicit_enable = self._coerce_bool_extra("link_previews", False)
+        if _explicit_enable:
             return {}
+        # Default: disable link previews.
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}

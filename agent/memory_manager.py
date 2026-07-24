@@ -169,6 +169,33 @@ _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
+_SESSION_MEMORY_TOOL_DIRECTIVE_PREFIX = r"(?:(?:\|DSML\|)|(?:\uFF5CDSML\uFF5C))?"
+_SESSION_MEMORY_TOOL_DIRECTIVE_KIND = r"(?:tool_calls?|function_calls?|tool_use_error)"
+_SESSION_MEMORY_DROP_BLOCK_RE = re.compile(
+    rf"<{_SESSION_MEMORY_TOOL_DIRECTIVE_PREFIX}{_SESSION_MEMORY_TOOL_DIRECTIVE_KIND}\b[^>]*>"
+    rf"[\s\S]*?(?:</{_SESSION_MEMORY_TOOL_DIRECTIVE_PREFIX}{_SESSION_MEMORY_TOOL_DIRECTIVE_KIND}>|$)",
+    re.IGNORECASE,
+)
+_SESSION_MEMORY_ROLE_BLOCK_RE = re.compile(
+    r"<(system|assistant|user)\b[^>]*>[\s\S]*?</\1>",
+    re.IGNORECASE,
+)
+_SESSION_MEMORY_ROLE_TAG_RE = re.compile(
+    r"</?(?:system|assistant|user)\b[^>]*>",
+    re.IGNORECASE,
+)
+_SESSION_MEMORY_MEDIA_PLACEHOLDER_RE = re.compile(
+    r"(^|\n)\s*<media:[^>]+>(?:\s*\([^)]*\))?\s*",
+    re.IGNORECASE,
+)
+_SESSION_MEMORY_SPECIAL_TOKEN_RE = re.compile(
+    r"<\|(?:im_(?:start|end)|endoftext|reserved_special_token_\d+)\|>",
+    re.IGNORECASE,
+)
+_SESSION_MEMORY_TRAILING_NO_REPLY_RE = re.compile(
+    r"(?:^|\n)\s*NO_REPLY\s*$",
+    re.IGNORECASE,
+)
 
 
 def sanitize_context(text: str) -> str:
@@ -177,6 +204,70 @@ def sanitize_context(text: str) -> str:
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def sanitize_session_memory_text(text: str) -> str | None:
+    """Strip model/runtime artifacts before a transcript reaches memory providers."""
+    stripped = text.strip()
+    if re.fullmatch(r"NO_REPLY", stripped, re.IGNORECASE):
+        return None
+    if re.fullmatch(r'\{\s*"action"\s*:\s*"NO_REPLY"\s*\}', stripped, re.IGNORECASE):
+        return None
+
+    sanitized = _SESSION_MEMORY_SPECIAL_TOKEN_RE.sub(
+        "[REMOVED_SPECIAL_TOKEN]",
+        text,
+    )
+    sanitized = _SESSION_MEMORY_DROP_BLOCK_RE.sub("", sanitized)
+    sanitized = _SESSION_MEMORY_ROLE_BLOCK_RE.sub("", sanitized)
+    sanitized = _SESSION_MEMORY_ROLE_TAG_RE.sub("", sanitized)
+    sanitized = _SESSION_MEMORY_MEDIA_PLACEHOLDER_RE.sub(r"\1", sanitized)
+    sanitized = _SESSION_MEMORY_TRAILING_NO_REPLY_RE.sub("", sanitized)
+    sanitized = sanitized.strip()
+    return sanitized or None
+
+
+def sanitize_session_memory_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return a provider-safe user/assistant transcript snapshot."""
+    sanitized_messages: List[Dict[str, Any]] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text_parts: List[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    text_parts.append(part)
+                elif isinstance(part, dict) and part.get("type") in {
+                    "text",
+                    "input_text",
+                    "output_text",
+                }:
+                    value = part.get("text")
+                    if isinstance(value, str):
+                        text_parts.append(value)
+            text = "\n".join(text_parts)
+        else:
+            continue
+
+        sanitized = sanitize_session_memory_text(text)
+        if not sanitized:
+            continue
+        clean_message = dict(message)
+        clean_message["content"] = sanitized
+        clean_message.pop("tool_calls", None)
+        clean_message.pop("tool_call_id", None)
+        sanitized_messages.append(clean_message)
+    return sanitized_messages
 
 
 class StreamingContextScrubber:
@@ -864,9 +955,10 @@ class MemoryManager:
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Notify all providers of session end."""
+        snapshot = sanitize_session_memory_messages(messages)
         for provider in self._providers:
             try:
-                provider.on_session_end(messages)
+                provider.on_session_end(snapshot)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' on_session_end failed: %s",

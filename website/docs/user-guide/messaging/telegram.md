@@ -541,6 +541,8 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
+When Hermes is added to a new group, it posts a one-time onboarding reminder explaining that either the sender or the group must be authorized, plus the Telegram delivery settings that affect whether the bot can see group messages. The reminder points to sender authorization through `TELEGRAM_ALLOWED_USERS` or `TELEGRAM_GROUP_ALLOWED_USERS`, group authorization through `TELEGRAM_GROUP_ALLOWED_CHATS`, and delivery through a direct mention, disabled privacy mode, or suitable admin permissions. That keeps common setup failures visible instead of failing silently.
+
 ### Multiple Hermes bots in one group
 
 If you run several Hermes profiles in the same Telegram group, create one Telegram bot token per profile and start one gateway per profile. Do not reuse the same bot token in multiple running gateways; Telegram will reject concurrent polling for the same token.

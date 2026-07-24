@@ -2923,10 +2923,22 @@ def create_task(
                             workspace_kind = "worktree"
 
         if project_obj is None:
-            # A project id/slug that doesn't resolve must not crash task
-            # creation or persist a dangling reference — drop the link and
-            # create the task as an ordinary (scratch) task.
-            project_id = None
+            # An explicit project id/slug that doesn't resolve must fail
+            # closed. Silently creating a scratch task here hid typos and
+            # per-profile registry mismatches behind exit 0 (#70386). The
+            # project_source_task_id fallback above still covers legitimate
+            # cross-profile worker children before we reach this branch.
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                profile_name = get_active_profile_name()
+            except Exception:
+                profile_name = "default"
+            raise ValueError(
+                f"project {project_id!r} not found in profile {profile_name!r}. "
+                "Register it with `hermes project create` or check "
+                "`hermes project list` (projects are per-profile)."
+            )
         else:
             # Canonicalise (a slug may have been passed) and anchor the
             # worktree under the project's primary repo.

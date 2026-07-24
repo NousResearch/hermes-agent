@@ -975,6 +975,89 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    # ------------------------------------------------------------------
+    # Glob-as-regex recovery for content search (issue #66129)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _rg_error_looks_like_bad_glob(error_msg: str, pattern: str) -> bool:
+        """Return True when an rg regex-parse error looks like a glob pattern.
+
+        Local models (e.g. Qwen3.6 35B A3B on llama.cpp) sometimes call
+        ``search_files`` with ``target="content"`` and a glob-style pattern
+        like ``*detector*scheduler*`` where rg expects a regex.  rg fails
+        with ``repetition operator missing expression`` because ``*`` is a
+        regex quantifier that must follow something.  Detect that signature
+        and the glob-likeness of the pattern together — avoids retrying on
+        genuinely broken regex like ``(?P<>)``.
+        """
+        if not error_msg or not pattern:
+            return False
+        if "regex parse error" not in error_msg:
+            return False
+        # Common rg messages for glob-as-regex:
+        #   "repetition operator missing expression"
+        #   "look-around expression is not supported"
+        # Triggering on the parse error + a leading-or-trailing ``*`` is enough
+        # to catch ``*foo*``, ``*foo*bar*``, ``(?:*foo*)`` without false-positiving
+        # legitimate regex like ``a*b`` (those parse fine and never reach here).
+        if "repetition operator missing expression" not in error_msg:
+            return False
+        # Strip wrapping ``(?:...)`` that some models add; check the inner.
+        stripped = pattern.strip()
+        if stripped.startswith("(?:") and stripped.endswith(")"):
+            stripped = stripped[3:-1]
+            if stripped.startswith("(?:") and stripped.endswith(")"):
+                stripped = stripped[3:-1]
+        # A leading ``*`` is the canonical signature — it is what rg refuses
+        # to parse.  Also accept ``(*`` (quantifier over group start) which
+        # surfaces the same way.
+        return stripped.startswith("*") or "(*" in stripped
+
+    @staticmethod
+    def _glob_to_regex(pattern: str) -> str:
+        """Convert a shell-style glob to a regex suitable for rg.
+
+        Translates the common wildcards ``*`` (any run of chars, NOT crossing
+        ``/``) and ``?`` (single non-slash char) and escapes everything else.
+        Output is anchored with ``.*`` on both ends so that ``*foo*bar*`` matches
+        the same files that ``find -name '*foo*bar*'`` would — i.e. the
+        substring must appear somewhere on a path component, not necessarily
+        at the start of the file name.
+
+        ``?`` is kept as a non-slash wildcard (``[^/]``) rather than ``.`` so
+        it does not accidentally bridge directory components.  Literal ``?`` is
+        available to callers via ``\\?``.
+        """
+        # Strip wrapping ``(?:...)`` some models add (idempotent).
+        s = pattern.strip()
+        while s.startswith("(?:") and s.endswith(")"):
+            s = s[3:-1]
+        out = []
+        i = 0
+        n = len(s)
+        while i < n:
+            c = s[i]
+            if c == "\\" and i + 1 < n:
+                # Preserve existing escape sequence (e.g. ``\\.``, ``\\*``).
+                out.append(re.escape(s[i:i + 2]))
+                i += 2
+                continue
+            if c == "*":
+                # ``*`` -> ``[^/]*`` (consistent with shell glob semantics).
+                out.append("[^/]*")
+                i += 1
+                continue
+            if c == "?":
+                out.append("[^/]")
+                i += 1
+                continue
+            # Default: escape literal char.
+            out.append(re.escape(c))
+            i += 1
+        # Anchor at substring (``.*<glob>.*``) so e.g. ``*detector*scheduler*``
+        # matches the same set ``find -name '*detector*scheduler*'`` would.
+        return ".*" + "".join(out) + ".*"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -2314,6 +2397,25 @@ class ShellFileOperations(FileOperations):
         # usable match payload remains. Otherwise we keep the real matches.
         if result.exit_code == 2 and not payload.strip():
             error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
+            # Retry: when rg fails with a regex-parse error, the pattern may be
+            # a glob (e.g. ``*detector*scheduler*``) mistakenly passed as a
+            # content regex — common with local models (#66129).  Convert glob
+            # wildcards to regex ``.*``/``.`` and retry once.  If still failing
+            # or the error is not a regex parse failure, return the original error.
+            if self._rg_error_looks_like_bad_glob(error_msg, pattern):
+                globbed = self._glob_to_regex(pattern)
+                # Recurse with the converted pattern (same caller arguments).
+                retried = self._search_with_rg(
+                    globbed, path, file_glob, limit, offset, output_mode, context,
+                )
+                if retried.error is None:
+                    # Successful glob->regex translation; tag the output so
+                    # callers know the pattern was auto-corrected.
+                    retried.warning = (
+                        f"Pattern was auto-converted from '{pattern}' "
+                        f"to a regex compatible with rg."
+                    )
+                    return retried
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
 
         # Parse the diagnostic-free payload so error text never becomes a match.

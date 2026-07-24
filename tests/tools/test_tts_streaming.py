@@ -179,6 +179,56 @@ def test_streamer_path_writes_pcm_to_output(monkeypatch):
     assert done.is_set()
 
 
+def test_streamer_path_handles_misaligned_pcm_chunks(monkeypatch):
+    """Regression: PCM chunks with odd byte counts must not be dropped.
+
+    OpenAI's streaming PCM API yields HTTP chunks on arbitrary byte
+    boundaries that are not aligned to the int16 frame width (2 bytes).
+    The old code called numpy.frombuffer directly on each chunk, which
+    raised "buffer size must be a multiple of element size" on any
+    odd-length chunk and silently dropped it — producing scattered
+    audio fragments. The fix carries leftover bytes into the next chunk.
+    """
+    from tools import tts_tool
+
+    class _OddChunkProvider(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            # Deliberately yield chunks with odd byte counts so the
+            # int16 frame boundary falls between chunks.
+            yield b"\x01\x00\x02"       # 3 bytes — odd, would crash old code
+            yield b"\x00\x03\x00\x04"   # 4 bytes — even, old code OK
+            yield b"\x00\x05\x00"       # 3 bytes — odd, would crash old code
+
+    sd, out = _sd_mock()
+    q = _drain_queue(["A complete sentence for testing."])
+    stop, done = threading.Event(), threading.Event()
+
+    with patch("tools.tts_streaming.resolve_streaming_provider",
+               return_value=_OddChunkProvider({}, {})), \
+         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
+        tts_tool.stream_tts_to_speaker(q, stop, done)
+
+    # Every chunk must have been written — no drops from misalignment.
+    assert out.write.called, "expected PCM chunks written despite odd byte counts"
+    # Collect all bytes the output stream received across all write calls.
+    written_bytes = b""
+    for call_args in out.write.call_args_list:
+        arr = call_args[0][0]
+        written_bytes += arr.tobytes()
+    # The provider yielded 3 + 4 + 3 = 10 bytes total; all should arrive.
+    assert len(written_bytes) == 10, (
+        f"expected 10 bytes of PCM data, got {len(written_bytes)} — "
+        "misaligned chunks were likely dropped"
+    )
+    assert done.is_set()
+
+
 def test_stop_event_aborts_streaming(monkeypatch):
     from tools import tts_tool
 

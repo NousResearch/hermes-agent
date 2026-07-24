@@ -653,6 +653,10 @@ def cmd_update(name: str) -> None:
         )
         sys.exit(1)
 
+    if _gateway_is_running_for_plugin_update():
+        console.print(f"[red]Error:[/red] {_RUNNING_GATEWAY_PLUGIN_UPDATE_ERROR}")
+        sys.exit(1)
+
     console.print(f"[dim]Updating {name}...[/dim]")
 
     ok, output = _git_pull_plugin_dir(target)
@@ -1950,6 +1954,9 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
         }
 
+    if _gateway_is_running_for_plugin_update():
+        return {"ok": False, "error": _RUNNING_GATEWAY_PLUGIN_UPDATE_ERROR}
+
     ok, msg = _git_pull_plugin_dir(target)
     if not ok:
         return {"ok": False, "error": msg}
@@ -1959,6 +1966,20 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg
     return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+
+
+_RUNNING_GATEWAY_PLUGIN_UPDATE_ERROR = (
+    "Cannot update plugin files while the gateway is running because loaded "
+    "plugin callbacks may still import from the installed checkout. Run "
+    "`hermes gateway stop`, update the plugin, then run `hermes gateway start`."
+)
+
+
+def _gateway_is_running_for_plugin_update() -> bool:
+    """Return whether mutating an installed plugin could break a live gateway."""
+    from gateway.status import is_gateway_running
+
+    return is_gateway_running(cleanup_stale=False)
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:

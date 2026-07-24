@@ -469,9 +469,39 @@ class TestCmdUpdate:
 
         mock_run.return_value = MagicMock(returncode=0, stdout="Updated", stderr="")
 
-        cmd_update("test-plugin")
+        with patch(
+            "hermes_cli.plugins_cmd._gateway_is_running_for_plugin_update",
+            return_value=False,
+        ):
+            cmd_update("test-plugin")
 
         mock_run.assert_called_once()
+
+    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd.subprocess.run")
+    def test_update_refuses_to_mutate_plugin_while_gateway_runs(
+        self, mock_run, mock_plugins_dir, mock_sanitize
+    ):
+        from hermes_cli.plugins_cmd import cmd_update
+
+        mock_plugins_dir.return_value = MagicMock()
+        mock_target = MagicMock()
+        mock_target.exists.return_value = True
+        mock_target.__truediv__ = lambda self, x: MagicMock(
+            exists=MagicMock(return_value=True)
+        )
+        mock_sanitize.return_value = mock_target
+
+        with patch(
+            "hermes_cli.plugins_cmd._gateway_is_running_for_plugin_update",
+            return_value=True,
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_update("test-plugin")
+
+        assert exc_info.value.code == 1
+        mock_run.assert_not_called()
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -489,6 +519,49 @@ class TestCmdUpdate:
             cmd_update("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
+
+class TestDashboardPluginUpdate:
+    def test_refuses_to_mutate_plugin_while_gateway_runs(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        target = tmp_path / "plugins" / "test-plugin"
+        (target / ".git").mkdir(parents=True)
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: tmp_path / "plugins")
+        monkeypatch.setattr(
+            pc, "_gateway_is_running_for_plugin_update", lambda: True
+        )
+        pull = MagicMock()
+        monkeypatch.setattr(pc, "_git_pull_plugin_dir", pull)
+
+        result = pc.dashboard_update_user_plugin("test-plugin")
+
+        assert result["ok"] is False
+        assert "gateway is running" in result["error"]
+        pull.assert_not_called()
+
+    def test_updates_plugin_when_gateway_is_stopped(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        target = tmp_path / "plugins" / "test-plugin"
+        (target / ".git").mkdir(parents=True)
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: tmp_path / "plugins")
+        monkeypatch.setattr(
+            pc, "_gateway_is_running_for_plugin_update", lambda: False
+        )
+        pull = MagicMock(return_value=(True, "Updating old..new"))
+        monkeypatch.setattr(pc, "_git_pull_plugin_dir", pull)
+        monkeypatch.setattr(pc, "_copy_example_files", MagicMock())
+
+        result = pc.dashboard_update_user_plugin("test-plugin")
+
+        assert result == {
+            "ok": True,
+            "name": "test-plugin",
+            "output": "Updating old..new",
+            "unchanged": False,
+        }
+        pull.assert_called_once_with(target)
 
 
 # ── cmd_remove tests ─────────────────────────────────────────────────────────

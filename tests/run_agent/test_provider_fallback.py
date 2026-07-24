@@ -334,3 +334,40 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+    def test_allows_xai_api_fallback_from_xai_oauth_same_host_model(self):
+        """xai-oauth and xai share api.x.ai but use different credentials.
+
+        A spending-limit 403 on OAuth must still be able to fall over to the
+        API-key provider even when both entries use the same model slug and
+        base URL.  Blind base_url+model dedup incorrectly skipped that path.
+        """
+        fbs = [
+            {
+                "provider": "xai",
+                "model": "grok-4.5",
+                "base_url": "https://api.x.ai/v1",
+            },
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "xai-oauth"
+        agent.model = "grok-4.5"
+        agent.base_url = "https://api.x.ai/v1"
+
+        called = []
+
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(base_url="https://api.x.ai/v1"), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        assert called == [("xai", "grok-4.5")]
+        assert agent.provider == "xai"
+        assert agent.model == "grok-4.5"

@@ -1641,6 +1641,31 @@ def compress_context(
             finally:
                 _release_lock()
 
+        # Plugin no-op: engine reports it made no structural change.
+        # Check this BEFORE the semantic equality test so a plugin that
+        # returns a freshly-built equal list (not the input object) is
+        # still recognized as a no-op via its status flag.
+        if (
+            getattr(
+                agent.context_compressor,
+                "last_compression_status",
+                getattr(agent.context_compressor, "_last_compression_status", ""),
+            )
+            == "noop"
+        ):
+            try:
+                logger.info(
+                    "context compression no-op: session=%s messages=%d unchanged; skipping session boundary",
+                    agent.session_id or "none",
+                    _pre_msg_count,
+                )
+                _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                if not _existing_sp:
+                    _existing_sp = agent._build_system_prompt(system_message)
+                return compressed, _existing_sp
+            finally:
+                _release_lock()
+
         # Compare against the pre-dispatch semantic state, not object identity:
         # legacy/plugin engines may return an equal copy for a no-op, or mutate
         # the live list while returning an unchanged snapshot. Neither case may

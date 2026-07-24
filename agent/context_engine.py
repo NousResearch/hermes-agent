@@ -96,7 +96,7 @@ class ContextEngine(ABC):
     def name(self) -> str:
         """Short identifier (e.g. 'compressor', 'lcm')."""
 
-    # -- Token state (read by run_agent.py for display/logging) ------------
+    # -- Token state (read by run_agent.py for display/logging) -----------
     #
     # Engines MUST maintain these. run_agent.py reads them directly.
 
@@ -106,6 +106,30 @@ class ContextEngine(ABC):
     threshold_tokens: int = 0
     context_length: int = 0
     compression_count: int = 0
+
+    # -- Compression result status (read by run_agent.py for boundary) -----
+    #
+    # After ``compress()`` returns, engines SHOULD expose the outcome of the
+    # pass so the host can decide whether to rotate/split the session:
+    #
+    #   * ``"noop"``  -> the engine made no structural change (e.g. LCM was
+    #                    above the host token threshold but had no eligible
+    #                    leaf backlog outside its protected fresh tail). The
+    #                    host MUST NOT treat this as a successful compression:
+    #                    it skips the session split so the continuation keeps
+    #                    its summary/DAG state and the prompt-cache prefix.
+    #   * anything else (or attribute absent) -> normal handling; the host
+    #                    proceeds to the existing identity-empty checks and,
+    #                    if ``compress()`` returned a new list, rotates the
+    #                    session.
+    #
+    # The host reads this via ``getattr(engine, "last_compression_status",
+    # getattr(engine, "_last_compression_status", ""))`` — public attribute
+    # preferred, legacy ``_last_compression_status`` private field honored for
+    # backward compatibility with older engines. See
+    # ``agent/conversation_compression.py`` (``_compress_context``).
+
+    last_compression_status: str = ""
 
     # -- Compaction parameters (read by run_agent.py for preflight) --------
     #

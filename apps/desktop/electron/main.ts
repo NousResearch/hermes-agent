@@ -35,6 +35,7 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
+import { completeLocalBackendHandshake, createHermesReadinessProbe } from './backend-readiness'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
@@ -4603,7 +4604,17 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token, signal?) {
+async function waitForHermes(
+  baseUrl,
+  token,
+  { preferReadyEndpoint = false, signal }: { preferReadyEndpoint?: boolean; signal?: AbortSignal } = {}
+) {
+
+  const probe = createHermesReadinessProbe({
+    preferReadyEndpoint,
+    request: path => fetchJson(`${baseUrl}${path}`, token)
+  })
+
   const deadline = Date.now() + 45_000
   let lastError = null
 
@@ -4615,7 +4626,7 @@ async function waitForHermes(baseUrl, token, signal?) {
     }
 
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      await probe()
 
       return
     } catch (error) {
@@ -6878,7 +6889,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       forward: (localPort, remotePort) => ssh.forward(localPort, remotePort),
       cancelForward: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
       pickLocalPort,
-      waitForHermes: (baseUrl, token) => waitForHermes(baseUrl, token, lease.signal),
+      waitForHermes: (baseUrl, token) => waitForHermes(baseUrl, token, { signal: lease.signal }),
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
@@ -7639,13 +7650,18 @@ async function spawnPoolBackend(profile, entry) {
   entry.port = port
 
   const baseUrl = `http://127.0.0.1:${port}`
-  await Promise.race([waitForHermes(baseUrl, token), startFailed])
-  ready = true
 
-  const authToken = await adoptServedDashboardToken(baseUrl, token, {
-    childAlive: () => child.exitCode === null && !child.killed,
-    label: `Hermes backend for profile "${profile}"`,
-    rememberLog
+  const authToken = await completeLocalBackendHandshake({
+    waitForReady: () => Promise.race([waitForHermes(baseUrl, token, { preferReadyEndpoint: true }), startFailed]),
+    markReady: () => {
+      ready = true
+    },
+    adoptServedToken: () =>
+      adoptServedDashboardToken(baseUrl, token, {
+        childAlive: () => child.exitCode === null && !child.killed,
+        label: `Hermes backend for profile "${profile}"`,
+        rememberLog
+      })
   })
 
   entry.token = authToken
@@ -7947,13 +7963,19 @@ async function startHermes() {
 
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
-    await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
-    backendReady = true
-    backendStartFailure = null
 
-    const authToken = await adoptServedDashboardToken(baseUrl, token, {
-      childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
-      rememberLog
+    const authToken = await completeLocalBackendHandshake({
+      waitForReady: () =>
+        Promise.race([waitForHermes(baseUrl, token, { preferReadyEndpoint: true }), backendStartFailed]),
+      markReady: () => {
+        backendReady = true
+        backendStartFailure = null
+      },
+      adoptServedToken: () =>
+        adoptServedDashboardToken(baseUrl, token, {
+          childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
+          rememberLog
+        })
     })
 
     updateBootProgress({

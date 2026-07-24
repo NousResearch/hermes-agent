@@ -9,7 +9,19 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    _extract_cron_deliverable_response,
+    run_job,
+    run_one_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _resolve_cron_enabled_toolsets,
+    _merge_mcp_into_per_job_toolsets,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -1453,6 +1465,28 @@ class TestRunJobSessionPersistence:
             mock_agent_cls = entered[-1]  # the AIAgent patch
             yield fake_db, mock_agent_cls
 
+    def test_run_job_preserves_marked_response_for_persisted_output(self, tmp_path):
+        """Marker extraction must happen after run_job builds the saved document."""
+        response = (
+            "scratch notes\n\n"
+            "FINAL_CRON_OUTPUT:\n\n"
+            "User brief body\n"
+        )
+        job = {"id": "marker-job", "name": "test", "prompt": "hello"}
+
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": response,
+            }
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert response == final_response
+        assert "scratch notes" in output
+        assert "FINAL_CRON_OUTPUT:" in output
+        assert "User brief body" in output
+
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
             "id": "toolset-job",
@@ -2832,6 +2866,136 @@ class TestRunJobSkillBacked:
         assert "Combine the results." in prompt_arg
 
 
+class TestCronDeliverableResponseExtraction:
+    """Cron delivery strips only after the explicit deliverable marker."""
+
+    def test_strips_text_before_explicit_cron_deliverable_marker(self):
+        response = """All checks complete. Compiling the brief.
+
+Summary of findings:
+- Weather checked.
+- Portfolio checked.
+
+FINAL_CRON_OUTPUT:
+
+Good morning.
+
+WEATHER
+- Today: 13C
+"""
+
+        assert _extract_cron_deliverable_response(response) == """Good morning.
+
+WEATHER
+- Today: 13C"""
+
+    def test_preserves_multiline_tail_after_same_line_marker(self):
+        response = """Now filtering issues by status.
+Grouping by priority and sorting by owner.
+
+FINAL_CRON_OUTPUT: Urgent
+- DOS-527 needs attention.
+- DOS-333 can wait.
+"""
+
+        assert _extract_cron_deliverable_response(response) == """Urgent
+- DOS-527 needs attention.
+- DOS-333 can wait."""
+
+    def test_empty_marker_does_not_suppress_delivery(self):
+        response = """Working notes.
+
+FINAL_CRON_OUTPUT:
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_generic_final_answer_heading_alone(self):
+        response = """Now filtering issues by status.
+Grouping by priority and sorting by owner.
+
+Final answer:
+
+Urgent
+- DOS-527 needs attention.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_unmarked_reasoning_preamble_alone(self):
+        response = """All checks complete. Compiling the brief.
+
+Summary of findings:
+- Weather checked.
+- Portfolio checked.
+
+---
+
+Good morning.
+
+WEATHER
+- Today: 13C
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_normal_markdown_horizontal_rule_alone(self):
+        response = """Daily Brief
+---
+
+Weather: clear.
+Portfolio: unchanged.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_single_signal_markdown_rule_alone(self):
+        response = """Checking in on weekly metrics
+---
+
+Weather: clear.
+Portfolio: unchanged.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_leaves_normal_report_heading_alone(self):
+        response = """Report:
+
+- Weather: clear.
+- Portfolio: unchanged.
+"""
+
+        assert _extract_cron_deliverable_response(response) == response.strip()
+
+    def test_run_one_job_delivers_extracted_final_response(self):
+        response = """All checks complete. Compiling the brief.
+
+Summary of findings:
+- Weather checked.
+
+FINAL_CRON_OUTPUT:
+
+Good morning.
+
+WEATHER
+- Today: 13C
+"""
+
+        with patch("cron.scheduler.run_job", return_value=(True, "# raw output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as save_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            assert run_one_job({"id": "brief-job", "name": "brief"})
+
+        save_mock.assert_called_once_with("brief-job", "# raw output")
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[1] == """Good morning.
+
+WEATHER
+- Today: 13C"""
+
+
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
@@ -3040,6 +3204,12 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "do NOT use send_message" in result
         assert "automatically delivered" in result
+
+    def test_deliverable_marker_guidance_present(self):
+        job = {"prompt": "Generate a report"}
+        result = _build_job_prompt(job)
+        assert "FINAL_CRON_OUTPUT:" in result
+        assert "Only content after that marker will be delivered" in result
 
     def test_delivery_guidance_precedes_user_prompt(self):
         """System guidance appears before the user's prompt text."""

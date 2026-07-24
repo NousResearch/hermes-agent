@@ -329,6 +329,42 @@ def _is_cron_silence_response(text: str) -> bool:
         return True
     return False
 
+
+CRON_DELIVERABLE_MARKER = "FINAL_CRON_OUTPUT:"
+_CRON_DELIVERABLE_MARKER_RE = re.compile(
+    rf"(?im)^\s*{re.escape(CRON_DELIVERABLE_MARKER)}[^\S\r\n]*(.*)$"
+)
+
+
+def _extract_cron_deliverable_response(text: str) -> str:
+    """Return the marked final user-facing cron response when present.
+
+    Cron jobs run in quiet, unattended mode. To avoid deleting legitimate
+    reports with broad content heuristics, only strip text before the explicit
+    marker injected into the cron prompt.
+    """
+    if not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+
+    marker_matches = list(_CRON_DELIVERABLE_MARKER_RE.finditer(stripped))
+    if marker_matches:
+        marker = marker_matches[-1]
+        same_line_tail = (marker.group(1) or "").strip()
+        remaining_tail = stripped[marker.end():].strip()
+        if same_line_tail and remaining_tail:
+            tail = f"{same_line_tail}\n{remaining_tail}"
+        else:
+            tail = same_line_tail or remaining_tail
+        if tail:
+            return tail
+        return stripped
+
+    return stripped
+
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -2499,6 +2535,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
         "final response and the system handles the rest. "
+        f"Before report content, include a line that says exactly "
+        f"{CRON_DELIVERABLE_MARKER}. Only content after that marker "
+        f"will be delivered; do not put working notes after the marker. "
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
@@ -3916,6 +3955,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
+            if should_deliver and success:
+                deliver_content = _extract_cron_deliverable_response(deliver_content)
+                should_deliver = bool(deliver_content.strip())
             if should_deliver and success and _is_cron_silence_response(deliver_content):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False

@@ -28,6 +28,44 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 logger = logging.getLogger(__name__)
 
 
+def _resolve_codex_approval_callback():
+    """Resolve Codex approvals through CLI or the active gateway session."""
+    try:
+        from tools.terminal_tool import _get_approval_callback
+
+        callback = _get_approval_callback()
+        if callback is not None:
+            return callback
+    except Exception:
+        logger.debug("failed to resolve CLI approval callback", exc_info=True)
+
+    try:
+        from tools.approval import has_gateway_notify, prompt_gateway_approval
+
+        if not has_gateway_notify():
+            return None
+
+        def _gateway_callback(
+            command: str,
+            description: str,
+            *,
+            allow_permanent: bool = True,
+            smart_denied: bool = False,
+        ) -> str:
+            return prompt_gateway_approval(
+                command,
+                description,
+                pattern_key="codex_app_server",
+                pattern_keys=["codex_app_server"],
+                allow_permanent=allow_permanent and not smart_denied,
+            )
+
+        return _gateway_callback
+    except Exception:
+        logger.debug("failed to resolve gateway approval callback", exc_info=True)
+        return None
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -640,24 +678,15 @@ def run_codex_app_server_turn(
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
-        # Approval callback: defer to Hermes' standard prompt flow if a
-        # CLI thread has installed one. Gateway / cron contexts get the
-        # codex-side fail-closed default.
-        try:
-            from tools.terminal_tool import _get_approval_callback
-            approval_callback = _get_approval_callback()
-        except Exception:
-            approval_callback = None
+        # CLI sessions use prompt-toolkit; gateway sessions bridge Codex
+        # requests into the shared Hermes approval queue; cron and other
+        # non-interactive contexts remain fail-closed.
+        approval_callback = _resolve_codex_approval_callback()
 
         # Gateway / cron contexts have no UI to surface codex's approval
         # requests through, so codex app-server exec / apply_patch requests
-        # fail closed (silently decline) by default. When the user has
-        # explicitly opted out of Hermes approvals — via `approvals.mode: off`
-        # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
-        # honor that and let codex's own sandbox permission profile
-        # (~/.codex/config.toml) be the policy gate instead of double-gating
-        # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
-        # current fail-closed behavior — this is a no-op for those users.
+        # fail closed by default. Explicit Hermes approval bypass settings are
+        # still honored through Codex's own sandbox permission profile.
         auto_approve_requests = False
         try:
             from tools.approval import is_approval_bypass_active

@@ -1220,7 +1220,6 @@ export interface Translations {
     fieldSkillsPlaceholder: string
     fieldDeliver: string
     fieldDeliverOnly: string
-    fieldDeliverOnlyHint: string
     fieldPrompt: string
     fieldPromptPlaceholder: string
     nameRequired: string

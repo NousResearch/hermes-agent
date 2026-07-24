@@ -465,79 +465,33 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
             </div>
           ) : (
             <div className="grid gap-1">
-              <ListRow
-                action={
-                  <Input
-                    autoFocus
-                    id="webhook-name"
-                    onChange={e => setName(e.target.value)}
-                    placeholder={w.fieldNamePlaceholder}
-                    value={name}
-                  />
-                }
-                title={<label htmlFor="webhook-name">{w.fieldName}</label>}
-                wide
-              />
-              <ListRow
-                action={
-                  <Input
-                    id="webhook-description"
-                    onChange={e => setDescription(e.target.value)}
-                    placeholder={w.fieldDescriptionPlaceholder}
-                    value={description}
-                  />
-                }
-                title={<label htmlFor="webhook-description">{w.fieldDescription}</label>}
-                wide
-              />
-              <ListRow
-                action={
-                  <Input
-                    id="webhook-events"
-                    onChange={e => setEvents(e.target.value)}
-                    placeholder={w.fieldEventsPlaceholder}
-                    value={events}
-                  />
-                }
-                title={<label htmlFor="webhook-events">{w.fieldEvents}</label>}
-                wide
-              />
-              <ListRow
-                action={
-                  <Input
-                    id="webhook-skills"
-                    onChange={e => setSkills(e.target.value)}
-                    placeholder={w.fieldSkillsPlaceholder}
-                    value={skills}
-                  />
-                }
-                title={<label htmlFor="webhook-skills">{w.fieldSkills}</label>}
-                wide
-              />
-              <ListRow
-                action={
-                  <Select onValueChange={setDeliver} value={deliver}>
-                    <SelectTrigger className="h-9 rounded-md" id="webhook-deliver">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {DELIVER_OPTIONS.map(opt => (
-                        <SelectItem key={opt} value={opt}>
-                          {w.deliverOptions[opt] ?? opt}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                }
-                title={<label htmlFor="webhook-deliver">{w.fieldDeliver}</label>}
-                wide
-              />
-              <ToggleRow
-                checked={deliverOnly}
-                description={w.fieldDeliverOnlyHint}
-                label={w.fieldDeliverOnly}
-                onChange={setDeliverOnly}
-              />
+              <div className="grid grid-cols-2 gap-4">
+                <ListRow
+                  action={
+                    <Input
+                      autoFocus
+                      id="webhook-name"
+                      onChange={e => setName(e.target.value)}
+                      placeholder={w.fieldNamePlaceholder}
+                      value={name}
+                    />
+                  }
+                  title={<label htmlFor="webhook-name">{w.fieldName}</label>}
+                  wide
+                />
+                <ListRow
+                  action={
+                    <Input
+                      id="webhook-description"
+                      onChange={e => setDescription(e.target.value)}
+                      placeholder={w.fieldDescriptionPlaceholder}
+                      value={description}
+                    />
+                  }
+                  title={<label htmlFor="webhook-description">{w.fieldDescription}</label>}
+                  wide
+                />
+              </div>
               <ListRow
                 action={
                   <Textarea
@@ -551,6 +505,53 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                 title={<label htmlFor="webhook-prompt">{w.fieldPrompt}</label>}
                 wide
               />
+              <div className="grid grid-cols-2 gap-4">
+                <ListRow
+                  action={
+                    <Input
+                      id="webhook-events"
+                      onChange={e => setEvents(e.target.value)}
+                      placeholder={w.fieldEventsPlaceholder}
+                      value={events}
+                    />
+                  }
+                  title={<label htmlFor="webhook-events">{w.fieldEvents}</label>}
+                  wide
+                />
+                <ListRow
+                  action={
+                    <Input
+                      id="webhook-skills"
+                      onChange={e => setSkills(e.target.value)}
+                      placeholder={w.fieldSkillsPlaceholder}
+                      value={skills}
+                    />
+                  }
+                  title={<label htmlFor="webhook-skills">{w.fieldSkills}</label>}
+                  wide
+                />
+              </div>
+              <div className="grid grid-cols-2 items-start gap-4">
+                <ListRow
+                  action={
+                    <Select onValueChange={setDeliver} value={deliver}>
+                      <SelectTrigger className="h-9 rounded-md" id="webhook-deliver">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {DELIVER_OPTIONS.map(opt => (
+                          <SelectItem key={opt} value={opt}>
+                            {w.deliverOptions[opt] ?? opt}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  }
+                  title={<label htmlFor="webhook-deliver">{w.fieldDeliver}</label>}
+                  wide
+                />
+                <ToggleRow checked={deliverOnly} label={w.fieldDeliverOnly} onChange={setDeliverOnly} />
+              </div>
               <DialogFooter>
                 <Button disabled={creating} onClick={() => void handleCreate()} size="sm">
                   {creating ? w.creating : w.create}

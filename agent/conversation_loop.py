@@ -159,6 +159,36 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     agent._stream_needs_break = True
 
 
+def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
+    """Detect a Copilot 400 that is really a STALE / DEGRADED credential.
+
+    Copilot surfaces a stale or degraded credential as an HTTP 400 rather than a
+    clean 401. Two body markers indicate this class:
+
+    - ``model_not_available_for_integrator`` — the request reached the
+      restricted ``copilot-language-server`` integrator (the server's fallback
+      when it receives a raw OAuth token instead of an exchanged API token),
+      whose model allowlist omits enterprise-only models.
+    - ``model_not_supported`` / "the requested model is not supported" — the
+      cached bearer's Copilot entitlement rotated out from under a long-lived
+      process.
+
+    Matched narrowly (status 400 AND a specific marker) so a genuinely wrong
+    model name — a real 400 — never triggers the single-shot re-exchange. The
+    caller enforces copilot-provider scoping and the single-shot guard.
+    """
+    lowered = (error_message or "").lower()
+    is_400 = status_code == 400 or "error code: 400" in lowered
+    if not is_400:
+        return False
+    return (
+        "model_not_available_for_integrator" in lowered
+        or "not available for integrator" in lowered
+        or "model_not_supported" in lowered
+        or "the requested model is not supported" in lowered
+    )
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -4487,6 +4517,32 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
+                    # Copilot self-heal BEFORE fallback: a stale/degraded
+                    # credential surfaces as a 400
+                    # ``model_not_available_for_integrator`` /
+                    # ``model_not_supported`` (not a clean 401), so the 401
+                    # refresh path above never fired. Force a fresh token
+                    # exchange + client rebuild and retry once on the SAME
+                    # provider — a fresh 437-char API token routes to the
+                    # correct integrator and the model becomes available again.
+                    # Single-shot guard prevents looping on a genuinely
+                    # unavailable model. Copilot-scoped so other providers'
+                    # real 400s are untouched.
+                    if (
+                        agent.provider == "copilot"
+                        and not _retry.copilot_stale_cred_retry_attempted
+                        and _is_stale_copilot_credential_error(
+                            status_code, str(getattr(api_error, "message", "") or api_error)
+                        )
+                    ):
+                        _retry.copilot_stale_cred_retry_attempted = True
+                        if agent._try_recover_stale_copilot_credential():
+                            agent._buffer_vprint(
+                                "🔐 Copilot credential re-exchanged after "
+                                "model_not_available 400. Retrying request..."
+                            )
+                            retry_count = 0
+                            continue
                     # Try fallback before aborting — a different provider may
                     # not have the same issue (rate limit, auth, etc.). Only
                     # announce the attempt when a fallback chain actually

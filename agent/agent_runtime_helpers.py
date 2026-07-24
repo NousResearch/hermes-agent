@@ -2024,6 +2024,31 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # restore, request-scoped); auxiliary_client builds its own clients and keeps
     # SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
+    # Defense-in-depth: guarantee Copilot requests carry the integration
+    # headers regardless of which build path we came through. The primary
+    # header wiring lives in `_apply_client_headers_for_base_url`, but two
+    # rebuild paths (`primary_recovery`, `restore_primary` in this module)
+    # reconstruct the client purely from a `_primary_runtime` snapshot and do
+    # NOT re-run that wiring. If the snapshot's client_kwargs ever lacks
+    # `default_headers` (older snapshot, header-less resolver result), the
+    # client goes out WITHOUT `Copilot-Integration-Id: vscode-chat`; the
+    # Copilot server then routes it to the "copilot-language-server" integrator
+    # whose model allowlist omits enterprise-only models (claude-opus-4.8) →
+    # HTTP 400 model_not_available_for_integrator on every turn. This chokepoint
+    # is the single place every primary OpenAI client passes through, so filling
+    # missing Copilot headers here closes the whole class. We only ADD missing
+    # keys — never override headers a caller deliberately set.
+    try:
+        if base_url_host_matches(str(client_kwargs.get("base_url", "")), "githubcopilot.com"):
+            from hermes_cli.models import copilot_default_headers
+            existing = dict(client_kwargs.get("default_headers") or {})
+            existing_lower = {k.lower() for k in existing}
+            for hk, hv in copilot_default_headers().items():
+                if hk.lower() not in existing_lower:
+                    existing[hk] = hv
+            client_kwargs["default_headers"] = existing
+    except Exception:
+        _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

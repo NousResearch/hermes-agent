@@ -2289,6 +2289,20 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             token, source = resolve_copilot_token()
             if token:
                 api_token, enterprise_base_url = get_copilot_api_token(token)
+                # Observability: get_copilot_api_token falls back to returning
+                # the RAW token when the exchange fails. A raw ~40-char token
+                # sent to the Copilot API is routed to the fallback
+                # "copilot-language-server" integrator, whose allowlist omits
+                # enterprise-only models (claude-opus-4.8) → HTTP 400 on every
+                # turn. exchange_copilot_token now retries + reuses a persisted
+                # JWT, so this should be rare; surface it at WARNING so a
+                # recurrence is visible in logs instead of failing silently.
+                if api_token == token and not enterprise_base_url:
+                    logger.warning(
+                        "Copilot token exchange degraded to RAW token (exchange "
+                        "unavailable); enterprise-only models may 400 with "
+                        "model_not_available_for_integrator until exchange recovers."
+                    )
                 source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
@@ -2458,6 +2472,20 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
+
+    # Copilot has its own dedicated seeding branch (see `_seed_credentials`
+    # for provider == "copilot") which exchanges the raw ghu_ OAuth token
+    # for the ~437-char api token via `get_copilot_api_token`. If we let
+    # the generic env-var loop below run for copilot, it re-reads
+    # COPILOT_GITHUB_TOKEN from .env and shoves the RAW 40-char token in
+    # as `access_token`, overwriting the correctly-exchanged token. That
+    # bypasses the Copilot token exchange entirely and causes 400s with
+    # "not available for integrator copilot-language-server" (the server's
+    # fallback integrator when it receives a raw OAuth token instead of
+    # an api token). Skip the generic loop here — the copilot-specific
+    # branch is authoritative.
+    if provider == "copilot":
+        return False, active_sources
 
     # Prefer ~/.hermes/.env over os.environ — the user's config file is the
     # authoritative source for Hermes credentials. Stale env vars from parent

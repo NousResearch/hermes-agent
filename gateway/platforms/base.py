@@ -26,9 +26,18 @@ from utils import normalize_proxy_url
 logger = logging.getLogger(__name__)
 
 # Audio file extensions Hermes recognizes for native audio delivery.
-# Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
-# should_send_media_as_audio() below.
-_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
+# Keep Telegram's narrower attachment/voice sets below separate: formats such
+# as MPEG-2 Layer II are audio to Hermes but unsupported by sendAudio/sendVoice.
+_AUDIO_MIME_TYPES = {
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".mp3": "audio/mpeg",
+    ".m2a": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/m4a",
+    ".flac": "audio/flac",
+}
+_AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either need to go through sendVoice (Opus/OGG) or must be
 # delivered as a regular document.
@@ -1480,7 +1489,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Video (embed inline where supported)
     ".mp4", ".mov", ".avi", ".mkv", ".webm",
     # Audio (delivered as voice/audio where supported)
-    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
+    ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
     ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data
@@ -1710,7 +1719,7 @@ def cache_media_bytes(
         or default_kind == "image"
     )
     is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
-    is_audio = mime.startswith("audio/") or default_kind == "audio"
+    is_audio = mime.startswith("audio/") or ext in _AUDIO_EXTS or default_kind == "audio"
 
     if is_image:
         img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
@@ -1727,9 +1736,9 @@ def cache_media_bytes(
         return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
 
     if is_audio:
-        aud_ext = ext if ext in {".ogg", ".mp3", ".wav", ".m4a", ".opus", ".flac"} else ".ogg"
+        aud_ext = ext if ext in _AUDIO_EXTS else ".ogg"
         path = cache_audio_from_bytes(data, ext=aud_ext)
-        out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
+        out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES[aud_ext]
         return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
 
     # Any other file type is cached and surfaced to the agent as a local path

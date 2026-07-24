@@ -63,7 +63,7 @@ _EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2
 _HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
-_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to

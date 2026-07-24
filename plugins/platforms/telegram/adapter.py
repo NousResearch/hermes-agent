@@ -7873,6 +7873,8 @@ class TelegramAdapter(BasePlatformAdapter):
             event.message_type = MessageType.PHOTO
         elif cached.kind == "video":
             event.message_type = MessageType.VIDEO
+        elif cached.kind == "audio":
+            event.message_type = MessageType.AUDIO
         event.text = self._append_observed_note(event.text, cached.context_note())
         logger.info("[Telegram] Cached observed group %s at %s", cached.kind, cached.path)
 
@@ -7916,6 +7918,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.message_type = MessageType.PHOTO
             elif cached.kind == "video":
                 event.message_type = MessageType.VIDEO
+            elif cached.kind == "audio":
+                event.message_type = MessageType.AUDIO
         event.text = self._append_observed_note(
             event.text,
             f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
@@ -8659,11 +8663,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
-                event.media_urls = [cached_path]
-                event.media_types = [mime_type]
-                logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)
+                from gateway.platforms.base import cache_media_bytes
+
+                cached = cache_media_bytes(
+                    raw_bytes,
+                    filename=original_filename or f"document{ext or '.bin'}",
+                    mime_type=doc_mime,
+                )
+                if cached is None:
+                    event.text = (
+                        f"Document '{original_filename or doc_mime or ext or 'unknown'}' "
+                        "could not be cached."
+                    )
+                    await self.handle_message(event)
+                    return
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                if cached.kind == "audio":
+                    event.message_type = MessageType.AUDIO
+                logger.info(
+                    "[Telegram] Cached user %s at %s (%s)",
+                    cached.kind,
+                    cached.path,
+                    cached.media_type,
+                )
 
                 # For text-readable files, inject content into event.text (capped
                 # at 100 KB). Gate on a text-like extension/MIME — NOT a blind

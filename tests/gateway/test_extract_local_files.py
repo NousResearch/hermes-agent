@@ -99,7 +99,7 @@ class TestBasicDetection:
 
     def test_audio_extensions(self):
         """Audio files are detected and routed by the gateway dispatch."""
-        for ext in (".mp3", ".wav", ".ogg", ".m4a", ".flac"):
+        for ext in (".mp3", ".m2a", ".wav", ".ogg", ".m4a", ".flac"):
             text = f"Audio at /tmp/sound{ext} ready"
             paths, _ = _extract(text)
             assert len(paths) == 1, f"Failed for {ext}"

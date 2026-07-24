@@ -477,6 +477,60 @@ stt:
 
 Hermes writes the incoming voice message to `{input_path}`, runs the command, and reads the `.txt` file produced under `{output_dir}`. Language is auto-detected by the Volcengine bigmodel endpoint.
 
+### Fully local STT (no API keys)
+
+If you don't want any audio leaving the machine, two zero-key setups cover most hardware. Both keep transcription entirely on-device.
+
+**CUDA / NVIDIA GPU — built-in `local` provider.** The default `local` provider already uses your GPU when it can. `faster-whisper` loads with `device="auto"` and `compute_type="auto"`, so it takes the CUDA path automatically when the `ctranslate2` wheel finds the NVIDIA runtime, and prints the model download on first use:
+
+```yaml
+# ~/.hermes/config.yaml
+stt:
+  provider: local
+  local:
+    model: large-v3          # GPUs handle the big models comfortably
+```
+
+No `device:` knob is needed — GPU is picked automatically. If the CUDA libraries (`libcublas`, `libcudnn`) aren't installed, `ctranslate2` sometimes reports the missing shared library only at load or at the first `transcribe()` call. Hermes catches those CUDA library-load errors and **falls back to CPU (`int8`)** rather than failing the voice message, logging a warning like:
+
+```
+faster-whisper CUDA load failed (…) — falling back to CPU (int8).
+Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.
+```
+
+So a GPU box with a broken CUDA runtime still transcribes (just slower). To actually use the GPU, install the NVIDIA CUDA runtime that matches your `ctranslate2` build.
+
+**Apple Silicon (MLX / M-series) — command provider.** `faster-whisper` runs on CPU on macOS; for hardware-accelerated local STT on Apple Silicon use [`mlx-whisper`](https://pypi.org/project/mlx-whisper/) and wire its CLI in as a [command provider](#stt-custom-command-providers):
+
+```bash
+pip install mlx-whisper
+```
+
+```yaml
+# ~/.hermes/config.yaml
+stt:
+  provider: mlx
+  providers:
+    mlx:
+      type: command
+      command: "mlx_whisper {input_path} --model mlx-community/whisper-large-v3-mlx --output-dir {output_dir} --output-name transcript --output-format txt --language {language}"
+      format: txt
+      language: en
+```
+
+A command provider reads its transcript back from `{output_path}` (Hermes sets this to `{output_dir}/transcript.txt` for `format: txt`) or, failing that, from the command's stdout — it does **not** scan `{output_dir}` for arbitrary files. `mlx_whisper` writes `<output-dir>/<output-name>.<format>`, so `--output-dir {output_dir} --output-name transcript --output-format txt` lands exactly on `{output_path}`. See [STT placeholders](#stt-placeholders) for the full list Hermes substitutes.
+
+(The legacy `HERMES_LOCAL_STT_COMMAND` / `stt.provider: local_command` escape hatch is looser — it globs any `.txt` under `{output_dir}` — but the named `stt.providers.<name>` registry above is the recommended way to add a local engine.)
+
+#### Running under the gateway service: PATH and ffmpeg
+
+A long-running gateway (systemd unit, launchd agent, Docker) often starts with a **minimal `PATH`** that omits `/opt/homebrew/bin` and `/usr/local/bin`, so a `whisper`/`mlx_whisper`/`ffmpeg` that works in your shell can be invisible to the service. Hermes checks `/opt/homebrew/bin` and `/usr/local/bin` in addition to `PATH` when locating `whisper` and `ffmpeg`, which covers the common Homebrew case, but for anything installed elsewhere:
+
+- Give the local-command provider an **absolute path** (`command: "/full/path/to/mlx_whisper …"`), or
+- Add the install directory to the service's environment (e.g. systemd `Environment="PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"`).
+
+The local **CLI fallback** — the auto-detected `whisper` binary and the `HERMES_LOCAL_STT_COMMAND` / `stt.provider: local_command` path — also needs **`ffmpeg`** for non-WAV inputs: voice notes usually arrive as `.ogg`/`.m4a`, and that path converts them to WAV first. If `ffmpeg` isn't found you'll see `Local STT fallback requires ffmpeg for non-WAV inputs, but ffmpeg was not found` — install it (`brew install ffmpeg`, `apt install ffmpeg`) and make sure it's on the service's `PATH` too. (The built-in faster-whisper `local` provider decodes audio itself and doesn't shell out to `ffmpeg`; a named `stt.providers.<name>` command engine like `mlx_whisper` above handles its own decoding too.)
+
 ### Fallback Behavior
 
 If your configured provider isn't available, Hermes automatically falls back:

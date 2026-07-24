@@ -7099,7 +7099,8 @@ def _gateway_command_inner(args):
             total = killed + (1 if service_stopped else 0)
             if total:
                 print(f"✓ Stopped {total} gateway process(es) across all profiles")
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _drain = _get_restart_drain_timeout()
+            _wait_for_gateway_exit(timeout=max(_drain, 20.0), force_after=min(_drain * 0.5, 10.0))
 
             # Start the current profile's service fresh
             print("Starting gateway...")
@@ -7193,7 +7194,8 @@ def _gateway_command_inner(args):
             if stop_profile_gateway():
                 print("✓ Stopped gateway for this profile")
 
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _drain = _get_restart_drain_timeout()
+            _wait_for_gateway_exit(timeout=max(_drain, 20.0), force_after=min(_drain * 0.5, 10.0))
 
             # Start fresh
             print("Starting gateway...")

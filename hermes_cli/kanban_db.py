@@ -4001,6 +4001,89 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+_OPERATOR_REQUEUE_SOURCE = "dashboard.status_ready"
+
+
+def _latest_recent_pr_comment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    cutoff: int,
+) -> Optional[sqlite3.Row]:
+    """Return the latest recent PR-bearing comment in insertion order.
+
+    Timestamps are stored at second precision, so ``created_at`` alone cannot
+    distinguish a dashboard requeue from a PR comment written in the same
+    second. The comment id supplies the necessary deterministic tie-breaker.
+    """
+    rows = conn.execute(
+        "SELECT id, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id, cutoff),
+    ).fetchall()
+    for row in rows:
+        if row["body"] and _RESPAWN_GUARD_PR_URL_RE.search(row["body"]):
+            return row
+    return None
+
+
+def _append_operator_requeue(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    source: str,
+    created_at: Optional[int] = None,
+) -> bool:
+    """Record a validated operator requeue inside an existing transaction."""
+    if actor != "dashboard" or source != _OPERATOR_REQUEUE_SOURCE:
+        raise ValueError("unrecognized operator requeue source")
+    task = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if task is None or task["status"] != "ready":
+        return False
+    event_time = int(time.time()) if created_at is None else int(created_at)
+    payload = {"actor": actor, "source": source}
+    latest_pr_comment = _latest_recent_pr_comment(
+        conn,
+        task_id,
+        cutoff=int(time.time()) - _RESPAWN_GUARD_PR_WINDOW,
+    )
+    if latest_pr_comment is not None:
+        payload["pr_comment_id"] = int(latest_pr_comment["id"])
+    conn.execute(
+        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+        "VALUES (?, 'operator_requeue', ?, ?)",
+        (
+            task_id,
+            json.dumps(payload),
+            event_time,
+        ),
+    )
+    return True
+
+
+def record_operator_requeue(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    source: str,
+    created_at: Optional[int] = None,
+) -> bool:
+    """Record an explicit dashboard requeue for an already-ready task."""
+    with write_txn(conn):
+        return _append_operator_requeue(
+            conn,
+            task_id,
+            actor=actor,
+            source=source,
+            created_at=created_at,
+        )
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4011,12 +4094,18 @@ def claim_task(
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in ``ready`` status). The active-PR branch of
+    the respawn guard is always re-checked while this claim's write
+    transaction holds the SQLite writer lock, so no public claim path can
+    bypass an active-PR lane guard. Dispatcher-only cooldown and circuit-
+    breaker reasons remain advisory for direct operator/CLI claims.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if check_respawn_guard(conn, task_id) == "active_pr":
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -5679,8 +5768,18 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    operator_requeue: bool = False,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
+
+    ``operator_requeue`` is reserved for an explicit dashboard recovery
+    action.  When that action reaches ``ready``, append the dedicated,
+    validated requeue marker in this same transaction so an active-PR lane
+    can resume without allowing generic lifecycle events to bypass the guard.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -5742,6 +5841,13 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
+        if operator_requeue and new_status == "ready":
+            _append_operator_requeue(
+                conn,
+                task_id,
+                actor="dashboard",
+                source=_OPERATOR_REQUEUE_SOURCE,
+            )
         return True
 
 
@@ -7945,21 +8051,29 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     # An explicit requeue after the latest PR-bearing comment is an operator
     # instruction to repair that same lane, not to open a duplicate PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    latest_pr_comment_at = None
-    for c in conn.execute(
-        "SELECT body, created_at FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            created_at = int(c["created_at"] or 0)
-            if latest_pr_comment_at is None or created_at > latest_pr_comment_at:
-                latest_pr_comment_at = created_at
-    if latest_pr_comment_at is not None:
-        explicit_requeue = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at > ? AND kind = ? LIMIT 1",
-            (task_id, latest_pr_comment_at, _RESPAWN_GUARD_PR_REQUEUE_EVENT),
-        ).fetchone()
+    latest_pr_comment = _latest_recent_pr_comment(
+        conn, task_id, cutoff=pr_cutoff,
+    )
+    if latest_pr_comment is not None:
+        latest_pr_id = int(latest_pr_comment["id"])
+        explicit_requeue = False
+        for event in conn.execute(
+            "SELECT payload, created_at FROM task_events "
+            "WHERE task_id = ? AND kind = ? ORDER BY id DESC",
+            (task_id, _RESPAWN_GUARD_PR_REQUEUE_EVENT),
+        ).fetchall():
+            try:
+                payload = json.loads(event["payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            if (
+                isinstance(payload, dict)
+                and payload.get("actor") == "dashboard"
+                and payload.get("source") == _OPERATOR_REQUEUE_SOURCE
+                and payload.get("pr_comment_id") == latest_pr_id
+            ):
+                explicit_requeue = True
+                break
         if not explicit_requeue:
             return "active_pr"
 
@@ -8409,7 +8523,11 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(
+            conn,
+            row["id"],
+            ttl_seconds=ttl_seconds,
+        )
         if claimed is None:
             continue
         try:

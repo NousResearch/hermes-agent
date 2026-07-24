@@ -2009,6 +2009,31 @@ def test_dashboard_direct_status_change_off_running_closes_run(kanban_home):
         conn.close()
 
 
+def test_dashboard_ready_requeue_records_explicit_operator_event(kanban_home):
+    """A dashboard requeue emits the marker consumed by the PR guard."""
+    from plugins.kanban.dashboard.plugin_api import _set_status_direct
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="requeue", assignee="worker")
+        kb.claim_task(conn, tid)
+
+        assert _set_status_direct(conn, tid, "ready", operator_requeue=True) is True
+        event = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+
+        assert event["kind"] == "operator_requeue"
+        assert json.loads(event["payload"]) == {
+            "actor": "dashboard",
+            "source": "dashboard.status_ready",
+        }
+    finally:
+        conn.close()
+
+
 def test_dashboard_direct_status_change_within_same_state_is_noop_for_runs(kanban_home):
     """todo -> ready on an unclaimed task must not create any run rows."""
     from plugins.kanban.dashboard.plugin_api import _set_status_direct

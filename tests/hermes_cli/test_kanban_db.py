@@ -2101,11 +2101,13 @@ def test_respawn_guard_active_pr_requires_requeue_after_latest_pr_comment(
         )
         assert kb.check_respawn_guard(conn, t) == "active_pr"
 
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, created_at) "
-            "VALUES (?, ?, ?)",
-            (t, "operator_requeue", now - 20),
-        )
+        assert kb.record_operator_requeue(
+            conn,
+            t,
+            actor="dashboard",
+            source="dashboard.status_ready",
+            created_at=now - 20,
+        ) is True
         assert kb.check_respawn_guard(conn, t) is None
 
         conn.execute(
@@ -2141,6 +2143,79 @@ def test_respawn_guard_active_pr_rejects_non_requeue_lifecycle_events(
         )
 
         assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    "payload_factory",
+    (
+        lambda _pr_id: "{not-json",
+        lambda pr_id: (
+            '{"actor":"forged","source":"generic",'
+            f'"pr_comment_id":{pr_id}}}'
+        ),
+    ),
+    ids=("malformed", "forged-actor-source"),
+)
+def test_respawn_guard_active_pr_rejects_invalid_operator_requeue_payload(
+    kanban_home, payload_factory,
+):
+    """A requeue marker is valid only with trusted actor/source and latest PR id."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reject-forged-pr-requeue", assignee="alice")
+        now = int(time.time())
+        pr_id = conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now - 30),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'operator_requeue', ?, ?)",
+            (t, payload_factory(pr_id), now - 20),
+        )
+
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+def test_claim_task_rechecks_active_pr_guard_inside_claim_transaction(kanban_home):
+    """A PR appearing after dispatcher selection cannot race a guarded claim."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="guarded-claim", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+
+        assert kb.claim_task(conn, t) is None
+        assert kb.get_task(conn, t).status == "ready"
+
+        assert kb.record_operator_requeue(
+            conn,
+            t,
+            actor="dashboard",
+            source="dashboard.status_ready",
+        ) is True
+        assert kb.claim_task(conn, t) is not None
+
+
+def test_unblock_task_operator_requeue_resumes_active_pr_lane(kanban_home):
+    """The explicit dashboard requeue marker is emitted on unblock -> ready."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="blocked-pr-repair", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        assert kb.block_task(conn, t, reason="needs repair") is True
+
+        assert kb.unblock_task(conn, t, operator_requeue=True) is True
+        assert kb.get_task(conn, t).status == "ready"
+        assert kb.check_respawn_guard(conn, t) is None
 
 
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(

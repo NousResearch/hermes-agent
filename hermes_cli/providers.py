@@ -222,18 +222,20 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
-    # Google Vertex AI — OAuth2 (service account / ADC), no static key.
-    # Transport is decided per-model at runtime (Claude → anthropic_messages
-    # via AnthropicVertex SDK; Gemini/MaaS → openai_chat), so the overlay
-    # records the default OpenAI-compat surface. Present here so
-    # get_provider("vertex") resolves and provider-preserving base_url
-    # forwarding (auxiliary tasks, MoA slots) doesn't collapse the provider
-    # to "custom" — which would rebuild a plain Anthropic client against
-    # aiplatform.googleapis.com and 404 on /v1/messages.
+    # Vertex authenticates via OAuth2 (service-account JSON / ADC), not a
+    # static API key or models.dev entry — resolved specially by
+    # agent/vertex_adapter.py, like bedrock's aws_sdk. Without an overlay
+    # entry get_provider("vertex") returns None, which makes
+    # _preserve_provider_with_base_url() in agent/auxiliary_client.py treat
+    # a Vertex MoA slot's resolved (base_url, api_key) pair as an unknown
+    # custom endpoint instead of "vertex" — losing the provider identity
+    # that _refresh_provider_credentials() needs to re-mint an expired
+    # OAuth2 token on a 401. No static base_url_override: Vertex's endpoint
+    # is computed per request from project_id + region (global vs regional
+    # host), like the matching PROVIDER_REGISTRY entry in hermes_cli/auth.py.
     "vertex": HermesOverlay(
         transport="openai_chat",
         auth_type="vertex",
-        base_url_override="https://aiplatform.googleapis.com",
     ),
 }
 

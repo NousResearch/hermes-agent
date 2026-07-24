@@ -993,6 +993,15 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 ))}
               </SelectContent>
             </Select>
+            <label className="flex items-center gap-2 rounded-sm border border-border px-2 py-1 text-xs">
+              Enabled
+              <Switch
+                checked={currentMoaPreset.enabled !== false}
+                disabled={applying}
+                onCheckedChange={checked => updateMoaPreset(prev => ({ ...prev, enabled: checked }))}
+                size="xs"
+              />
+            </label>
             <Button
               disabled={applying}
               onClick={() => {
@@ -1069,6 +1078,21 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="grid gap-1">
             {currentMoaPreset.reference_models.map((slot, index) => (
               <ListRow
+                action={
+                  <Switch
+                    aria-label={`${slot.enabled !== false ? 'Disable' : 'Enable'} reference ${index + 1}`}
+                    checked={slot.enabled !== false}
+                    disabled={applying}
+                    onCheckedChange={checked =>
+                      updateMoaPreset(prev => ({
+                        ...prev,
+                        reference_models: prev.reference_models.map((s, i) =>
+                          i === index ? { ...s, enabled: checked === true } : s
+                        )
+                      }))
+                    }
+                  />
+                }
                 below={
                   <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
                     <Select
@@ -1137,6 +1161,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     </Button>
                   </div>
                 }
+                className={cn(slot.enabled === false && 'opacity-60')}
                 description={
                   <span className="font-mono text-[0.68rem]">
                     {slot.provider} · {slot.model || m.model}
@@ -1149,7 +1174,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             <Button
               disabled={applying}
               onClick={() =>
-                updateMoaPreset(prev => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))
+                updateMoaPreset(prev => ({
+                  ...prev,
+                  reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }]
+                }))
               }
               size="sm"
               variant="textStrong"

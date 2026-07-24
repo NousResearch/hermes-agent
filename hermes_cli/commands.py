@@ -118,6 +118,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
+    CommandDef("egress", "Show Docker egress proxy status", "Session",
+               args_hint="[status]", subcommands=("status",)),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -561,6 +563,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "new",
     "stop",
     "status",
+    "egress",
     "resume",
     "sessions",
     "model",
@@ -967,7 +970,8 @@ def discord_skill_commands_by_category(
 
     Skills whose directory is nested at least 2 levels under a scan root
     (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
-    category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
+    category.  Root-level skills (e.g. ``some-skill/SKILL.md`` directly under a
+    scan root) are returned as
     *uncategorized*.
 
     Scan roots include the local ``SKILLS_DIR`` **and** any configured
@@ -1167,7 +1171,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug"})
+#   - egress: Docker-only proxy status; reachable as /hermes egress on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

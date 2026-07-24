@@ -284,7 +284,7 @@ def derive_skill_meta(skill_path: Path, source_dir: Path, source_kind: str) -> d
     rel = skill_path.parent.relative_to(source_dir)
     parts = rel.parts
     if len(parts) == 1:
-        # Top-level skill (e.g. skills/dogfood/SKILL.md) -- rare
+        # Top-level skill (e.g. skills/<name>/SKILL.md with no category) -- rare
         category = parts[0]
         sub = None
         slug = parts[0]

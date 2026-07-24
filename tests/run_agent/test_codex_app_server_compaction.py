@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_runtime import _record_codex_app_server_compaction
-from agent.conversation_compression import COMPACTION_STATUS, compress_context
+from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
 from agent.transports.codex_app_server_session import TurnResult
 
 
@@ -63,6 +63,8 @@ class DummyAgent:
             awaiting_real_usage_after_compression=False,
         )
         self.statuses = []
+        self.status_events = []
+        self.status_callback = lambda kind, text: self.status_events.append((kind, text))
         self.warnings = []
         self.events = []
         self.built_prompts = []
@@ -74,9 +76,11 @@ class DummyAgent:
 
     def _emit_status(self, message):
         self.statuses.append(message)
+        self.status_callback("lifecycle", message)
 
     def _emit_warning(self, message):
         self.warnings.append(message)
+        self.status_callback("warn", message)
 
     def _build_system_prompt(self, system_message):
         self.built_prompts.append(system_message)
@@ -156,6 +160,10 @@ def test_codex_app_server_manual_compression_routes_to_codex_thread():
     assert prompt == "cached prompt"
     assert agent._codex_session.calls == 1
     assert agent.context_compressor.compression_count == 1
+    assert agent.status_events == [
+        ("lifecycle", COMPACTION_STATUS),
+        ("compacted", COMPACTION_DONE_STATUS),
+    ]
     assert agent.context_compressor.last_compression_rough_tokens == 100000
     # This minimal fake compressor does not implement update_from_response(),
     # so the runtime preserves its existing pending-usage bookkeeping here.
@@ -219,6 +227,11 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
     assert agent.warnings
     assert agent.touch_calls[0] == "context compression started"
     assert agent.touch_calls[-1] == "context compression failed"
+    assert agent.status_events == [
+        ("lifecycle", COMPACTION_STATUS),
+        ("warn", "⚠ Codex app-server compaction failed: compact failed"),
+        ("compacted", COMPACTION_DONE_STATUS),
+    ]
 
 
 def test_codex_app_server_native_compaction_notice_emits_status_and_event():

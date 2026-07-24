@@ -739,7 +739,34 @@ def run_doctor(args):
             "Upgrade Python to 3.10+",
             issues,
         )
-    
+
+    # Linked SQLite library (issue #69784): version + source id matter independently
+    # of the Python minor — uv's python-build-standalone can keep a vulnerable
+    # SQLite across Python upgrades.
+    try:
+        import sqlite3
+        from hermes_state import is_sqlite_wal_reset_vulnerable, sqlite_source_id
+
+        _sqlite_ver = sqlite3.sqlite_version
+        _sqlite_src = sqlite_source_id()
+        _sqlite_src_short = (
+            (_sqlite_src[:48] + "…") if len(_sqlite_src) > 48 else _sqlite_src
+        )
+        if is_sqlite_wal_reset_vulnerable():
+            # Warn-only: Hermes already refuses to enable WAL on fresh DBs.
+            # Do not append to ``issues`` — users often cannot change the
+            # SQLite embedded in python-build-standalone via `hermes update`.
+            check_warn(
+                f"SQLite {_sqlite_ver} (WAL-reset bug)",
+                "(new shared DBs use DELETE; prefer 3.51.3+ / 3.50.7 / 3.44.6 — "
+                "see https://sqlite.org/wal.html#walresetbug)",
+            )
+        else:
+            check_ok(f"SQLite {_sqlite_ver}")
+        if _sqlite_src_short:
+            check_info(f"SQLite source id: {_sqlite_src_short}")
+    except Exception as e:
+        check_warn(f"SQLite version probe failed: {e}")
     # Check if in virtual environment
     in_venv = sys.prefix != sys.base_prefix
     if in_venv:
@@ -845,7 +872,7 @@ def run_doctor(args):
                     PROVIDER_REGISTRY,
                     resolve_provider as _resolve_auth_provider,
                 )
-                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto", "moa"}
             except Exception:
                 _resolve_auth_provider = None
                 pass

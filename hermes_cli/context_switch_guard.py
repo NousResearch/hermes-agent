@@ -83,6 +83,13 @@ def merge_preflight_compression_warning(
     if cc is None:
         return
 
+    # Classic CLI historically omitted custom_providers here while the /model
+    # confirmation display threaded agent._custom_providers — so the shrink
+    # warning fell through to the hardcoded catalog (e.g. "qwen" → 131072)
+    # even when custom_providers[].models.<id>.context_length was 1M.
+    if custom_providers is None:
+        custom_providers = getattr(agent, "_custom_providers", None)
+
     old_ctx = int(getattr(cc, "context_length", 0) or 0)
     new_ctx = resolve_display_context_length(
         result.new_model,

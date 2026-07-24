@@ -181,6 +181,21 @@ class TestStubEngine:
         assert engine.last_prompt_tokens == 1000
         assert engine.last_completion_tokens == 200
 
+    def test_prune_tool_results_only_defaults_to_safe_noop(self):
+        # An engine implementing only the required interface (no prune override)
+        # must inherit the base no-op instead of raising AttributeError: the
+        # agent loop calls prune_tool_results_only() on the active engine after a
+        # tool call whenever full compression does not fire, so every pluggable
+        # ContextEngine reaches this path (see conversation_loop proactive-prune).
+        engine = StubEngine()
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        result, pruned = engine.prune_tool_results_only(msgs, current_tokens=10_000_000)
+        assert pruned == 0
+        assert result is msgs
+
 
 # ---------------------------------------------------------------------------
 # ContextCompressor session reset via ABC

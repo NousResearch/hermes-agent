@@ -7,11 +7,14 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
+import { groupEntriesByRecency, type SidebarListRow, toSessionRows } from '@/lib/session-date-groups'
+import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
-import { SidebarCount } from './chrome'
+import { SidebarCount, SidebarDateDivider } from './chrome'
 import {
   EnteredProjectContent,
   ProjectOverviewRow,
@@ -139,6 +142,11 @@ interface SidebarSessionsSectionProps {
   // lists (Pinned / search results) in the All-profiles view, where no group
   // header communicates ownership (#66003).
   showProfileTags?: boolean
+  // Insert "Yesterday" / "Last week" date dividers into the chronological
+  // session list (flat recents + entered-project lanes). Off for hand-ordered
+  // lists, pinned, messaging groups, and the project overview, where the order
+  // isn't strictly by recency so a date bucket would be misleading.
+  dateGrouped?: boolean
 }
 
 export function SidebarSessionsSection({
@@ -179,8 +187,11 @@ export function SidebarSessionsSection({
   onReorderProjects,
   projectBackRow,
   dndSensors,
-  showProfileTags = false
+  showProfileTags = false,
+  dateGrouped = false
 }: SidebarSessionsSectionProps) {
+  const { t } = useI18n()
+  const dividerLabels = t.sidebar.dateDivider
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   // A defined project list is itself content (even an empty project should
@@ -219,9 +230,29 @@ export function SidebarSessionsSection({
     )
   }
 
+  // A single flat/virtual/lane list row — either a date divider or a session.
+  const renderListRow = (row: SidebarListRow, draggable: boolean) =>
+    row.kind === 'divider' ? (
+      <SidebarDateDivider key={row.key} label={sessionBucketLabel(row.bucket, dividerLabels)} />
+    ) : (
+      renderRow(row.entry.session, draggable, row.entry.branchStem)
+    )
+
   // Sessions inside repos/worktrees are date-ordered and static.
   const renderRows = (items: SessionInfo[]) =>
     flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem))
+
+  // Same as `renderRows`, but with date dividers folded in — used for
+  // entered-project lanes so a lane spanning multiple days reads
+  // chronologically, matching the flat recents list.
+  const renderRowsDated = (items: SessionInfo[]) => {
+    const entries = flattenSessionsWithBranches(items)
+
+    return (dateGrouped ? groupEntriesByRecency(entries) : toSessionRows(entries)).map(row => renderListRow(row, false))
+  }
+
+  // Flat recents as list rows: grouped by recency when enabled, plain otherwise.
+  const flatRows: SidebarListRow[] = dateGrouped ? groupEntriesByRecency(displayEntries) : toSessionRows(displayEntries)
 
   const flatVirtualized =
     !showEmptyState &&
@@ -254,7 +285,7 @@ export function SidebarSessionsSection({
             onNewSession={onNewSessionInWorkspace}
             project={projectContent}
             removedSessionIds={removedSessionIds}
-            renderRows={renderRows}
+            renderRows={renderRowsDated}
             repoWorktrees={projectRepoWorktrees}
           />
         ) : (
@@ -310,13 +341,13 @@ export function SidebarSessionsSection({
       <VirtualSessionList
         activeSessionId={activeSessionId}
         className={contentClassName}
-        entries={displayEntries}
         onArchiveSession={onArchiveSession}
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
         onTogglePin={onTogglePin}
         pinned={pinned}
+        rows={flatRows}
         showProfileTags={showProfileTags}
         sortable={sessionsDraggable}
         workingSessionIdSet={workingSessionIdSet}
@@ -334,11 +365,11 @@ export function SidebarSessionsSection({
   } else if (sessionsDraggable && onReorderSessions) {
     inner = (
       <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
-        {displayEntries.map(({ branchStem, session }) => renderRow(session, true, branchStem))}
+        {flatRows.map(row => renderListRow(row, true))}
       </ReorderableList>
     )
   } else {
-    inner = displayEntries.map(({ branchStem, session }) => renderRow(session, false, branchStem))
+    inner = flatRows.map(row => renderListRow(row, false))
   }
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow

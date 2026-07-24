@@ -201,6 +201,36 @@ def finalize_turn(
         )
     )
 
+    # Preflight can seed the display count before the provider receives the
+    # request. Roll that estimate back only when an interrupt wins the race
+    # before any successful provider response. Compaction state remains owned
+    # by the real-usage/post-compaction path, including its ``-1`` sentinel.
+    # Guard rules (test-double density on this path is high):
+    #  - snapshot is type-pinned to a real int — MagicMock agents auto-create
+    #    truthy Mock attributes that must never arm the rollback;
+    #  - the received-response flag is pinned to ``is not True`` — its real
+    #    domain is True/False, and only a literal True means a provider
+    #    response completed;
+    #  - the compressor method gets a getattr+callable guard — SimpleNamespace
+    #    compressor doubles and plugin context engines lack it.
+    _preflight_snapshot = getattr(
+        agent, "_turn_preflight_display_snapshot", None
+    )
+    if (
+        interrupted is True
+        and isinstance(_preflight_snapshot, int)
+        and not isinstance(_preflight_snapshot, bool)
+        and getattr(agent, "_turn_received_provider_response", False) is not True
+        and getattr(agent, "context_compressor", None) is not None
+    ):
+        _rollback_fn = getattr(
+            agent.context_compressor,
+            "rollback_interrupted_preflight_display_tokens",
+            None,
+        )
+        if callable(_rollback_fn):
+            _rollback_fn(_preflight_snapshot)
+
     # Post-loop cleanup must never lose the response.  Trajectory save,
     # resource teardown, and session persistence all touch fallible
     # surfaces — file I/O / JSON serialization (_save_trajectory), remote
@@ -495,6 +525,34 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
 
+    # Context engine observation hook: notify the active engine that this
+    # turn has finished, with the finalized transcript. Complements the
+    # per-request select_context() hook (selection before the request;
+    # observation after the turn). No-op default, fail-open.
+    try:
+        from agent.conversation_loop import _notify_context_engine_turn_complete
+        # Forward the turn's canonical usage when the host has it. The loop
+        # stashes the most recent API response's usage dict (the same
+        # canonical buckets fed to ``update_from_response``) on the agent as
+        # ``_last_turn_usage``. It is ``None`` on turns that never reached a
+        # provider response (early failure / interrupt), which is exactly the
+        # contract: real usage when available, ``None`` otherwise.
+        _turn_usage = getattr(agent, "_last_turn_usage", None)
+        _notify_context_engine_turn_complete(
+            agent,
+            messages,
+            usage=_turn_usage,
+            logger=logger,
+            turn_id=turn_id,
+            task_id=effective_task_id,
+            api_call_count=api_call_count,
+            interrupted=interrupted,
+            failed=failed,
+            turn_exit_reason=_turn_exit_reason,
+        )
+    except Exception as exc:
+        logger.warning("on_turn_complete notification failed: %s", exc)
+
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything
     # earlier is from a prior turn and must not leak into the reasoning
@@ -624,5 +682,8 @@ def finalize_turn(
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
+
+    agent._turn_preflight_display_snapshot = None
+    agent._turn_received_provider_response = False
 
     return result

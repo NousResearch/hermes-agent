@@ -13,6 +13,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { billingDialogCopy } from '../lib/billingDialog.js'
 import { relativeLuminance } from '../lib/color.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
@@ -1004,6 +1005,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // through the normal message stream. No committed transcript entry.
         return
 
+      case 'moa.progress':
+        // Live fan-out progress — one activity line, replaced in place as each
+        // reference completes ("MoA: refs 2/3"), so the user sees movement
+        // during the (potentially long) reference phase without transcript spam.
+        if (typeof ev.payload?.refs_done === 'number' && typeof ev.payload?.refs_total === 'number') {
+          turnController.pushActivity(`MoA: refs ${ev.payload.refs_done}/${ev.payload.refs_total}`, 'info', 'MoA')
+        }
+
+        return
+
+      case 'moa.phase':
+        // Phase transition — currently only phase="aggregator" (fan-out done,
+        // aggregator acting). Swap the progress line for aggregator copy.
+        if (ev.payload?.phase === 'aggregator') {
+          turnController.pushActivity('MoA: aggregating…', 'info', 'MoA')
+        }
+
+        return
+
       case 'tool.progress':
         if (ev.payload?.preview && ev.payload.name) {
           turnController.recordToolProgress(ev.payload.name, ev.payload.preview)
@@ -1276,6 +1296,35 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+        }
+
+        // Billing wall (out of credits / payment required): open a proper
+        // confirm dialog with the one recovery action, not a truncating status
+        // notice. The transcript already carries the full provider guidance;
+        // this is the actionable layer. Set AFTER recordMessageComplete() so the
+        // turn-idle resetFlowOverlays() (which clears `confirm`) can't wipe it;
+        // the top-of-loop guard already scopes this to the active session.
+        if (ev.payload?.billing) {
+          const block = ev.payload.billing
+          const copy = billingDialogCopy(block)
+
+          patchOverlayState({
+            confirm: {
+              cancelLabel: copy.cancelLabel,
+              confirmLabel: copy.confirmLabel,
+              detail: copy.detail,
+              onConfirm: () => {
+                if (block.is_nous) {
+                  submitRef.current('/topup')
+                } else if (block.billing_url) {
+                  openExternalUrl(block.billing_url)
+                } else {
+                  submitRef.current('/model')
+                }
+              },
+              title: copy.title
+            }
+          })
         }
 
         return

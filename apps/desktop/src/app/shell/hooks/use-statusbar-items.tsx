@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
@@ -9,7 +9,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal } from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -27,7 +27,8 @@ import {
   $sessions,
   $sessionStartedAt,
   $turnStartedAt,
-  sessionMatchesStoredId
+  sessionMatchesStoredId,
+  setCurrentUsage
 } from '@/store/session'
 import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
@@ -40,9 +41,9 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
-import type { StatusResponse } from '@/types/hermes'
+import type { StatusResponse, UsageStats } from '@/types/hermes'
 
-import { CRON_ROUTE, SETTINGS_ROUTE } from '../../routes'
+import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
@@ -144,6 +145,14 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+
+  const publishContextUsage = useCallback(
+    (snapshot: Pick<UsageStats, 'context_max' | 'context_percent' | 'context_used'>) => {
+      setCurrentUsage(current => ({ ...current, ...snapshot }))
+    },
+    []
+  )
+
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
 
   const gatewayMenuContent = useMemo(
@@ -411,6 +420,14 @@ export function useStatusbarItems({
         title: copy.openCron,
         to: CRON_ROUTE,
         variant: 'action'
+      },
+      {
+        icon: <Globe className="size-3" />,
+        id: 'webhooks',
+        label: copy.webhooks,
+        title: copy.openWebhooks,
+        to: WEBHOOKS_ROUTE,
+        variant: 'action'
       }
     ],
     [
@@ -455,7 +472,12 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
+          <ContextUsagePanel
+            currentUsage={currentUsage}
+            onUsageSnapshot={publishContextUsage}
+            requestGateway={requestGateway}
+            sessionId={activeSessionId}
+          />
         ),
         title: copy.openContextUsage,
         variant: 'menu'
@@ -496,6 +518,7 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       currentUsage,
+      publishContextUsage,
       requestGateway,
       sessionStartedAt,
       gatewayState,

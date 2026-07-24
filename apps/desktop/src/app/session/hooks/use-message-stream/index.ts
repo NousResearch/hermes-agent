@@ -501,27 +501,36 @@ export function useMessageStream({
             const existing = prev[index]
             const existingText = chatMessageText(existing).trim()
 
+            // The last assistant row is a sealed interim (a tool-call turn or a
+            // verify-on-stop candidate — `message.interim` fires for BOTH, see
+            // tui_gateway `_load_interim_assistant_messages`). When the final
+            // completion is the SAME turn's reply, settle it onto that interim
+            // instead of appending a second bubble. Continuity, not exact
+            // equality: streaming can drop characters and the final may add a
+            // trailing delta, so treat prefix-either-way as the same message.
+            // (mergeFinalAssistantText, via completeMessage, does the real
+            // text merge — replaces the interim's text with the full final.)
+            const finalContinuesInterim = Boolean(
+              existing.interim &&
+              finalText &&
+              existingText &&
+              (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
+            )
+
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (
-              interimBoundaryPending &&
-              responsePreviewed &&
-              finalText &&
-              existingText &&
-              finalText.startsWith(existingText)
-            ) {
-              // The verification candidate was published provisionally as an
-              // interim message and then reused as the terminal response
-              // (continuation-budget fallback). Settle the interim in place
-              // instead of creating a duplicate — the DB has one row, so the
-              // live UI must agree. (#65919 review: duplicate-message blocker)
-              //
-              // Prefix match (not exact equality): the final response may be
-              // the streamed text plus a trailing delta.  mergeFinalAssistantText
-              // (called via completeMessage) handles the actual merge — it
-              // strips the old text parts and appends the full final text.
+            } else if (interimBoundaryPending && (responsePreviewed || finalContinuesInterim)) {
+              // Settle the interim in place instead of creating a duplicate —
+              // the DB has one row, so the live UI must agree. Previously this
+              // was gated on `responsePreviewed` alone, so a NON-previewed
+              // tool-call turn whose final matched its sealed interim appended a
+              // second bubble (the "renders twice: partial first copy + clean
+              // final" bug, #63679). `finalContinuesInterim` closes that gap
+              // for ordinary tool-call turns while `responsePreviewed` still
+              // covers the verify-on-stop continuation-budget case even when the
+              // final text was rewritten and no longer shares a prefix.
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )

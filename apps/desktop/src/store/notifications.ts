@@ -16,6 +16,10 @@ export interface AppNotification {
   kind: NotificationKind
   /** When set, renders this codicon instead of the default kind icon. */
   icon?: string
+  /** When set, tints the icon and message with this CSS color (severity ramp). */
+  accentColor?: string
+  /** Secondary detail line rendered below the message, muted (e.g. "$220.00 cap"). */
+  meta?: string
   title?: string
   message: string
   detail?: string
@@ -25,10 +29,12 @@ export interface AppNotification {
   placement?: NotificationPlacement
 }
 
-interface NotificationInput {
+export interface NotificationInput {
   id?: string
   kind?: NotificationKind
   icon?: string
+  accentColor?: string
+  meta?: string
   title?: string
   message: string
   detail?: string
@@ -71,6 +77,10 @@ function cleanErrorText(value: string) {
 }
 
 const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
+  {
+    test: msg => /['"]code['"]\s*:\s*['"]gateway_auth_failed['"]/i.test(msg),
+    summarize: () => translateNow('notifications.errors.gatewayAuthFailed')
+  },
   {
     test: msg => /incorrect api key provided/i.test(msg) || /['"]code['"]\s*:\s*['"]invalid_api_key['"]/i.test(msg),
     summarize: msg => {
@@ -130,6 +140,8 @@ export function notify(input: NotificationInput): string {
     id,
     kind,
     icon: input.icon,
+    accentColor: input.accentColor,
+    meta: input.meta,
     title: input.title,
     message: input.message,
     detail: input.detail,

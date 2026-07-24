@@ -77,6 +77,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "model_override": t.model_override,
+        "provider_override": t.provider_override,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
@@ -347,6 +349,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--model", default=None, dest="model_override",
+                          help="Pin the worker to this model (passed as "
+                               "-m <model>) without changing the profile's "
+                               "configured model. Combine with --provider "
+                               "when the model belongs to a different "
+                               "backend than the profile's default.")
+    p_create.add_argument("--provider", default=None, dest="provider_override",
+                          help="Provider the --model belongs to (passed as "
+                               "--provider <name> to the worker). Requires "
+                               "--model.")
     p_create.add_argument("--goal", action="store_true", dest="goal_mode",
                           help="Run the worker in a goal loop: after each "
                                "turn a judge checks the response against the "
@@ -444,6 +456,23 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
+
+    # --- set-model (per-task model/provider override) ---
+    p_set_model = sub.add_parser(
+        "set-model",
+        help="Set or clear a task's model/provider override "
+             "(takes effect on the next dispatch)",
+    )
+    p_set_model.add_argument("task_id")
+    p_set_model.add_argument(
+        "model", nargs="?", default=None,
+        help="Model to pin the worker to (or 'none' to clear the override)",
+    )
+    p_set_model.add_argument(
+        "--provider", default=None,
+        help="Provider the model belongs to (worker is spawned with "
+             "--provider <name>). Cleared together with the model.",
+    )
 
     # --- reclaim / reassign (recovery) ---
     p_reclaim = sub.add_parser(
@@ -926,6 +955,15 @@ def kanban_command(args: argparse.Namespace) -> int:
             )
         return 0
 
+    # Fast-fail for clearer CLI UX only. The durable trust boundary is lower in
+    # hermes_cli.kanban_db, because children can import DB mutators directly.
+    if _is_delegated_child_cli_mutation(args):
+        print(
+            "kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI",
+            file=sys.stderr,
+        )
+        return 1
+
     # Board-management commands operate on board metadata and the persisted
     # current-board pointer itself. They must ignore the shared `--board`
     # task-routing override; otherwise `/kanban --board beta boards show`
@@ -989,6 +1027,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "ls":       _cmd_list,
             "show":     _cmd_show,
             "assign":   _cmd_assign,
+            "set-model": _cmd_set_model,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
@@ -1050,6 +1089,66 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+_DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
+    "init",
+    "create",
+    "swarm",
+    "assign",
+    "reclaim",
+    "reassign",
+    "link",
+    "unlink",
+    "claim",
+    "comment",
+    "attach",
+    "attach-rm",
+    "complete",
+    "edit",
+    "block",
+    "schedule",
+    "unblock",
+    "promote",
+    "archive",
+    "dispatch",
+    "daemon",
+    "repair",
+    "heartbeat",
+    "notify-subscribe",
+    "notify-unsubscribe",
+    "specify",
+    "decompose",
+    "gc",
+})
+
+_DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
+    "create",
+    "new",
+    "rm",
+    "remove",
+    "delete",
+    "switch",
+    "use",
+    "rename",
+    "set-default-workdir",
+})
+
+
+def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
+    action = getattr(args, "kanban_action", None)
+    if action == "boards":
+        boards_action = getattr(args, "boards_action", None) or "list"
+        if boards_action not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
+            return False
+    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
+        return False
+    try:
+        from agent.delegation_context import is_delegated_child_process_context
+
+        return is_delegated_child_process_context()
+    except Exception:
+        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
 
 
 # ---------------------------------------------------------------------------
@@ -1393,6 +1492,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            model_override=getattr(args, "model_override", None),
+            provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
@@ -1567,7 +1668,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
-        print(f"  model:     {task.model_override}")
+        _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
+        print(f"  model:     {task.model_override}{_prov}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -1672,6 +1774,30 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    return 0
+
+
+def _cmd_set_model(args: argparse.Namespace) -> int:
+    model = args.model
+    if model is not None and model.lower() in {"none", "-", "null", ""}:
+        model = None
+    provider = getattr(args, "provider", None)
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.set_model_override(conn, args.task_id, model, provider=provider)
+    except (ValueError, RuntimeError) as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if not ok:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if model:
+        label = f"{provider}:{model}" if provider else model
+        print(f"Set model override on {args.task_id}: {label} "
+              "(applies on next dispatch)")
+    else:
+        print(f"Cleared model override on {args.task_id} "
+              "(worker uses its profile default)")
     return 0
 
 

@@ -1398,6 +1398,15 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
+        "progress_notices": False,    # opt-in (#52995): when True, routine compression
+                                      # progress statuses (compacting/preflight/pre-API/
+                                      # idle/retry) are delivered to chat gateway
+                                      # platforms instead of being suppressed by the
+                                      # gateway noise filter. Default False keeps
+                                      # routine compression silent-by-design on chat
+                                      # surfaces (server-side logging only). Failure
+                                      # notices and manual /compress feedback are
+                                      # always visible regardless of this setting.
         "threshold": 0.50,            # compress when context usage exceeds this ratio.
                                       # Models with context windows below 512K are
                                       # floored at 0.75 (raise-only) so compaction
@@ -1409,12 +1418,43 @@ DEFAULT_CONFIG = {
                                       # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
+                                      # survive in the uncompressed tail. 1 = existing
+                                      # single last-user anchor (default, behavior-
+                                      # preserving); raise to e.g. 3 to keep the last
+                                      # 3 real user turns verbatim when bulky tool
+                                      # outputs fill the tail token budget.
         "max_attempts": 3,            # compression retry rounds before a turn gives up
                                       # with "max compression attempts reached". Raise
                                       # (e.g. 6) for tool-schema-heavy sessions where 3
                                       # rounds cannot clear the request estimate.
                                       # Validated >= 1, hard-capped at 10.
+        "proactive_prune_tokens": 0,  # opt-in trigger (tokens) for the deterministic,
+                                      # no-LLM tool-result prune, run independently of
+                                      # `threshold` above. On large-window models
+                                      # `threshold` (≈50% of the window) rarely fires,
+                                      # so old tool output otherwise rides in history
+                                      # and is re-sent every turn; a low value like
+                                      # 48000 reclaims it early. 0 = off. Recent tail
+                                      # protected by `protect_last_n`. Built-in
+                                      # compressor only (other engines inherit a no-op).
+                                      # NOTE: each committed prune rewrites already-sent
+                                      # history, breaking the provider prompt-cache
+                                      # prefix — the min_reclaim gate below keeps those
+                                      # breaks episodic rather than per-turn.
+        "proactive_prune_min_result_chars": 8000,  # the prune's summarize pass only
+                                      # touches tool results larger than this (chars);
+                                      # clamped to >= 200 so a generated summary can't
+                                      # itself be re-summarized.
+        "proactive_prune_min_reclaim_tokens": 4096,  # a proactive prune only commits
+                                      # when it reclaims at least this many tokens
+                                      # (measured on the pruned output). Keeps
+                                      # prompt-cache invalidation amortized: one big
+                                      # episodic break instead of a tiny break every
+                                      # tool iteration. 0 = commit any non-zero prune.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
+        "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
+        "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -1974,9 +2014,9 @@ DEFAULT_CONFIG = {
         # per platform:
         #   - Telegram has native animated draft streaming (sendMessageDraft),
         #     which is smooth, so streaming is on by default there.
-        #   - Discord/Slack/etc. only have edit-based streaming (repeated
+        #   - Discord and Slack only have edit-based streaming (repeated
         #     editMessage), which flickers and is noticeably jankier, so
-        #     streaming is off by default there.
+        #     streaming is off by default for both.
         # These are gap-fillers: a user who explicitly sets, e.g.,
         # display.platforms.discord.streaming: true keeps their value
         # (config deep-merge has user values win over defaults). The global
@@ -1985,6 +2025,7 @@ DEFAULT_CONFIG = {
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
+            "slack": {"streaming": False},
         },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
@@ -2399,6 +2440,16 @@ DEFAULT_CONFIG = {
         # override the output directory.
         "save_traces": False,
         "trace_dir": "",
+        # Privacy redaction filter for advisor (reference) outputs. Advisors
+        # can echo PII from the conversation (emails, formatted phone numbers)
+        # and credential shapes into reference blocks, traces, and the
+        # aggregator prompt. Modes ('' = off, the default):
+        #   "display" — redact user-visible surfaces only (reference blocks
+        #               shown in the UI + saved MoA trace records); the
+        #               aggregator still sees raw advisor text.
+        #   "full"    — additionally redact the advisor text injected into
+        #               the aggregator prompt (issue #59959).
+        "privacy_filter": "",
         "presets": {
             "default": {
                 "reference_models": [
@@ -2520,6 +2571,15 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        # Channel IDs where @mention is ALWAYS required, even when
+        # require_mention is false globally (per-channel force-mention override).
+        "require_mention_channels": "",
+        # Ignore a channel/thread message addressed to another user (first token
+        # @mentions someone other than the bot) unless the bot is also mentioned.
+        # Opt-in; default off keeps existing behaviour. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+        "ignore_other_user_mentions": False,
+        # If True, require @mention in Slack thread replies too.
+        "thread_require_mention": False,
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
@@ -3166,6 +3226,15 @@ DEFAULT_CONFIG = {
         # How many days of ended-session history to keep.  Matches the
         # default of ``hermes sessions prune``.
         "retention_days": 90,
+        # When true, auto-archive (soft-hide, never delete) sessions that
+        # haven't been touched in ``auto_archive_days`` days, once per
+        # (roughly) min_interval_hours.  "Touched" is last activity, not
+        # creation, so an old-but-recently-used session is spared.  Pinned
+        # sessions are always exempt.  Off by default — opt in explicitly.
+        "auto_archive": False,
+        # Idle threshold (days of no activity) before auto-archive hides a
+        # session.  Only applies when auto_archive is true.
+        "auto_archive_days": 3,
         # VACUUM after a prune that actually deleted rows.  SQLite does not
         # reclaim disk space on DELETE — freed pages are just reused on
         # subsequent INSERTs — so without VACUUM the file stays bloated
@@ -3465,6 +3534,81 @@ DEFAULT_CONFIG = {
         # every invocation (MCP backend, status, doctor, install). Set true
         # to let cua-driver use its own default (telemetry on).
         "cua_telemetry": False,
+        # Cap driver screenshot longest edge (pixels) via set_config on
+        # session start. Shrinks SOM multimodal payloads; 0 disables.
+        "max_image_dimension": 1456,
+        # Mode for capture_after follow-ups: som (screenshot + overlays —
+        # default), ax (elements only, no PNG — faster), vision (pixels only).
+        "capture_after_mode": "som",
+        # Disable the cursor overlay rendered by cua-driver. The overlay
+        # shows where agent actions land but can peg a core when idle
+        # (macOS vImage redraw loop #47032; Linux/WSL2 idle spin #28152).
+        # cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
+        # set_agent_cursor_enabled(false) after start_session when this is on.
+        #   None  = auto-detect (off on macOS + headless/WSL2 Linux; on elsewhere)
+        #   True  = always disable the overlay
+        #   False = always enable the overlay
+        "no_overlay": None,
+    },
+
+    # =========================================================================
+    # Egress credential-injection proxy (iron-proxy)
+    # =========================================================================
+    # When enabled, outbound traffic from remote terminal sandboxes (Docker
+    # today; Modal/SSH in follow-ups) is routed through a managed iron-proxy
+    # subprocess.  The sandbox sees opaque proxy tokens; iron-proxy swaps in
+    # real API credentials at the egress boundary.  Compromising the sandbox
+    # leaks tokens that only work behind the configured trusted proxy boundary
+    # (CA private key + proxy endpoint integrity are part of that boundary).
+    #
+    # Configure with `hermes egress setup`.  Disabled by default — the rest of
+    # Hermes works exactly as before with `enabled: false`.
+    "proxy": {
+        # Master switch.  When false, iron-proxy is never started, no docker
+        # mounts are added, no binaries are auto-installed — feature is a
+        # complete no-op.
+        "enabled": False,
+        # Tunnel listener port.  Sandboxes get `HTTPS_PROXY=http://<host>:<port>`.
+        # 9090 is the default; collide-aware setup wizard can reassign.
+        "tunnel_port": 9090,
+        # Auto-download the pinned iron-proxy binary into ~/.hermes/bin/ on
+        # first use.  When false, you must place `iron-proxy` on PATH yourself.
+        "auto_install": True,
+        # Where iron-proxy looks up the real upstream secrets at egress time.
+        # "env"        — process env (default; what bitwarden integration
+        #                already populates if you use it)
+        # "bitwarden"  — refetch via `bws secret list` on each proxy restart;
+        #                rotation in the Bitwarden web app propagates without
+        #                touching .env (requires `secrets.bitwarden.enabled`).
+        "credential_source": "env",
+        # When true, the Docker backend refuses to start a sandbox if the
+        # proxy is enabled but not running.  False = fall back to direct
+        # outbound with real credentials in the sandbox (the legacy posture).
+        "enforce_on_docker": True,
+        # NOTE: ``fail_on_uncovered_providers`` was removed.  It gated a
+        # refuse-start when Anthropic / Azure OpenAI / Gemini env vars were
+        # present — those providers are now first-class swapped providers
+        # via per-provider match_headers rules (x-api-key, api-key,
+        # x-goog-api-key), so the fail-closed tier is empty.  A leftover
+        # key in existing user configs is ignored harmlessly.
+        # When credential_source is bitwarden but the BWS access token /
+        # project_id is missing OR the bws fetch returns no values for
+        # mapped providers, the daemon raises by default.  Set this to
+        # True to opt back in to the legacy "silently fall back to host
+        # env" behaviour — useful for migrations where the operator wants
+        # to switch credential_source to bitwarden but hasn't fully wired
+        # BWS yet.  Defaults to false (strict).
+        "allow_env_fallback": False,
+        # SSRF deny list applied to outbound traffic.  Omit / leave empty
+        # to use the safe default: loopback, link-local (incl. cloud
+        # metadata IPs at 169.254.169.254), and RFC1918.  Set to an
+        # explicit ``[]`` to opt out entirely (only sensible in hermetic
+        # tests that need to reach a loopback upstream).
+        "upstream_deny_cidrs": None,
+        # Extra allowed upstream hosts beyond the bundled defaults (which
+        # cover OpenRouter, OpenAI, Anthropic, Google, xAI, Mistral, Groq,
+        # Together, DeepSeek, Nous).  Wildcards (`*.foo.com`) are supported.
+        "extra_allowed_hosts": [],
     },
 
     # Hermes Desktop (Electron app) launch options. These only affect

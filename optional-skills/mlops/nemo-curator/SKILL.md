@@ -1,7 +1,7 @@
 ---
 name: nemo-curator
-description: GPU-accelerated data curation for LLM training. Supports text/image/video/audio. Features fuzzy deduplication (16× faster), quality filtering (30+ heuristics), semantic deduplication, PII redaction, NSFW detection. Scales across GPUs with RAPIDS. Use for preparing high-quality training datasets, cleaning web data, or deduplicating large corpora.
-version: 1.0.0
+description: "Curate LLM training data: dedupe, filter, PII redaction."
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [nemo-curator, cudf, dask, rapids]
@@ -40,40 +40,54 @@ NVIDIA's toolkit for preparing high-quality training data for LLMs.
 ### Installation
 
 ```bash
+# NeMo Curator 1.x installs with uv. Extras use hyphens (PyPI-normalized):
+#   text-cuda12 / text-cpu (and image/video/audio/math variants), or `all`.
+
 # Text curation (CUDA 12)
-uv pip install "nemo-curator[text_cuda12]"
+uv pip install "nemo-curator[text-cuda12]"
 
 # All modalities
-uv pip install "nemo-curator[all_cuda12]"
+uv pip install "nemo-curator[all]"
 
-# CPU-only (slower)
-uv pip install "nemo-curator[cpu]"
+# CPU-only text (slower)
+uv pip install "nemo-curator[text-cpu]"
 ```
 
 ### Basic text curation pipeline
 
+> **Major version rewrite (1.x):** NeMo Curator was rewritten around a **Ray-based
+> pipeline/stage architecture**. The old `DocumentDataset` + `nemo_curator.modules.*` /
+> `ScoreFilter` / `Modify` call-the-object-on-a-dataset API from 0.x is gone. In 1.x you
+> compose `ProcessingStage`s into a `Pipeline` and run it with an executor. The exact
+> stage/import surface differs per modality — treat the examples in this skill below as
+> **conceptual** (0.x-style) and follow the current
+> [quickstart](https://github.com/NVIDIA-NeMo/Curator/blob/main/tutorials/quickstart.py)
+> and [text guide](https://docs.nvidia.com/nemo/curator/latest/get-started/text) for the
+> exact 1.x APIs rather than copying imports verbatim.
+
+Shape of a 1.x pipeline (from the upstream quickstart):
+
 ```python
-from nemo_curator import ScoreFilter, Modify
-from nemo_curator.datasets import DocumentDataset
-import pandas as pd
+from nemo_curator.pipeline import Pipeline
+from nemo_curator.stages.base import ProcessingStage
+from nemo_curator.stages.resources import Resources
+from nemo_curator.backends.xenna import XennaExecutor
+from nemo_curator.core.client import RayClient
 
-# Load data
-df = pd.DataFrame({"text": ["Good document", "Bad doc", "Excellent text"]})
-dataset = DocumentDataset(df)
+# 1. Define/compose stages (load -> filter -> dedupe -> classify -> write).
+#    Each stage declares its own Resources (CPU cores, GPU memory, replicas).
+pipeline = Pipeline(name="curation", stages=[...])
 
-# Quality filtering
-def quality_score(doc):
-    return len(doc["text"].split()) > 5  # Filter short docs
-
-filtered = ScoreFilter(quality_score)(dataset)
-
-# Deduplication
-from nemo_curator.modules import ExactDuplicates
-deduped = ExactDuplicates()(filtered)
-
-# Save
-deduped.to_parquet("curated_data/")
+# 2. Run it with an executor (Ray-backed).
+client = RayClient()
+client.start()
+pipeline.run(XennaExecutor())
+client.stop()
 ```
+
+The 0.x-style snippets in the sections that follow illustrate the *concepts* (quality
+filtering, exact/fuzzy/semantic dedup, PII redaction, classifier filtering). For runnable
+1.x code, map each concept onto the corresponding stage from the modality guide.
 
 ## Data curation pipeline
 
@@ -378,9 +392,9 @@ cluster.close()
 
 ## Resources
 
-- **GitHub**: https://github.com/NVIDIA/NeMo-Curator ⭐ 500+
-- **Docs**: https://docs.nvidia.com/nemo-framework/user-guide/latest/datacuration/
-- **Version**: 0.4.0+
+- **GitHub**: https://github.com/NVIDIA-NeMo/Curator
+- **Docs**: https://docs.nvidia.com/nemo/curator/latest/
+- **Version**: 1.2.0 (1.x is a Ray-based pipeline rewrite — see the quickstart before copying 0.x snippets)
 - **License**: Apache 2.0
 
 

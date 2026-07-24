@@ -1,8 +1,15 @@
 name: Docker Build, Test, and Publish
 
 on:
+  # Trusted main pushes run this workflow directly so environment-scoped
+  # Docker Hub secrets are resolved by the top-level workflow, never across
+  # a reusable-workflow boundary.
+  push:
+    branches: [main]
   release:
     types: [published]
+  # CI calls this only for untrusted PR build/test coverage. Those runs never
+  # reach the protected publish or merge jobs below.
   workflow_call:
 
 permissions:
@@ -20,7 +27,9 @@ env:
   IMAGE_NAME: nousresearch/hermes-agent
 
 jobs:
-  # Build, test, and optionally push the image for each architecture.
+  # Build and test the image for each architecture. This job runs PR code,
+  # so it must remain secret-free. Publishing happens in the separate,
+  # protected publish job after these tests pass.
   build:
     if: github.repository == 'NousResearch/hermes-agent'
     strategy:
@@ -62,49 +71,6 @@ jobs:
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ (github.event_name != 'pull_request') && matrix.cache-to || '' }}
 
-      - name: Log in to Docker Hub
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Push by digest only (no tag).  The merge job assembles the
-      # tagged manifest list.  `push-by-digest=true` is docker's recommended
-      # pattern for multi-runner multi-platform builds.
-      - name: Push ${{ matrix.arch }} by digest
-        id: push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
-        with:
-          context: .
-          file: Dockerfile
-          platforms: ${{ matrix.platform }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
-          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: ${{ matrix.cache-from }}
-          cache-to: ${{ matrix.cache-to }}
-
-      # Write the digest to a file and upload it as an artifact so the
-      # merge job can stitch both per-arch digests into a manifest list.
-      - name: Export digest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.push.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: digest-${{ matrix.arch }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
 
       # Run the docker-integration test suite against the freshly-built
       # image already loaded into the local daemon (`:test`).
@@ -148,6 +114,74 @@ jobs:
           scripts/run_tests.sh tests/docker/ --file-timeout 600
 
   # ---------------------------------------------------------------------------
+  # Rebuild and push each architecture only after the unprivileged build/test
+  # matrix passes. This job is the sole Docker Hub credential boundary.
+  # ---------------------------------------------------------------------------
+  publish:
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    needs: [build]
+    environment: container-publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            cache-from: type=gha,scope=docker-amd64
+            cache-to: type=gha,mode=max,scope=docker-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            cache-from: type=gha,scope=docker-arm64
+            cache-to: type=gha,mode=max,scope=docker-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Push by digest only (no tag). The merge job assembles the tagged
+      # manifest list after both architecture publishers complete.
+      - name: Push ${{ matrix.arch }} by digest
+        id: push
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: ${{ matrix.cache-from }}
+          cache-to: ${{ matrix.cache-to }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
   # Stitch both per-arch digests into a single tagged multi-arch manifest.
   # This is a registry-side operation — no building, no layer re-push —
   # so it runs in ~30 seconds.
@@ -158,8 +192,9 @@ jobs:
   merge:
     if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [publish]
     timeout-minutes: 10
+    environment: container-publish
     steps:
       - name: Download digests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

@@ -4,7 +4,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { arraysEqual, insertUniqueId } from '@/lib/storage'
+import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
 
@@ -29,6 +29,7 @@ const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const SIDEBAR_PROJECT_ORDER_STORAGE_KEY = 'hermes.desktop.projectOrder'
 const SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY = 'hermes.desktop.workspaceCollapsed'
+const SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY = 'hermes.desktop.workspaceNodeOpen'
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
 const SIDEBAR_DISMISSED_WORKTREES_STORAGE_KEY = 'hermes.desktop.dismissedWorktrees'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
@@ -96,14 +97,62 @@ export const $sidebarProjectOrderIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
-// Repo/worktree nodes that the user has explicitly COLLAPSED. Absent = open, so
-// a project's folders auto-open when you enter it (and persist your collapses
-// across reloads). Keyed by stable node id (repo root / worktree path).
-export const $sidebarWorkspaceCollapsedIds = persistentAtom(
-  SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY,
-  [] as string[],
-  Codecs.stringArray
+// Explicit open/collapse state for sidebar workspace nodes AND review file-tree
+// folders, keyed by stable node id (repo root / worktree path / `review:<path>`).
+// A stored value is the user's EXPLICIT choice (true = open, false = collapsed);
+// an absent id falls back to the caller's `defaultOpen`.
+//
+// We store the RESOLVED boolean, NOT an XOR against the default (the old
+// `workspaceCollapsed` set did the latter). The XOR was buggy for any node
+// whose default *flips*: a worktree lane defaults collapsed while empty and
+// open once it holds a session, so an explicit expand of an empty lane silently
+// re-read as a "collapse" the moment the lane gained a row — collapsing the very
+// lane the user had just opened to work in. An absolute value survives that flip.
+export const $sidebarWorkspaceNodeOpen = persistentAtom<Record<string, boolean>>(
+  SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY,
+  migrateWorkspaceCollapsedIds(),
+  Codecs.json<Record<string, boolean>>(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(raw).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')
+    )
+  })
 )
+
+// One-time migration off the old XOR `workspaceCollapsed` string[]. Every id in
+// it was a deviation from a DEFAULT-OPEN node (repos + file-tree folders, whose
+// default never flips), so it maps cleanly to `collapsed` (false). The rare
+// empty-worktree-lane "expand" record maps to `false` too, which just returns
+// that lane to its default-collapsed state — self-healing, not a regression.
+function migrateWorkspaceCollapsedIds(): Record<string, boolean> {
+  if (readKey(SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY) !== null) {
+    return {}
+  }
+
+  const raw = readKey(SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY)
+
+  if (raw === null) {
+    return {}
+  }
+
+  try {
+    const ids = JSON.parse(raw) as unknown
+
+    if (!Array.isArray(ids)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      ids.filter((id): id is string => typeof id === 'string' && id.length > 0).map(id => [id, false])
+    )
+  } catch {
+    return {}
+  }
+}
+
 // Auto-derived (git-repo) projects the user has dismissed ("deleted") from the
 // overview. Keyed by repo-root path; persisted so they stay hidden. Explicit
 // projects are deleted for real instead — this only declutters the auto tier.
@@ -141,11 +190,26 @@ export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Co
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
-// Toggle a repo/worktree node's persisted collapse state (absent = open).
-export function toggleWorkspaceNodeCollapsed(id: string): void {
-  const current = $sidebarWorkspaceCollapsedIds.get()
+// Resolve a node's open state against its default (absent = follow default).
+export function workspaceNodeOpen(id: string, defaultOpen = true): boolean {
+  return $sidebarWorkspaceNodeOpen.get()[id] ?? defaultOpen
+}
 
-  $sidebarWorkspaceCollapsedIds.set(current.includes(id) ? current.filter(nodeId => nodeId !== id) : [...current, id])
+// Force a node open/collapsed. Stable across a default flip — used by "+ new
+// session" to reveal the lane it targets and keep it open once it's populated.
+export function setWorkspaceNodeOpen(id: string, open: boolean): void {
+  const current = $sidebarWorkspaceNodeOpen.get()
+
+  if (current[id] === open) {
+    return
+  }
+
+  $sidebarWorkspaceNodeOpen.set({ ...current, [id]: open })
+}
+
+// Toggle a repo/worktree/file-tree node relative to its current resolved state.
+export function toggleWorkspaceNodeCollapsed(id: string, defaultOpen = true): void {
+  setWorkspaceNodeOpen(id, !workspaceNodeOpen(id, defaultOpen))
 }
 
 // Dismiss ("delete") an auto-derived project from the overview.

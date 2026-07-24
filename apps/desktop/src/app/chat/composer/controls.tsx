@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, iconSize, Layers3, Loader2, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
@@ -81,7 +81,7 @@ export function ComposerControls({
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       {busyAction === 'steer' ? (
-        <Tip label={c.queueMessage}>
+        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button
             aria-label={c.queueMessage}
             className={GHOST_ICON_BTN}
@@ -112,7 +112,24 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : (
-        <Tip label={busy ? busyLabel : c.send}>
+        <Tip
+          label={
+            busy ? (
+              <TipKeybindLabel
+                actionId={
+                  busyAction === 'steer'
+                    ? 'composer.steer'
+                    : busyAction === 'queue'
+                      ? 'composer.queue'
+                      : 'composer.send'
+                }
+                text={busyLabel}
+              />
+            ) : (
+              <TipKeybindLabel actionId="composer.send" text={c.send} />
+            )
+          }
+        >
           <Button
             aria-label={busy ? busyLabel : c.send}
             className={PRIMARY_ICON_BTN}

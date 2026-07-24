@@ -633,6 +633,31 @@ def cmd_install(
     console.print()
 
 
+def _assert_gateway_not_running() -> None:
+    """Check if the gateway is running; if so, bail with an error.
+
+    Mutating plugin files (git pull) while the gateway is loaded can
+    cause ModuleNotFoundError in lazy-import callbacks that depend on
+    files that were just removed or renamed.
+    """
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        if find_gateway_pids():
+            from rich.console import Console
+
+            Console().print(
+                "[red]Error:[/red] The gateway is running. "
+                "Stop the gateway, update, then start again."
+            )
+            sys.exit(1)
+    except Exception:
+        # If we can't even probe (env without gateway, import error, etc.),
+        # let the update proceed — better a false-negative than a false-positive
+        # gate that blocks updates when the gateway plainly isn't running.
+        pass
+
+
 def cmd_update(name: str) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.console import Console
@@ -652,6 +677,8 @@ def cmd_update(name: str) -> None:
             f"(no .git directory). Cannot update."
         )
         sys.exit(1)
+
+    _assert_gateway_not_running()
 
     console.print(f"[dim]Updating {name}...[/dim]")
 
@@ -1949,6 +1976,20 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             "ok": False,
             "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
         }
+
+    # Don't pull if the gateway is running — mutating plugin files under
+    # a live gateway can cause ModuleNotFoundError in lazy-import callbacks
+    # that depend on files that were just removed or renamed.
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        if find_gateway_pids():
+            return {
+                "ok": False,
+                "error": "The gateway is running. Stop the gateway, update, then start again.",
+            }
+    except Exception:
+        pass
 
     ok, msg = _git_pull_plugin_dir(target)
     if not ok:

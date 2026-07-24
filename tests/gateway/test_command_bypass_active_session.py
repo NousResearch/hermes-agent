@@ -493,3 +493,38 @@ class TestBypassWithBotnameSuffix:
 
         assert sk not in adapter._pending_messages
         assert any("handled:new" in r for r in adapter.sent_responses)
+
+
+# ---------------------------------------------------------------------------
+# Regression: skill commands must also bypass active-session guard (#58559)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillCommandBypass:
+    """Registered skill commands (e.g. /arxiv) must bypass the active-session
+    queue, matching how built-in slash commands are dispatched directly."""
+
+    def test_should_bypass_returns_true_for_skill_command(self):
+        """A registered skill command bypasses the active-session guard."""
+        from unittest.mock import patch as _patch
+
+        from hermes_cli.commands import should_bypass_active_session
+
+        with _patch(
+            "agent.skill_commands.get_skill_commands",
+            return_value={"/arxiv": {"description": "search arXiv papers"}},
+        ):
+            assert should_bypass_active_session("arxiv") is True
+
+    def test_should_bypass_returns_false_for_unregistered_skill(self):
+        """An unknown name that is neither a built-in nor a skill command
+        does NOT bypass."""
+        from unittest.mock import patch as _patch
+
+        from hermes_cli.commands import should_bypass_active_session
+
+        with _patch(
+            "agent.skill_commands.get_skill_commands",
+            return_value={"/arxiv": {"description": "search arXiv papers"}},
+        ):
+            assert should_bypass_active_session("not-a-skill") is False

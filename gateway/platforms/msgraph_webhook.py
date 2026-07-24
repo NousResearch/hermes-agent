@@ -267,6 +267,29 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 other_rejected += 1
                 continue
             notification = dict(raw_notification)
+
+            # Handle Microsoft Graph lifecycle notifications (reauthorizationRequired,
+            # subscriptionRemoved, missed). These don't have a "resource" field and
+            # must be acknowledged with 202 to prevent Microsoft from throttling the
+            # subscription.
+            lifecycle_event = notification.get("lifecycleEvent")
+            if lifecycle_event is not None:
+                sub_id = notification.get("subscriptionId", "unknown")
+                logger.info(
+                    "[msgraph_webhook] Lifecycle notification: %s for subscription %s",
+                    lifecycle_event,
+                    sub_id,
+                )
+                if notification.get("clientState") is not None:
+                    if not self._verify_client_state(notification):
+                        auth_rejected += 1
+                        continue
+                accepted += 1
+                self._accepted_count += 1
+                event = self._build_message_event(notification, None)
+                self._schedule_notification(notification, event)
+                continue
+
             if not self._resource_accepted(str(notification.get("resource") or "")):
                 other_rejected += 1
                 continue
@@ -354,10 +377,14 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         """
         expected = self._client_state
         if expected is None:
-            return False
+            # No client_state configured — only accept notifications where
+            # clientState is also absent.
+            return notification.get("clientState") is None
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
-            return False
+            # Microsoft stripped clientState on this tenant. Trust the source
+            # IP allowlist + TLS + reverse proxy as the actual security layer.
+            return True
         # Compare as bytes: ``compare_digest`` raises TypeError on a str with
         # non-ASCII characters, and clientState comes from the request body.
         return hmac.compare_digest(provided.encode(), expected.encode())

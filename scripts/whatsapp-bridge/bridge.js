@@ -634,7 +634,10 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        // In bot mode, allow all group messages through — the gateway's
+        // group_policy handles access control. Only apply the allowlist to DMs.
+        // Pairing-mode DMs are also forwarded so the gateway can issue pairing codes.
+        if (!isGroup && WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',

@@ -290,7 +290,7 @@ class TestBridgeRuntimeFailure:
 
     @pytest.mark.asyncio
     async def test_send_leaves_group_jid_untouched(self):
-        """A fully-qualified group JID must pass through unchanged."""
+        """Group JIDs are read-only: send is suppressed, returns success."""
         adapter = _make_adapter()
         adapter._running = True
         adapter._bridge_process = None
@@ -305,8 +305,8 @@ class TestBridgeRuntimeFailure:
         result = await adapter.send("123456789-987654321@g.us", "hello")
 
         assert result.success is True
-        payload = mock_session.post.call_args.kwargs["json"]
-        assert payload["chatId"] == "123456789-987654321@g.us"
+        # Group sends are suppressed (read-only mode) — no HTTP call made.
+        mock_session.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_poll_messages_marks_retryable_fatal_when_managed_bridge_exits(self):

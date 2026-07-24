@@ -225,6 +225,19 @@ gateway:
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
 
+### Group chats are observe-only
+
+For the Baileys bridge, WhatsApp group chats are intentionally **read-only** for the agent. If a group passes `group_policy` / `group_allow_from`, Hermes stores inbound group messages in the session transcript as passive `observed` context, but it does **not** dispatch them to the agent and does **not** generate a reply. This applies even when a group message mentions the bot, replies to a previous bot message, starts with a slash command, or matches `require_mention` / `mention_patterns` / `free_response_chats` settings.
+
+This design lets the agent retain useful life/context signals from allowed groups without risking an automated response into a multi-person chat. The outbound send path also suppresses group JIDs as a defense-in-depth fallback, but the primary guard is inbound: group messages should be absorbed before any agent turn is started.
+
+To fully disable group ingestion rather than observe it, set:
+
+```yaml
+whatsapp:
+  group_policy: disabled
+```
+
 ---
 
 ## Troubleshooting

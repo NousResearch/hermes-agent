@@ -450,11 +450,17 @@ def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> 
     Agent-created skills are always eligible. Bundled built-ins become eligible
     only when ``curator.prune_builtins`` is enabled. Hub-installed and external
     skill-dir skills are NEVER eligible — they have an external upstream owner.
+    Org-mirror skills (``_org/``) are NEVER eligible — the org HEAD owns them;
+    curation happens via propose → approve, not local archive/consolidate.
     Protected built-ins (``PROTECTED_BUILTIN_SKILLS``) are NEVER eligible
     regardless of any flag — they back load-bearing UX and must never be
     archived or consolidated.
     """
+    from agent.skill_utils import is_org_mirror_path
+
     if skill_path is not None and is_external_skill_path(skill_path):
+        return False
+    if skill_path is not None and is_org_mirror_path(skill_path, _skills_dir()):
         return False
     if is_protected_builtin(skill_name):
         return False
@@ -464,6 +470,8 @@ def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> 
         return _prune_builtins_enabled()
     local_dir = _find_skill_dir(skill_name)
     if local_dir is not None:
+        if is_org_mirror_path(local_dir, _skills_dir()):
+            return False
         return not is_external_skill_path(local_dir)
     if _find_external_skill_dir(skill_name) is not None:
         return False
@@ -675,6 +683,26 @@ def set_pinned(skill_name: str, pinned: bool) -> None:
     _mutate(skill_name, _apply, require_curation_eligible=True)
 
 
+def set_sync(skill_name: str, sync: bool) -> None:
+    """Set the HSP-sync opt-in flag on a skill's usage record (M1-D).
+
+    Sync is OPT-IN: nothing propagates to the sync plane unless the user marks
+    a skill with ``sync: true`` here. Sits alongside ``pinned``/``created_by``
+    on the ``.usage.json`` sidecar and is read by
+    ``tools.skills_sync_client.list_synced_skill_names``. Gated on curation
+    eligibility so bundled/hub/external skills (which never sync) can't be
+    marked. Provisional per the M1-D default.
+    """
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["sync"] = bool(sync)
+    _mutate(skill_name, _apply, require_curation_eligible=True)
+
+
+def is_sync_enabled(skill_name: str) -> bool:
+    """Whether a skill is opted into HSP sync (``sync: true`` in its record)."""
+    return get_record(skill_name).get("sync") is True
+
+
 def forget(skill_name: str) -> None:
     """Drop a skill's usage entry entirely. Called when the skill is deleted."""
     if not skill_name:
@@ -833,14 +861,16 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     """Locate the directory for a skill by its frontmatter `name:` field.
 
     Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
-    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
+    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts. Uses the gated
+    index iterator so M2 org mirrors resolve ONLY for the active org
+    (stale ``_org/<other>/`` trees never match).
     """
     base = _skills_dir()
     if not base.exists():
         return None
-    for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
-            continue
+    from agent.skill_utils import iter_skill_index_files
+
+    for skill_md in iter_skill_index_files(base, "SKILL.md"):
         if is_external_skill_path(skill_md):
             continue
         if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:

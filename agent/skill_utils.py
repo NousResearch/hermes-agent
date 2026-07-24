@@ -49,6 +49,52 @@ EXCLUDED_SKILL_DIRS = frozenset(
 # archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
+# ── M2 org-shared skills (hsp-1-contract.md §11) ───────────────────────────
+# Org mirrors live under ~/.hermes/skills/_org/<org_id>/. Resolution is
+# TOKEN-GATED via a marker file the sync client writes after verifying the
+# token (skills_sync_client.pull_org_skills): only the marked org's mirror is
+# scanned. No marker ⇒ no org skills load. The marker is plain data (org_id
+# string) so this module stays import-light; the VERIFICATION lives in the
+# sync client, which is the only writer. Offline grace: the marker persists,
+# so already-pulled org skills keep working without connectivity; a VERIFIED
+# org change (or personal-org token) rewrites/removes it.
+
+ORG_MIRROR_DIR_NAME = "_org"
+ORG_ACTIVE_MARKER = ".active_org"
+ORG_PROVENANCE_FILE = ".org-provenance.json"
+
+
+def read_active_org_id(skills_dir: Path) -> Optional[str]:
+    """The org id whose mirror may resolve, or None (no org skills load)."""
+    try:
+        marker = skills_dir / ORG_MIRROR_DIR_NAME / ORG_ACTIVE_MARKER
+        if not marker.exists():
+            return None
+        val = marker.read_text(encoding="utf-8").strip()
+        return val or None
+    except OSError:
+        return None
+
+
+def is_org_mirror_path(path, skills_dir: Path) -> bool:
+    """True when *path* is inside the org mirror (``_org/``)."""
+    try:
+        rel = Path(path).resolve().relative_to(Path(skills_dir).resolve())
+    except (OSError, ValueError):
+        return False
+    return bool(rel.parts) and rel.parts[0] == ORG_MIRROR_DIR_NAME
+
+
+def org_id_of_path(path, skills_dir: Path) -> Optional[str]:
+    """The ``<org_id>`` segment for a path under ``_org/<org_id>/...``."""
+    try:
+        rel = Path(path).resolve().relative_to(Path(skills_dir).resolve())
+    except (OSError, ValueError):
+        return None
+    if len(rel.parts) >= 2 and rel.parts[0] == ORG_MIRROR_DIR_NAME:
+        return rel.parts[1]
+    return None
+
 
 def is_excluded_skill_path(path) -> bool:
     """True if *path* should be skipped by active skill scanners.
@@ -815,11 +861,24 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     scripts) can contain arbitrary markdown and even archived package
     ``SKILL.md`` files, but they are progressive-disclosure data loaded through
     ``skill_view(..., file_path=...)`` rather than active skill roots.
+
+    M2 org mirrors (``_org/``): TOKEN-GATED resolution. Only the active org's
+    subdir (per the sync-client-written ``.active_org`` marker) is walked;
+    every other ``_org/<id>/`` (stale mirror from a previous org, or no
+    marker at all) is pruned — leave an org and its skills stop resolving,
+    without any manual cleanup.
     """
     skills_dir_str = str(skills_dir)
+    active_org = read_active_org_id(skills_dir)
+    org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
+        if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
+            dirs.remove(ORG_MIRROR_DIR_NAME)
+        elif root == org_root:
+            # Inside _org/: descend ONLY into the active org's mirror.
+            dirs[:] = [d for d in dirs if d == active_org]
         dirs[:] = [
             d
             for d in dirs

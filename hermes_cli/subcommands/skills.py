@@ -312,4 +312,27 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "config",
         help="Interactive skill configuration — enable/disable individual skills",
     )
+
+    # M2 org-shared skills (hsp-1-contract.md §11.5/§11.11): propose a local
+    # skill's content to the org canonical set. MEMBER → 202 proposal
+    # (pending admin review); ADMIN/OWNER → direct merge. Only meaningful for
+    # multi-member orgs — personal orgs have no org workflow (the command
+    # reports that instead of failing opaquely).
+    skills_propose = skills_subparsers.add_parser(
+        "propose",
+        help="Propose a skill to your org's shared skill set (M2)",
+        description=(
+            "Snapshot the local skill and submit it to the org canonical set. "
+            "An org admin's push merges directly; a member's push becomes a "
+            "proposal reviewed in the org console. Personal orgs keep simple "
+            "personal sync and have no proposal workflow."
+        ),
+    )
+    skills_propose.add_argument("name", help="Skill name to propose")
+    skills_propose.add_argument(
+        "-m",
+        "--message",
+        default=None,
+        help="Optional proposal message (defaults to 'propose <name>')",
+    )
     skills_parser.set_defaults(func=cmd_skills)

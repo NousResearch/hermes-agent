@@ -430,6 +430,7 @@ from typing import Optional
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -4464,6 +4465,131 @@ def cmd_cron(args):
     from hermes_cli.cron import cron_command
 
     cron_command(args)
+
+
+def cmd_sync(args):
+    """HSP/1 personal skill sync management (status/pull/push/now/enable/disable)."""
+    import json as _json
+
+    sub = getattr(args, "sync_command", None)
+
+    if sub in {None, ""}:
+        print(
+            "usage: hermes sync <status|pull|push|now|enable|disable|device>\n"
+            "\n"
+            "  status            Show sync gate, opt-in, and head state\n"
+            "  pull              Pull the owner's HEAD, materialize opted-in skills\n"
+            "  push              Push opted-in skills to the owner's HEAD\n"
+            "  now               Reconcile now: pull then push\n"
+            "  enable <skill>    Opt a skill into sync (M1-D opt-in)\n"
+            "  disable <skill>   Opt a skill out of sync\n"
+            "  device [--name N] Show or set this device's sync label",
+            file=sys.stderr,
+        )
+        return 1
+
+    if sub == "device":
+        from tools import skills_sync_client as ssc
+
+        name = getattr(args, "device_name", None)
+        if name is not None:
+            try:
+                stored = ssc.set_device_name(name)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 1
+            print(f"device label set to '{stored}'.")
+            print(
+                "New commits from this device will use this label; existing "
+                "commits keep their previous one.",
+                file=sys.stderr,
+            )
+            return 0
+        # No --name: print the current (creating a default on first use).
+        print(ssc.stable_device_id())
+        return 0
+
+    if sub in {"enable", "disable"}:
+        from tools.skill_usage import set_sync, is_curation_eligible
+
+        skill = args.skill
+        if not is_curation_eligible(skill):
+            print(
+                f"'{skill}' is not sync-eligible (bundled, hub-installed, "
+                f"external, or not found). Only agent-created / user-authored "
+                f"skills under ~/.hermes/skills/ can sync.",
+                file=sys.stderr,
+            )
+            return 1
+        set_sync(skill, sub == "enable")
+        print(f"sync {'enabled' if sub == 'enable' else 'disabled'} for '{skill}'.")
+        return 0
+
+    from tools import skills_sync_client as ssc
+
+    if sub == "status":
+        status = ssc.sync_status()
+        print(_json.dumps(status, indent=2, ensure_ascii=False))
+        if not status.get("logged_in"):
+            print("\nNot logged into Nous Portal — sync is inert.", file=sys.stderr)
+        elif not status.get("dev_gate_ok"):
+            print(
+                "\nDEV-PHASE gate closed: your token lacks 'tool_gateway_admin'. "
+                "Sync is inert during the dev rollout.",
+                file=sys.stderr,
+            )
+        elif not status.get("feature_enabled"):
+            print(
+                "\nSync feature is off for this instance (set HERMES_SYNC_ENABLED=1 "
+                "or config.yaml sync.enabled: true). Sync is inert.",
+                file=sys.stderr,
+            )
+        elif not status.get("base_url"):
+            print(
+                "\nNo sync base URL configured (config.yaml sync.base_url or "
+                "HERMES_SYNC_BASE_URL). Sync is inert.",
+                file=sys.stderr,
+            )
+        return 0
+
+    # pull / push / now — enforce the gate up front with a clear message.
+    try:
+        identity = ssc.resolve_identity()
+    except ssc.SyncInertError as e:
+        print(f"sync inert: {e}", file=sys.stderr)
+        return 1
+    if not identity.get("dev_gate_ok"):
+        print(
+            "sync inert: DEV-PHASE gate closed (token lacks 'tool_gateway_admin').",
+            file=sys.stderr,
+        )
+        return 1
+    if not ssc.resolve_sync_base_url():
+        print(
+            "sync inert: no sync base URL configured (config.yaml sync.base_url "
+            "or HERMES_SYNC_BASE_URL).",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        if sub == "pull":
+            result = ssc.pull_skills(identity=identity)
+        elif sub == "push":
+            result = ssc.push_skills(identity=identity, message="hermes sync push")
+        elif sub == "now":
+            pull_res = ssc.pull_skills(identity=identity)
+            push_res = ssc.push_skills(identity=identity, message="hermes sync now")
+            result = {"pull": pull_res, "push": push_res}
+        else:
+            print(f"Unknown sync subcommand: {sub}", file=sys.stderr)
+            return 1
+    except ssc.HSPError as e:
+        print(f"sync failed: {e}", file=sys.stderr)
+        return 1
+
+    print(_json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
 
 
 def cmd_webhook(args):
@@ -13862,7 +13988,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -14318,6 +14444,34 @@ def cmd_skills(args):
         from hermes_cli.skills_config import skills_command as skills_config_command
 
         skills_config_command(args)
+    elif getattr(args, "skills_action", None) == "propose":
+        # M2 org-shared skills (hsp-1-contract.md §11.5): propose a local
+        # skill to the org canonical set. 202 => pending review (NEVER shown
+        # as live); direct merge for admins. Personal orgs have no org
+        # workflow — say so plainly instead of a raw 403.
+        from tools import skills_sync_client as ssc
+
+        name = args.name
+        try:
+            result = ssc.propose_skill(name, message=args.message)
+        except ssc.SyncInertError as e:
+            print(f"org sync unavailable: {e}", file=sys.stderr)
+            return 1
+        except ssc.HSPError as e:
+            print(f"propose failed: {e}", file=sys.stderr)
+            return 1
+        if result.get("proposal_pending"):
+            print(
+                f"proposed '{name}' — pending admin review "
+                f"(proposal #{result.get('proposal_id')}). Not live for the "
+                f"org until approved."
+            )
+        else:
+            print(
+                f"merged '{name}' into the org set "
+                f"(head {str(result.get('head', ''))[:19]}…)."
+            )
+        return 0
     else:
         from hermes_cli.skills_hub import skills_command
 
@@ -14615,6 +14769,7 @@ def main():
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
+    build_sync_parser(subparsers, cmd_sync=cmd_sync)
 
     # =========================================================================
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)

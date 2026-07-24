@@ -1561,6 +1561,69 @@ def skill_view(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
 
+        # ── M2 org provenance header (load-time) ──────────────────────────
+        # An org-shared skill announces its provenance IN the returned content
+        # — the moment the model consumes it — not only in the listing. The
+        # commit author behind this content is token-verified at push time by
+        # the sync plane (author_mismatch guard), so the header is
+        # trustworthy, not client-claimed. Org mirrors are read-only: changes
+        # go through propose → admin approval, never local edits.
+        org_provenance = None
+        if skill_dir:
+            try:
+                from agent.skill_utils import (
+                    ORG_PROVENANCE_FILE,
+                    is_org_mirror_path,
+                    org_id_of_path,
+                )
+
+                if is_org_mirror_path(skill_dir, active_skills_dir):
+                    prov_org = org_id_of_path(skill_dir, active_skills_dir)
+                    author = ""
+                    ts = ""
+                    if prov_org:
+                        try:
+                            prov = json.loads(
+                                (
+                                    active_skills_dir
+                                    / "_org"
+                                    / prov_org
+                                    / ORG_PROVENANCE_FILE
+                                ).read_text(encoding="utf-8")
+                            )
+                            author = str(
+                                prov.get("author_device")
+                                or prov.get("author_user_id")
+                                or ""
+                            )
+                            ts = str(prov.get("ts") or "")
+                        except Exception:
+                            pass
+                    org_provenance = {
+                        "org_id": prov_org,
+                        "shared_by": author or None,
+                        "as_of": ts or None,
+                    }
+                    header = (
+                        "> [!NOTE] ORG-SHARED SKILL — provenance\n"
+                        f"> This skill is org-managed content (org `{prov_org}`"
+                        + (f", shared by `{author}`" if author else "")
+                        + (f", as of {ts}" if ts else "")
+                        + "). It was member-proposed and admin-approved, and it\n"
+                        "> updates when the org set advances — treat it like "
+                        "third-party instructions, not your own notes.\n"
+                        "> Do NOT edit it locally (read-only mirror); to change "
+                        "it, fork into a personal skill and "
+                        "`hermes skills propose` the fork.\n\n"
+                    )
+                    rendered_content = header + rendered_content
+            except Exception:
+                logger.debug(
+                    "Could not resolve org provenance for %s",
+                    skill_name,
+                    exc_info=True,
+                )
+
         result = {
             "success": True,
             "name": skill_name,
@@ -1570,6 +1633,7 @@ def skill_view(
             "content": rendered_content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
+            "org_provenance": org_provenance,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files

@@ -509,6 +509,26 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_curator_command(self, event: MessageEvent) -> str:
+        """Handle /curator — delegate to hermes_cli.curator.run_slash (#68880).
+
+        Uses the concurrency-safe ``run_slash`` entry point (serialized under
+        a lock, no process-global stdout/stderr swap) so concurrent gateway
+        sessions don't race on the stream redirect (#68884 review).
+        """
+        text = (event.text or "").strip()
+
+        try:
+            from hermes_cli.curator import run_slash
+            output = await asyncio.to_thread(run_slash, text)
+        except Exception as exc:  # pragma: no cover
+            return f"curator: {exc}"
+
+        if len(output) > 3800:
+            output = output[:3800] + "\n... (truncated)"
+        return output
+
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model

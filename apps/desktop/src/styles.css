@@ -986,6 +986,28 @@ text-* variant utilities. */ .btn-arc {
   text-align: start;
 }
 
+/* Table cells follow the table's single resolved direction. The <table>
+   carries dir="auto" (markdown-text.tsx) so the browser derives that one
+   direction, and the column order, from the cells' content (in practice the
+   column headers). plaintext keeps each cell's inline content in its authored
+   order, so a value like "18 ₪", "-3%" or "123 units" is never reordered by the
+   surrounding RTL run. :dir() then pins every header and cell to the table's
+   resolved edge, so a column's header and values stay on the same side instead
+   of splitting (an RTL header right, a numeric value left). Physical right/left
+   is deliberate here: the side is chosen by the table's resolved direction, not
+   the cell's own. Out-specifies the prose cell defaults. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(th, td) {
+  unicode-bidi: plaintext;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md table:dir(rtl) :where(th, td) {
+  text-align: right;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md table:dir(ltr) :where(th, td) {
+  text-align: left;
+}
+
 /* Inline code/KaTeX don't vote on direction and keep their own order: isolate
    makes bidi treat each as one neutral, so a block that *starts* with `./run.sh`
    then Arabic still resolves RTL, and the command's neutrals (dots/slashes)

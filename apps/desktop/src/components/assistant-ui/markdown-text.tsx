@@ -476,6 +476,14 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
         li: ({ className, ...props }: ComponentProps<'li'>) => (
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />
         ),
+        // A table's column order is its box `direction`, which the
+        // unicode-bidi:plaintext rules that resolve per-block text direction
+        // never touch. An RTL table (Hebrew, Arabic, ...) otherwise keeps LTR
+        // columns with its headers stranded on the left. No CSS selector can
+        // read direction off the cells' script either, so `dir="auto"` is the
+        // minimal hook that lets the browser derive the box direction from
+        // content; styles.css then keeps each cell's value in its authored
+        // order and pins every cell's alignment to that one resolved direction.
         table: ({ className, ...props }: ComponentProps<'table'>) => (
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
             <table
@@ -483,6 +491,7 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
                 'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
                 className
               )}
+              dir="auto"
               {...props}
             />
           </div>
@@ -493,7 +502,7 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
         th: ({ className, ...props }: ComponentProps<'th'>) => (
           <th
             className={cn(
-              'whitespace-nowrap px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+              'whitespace-nowrap px-2.5 py-1.5 text-start align-middle text-[0.75rem] font-medium text-muted-foreground',
               className
             )}
             {...props}

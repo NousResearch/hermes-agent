@@ -35,7 +35,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,10 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    # Rich-option fields (None when simple choices path is used)
+    options: Optional[List[Dict[str, Any]]] = None
+    display_type: Optional[str] = None
+    auth_policy: Optional[str] = None
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -61,6 +65,9 @@ class _ClarifyEntry:
             "session_key": self.session_key,
             "question": self.question,
             "choices": list(self.choices) if self.choices else None,
+            "options": self.options,
+            "display_type": self.display_type,
+            "auth_policy": self.auth_policy,
         }
 
 
@@ -80,19 +87,32 @@ def register(
     session_key: str,
     question: str,
     choices: Optional[List[str]],
+    options: Optional[List[Dict[str, Any]]] = None,
+    display_type: Optional[str] = None,
+    auth_policy: Optional[str] = None,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
     The caller (gateway clarify_callback) will then send the prompt to the
     user and block on ``wait_for_response(clarify_id, timeout)``.
+
+    For the rich path (``options`` is not None), ``choices`` must be None.
     """
+    # Determine awaiting_text:
+    # - Simple with choices -> False (buttons will handle it)
+    # - Simple open-ended (no choices) -> True (next message is the response)
+    # - Rich with options -> False (buttons/views handle it)
+    is_open = not bool(choices) and options is None
+
     entry = _ClarifyEntry(
         clarify_id=clarify_id,
         session_key=session_key,
         question=question,
         choices=list(choices) if choices else None,
-        # Open-ended (no choices) → next message IS the response, no buttons needed.
-        awaiting_text=not bool(choices),
+        awaiting_text=is_open,
+        options=options,
+        display_type=display_type,
+        auth_policy=auth_policy,
     )
     with _lock:
         _entries[clarify_id] = entry

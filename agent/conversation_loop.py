@@ -5329,6 +5329,14 @@ def run_conversation(
                         args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
                         logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
                 
+                # Uniquify duplicate tool-call ids BEFORE any downstream
+                # consumer (validation error paths, dispatch, history build,
+                # Responses item-id derivation). Models that reuse one id for
+                # different calls in a batch otherwise lose the later call's
+                # result: the pre-API sanitizer keeps only the first
+                # call/result pair per id. See _uniquify_tool_call_ids.
+                agent._uniquify_tool_call_ids(assistant_message.tool_calls)
+
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:

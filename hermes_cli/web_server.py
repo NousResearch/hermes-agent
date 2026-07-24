@@ -7062,6 +7062,22 @@ def _catalog_provider_env_metadata() -> dict:
                 "advanced": existing.get("advanced", True),
                 "category": "provider",
             }
+            # API key (Express Mode) env vars — shown when using API key auth.
+            for api_key_env, desc in (
+                ("GOOGLE_VERTEX_API_KEY", "Vertex AI API key (Express Mode)"),
+                ("GOOGLE_VERTEX_PROJECT", "Vertex AI GCP project ID"),
+                ("GOOGLE_VERTEX_LOCATION", "Vertex AI region (default: us-central1)"),
+            ):
+                ek = meta.get(api_key_env, {})
+                meta[api_key_env] = {
+                    "provider": d.slug,
+                    "provider_label": d.label,
+                    "description": ek.get("description") or desc,
+                    "url": ek.get("url"),
+                    "is_password": api_key_env == "GOOGLE_VERTEX_API_KEY",
+                    "advanced": ek.get("advanced", False),
+                    "category": "provider",
+                }
     return meta
 
 

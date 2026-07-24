@@ -5314,8 +5314,13 @@ def resolve_provider_client(
                          "no GCP credentials found")
             return None, None
 
-        token, base_url = get_vertex_config()
-        if not token or not base_url:
+        from agent.vertex_adapter import (
+            get_vertex_config,
+            has_vertex_api_key,
+        )
+
+        token_or_key, base_url, auth_header = get_vertex_config()
+        if not token_or_key or not base_url:
             logger.warning("resolve_provider_client: vertex requested but "
                            "could not mint token / resolve project")
             return None, None
@@ -5324,7 +5329,19 @@ def resolve_provider_client(
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
+
+            if auth_header == "x-goog-api-key":
+                # Express Mode — use the API key as x-goog-api-key header
+                # instead of Authorization: Bearer (which only works for
+                # OAuth2 tokens).
+                client = OpenAI(
+                    api_key="",
+                    base_url=base_url,
+                    default_headers={"x-goog-api-key": token_or_key},
+                )
+            else:
+                # Standard OAuth2 — pass token as Authorization: Bearer
+                client = OpenAI(api_key=token_or_key, base_url=base_url)
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)

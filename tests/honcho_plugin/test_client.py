@@ -378,7 +378,15 @@ class TestResolveConfigPath:
         fake_home.mkdir()
 
         with patch.dict(os.environ, {}, clear=False), \
-             patch.object(Path, "home", return_value=fake_home):
+             patch.object(Path, "home", return_value=fake_home), \
+             patch(
+                 "plugins.memory.honcho.client.get_hermes_home",
+                 return_value=fake_home / ".hermes",
+             ), \
+             patch(
+                 "plugins.memory.honcho.client._get_default_hermes_home",
+                 return_value=fake_home / ".hermes",
+             ):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
         assert result == fake_home / ".honcho" / "config.json"

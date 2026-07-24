@@ -29,6 +29,43 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
+# Strip only explicit quotes/transcripts of prior Hermes output. Bare user
+# statements such as "Hermes is useful" or "Hermes has memory" are legitimate
+# assertions and must remain available to the deriver.
+_AGENT_SELF_QUOTE_VERBS = (
+    r"said|reported|confirmed|identified|provided|outlined|created|saved|"
+    r"noted|asked|required|received|believes|described|added|changed|"
+    r"verifies|verified|wanted|completed|commits|requires|continues|sent|started"
+)
+_AGENT_SELF_QUOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Markdown blockquote containing a third-person Hermes report.
+    re.compile(
+        rf"^\s*>\s*hermes\s+(?:{_AGENT_SELF_QUOTE_VERBS})\b[^\n]{{0,400}}$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # Quoted third-person report, including straight or curly quote marks.
+    re.compile(
+        rf"(?:[\"']|\u201c|\u2018)hermes\s+(?:{_AGENT_SELF_QUOTE_VERBS})\b"
+        r"[^\"'\u201c\u201d\u2018\u2019\n]{0,400}(?:[\"']|\u201d|\u2019)",
+        re.IGNORECASE,
+    ),
+    # Explicit transcript labels are always copied assistant output.
+    re.compile(
+        r"^\s*(?:assistant|hermes)\s*:\s*[^\n]{0,400}$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+)
+
+
+def _strip_agent_self_quotes(text: str) -> str:
+    """Remove explicit copies of prior Hermes output from user content."""
+    if not text:
+        return text
+    for pattern in _AGENT_SELF_QUOTE_PATTERNS:
+        text = pattern.sub("[quoted Hermes output omitted]", text)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
@@ -1330,6 +1367,20 @@ class HonchoMemoryProvider(MemoryProvider):
 
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
+
+        **Skips assistant messages by default.** Assistant output is
+        dominated by self-narration, status reports, and tool-call traces.
+        The Honcho deriver's extraction prompt reads assistant output as
+        facts about the `hermes` peer, which inflates the AI Self-
+        Representation with debug breadcrumbs and re-asserting "hermes
+        said X" lines on every turn — the exact pattern that fed the
+        2026-07-18 self-trust loop and that PR #66770's renderer only
+        partially mitigates. Source-side fix is the right layer.
+
+        The user message stream still goes in (legitimate). The assistant
+        stream does not. AI identity / config / system-prompt seeds go
+        through the separate `HonchoSessionManager.seed_ai_identity` path
+        in `session.py` and are unaffected.
         """
         if self._cron_skipped:
             return
@@ -1341,15 +1392,23 @@ class HonchoMemoryProvider(MemoryProvider):
 
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        # Strip third-person agent-self-quote phrases that the Honcho deriver
+        # would otherwise extract as Explicit Observations on the `hermes`
+        # observer peer. When the user message quotes prior tool output
+        # (e.g. "hermes verified that..." or "hermes reported that..."), the
+        # deriver reads those quotes and turns them into re-asserting
+        # "hermes said X" observations — feeding the self-trust loop.
+        # Replace each match with a placeholder so positional context isn't
+        # lost, then strip a leading "hermes " if the line now starts with
+        # one (which would itself be a pollution pattern).
+        clean_user_content = _strip_agent_self_quotes(clean_user_content)
 
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
                 for chunk in self._chunk_message(clean_user_content, msg_limit):
                     session.add_message("user", chunk)
-                for chunk in self._chunk_message(clean_assistant_content, msg_limit):
-                    session.add_message("assistant", chunk)
+                # Assistant content intentionally not written. See docstring.
                 self._manager._flush_session(session)
             except Exception as e:
                 logger.debug("Honcho sync_turn failed: %s", e)

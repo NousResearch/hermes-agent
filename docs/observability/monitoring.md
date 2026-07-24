@@ -48,9 +48,9 @@ hermes monitoring status
 
 The OpenTelemetry SDK is an optional extra (`pip install 'hermes-agent[otlp]'`),
 lazy-installed on first use. When the SDK is missing or the endpoint is down,
-the gateway runs unaffected: every export path is fail-open and off the hot
-path (events flow through a fire-and-forget in-process emitter; a slow or
-failing exporter can never block gateway code).
+the gateway runs unaffected: metric collection and ordinary event export stay
+off the hot path, while terminal cron events make one bounded fail-open flush
+attempt of up to one second so the final state is less likely to be lost.
 
 Works identically under systemd/launchd/s6 supervision, containers, tmux, or
 a plain `hermes gateway run` — the exporter lives in the gateway process, so

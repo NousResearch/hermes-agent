@@ -48,6 +48,15 @@ hermes tools
 # → 🐦 X (Twitter) Search   (press space to toggle on)
 ```
 
+Non-interactive `hermes tools enable x_search` applies to the CLI platform by
+default. If you use a messaging gateway with explicit `platform_toolsets`
+configured, enable it for that platform too:
+
+```bash
+hermes tools enable --platform matrix x_search
+systemctl --user restart hermes-gateway.service
+```
+
 The picker offers two credential choices:
 
 1. **xAI Grok OAuth (SuperGrok / Premium+)** — opens the browser to `accounts.x.ai` if you're not already logged in

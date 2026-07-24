@@ -4688,6 +4688,30 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
     _save_platform_tools(config, platform, updated)
 
 
+def _platforms_missing_toolset(config: dict, toolset_name: str, exclude_platform: str) -> List[str]:
+    """Return explicitly configured platforms that do not include a toolset.
+
+    Keep this helper toolset-agnostic so future CLI-vs-gateway visibility
+    gaps can reuse the same check; ``x_search`` is only the first caller.
+
+    Non-interactive ``hermes tools enable`` defaults to the CLI platform.  Users
+    often run it after seeing a tool in the CLI list, then expect Matrix or
+    another gateway to see the same tool.  Only warn for platforms that already
+    have explicit platform_toolsets lists; default/unconfigured platforms can
+    still receive credential-gated auto-enable behavior.
+    """
+    platform_toolsets = config.get("platform_toolsets") or {}
+    missing: List[str] = []
+    for pkey, configured_toolsets in platform_toolsets.items():
+        if pkey == exclude_platform or pkey not in PLATFORMS:
+            continue
+        if not isinstance(configured_toolsets, list):
+            continue
+        if toolset_name not in {str(ts) for ts in configured_toolsets}:
+            missing.append(pkey)
+    return sorted(missing)
+
+
 def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]:
     """Add or remove specific MCP tools from a server's exclude list.
 
@@ -4818,4 +4842,12 @@ def tools_disable_enable_command(args):
     ]
     if successful:
         verb = "Disabled" if action == "disable" else "Enabled"
-        _print_success(f"{verb}: {', '.join(successful)}")
+        _print_success(f"{verb} for {platform}: {', '.join(successful)}")
+        if action == "enable" and platform == "cli" and "x_search" in successful:
+            missing_platforms = _platforms_missing_toolset(config, "x_search", platform)
+            if missing_platforms:
+                _print_info(
+                    "x_search was enabled for CLI only. To expose it in a "
+                    "gateway, also run e.g. `hermes tools enable --platform "
+                    "matrix x_search`."
+                )

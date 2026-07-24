@@ -59,6 +59,22 @@ class TestToolsEnableBuiltin:
         saved = mock_save.call_args[0][0]
         assert saved["platform_toolsets"]["cli"].count("web") == 1
 
+    def test_enable_x_search_cli_warns_when_matrix_explicitly_missing_it(self, capsys):
+        config = {
+            "platform_toolsets": {
+                "cli": ["web"],
+                "matrix": ["web", "memory"],
+            }
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config"):
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["x_search"], platform="cli")
+            )
+        out = capsys.readouterr().out
+        assert "Enabled for cli: x_search" in out
+        assert "hermes tools enable --platform matrix x_search" in out
+
 
 # ── MCP tool disable ────────────────────────────────────────────────────────
 

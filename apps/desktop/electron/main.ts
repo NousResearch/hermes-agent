@@ -9211,6 +9211,23 @@ async function remoteSessionList(profile, searchParams) {
   return { ...(data as any), sessions: rowsOf(data) }
 }
 
+// Primary-connection GET that stays authenticated for OAuth primaries, whose
+// token is null by design. Prefer the native RFC 8252 bearer when held, else
+// ride the cookie-bound session partition — plain fetchJson(url, primary.token)
+// 401s and callers' .catch silently blanks the primary profile's session rows
+// (mirrors the requestJsonForProfile pattern).
+async function fetchPrimaryGetJson(primary, url) {
+  const opts = { method: 'GET', timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
+  if (primary.authMode === 'oauth') {
+    const nativeAt = await ensureNativeAccessToken(primary.baseUrl).catch(() => null)
+    if (nativeAt) {
+      return fetchJson(url, null, { ...opts, bearer: nativeAt })
+    }
+    return fetchJsonViaOauthSession(url, opts)
+  }
+  return fetchJson(url, primary.token, opts)
+}
+
 // Resolve one /api/profiles/sessions slice with remote profiles spliced in —
 // the same branch logic as the GET /api/profiles/sessions intercept, but always
 // returns data (never `undefined`) so a batched caller can compose slices. A
@@ -9226,10 +9243,9 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
 
     const primary = await ensureBackend(null)
 
-    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-      method: 'GET',
-      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+    // OAuth-aware: token is null for OAuth primaries — see fetchPrimaryGetJson.
+    return fetchPrimaryGetJson(primary, `${primary.baseUrl}/api/profiles/sessions?${searchParams}`)
+      .catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
   }
 
   return mergeRemoteProfileSessions(searchParams, remoteProfiles)
@@ -9246,10 +9262,11 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
 
   const primary = await ensureBackend(null)
 
-  const base = (await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-    method: 'GET',
-    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
+  // Same OAuth caveat as fetchProfilesSessionSlice: token is null for OAuth
+  // primaries, so without the auth-aware fetch the base aggregate 401s and
+  // silently contributes zero rows.
+  const base = (await fetchPrimaryGetJson(primary, `${primary.baseUrl}/api/profiles/sessions?${searchParams}`)
+    .catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.

@@ -829,6 +829,19 @@ export const en: Translations = {
         title: 'Local / custom endpoint',
         description: 'Point Hermes at any OpenAI-compatible endpoint (Zyphra, vLLM, llama.cpp, Ollama, etc).'
       },
+      customEndpoint: {
+        title: 'Custom Endpoint',
+        description: 'Point Hermes at any OpenAI-compatible endpoint (Ollama, vLLM, etc).',
+        baseUrlLabel: 'Endpoint URL',
+        pasteApiKey: 'Paste API key',
+        removeApiKey: 'Remove API key',
+        removeConfirm: 'Remove API key?',
+        saved: 'Custom endpoint saved.',
+        apiKeyRemoved: 'API key removed.',
+        failedLoad: 'Failed to load custom endpoint',
+        failedSave: 'Failed to save custom endpoint',
+        failedRemove: 'Failed to remove API key'
+      },
       loading: 'Loading providers...'
     },
     sessions: {

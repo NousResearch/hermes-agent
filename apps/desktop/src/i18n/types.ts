@@ -710,6 +710,19 @@ export interface Translations {
         title: string
         description: string
       }
+      customEndpoint: {
+        title: string
+        description: string
+        baseUrlLabel: string
+        pasteApiKey: string
+        removeApiKey: string
+        removeConfirm: string
+        saved: string
+        apiKeyRemoved: string
+        failedLoad: string
+        failedSave: string
+        failedRemove: string
+      }
       loading: string
     }
     sessions: {

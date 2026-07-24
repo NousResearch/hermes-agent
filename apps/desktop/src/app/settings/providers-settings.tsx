@@ -13,9 +13,10 @@ import {
   sortProviders
 } from '@/components/onboarding'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { deleteCustomEndpoint, disconnectOAuthProvider, getCustomEndpoints, listOAuthProviders, saveCustomEndpoint } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -24,11 +25,11 @@ import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
-import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
+import { CREDENTIAL_CONTROL_CLASS, isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
-import { SettingsContent, SettingsSkeleton } from './primitives'
+import { ListRow, SettingsContent, SettingsSkeleton } from './primitives'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
 // exists in the Electron desktop shell, not the web dashboard.
@@ -331,6 +332,228 @@ function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void 
   )
 }
 
+function CustomEndpointKeyCard() {
+  const { t } = useI18n()
+  const ce = t.settings.providers.customEndpoint
+  const [expanded, setExpanded] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [savedBaseUrl, setSavedBaseUrl] = useState('')
+  const [baseUrlDraft, setBaseUrlDraft] = useState('')
+  const [apiKeyDraft, setApiKeyDraft] = useState<string | null>(null)
+  const [apiKeySet, setApiKeySet] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void getCustomEndpoints()
+      .then(response => {
+        if (cancelled) return
+        const current = response.endpoints.find(e => e.is_current) ?? response.endpoints[0]
+        if (current) {
+          setSavedBaseUrl(current.base_url ?? '')
+          setBaseUrlDraft(current.base_url ?? '')
+          setApiKeySet(current.has_api_key)
+        }
+      })
+      .catch(err => notifyError(err, ce.failedLoad))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const keyEditing = apiKeyDraft !== null
+  const baseUrlDirty = baseUrlDraft.trim() !== savedBaseUrl
+  const apiKeyDirty = Boolean(apiKeyDraft?.trim())
+  const dirty = baseUrlDirty || apiKeyDirty
+
+  async function save() {
+    if (!baseUrlDraft.trim() || !dirty) return
+    setSaving(true)
+    try {
+      const response = await getCustomEndpoints()
+      const current = response.endpoints.find(e => e.is_current) ?? response.endpoints[0]
+      if (!current) {
+        notifyError(new Error('No endpoint'), ce.failedSave)
+        return
+      }
+      const updated = await saveCustomEndpoint({
+        ...(apiKeyDirty ? { api_key: apiKeyDraft!.trim() } : {}),
+        base_url: baseUrlDraft.trim(),
+        context_length: current.context_length ?? undefined,
+        discover_models: current.discover_models,
+        id: current.id,
+        make_default: current.is_current,
+        model: current.model,
+        name: current.name
+      })
+      setSavedBaseUrl(current.base_url ?? '')
+      setBaseUrlDraft(current.base_url ?? '')
+      setApiKeySet(apiKeyDirty || updated.endpoints.some(e => e.id === current.id && e.has_api_key))
+      setApiKeyDraft(null)
+      notify({ kind: 'success', message: ce.saved })
+    } catch (err) {
+      notifyError(err, ce.failedSave)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function removeApiKey() {
+    if (!window.confirm(ce.removeConfirm)) return
+    setSaving(true)
+    try {
+      const response = await getCustomEndpoints()
+      const current = response.endpoints.find(e => e.is_current) ?? response.endpoints[0]
+      if (!current) return
+      await saveCustomEndpoint({ api_key: '', base_url: savedBaseUrl, id: current.id, model: current.model, name: current.name })
+      setApiKeyDraft(null)
+      setApiKeySet(false)
+      notify({ kind: 'success', message: ce.apiKeyRemoved })
+    } catch (err) {
+      notifyError(err, ce.failedRemove)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteEndpoint() {
+    if (!window.confirm(ce.removeConfirm)) return
+    setSaving(true)
+    try {
+      const response = await getCustomEndpoints()
+      const current = response.endpoints.find(e => e.is_current) ?? response.endpoints[0]
+      if (!current) return
+      await deleteCustomEndpoint(current.id)
+      setSavedBaseUrl('')
+      setBaseUrlDraft('')
+      setApiKeyDraft(null)
+      setApiKeySet(false)
+      notify({ kind: 'success', message: ce.apiKeyRemoved })
+    } catch (err) {
+      notifyError(err, ce.failedRemove)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return null
+
+  const busy = saving
+
+  return (
+    <div
+      className={cn(
+        '@container group/card rounded-[6px] p-3 transition-colors',
+        !expanded && 'row-hover',
+        expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
+      )}
+      onClick={() => setExpanded(v => !v)}
+      onKeyDown={e => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v) }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:gap-y-3">
+        <div className="flex h-8 min-w-0 items-center gap-2">
+          <span className={cn('size-2 shrink-0 rounded-full', savedBaseUrl ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')} />
+          <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            {ce.title}
+          </span>
+          <ChevronDown className={cn('size-3.5 shrink-0 text-muted-foreground transition', expanded ? 'rotate-180' : 'opacity-0 group-hover/card:opacity-100')} />
+        </div>
+
+        <div className="min-w-0" onClick={e => e.stopPropagation()}>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+            {apiKeySet && !keyEditing ? (
+              <Input
+                className={cn(CREDENTIAL_CONTROL_CLASS, !expanded && 'border-0! bg-transparent! shadow-none! h-auto! p-0! @2xl:h-8! @2xl:px-2.5! @2xl:py-1.5!', 'cursor-pointer text-muted-foreground')}
+                onFocus={() => setApiKeyDraft('')}
+                readOnly
+                value="••••••••"
+              />
+            ) : (
+              <Input
+                autoFocus={keyEditing}
+                className={cn(CREDENTIAL_CONTROL_CLASS, !expanded && 'border-0! bg-transparent! shadow-none! h-auto! p-0! @2xl:h-8! @2xl:px-2.5! @2xl:py-1.5!')}
+                onChange={e => setApiKeyDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && apiKeyDirty) void save()
+                  if (e.key === 'Escape') { e.preventDefault(); setApiKeyDraft(null) }
+                }}
+                placeholder={ce.pasteApiKey}
+                type="password"
+                value={apiKeyDraft ?? ''}
+              />
+            )}
+            <div className="flex items-center gap-1">
+              {keyEditing && (apiKeySet || apiKeyDirty) && (
+                <>
+                  {apiKeySet && (
+                    <Button aria-label={ce.removeApiKey} className="text-muted-foreground hover:text-destructive" disabled={busy} onClick={() => void removeApiKey()} size="icon-xs" title={ce.removeApiKey} type="button" variant="ghost">
+                      <Trash2 />
+                    </Button>
+                  )}
+                  {dirty && (
+                    <Button className="h-8" disabled={busy || !baseUrlDraft.trim()} onClick={() => void save()} size="sm">
+                      {busy ? <Loader2 className="animate-spin" /> : <Check />}
+                      {t.common.save}
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {expanded && (
+          <div className="grid gap-3 @2xl:col-span-2" onClick={e => e.stopPropagation()}>
+            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {ce.description}
+            </p>
+            <ListRow
+              action={
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                  <Input
+                    className={CREDENTIAL_CONTROL_CLASS}
+                    onChange={e => setBaseUrlDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && baseUrlDirty) void save() }}
+                    placeholder="http://127.0.0.1:11434/v1"
+                    value={loading ? '' : baseUrlDraft}
+                  />
+                  {savedBaseUrl && (
+                    <Button
+                      aria-label={t.common.remove}
+                      className="text-muted-foreground hover:text-destructive"
+                      disabled={busy}
+                      onClick={() => void deleteEndpoint()}
+                      size="icon-xs"
+                      title={t.common.remove}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
+                </div>
+              }
+              title={ce.baseUrlLabel}
+            />
+            {baseUrlDirty && !keyEditing && (
+              <div>
+                <Button className="h-8" disabled={busy || !baseUrlDraft.trim()} onClick={() => void save()} size="sm">
+                  {busy ? <Loader2 className="animate-spin" /> : <Check />}
+                  {t.common.save}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function ProvidersSettings({
   onClose,
   onConfigSaved,
@@ -455,6 +678,7 @@ export function ProvidersSettings({
     return (
       <SettingsContent>
         <LocalEndpointRow onOpen={startManualLocalEndpoint} />
+        <CustomEndpointKeyCard />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField

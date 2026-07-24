@@ -1443,19 +1443,39 @@ def setup_terminal_backend(config: dict):
             print_info("  Testing connection...")
             import subprocess
 
-            ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-            if ssh_key:
-                ssh_cmd.extend(["-i", ssh_key])
-            if port and port != "22":
-                ssh_cmd.extend(["-p", port])
-            ssh_cmd.append(f"{user}@{host}" if user else host)
-            ssh_cmd.append("echo ok")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-            if result.returncode == 0:
-                print_success("  SSH connection successful!")
+            if shutil.which("ssh") is None:
+                print_warning(
+                    "  SSH client not found on PATH — install OpenSSH to test the connection."
+                )
             else:
-                print_warning(f"  SSH connection failed: {result.stderr.strip()}")
-                print_info("  Check your SSH key and host settings.")
+                ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+                if ssh_key:
+                    ssh_cmd.extend(["-i", ssh_key])
+                if port and port != "22":
+                    ssh_cmd.extend(["-p", port])
+                ssh_cmd.append(f"{user}@{host}" if user else host)
+                ssh_cmd.append("echo ok")
+                try:
+                    result = subprocess.run(
+                        ssh_cmd,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=10,
+                    )
+                except subprocess.TimeoutExpired:
+                    print_warning(
+                        "  SSH connection test timed out after 10s. Check the host and network."
+                    )
+                except OSError as exc:
+                    print_warning(f"  Could not run the SSH client: {exc}")
+                else:
+                    if result.returncode == 0:
+                        print_success("  SSH connection successful!")
+                    else:
+                        print_warning(f"  SSH connection failed: {result.stderr.strip()}")
+                        print_info("  Check your SSH key and host settings.")
 
     # Sync terminal backend to .env so terminal_tool picks it up directly.
     # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.

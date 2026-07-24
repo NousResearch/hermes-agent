@@ -2,6 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 import type { BillingBlock } from '@hermes/shared'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import { extractImageRefs } from '@/lib/embedded-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
@@ -912,7 +913,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const content = message.content || message.text || message.context || message.name
 
-    const displayContent = transcriptContent(
+    const rawDisplayContent = transcriptContent(
       message.display_kind,
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
@@ -921,6 +922,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
         ? 'system'
         : message.role
+
+    // Persisted user turns carry `@image:<path>` directive lines inline in
+    // the text (see tui_gateway/server.py's persist-time rewrite). The
+    // read-only bubble clamps its body to ~2 lines, and a large inline image
+    // thumbnail pushes any caption text below the clamp's visible area — so
+    // pull image refs out into `attachmentRefs` (same shape the local
+    // optimistic composer already uses) and render them via the dedicated
+    // attachments row below the bubble instead.
+    const imageRefExtraction = displayRole === 'user' ? extractImageRefs(rawDisplayContent) : null
+    const displayContent = imageRefExtraction ? imageRefExtraction.cleanedText : rawDisplayContent
+    const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
 
     const parts: ChatMessagePart[] = []
 
@@ -941,7 +953,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       parts.push(...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex)))
     }
 
-    if (!parts.length) {
+    if (!parts.length && !extractedAttachmentRefs?.length) {
       if (message.role !== 'assistant') {
         flushPendingTools(index)
         activeAssistantIndex = null
@@ -991,7 +1003,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
-      timestamp: message.timestamp
+      timestamp: message.timestamp,
+      ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
@@ -1003,7 +1016,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   )
 
   return withUniqueToolCallIds(
-    withoutGeneratedImageEchoes.filter(m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
+    withoutGeneratedImageEchoes.filter(
+      m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length
+    )
   )
 }
 

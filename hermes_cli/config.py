@@ -946,6 +946,11 @@ DEFAULT_CONFIG = {
     "max_live_sessions": 16,
     "agent": {
         "max_turns": 90,
+        # Enable the skill knowledge graph for dynamic skill discovery.
+        # When true, replaces the flat skill index in the system prompt
+        # with graph-based routing instructions. Requires the skill-graph
+        # plugin to be enabled.  Default false (opt-in).
+        "skill_graph_mode": False,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

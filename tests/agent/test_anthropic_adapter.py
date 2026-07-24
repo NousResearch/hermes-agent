@@ -1394,7 +1394,10 @@ class TestConvertMessages:
 
         assert system == "You are helpful."
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        # Filler text must be non-whitespace or Anthropic 400s the request with
+        # "messages: text content blocks must contain non-whitespace text".
+        assert result[0]["content"] == [{"type": "text", "text": "(empty)"}]
+        assert result[0]["content"][0]["text"].strip() != ""
         assert result[1]["role"] == "assistant"
         assert any(
             m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
@@ -1418,9 +1421,41 @@ class TestConvertMessages:
 
         assert system is None
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        # Filler text must be non-whitespace or Anthropic 400s the request with
+        # "messages: text content blocks must contain non-whitespace text".
+        assert result[0]["content"] == [{"type": "text", "text": "(empty)"}]
+        assert result[0]["content"][0]["text"].strip() != ""
         assert result[1]["role"] == "assistant"
         assert "Context compaction summary" in str(result[1]["content"])
+
+    def test_synthesized_leading_user_turn_is_non_whitespace(self):
+        """Resumed sessions whose active window opens on an assistant tool-call
+        turn must get a NON-whitespace leading user turn.
+
+        Regression for the Anthropic HTTP 400 "messages: text content blocks
+        must contain non-whitespace text". The synthesized filler previously used
+        a single space (" "), which Anthropic rejects. Any resumed/compacted
+        session whose first live message is an assistant turn tripped it.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",  # tool-call turn with no preamble text
+                "tool_calls": [
+                    {"id": "toolu_1", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "ok"},
+            {"role": "user", "content": "continue"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert result[0]["role"] == "user"
+        block = result[0]["content"][0]
+        assert block["type"] == "text"
+        # The property that actually matters to the Messages API: printable text.
+        assert block["text"].strip() != ""
 
     def test_leading_user_message_is_not_modified(self):
         """A normal transcript that already starts with user must be untouched."""

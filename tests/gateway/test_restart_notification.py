@@ -73,6 +73,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
+    assert data["user_id"] == "u1"
     assert data["message_id"] == "m1"
     assert "thread_id" not in data  # no thread → omitted
 
@@ -382,6 +383,8 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
     notify_path.write_text(json.dumps({
         "platform": "telegram",
         "chat_id": "42",
+        "user_id": "u1",
+        "chat_type": "dm",
     }))
 
     runner, adapter = make_restart_runner()
@@ -408,6 +411,7 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
         "platform": "telegram",
         "chat_id": "99",
         "chat_type": "dm",
+        "user_id": "u1",
         "thread_id": "777",
         "message_id": "m2",
     }))
@@ -425,6 +429,125 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
         "direct_messages_topic_id": "777",
         "telegram_reply_to_message_id": "m2",
     }
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_skips_stale_marker_missing_identity(tmp_path, monkeypatch):
+    """Old restart markers without requester identity are cleaned without sending."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "123456",
+        # Deliberately no user_id/chat_type: old marker format.
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner._is_user_authorized = MagicMock(return_value=True)
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    runner._is_user_authorized.assert_not_called()
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_allows_identityless_authorized_group(
+    tmp_path, monkeypatch
+):
+    """Chat-scoped authorization supports group markers without a user ID."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100123",
+        "chat_type": "group",
+    }))
+
+    runner, adapter = make_restart_runner()
+    real_authorize = gateway_run.GatewayRunner._is_user_authorized.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+    runner._is_user_authorized = MagicMock(wraps=real_authorize)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100123", None)
+    runner._is_user_authorized.assert_called_once()
+    checked_source = runner._is_user_authorized.call_args.args[0]
+    assert checked_source.chat_id == "-100123"
+    assert checked_source.user_id is None
+    assert checked_source.chat_type == "group"
+    adapter.send.assert_called_once()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_rejects_identityless_unauthorized_group(
+    tmp_path, monkeypatch
+):
+    """An identity-less marker still requires chat-scoped authorization."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100999")
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100123",
+        "chat_type": "group",
+    }))
+
+    runner, adapter = make_restart_runner()
+    real_authorize = gateway_run.GatewayRunner._is_user_authorized.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+    runner._is_user_authorized = MagicMock(wraps=real_authorize)
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    runner._is_user_authorized.assert_called_once()
+    checked_source = runner._is_user_authorized.call_args.args[0]
+    assert checked_source.user_id is None
+    adapter.send.assert_not_called()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_skips_unauthorized_marker(tmp_path, monkeypatch):
+    """Current markers are re-authorized by requester user_id, not chat_id."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "channel-42",
+        "user_id": "user-99",
+        "chat_type": "group",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner._is_user_authorized = MagicMock(return_value=False)
+    adapter.send = AsyncMock()
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    runner._is_user_authorized.assert_called_once()
+    checked_source = runner._is_user_authorized.call_args.args[0]
+    assert checked_source.chat_id == "channel-42"
+    assert checked_source.user_id == "user-99"
+    assert checked_source.chat_type == "group"
+    adapter.send.assert_not_called()
     assert not notify_path.exists()
 
 
@@ -450,6 +573,8 @@ async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, mo
     notify_path.write_text(json.dumps({
         "platform": "discord",  # runner only has telegram adapter
         "chat_id": "42",
+        "user_id": "u1",
+        "chat_type": "dm",
     }))
 
     runner, _adapter = make_restart_runner()
@@ -471,6 +596,8 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
     notify_path.write_text(json.dumps({
         "platform": "telegram",
         "chat_id": "42",
+        "user_id": "u1",
+        "chat_type": "dm",
     }))
 
     runner, adapter = make_restart_runner()
@@ -503,6 +630,8 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     notify_path.write_text(json.dumps({
         "platform": "telegram",
         "chat_id": "42",
+        "user_id": "u1",
+        "chat_type": "dm",
     }))
 
     runner, adapter = make_restart_runner()
@@ -599,6 +728,8 @@ async def test_send_restart_notification_skipped_when_flag_disabled(
     notify_path.write_text(json.dumps({
         "platform": "telegram",
         "chat_id": "42",
+        "user_id": "u1",
+        "chat_type": "dm",
     }))
 
     runner, adapter = make_restart_runner()
@@ -625,6 +756,8 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
     notify_path.write_text(json.dumps({
         "platform": "telegram",
         "chat_id": "42",
+        "user_id": "u1",
+        "chat_type": "dm",
     }))
 
     runner, adapter = make_restart_runner()

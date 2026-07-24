@@ -38,6 +38,12 @@ _CODEX_SOFT_ACCEPT = {
     ),
 }
 
+_AMBIGUOUS_BUILTIN_MODEL = "gpt-test-collision"
+_AMBIGUOUS_PROVIDER_CATALOG = {
+    "openai-api": [_AMBIGUOUS_BUILTIN_MODEL],
+    "openai-codex": [_AMBIGUOUS_BUILTIN_MODEL],
+}
+
 
 def _run_switch(
     *,
@@ -46,6 +52,9 @@ def _run_switch(
     user_providers=None,
     custom_providers=None,
     validation=_ACCEPTED,
+    detected_provider=None,
+    authenticated_providers=None,
+    explicit_provider="",
     current_model="old-model",
     current_base_url="",
 ):
@@ -61,7 +70,8 @@ def _run_switch(
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
          patch("hermes_cli.models.validate_requested_model", return_value=validation), \
-         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=detected_provider), \
+         patch("hermes_cli.model_switch.get_authenticated_provider_slugs", return_value=authenticated_providers or []), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
          patch(
@@ -79,6 +89,7 @@ def _run_switch(
             current_base_url=current_base_url,
             user_providers=user_providers or {},
             custom_providers=custom_providers or [],
+            explicit_provider=explicit_provider,
         )
 
 
@@ -101,6 +112,48 @@ def test_typed_configured_model_routes_away_from_openai_codex():
     assert result.success is True, result.error_message
     assert result.target_provider == "local-ollama"
     assert result.new_model == "qwen3.5-4b"
+
+
+def test_ambiguous_builtin_model_prefers_authenticated_codex_before_static_detector():
+    """Bare ids can exist in several static catalogs. If the user is
+    authenticated for Codex, a colliding bare id should not be hijacked by the
+    direct OpenAI API catalog just because it appears earlier in the static
+    provider scan."""
+    with patch.dict(
+        "hermes_cli.models._PROVIDER_MODELS",
+        _AMBIGUOUS_PROVIDER_CATALOG,
+        clear=True,
+    ):
+        result = _run_switch(
+            raw_input=_AMBIGUOUS_BUILTIN_MODEL,
+            current_provider="zai",
+            current_model="glm-5.2",
+            detected_provider=("openai-api", _AMBIGUOUS_BUILTIN_MODEL),
+            authenticated_providers=["openai-codex"],
+        )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openai-codex"
+    assert result.new_model == _AMBIGUOUS_BUILTIN_MODEL
+
+
+def test_explicit_provider_still_wins_for_ambiguous_builtin_model():
+    """The authenticated-provider preference only applies to bare model
+    auto-detection. An explicit provider flag remains authoritative."""
+    with patch.dict(
+        "hermes_cli.models._PROVIDER_MODELS",
+        _AMBIGUOUS_PROVIDER_CATALOG,
+        clear=True,
+    ):
+        result = _run_switch(
+            raw_input=_AMBIGUOUS_BUILTIN_MODEL,
+            current_provider="zai",
+            current_model="glm-5.2",
+            explicit_provider="openai-api",
+            authenticated_providers=["openai-codex", "openai-api"],
+        )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openai-api"
+    assert result.new_model == _AMBIGUOUS_BUILTIN_MODEL
 
 
 def test_typed_configured_model_routes_to_custom_provider():

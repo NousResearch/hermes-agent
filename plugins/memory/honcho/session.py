@@ -964,7 +964,12 @@ class HonchoSessionManager:
         *,
         target: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch representation + peer card directly from a peer object."""
+        """Fetch representation + peer card directly from a peer object.
+
+        When an observer requests context for a different target, merge the
+        observer-owned scope with the target peer's self-scope. Conclusions
+        may be stored in either scope depending on the observation settings.
+        """
         peer = self._get_or_create_peer(peer_id)
         representation = ""
         card: list[str] = []
@@ -998,6 +1003,25 @@ class HonchoSessionManager:
                 card = self._fetch_peer_card(peer_id, target=target)
             except Exception as e:
                 logger.debug("Direct peer card fetch failed for '%s': %s", peer_id, e)
+
+        # Conclusions about a target may also live in its self-scope
+        # (target observing target). Keep the observer-owned result primary,
+        # and treat a failed self-scope lookup as non-fatal.
+        if target is not None and target != peer_id:
+            try:
+                self_ctx = self._fetch_peer_context(
+                    target,
+                    search_query=search_query,
+                    target=target,
+                )
+                self_representation = self_ctx["representation"]
+                if self_representation:
+                    representation = "\n\n".join(
+                        part for part in (representation, self_representation) if part
+                    )
+                card.extend(item for item in self_ctx["card"] if item not in card)
+            except Exception as e:
+                logger.debug("Target peer self-scope fetch failed for '%s': %s", target, e)
 
         return {"representation": representation, "card": card}
 

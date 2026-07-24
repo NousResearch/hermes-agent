@@ -348,18 +348,24 @@ class TestPeerLookupHelpers:
                 else ["Name: Robert"]
             ),
         )
-        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
+        mgr._get_or_create_peer = MagicMock(
+            side_effect=lambda peer_id: (
+                ai_peer if peer_id == session.assistant_peer_id else user_peer
+            )
+        )
 
         result = mgr.get_prefetch_context(session.key)
 
         assert result == {
-            "representation": "User representation",
+            "representation": "Mixed representation\n\nUser representation",
             "card": "Name: Robert",
             "ai_representation": "AI representation",
             "ai_card": "Role: Assistant",
         }
         user_peer.context.assert_called_once_with(target=session.user_peer_id)
-        ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
+        assert ai_peer.context.call_count == 2
+        ai_peer.context.assert_any_call(target=session.user_peer_id)
+        ai_peer.context.assert_any_call(target=session.assistant_peer_id)
 
     def test_get_prefetch_context_uses_assistant_observer_for_user_when_ai_observe_others(self):
         """With ai_observe_others enabled, get_prefetch_context must query
@@ -383,21 +389,115 @@ class TestPeerLookupHelpers:
             return SimpleNamespace(representation="Unknown", peer_card=[])
 
         assistant_peer.context.side_effect = _assistant_context
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="User self",
+            peer_card=["Prefers: concise answers"],
+        )
         mgr._get_or_create_peer = MagicMock(
-            side_effect=[assistant_peer, assistant_peer],
+            side_effect=lambda peer_id: (
+                assistant_peer if peer_id == session.assistant_peer_id else user_peer
+            ),
         )
 
         result = mgr.get_prefetch_context(session.key)
 
         assert result == {
-            "representation": "User via assistant",
-            "card": "Name: Robert",
+            "representation": "User via assistant\n\nUser self",
+            "card": "Name: Robert\nPrefers: concise answers",
             "ai_representation": "AI self",
             "ai_card": "Role: Assistant",
         }
         assert assistant_peer.context.call_count == 2
         assistant_peer.context.assert_any_call(target=session.user_peer_id)
         assistant_peer.context.assert_any_call(target=session.assistant_peer_id)
+
+    def test_fetch_peer_context_merges_directional_and_target_self_scopes(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
+            representation="Assistant-observed context",
+            peer_card=["Location: Melbourne"],
+        )
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="User self-scope context",
+            peer_card=["Prefers: concise answers"],
+        )
+        mgr._get_or_create_peer = MagicMock(
+            side_effect=lambda peer_id: (
+                assistant_peer if peer_id == session.assistant_peer_id else user_peer
+            )
+        )
+
+        result = mgr._fetch_peer_context(
+            session.assistant_peer_id,
+            search_query="preferences",
+            target=session.user_peer_id,
+        )
+
+        assert result == {
+            "representation": "Assistant-observed context\n\nUser self-scope context",
+            "card": ["Location: Melbourne", "Prefers: concise answers"],
+        }
+        assistant_peer.context.assert_called_once_with(
+            target=session.user_peer_id,
+            search_query="preferences",
+        )
+        user_peer.context.assert_called_once_with(
+            target=session.user_peer_id,
+            search_query="preferences",
+        )
+
+    def test_fetch_peer_context_preserves_primary_result_when_self_scope_fails(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
+            representation="Primary representation",
+            peer_card=["Primary card"],
+        )
+
+        def _peer(peer_id):
+            if peer_id == session.assistant_peer_id:
+                return assistant_peer
+            raise RuntimeError("self-scope unavailable")
+
+        mgr._get_or_create_peer = MagicMock(side_effect=_peer)
+
+        result = mgr._fetch_peer_context(
+            session.assistant_peer_id,
+            target=session.user_peer_id,
+        )
+
+        assert result == {
+            "representation": "Primary representation",
+            "card": ["Primary card"],
+        }
+
+    def test_fetch_peer_context_assistant_self_uses_one_scope_call(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
+            representation="Assistant self context",
+            peer_card=["Role: Assistant"],
+        )
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        result = mgr._fetch_peer_context(
+            session.assistant_peer_id,
+            search_query="identity",
+            target=session.assistant_peer_id,
+        )
+
+        assert result == {
+            "representation": "Assistant self context",
+            "card": ["Role: Assistant"],
+        }
+        mgr._get_or_create_peer.assert_called_once_with(session.assistant_peer_id)
+        assistant_peer.context.assert_called_once_with(
+            target=session.assistant_peer_id,
+            search_query="identity",
+        )
 
     def test_get_ai_representation_uses_peer_api(self):
         mgr, session = self._make_cached_manager()

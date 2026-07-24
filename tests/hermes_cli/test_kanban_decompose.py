@@ -293,6 +293,149 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
     assert child.assignee == "fallback"
 
 
+def test_large_refactor_guard_forces_split_before_worker_spawn(kanban_home):
+    file_list = "\n".join(f"src/package/module_{i}.py" for i in range(10))
+    body = f"Extract the Discord intake workflow into a plugin.\n{file_list}"
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="Extract Discord intake plugin", body=body, triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "large refactor split",
+        "tasks": [
+            {"title": "audit current intake", "body": "Map current files only.", "assignee": "engineer", "parents": []},
+            {"title": "extract package shell", "body": "Move the smallest package slice.", "assignee": "engineer", "parents": [0]},
+            {"title": "verify extracted intake", "body": "Run focused tests and smoke checks.", "assignee": "engineer", "parents": [1]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload) as aux_patch, _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids and len(outcome.child_ids) == 3
+    messages = aux_patch.call_args.kwargs["messages"]
+    assert "Large-refactor guard: ACTIVE" in messages[1]["content"]
+    assert "fanout=true with 3-5 smaller child tasks" in messages[1]["content"]
+
+    with kb.connect() as conn:
+        comments = kb.list_comments(conn, tid)
+    assert any("Large-refactor guard split this card" in c.body for c in comments)
+
+
+def test_large_refactor_guard_preserves_narrow_singleton_refactors(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Refactor provider routing",
+            body="Refactor this across src/a.py and src/b.py without splitting.",
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Refactor provider routing",
+        "body": "Do everything in one task.",
+        "assignee": "engineer",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is False
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "ready"
+
+
+def test_large_refactor_guard_rejects_broad_single_task_collapse(kanban_home):
+    file_list = "\n".join(f"src/package/module_{i}.py" for i in range(10))
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Refactor provider routing",
+            body=f"Refactor provider routing across these files.\n{file_list}",
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Refactor provider routing",
+        "body": "Do everything in one task.",
+        "assignee": "engineer",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "large-refactor guard requires fanout=true" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+
+
+@pytest.mark.parametrize("child_count", [2, 6])
+def test_large_refactor_guard_rejects_child_count_boundaries(kanban_home, child_count):
+    file_list = "\n".join(f"src/package/module_{i}.py" for i in range(10))
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Extract Discord intake plugin",
+            body=f"Extract the Discord intake workflow into a plugin.\n{file_list}",
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "bad child count",
+        "tasks": [
+            {"title": f"slice {i}", "body": "Do one slice.", "assignee": "engineer", "parents": []}
+            for i in range(child_count)
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "large-refactor guard requires 3-5 child tasks" in outcome.reason
+
+
 def test_decompose_handles_malformed_llm_json(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)

@@ -168,6 +168,74 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_children_do_not_inherit_root_notification_subscriptions_by_default(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="notify root only")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="weixin",
+            chat_id="chat-123",
+            thread_id="thread-456",
+            user_id="user-789",
+            notifier_profile="default",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[{"title": "backend", "assignee": "mabu"}],
+            author="alice",
+        )
+
+    assert child_ids is not None
+    with kb.connect() as conn:
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+        assert kb.list_notify_subs(conn, child_ids[0]) == []
+
+
+def test_decompose_children_can_inherit_root_notification_subscriptions(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="notify me")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="weixin",
+            chat_id="chat-123",
+            thread_id="thread-456",
+            user_id="user-789",
+            notifier_profile="default",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[
+                {"title": "backend", "assignee": "mabu"},
+                {"title": "review", "assignee": "reviewer", "parents": [0]},
+            ],
+            author="alice",
+            inherit_notify_subscriptions=True,
+        )
+
+    assert child_ids is not None
+    with kb.connect() as conn:
+        root_subs = kb.list_notify_subs(conn, tid)
+        child_subs = [kb.list_notify_subs(conn, cid) for cid in child_ids]
+
+    assert len(root_subs) == 1
+    assert len(child_subs) == 2
+    for subs in child_subs:
+        assert len(subs) == 1
+        sub = subs[0]
+        assert sub["platform"] == "weixin"
+        assert sub["chat_id"] == "chat-123"
+        assert sub["thread_id"] == "thread-456"
+        assert sub["user_id"] == "user-789"
+        assert sub["notifier_profile"] == "default"
+        assert sub["last_event_id"] == 0
+
+
 def test_decompose_children_inherit_dir_workspace(kanban_home):
     """Fan-out children inherit the root's dir workspace, not scratch."""
     proj = "/home/teknium/myproject"

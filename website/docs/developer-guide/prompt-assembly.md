@@ -171,6 +171,30 @@ def load_soul_md() -> Optional[str]:
 
 When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_IDENTITY`. The `build_context_files_prompt()` function is then called with `skip_soul=True` to prevent SOUL.md from appearing twice (once as identity, once as a context file).
 
+### Task-contract defaults in SOUL.md
+
+SOUL.md can define a durable operating default: an active user task contract
+authorizes execution within its stated goal, scope, budget, and stop
+conditions. This lets the agent and delegated workers execute and verify
+in-scope work without asking again for each step. Use `clarify` only when an
+unresolved goal, scope, quality bar, budget, or priority would change the
+result.
+
+SOUL.md does not expand authority by itself. System and tool enforcement,
+secret redaction, explicit user stop conditions, and the task boundary remain
+binding. Keep automatic verification explicit: changed files need readback and
+surface-appropriate parsing, tests, or execution evidence before completion is
+reported.
+
+When internal policy text conflicts, the active user task contract and explicit
+user preference govern within those non-overridable boundaries. For high-risk
+in-scope work, report the impact, mitigation, recovery path, and residual risk
+after execution. Tools may use already configured credentials when required,
+but must never expose their plaintext in prompts, output, records, memory, or
+external delivery. If this surface does not expose a clickable `clarify` tool,
+use a typed fallback only for a material unresolved decision and do not claim a
+clickable control was shown.
+
 If `SOUL.md` doesn't exist, the system falls back to:
 
 ```

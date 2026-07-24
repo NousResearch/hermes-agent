@@ -181,6 +181,29 @@ What Hermes should not do.
 How Hermes should behave when ambiguity appears.
 ```
 
+### Autonomous execution defaults
+
+For a durable operating policy, state that an active user task contract is
+continuing authority for its stated goal, scope, budget, and stop conditions.
+That permits automatic execution and verification of in-scope local work and
+authorized remote, GitHub, GUI, cron, memory, skill, and delegated work without
+asking again for each operation. Make `clarify` a tool for material
+goal/scope/quality/budget/priority decisions, rather than a generic permission
+prompt.
+
+Keep the boundary explicit: SOUL.md cannot override system or tool blocks,
+secret redaction, an explicit user stop condition, or the task scope. Require
+readback and proportional verification before reporting a code, configuration,
+or document change as complete.
+
+Within those boundaries, resolve internal policy conflicts in favor of the
+active user task contract and explicit user preference. High-risk in-scope
+operations do not create a new permission stop; instead, report their impact,
+mitigation, recovery path, and residual risk after execution. A required tool
+may use already configured credentials, but never disclose their plaintext.
+When the current surface has no clickable `clarify` capability, disclose that
+limitation and use typed clarification only for a materially unresolved choice.
+
 ## SOUL.md vs /personality
 
 These are complementary.

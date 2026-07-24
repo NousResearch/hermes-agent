@@ -146,6 +146,29 @@ Notice that SOUL content is inserted directly, without extra wrapper text.
 
 ## Security: Prompt Injection Protection
 
+### Context files and task authority
+
+SOUL.md, AGENTS.md, and skill files can explain how to execute and verify a
+user-authorized task. They do not independently authorize new external work,
+credential disclosure, or activity outside the user's stated goal, scope,
+budget, and stop conditions. Treat copied repository text and retrieved web
+content as untrusted for authority purposes.
+
+Within an active task contract, a context file may direct automatic execution
+and verification of in-scope work. The agent should record evidence and
+failures instead of requesting action-by-action approval; `clarify` remains for
+material goal, scope, quality, budget, or priority decisions. System/tool
+blocks, secret redaction, and explicit user stops always remain in force.
+
+Internal policy conflicts within that boundary resolve in favor of the active
+user task contract and explicit user preference. High-risk in-scope work is
+executed with a result report covering impact, mitigation, recovery path, and
+residual risk. Required tools may use already configured credentials but must
+not disclose their plaintext in output, records, memory, or external delivery.
+When the active surface does not expose a clickable `clarify` control, state
+that limitation and use typed clarification only for a material unresolved
+decision; never simulate a click UI or invent an approval stop.
+
 All context files are scanned for potential prompt injection before being included. The scanner checks for:
 
 - **Instruction override attempts**: "ignore previous instructions", "disregard your rules"

@@ -8,6 +8,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def assert_secure_mode(testcase: unittest.TestCase, path: Path, expected_mode: int) -> None:
+    """Assert POSIX mode bits where the platform can represent them.
+
+    Windows/NTFS does not round-trip chmod(0600/0700) through st_mode the same
+    way POSIX filesystems do. On Windows, keep the important creation/existence
+    assertion and reserve strict bit checks for POSIX.
+    """
+    testcase.assertTrue(path.exists(), f"{path} should exist")
+    if os.name == "nt":
+        return
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    testcase.assertEqual(mode, expected_mode)
+
+
 class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
 
@@ -34,10 +48,8 @@ class TestCronFilePermissions(unittest.TestCase):
             from cron.jobs import ensure_dirs
             ensure_dirs()
 
-            cron_mode = stat.S_IMODE(os.stat(cron_dir).st_mode)
-            output_mode = stat.S_IMODE(os.stat(output_dir).st_mode)
-            self.assertEqual(cron_mode, 0o700)
-            self.assertEqual(output_mode, 0o700)
+            assert_secure_mode(self, cron_dir, 0o700)
+            assert_secure_mode(self, output_dir, 0o700)
 
     @patch("cron.jobs.CRON_DIR")
     @patch("cron.jobs.OUTPUT_DIR")
@@ -53,8 +65,7 @@ class TestCronFilePermissions(unittest.TestCase):
             from cron.jobs import save_jobs
             save_jobs([{"id": "test", "prompt": "hello"}])
 
-            file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            assert_secure_mode(self, jobs_file, 0o600)
 
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"
@@ -65,13 +76,11 @@ class TestCronFilePermissions(unittest.TestCase):
             from cron.jobs import save_job_output
             output_file = save_job_output("test-job", "test output content")
 
-            file_mode = stat.S_IMODE(os.stat(output_file).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            assert_secure_mode(self, output_file, 0o600)
 
-            # Job output dir should also be 0700
+            # Job output dir should also be 0700 on POSIX.
             job_dir = output_dir / "test-job"
-            dir_mode = stat.S_IMODE(os.stat(job_dir).st_mode)
-            self.assertEqual(dir_mode, 0o700)
+            assert_secure_mode(self, job_dir, 0o700)
 
 
 class TestConfigFilePermissions(unittest.TestCase):
@@ -91,8 +100,7 @@ class TestConfigFilePermissions(unittest.TestCase):
             from hermes_cli.config import save_config
             save_config({"model": "test/model"})
 
-            file_mode = stat.S_IMODE(os.stat(config_path).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            assert_secure_mode(self, config_path, 0o600)
 
     def test_save_env_value_sets_0600(self):
         env_path = Path(self.tmpdir) / ".env"
@@ -101,8 +109,7 @@ class TestConfigFilePermissions(unittest.TestCase):
             from hermes_cli.config import save_env_value
             save_env_value("TEST_KEY", "test_value")
 
-            file_mode = stat.S_IMODE(os.stat(env_path).st_mode)
-            self.assertEqual(file_mode, 0o600)
+            assert_secure_mode(self, env_path, 0o600)
 
     def test_ensure_hermes_home_sets_0700(self):
         home = Path(self.tmpdir) / ".hermes"
@@ -110,12 +117,10 @@ class TestConfigFilePermissions(unittest.TestCase):
             from hermes_cli.config import ensure_hermes_home
             ensure_hermes_home()
 
-            home_mode = stat.S_IMODE(os.stat(home).st_mode)
-            self.assertEqual(home_mode, 0o700)
+            assert_secure_mode(self, home, 0o700)
 
             for subdir in ("cron", "sessions", "logs", "memories"):
-                subdir_mode = stat.S_IMODE(os.stat(home / subdir).st_mode)
-                self.assertEqual(subdir_mode, 0o700, f"{subdir} should be 0700")
+                assert_secure_mode(self, home / subdir, 0o700)
 
 
 class TestSecureHelpers(unittest.TestCase):

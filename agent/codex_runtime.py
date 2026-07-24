@@ -28,6 +28,28 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 logger = logging.getLogger(__name__)
 
 
+def _codex_app_server_config_overrides(agent) -> list[str]:
+    """Build per-session Codex config overrides from Hermes' active state.
+
+    Codex App Server reads its own ``config.toml``.  Hermes must therefore
+    pass the model controls selected through the CLI/Desktop as process-local
+    ``-c`` overrides; otherwise a Hermes model switch can leave the spawned
+    Codex thread on an unrelated standalone-Codex default.
+    """
+    overrides: list[str] = []
+    model = str(getattr(agent, "model", "") or "").strip()
+    if model:
+        overrides.extend(["-c", f"model={json.dumps(model)}"])
+
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is not False:
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        if effort:
+            overrides.extend(["-c", f"model_reasoning_effort={json.dumps(effort)}"])
+
+    return overrides
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -636,6 +658,23 @@ def run_codex_app_server_turn(
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
+    codex_overrides = _codex_app_server_config_overrides(agent)
+    override_key = tuple(codex_overrides)
+    existing_session = getattr(agent, "_codex_session", None)
+    # A Desktop/CLI model switch updates the Hermes agent before the next
+    # turn.  Recreate only sessions born through this bridge when its launch
+    # controls changed, so the next turn cannot stay pinned to the old Codex
+    # process configuration.
+    if (
+        existing_session is not None
+        and getattr(existing_session, "_hermes_override_key", override_key) != override_key
+    ):
+        try:
+            existing_session.close()
+        except Exception:
+            logger.debug("codex app-server: old session close failed", exc_info=True)
+        agent._codex_session = None
+
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
         from agent.runtime_cwd import resolve_agent_cwd
 
@@ -679,6 +718,7 @@ def run_codex_app_server_turn(
         # Supersedes the narrower item/started-only bridge from #38835.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            extra_args=codex_overrides,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
@@ -686,6 +726,7 @@ def run_codex_app_server_turn(
             ),
             on_event=make_codex_app_server_event_bridge(agent),
         )
+        agent._codex_session._hermes_override_key = override_key
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early

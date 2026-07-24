@@ -2628,6 +2628,25 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         if existing_key:
             break
 
+    # Fallback: check credential pool (auth.json) — a key added via
+    # `hermes auth` is invisible to get_env_value/os.getenv but is live
+    # and working (see #65977).  Same fallback pattern as resolve_provider
+    # in hermes_cli/auth.py.
+    if not existing_key:
+        try:
+            from agent.credential_pool import load_pool as _load_pool
+            _pool = _load_pool(provider_id)
+            if _pool and _pool.has_credentials():
+                _entry = _pool.peek()
+                if _entry:
+                    existing_key = (
+                        getattr(_entry, "access_token", "")
+                        or getattr(_entry, "runtime_api_key", "")
+                        or ""
+                    )
+        except Exception:
+            pass
+
     existing_key, abort = _prompt_api_key(
         pconfig, existing_key, provider_id=provider_id
     )

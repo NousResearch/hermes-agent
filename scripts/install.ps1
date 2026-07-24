@@ -479,6 +479,30 @@ function Install-Uv {
             return $true
         }
 
+        # #69216: The astral installer may place uv.exe in a different
+        # location depending on version / configuration. Search common
+        # fallback locations and move the binary to the managed path.
+        $fallbackDirs = @(
+            (Join-Path $env:USERPROFILE ".local\bin"),
+            (Join-Path $env:LOCALAPPDATA "astral\bin"),
+            (Join-Path $env:LOCALAPPDATA "uv")
+        )
+        foreach $fbDir in $fallbackDirs) {
+            $fbUv = Join-Path $fbDir "uv.exe"
+            if (Test-Path $fbUv) {
+                Write-Info "uv.exe found at fallback location: $fbUv"
+                try {
+                    Copy-Item $fbUv $managedUv -Force
+                    $script:UvCmd = $managedUv
+                    $version = & $managedUv --version
+                    Write-Success "Managed uv installed from fallback ($version)"
+                    return $true
+                } catch {
+                    Write-Info "Could not copy from fallback: $_"
+                }
+            }
+        }
+
         Write-Err "uv installed but not found at $managedUv"
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false

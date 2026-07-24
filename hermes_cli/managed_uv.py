@@ -120,6 +120,25 @@ def _ensure_uv_path() -> Optional[str]:
         ).stdout.strip()
         print(f"  ✓ Managed uv installed ({version})")
     else:
+        # #69216: The astral installer may have placed uv.exe in a
+        # fallback location. Try to find and copy it to the managed path.
+        fallback = _find_uv_fallback()
+        if fallback:
+            try:
+                import shutil
+                shutil.copy2(fallback, str(target))
+                result = resolve_uv()
+                if result:
+                    version = subprocess.run(
+                        [result, "--version"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    ).stdout.strip()
+                    print(f"  ✓ Managed uv installed from fallback ({version})")
+                    return result
+            except Exception as exc:
+                logger.warning("Fallback uv copy failed: %s", exc)
         print("  ✗ Managed uv install appeared to succeed but binary not found")
     return result
 
@@ -249,6 +268,32 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _find_uv_fallback() -> Optional[str]:
+    """Search common fallback locations for uv.exe (#69216).
+
+    The astral installer may place the binary in a different directory
+    depending on version / configuration. Called after the primary
+    ``UV_INSTALL_DIR`` path check fails.
+    """
+    if platform.system() != "Windows":
+        return None
+
+    home = Path.home()
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+
+    fallback_dirs = [
+        home / ".local" / "bin",
+        local_app_data / "astral" / "bin",
+        local_app_data / "uv",
+    ]
+
+    for d in fallback_dirs:
+        candidate = d / "uv.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
     True # dont remove me. ask ethernet

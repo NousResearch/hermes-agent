@@ -327,6 +327,22 @@ def test_cron_status_reports_running_gateway(monkeypatch, capsys):
     assert "2026-05-31T12:00:00Z" in out
 
 
+def test_cron_status_reports_live_but_consistently_failing_ticker(monkeypatch, capsys):
+    """A fresh heartbeat must not hide a stale last-success marker."""
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1234])
+    monkeypatch.setattr("cron.jobs.get_ticker_heartbeat_age", lambda: 5.0)
+    monkeypatch.setattr("cron.jobs.get_ticker_success_age", lambda: 600.0)
+    monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: [])
+
+    cron_cli.cron_status()
+
+    out = capsys.readouterr().out
+    assert "no tick has succeeded in 600s" in out
+    assert "ticks may be failing" in out
+    assert "cron jobs will fire automatically" not in out
+
+
 def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     calls = []
     monkeypatch.setattr("cron.scheduler.tick", lambda verbose=False: calls.append(verbose))

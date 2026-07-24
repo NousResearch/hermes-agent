@@ -911,9 +911,30 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
+
+    # Atomic replace normally gives the destination the temporary file's owner.
+    # When a root CLI process edits jobs.json owned by the unprivileged gateway
+    # account, preserve that existing owner on the temp file before replacement.
+    existing_owner = None
+    if hasattr(os, "fchown"):
+        try:
+            current_stat = jobs_file.stat()
+        except FileNotFoundError:
+            pass
+        else:
+            existing_owner = (current_stat.st_uid, current_stat.st_gid)
+
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            if existing_owner is not None:
+                process_uid = os.geteuid()  # windows-footgun: ok — existing_owner requires fchown
+                process_owner = (
+                    process_uid,
+                    os.getegid(),  # windows-footgun: ok — existing_owner requires fchown
+                )
+                if process_uid == 0 and existing_owner != process_owner:
+                    os.fchown(f.fileno(), *existing_owner)
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())

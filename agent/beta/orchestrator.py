@@ -252,6 +252,15 @@ def orchestrate_request(
         qa_validator=_qa_validator(request, decision, registry, parent_agent, delegate, gate),
     )
 
+    if response.qa_required and not response.qa_performed:
+        return BetaRun(
+            decision=decision,
+            plan=plan,
+            specialist_results=results,
+            response=response,
+            chief_profile_revision=chief_profile.revision if chief_profile else 0,
+        )
+
     operations = _recommended_operations(request, response)
     issued: list[ApprovalReceipt] = []
     available = dict(receipts)

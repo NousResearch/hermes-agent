@@ -71,6 +71,25 @@ class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
         return DiscordAdapter.format_tool_preview(self, preview, **kwargs)
 
 
+class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
+    """Capture native image batches without contacting a platform API."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.image_batches = []
+
+    async def send_multiple_images(
+        self, chat_id, images, metadata=None, human_delay=0.0
+    ) -> None:
+        self.image_batches.append(
+            {
+                "chat_id": chat_id,
+                "images": images,
+                "metadata": metadata,
+            }
+        )
+
+
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
     """Adapter with a tiny platform limit to exercise progress rollover."""
 
@@ -788,6 +807,33 @@ class QueuedCommentaryAgent:
         }
 
 
+class QueuedMediaAgent:
+    """Return an explicit image attachment before a queued follow-up."""
+
+    calls = 0
+    media_path = None
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            final_response = f"first response\nMEDIA:{type(self).media_path}"
+            if self.stream_delta_callback:
+                self.stream_delta_callback("first response")
+        else:
+            final_response = "follow-up processed"
+            if self.stream_delta_callback:
+                self.stream_delta_callback(final_response)
+        return {
+            "final_response": final_response,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class QueuedSilenceAgent:
     """First turn is intentionally silent; queued follow-up still runs."""
 
@@ -1034,6 +1080,208 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     assert any("[plugin appended this]" in text for text in edited_texts), (
         f"expected transformed text in adapter.edits, got: {edited_texts!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monkeypatch, tmp_path):
+    QueuedCommentaryAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedCommentaryAgent,
+        session_id="sess-queued-commentary",
+        pending_text="queued follow-up",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert result["final_response"] == "final response 2"
+    assert "I'll inspect the repo first." in sent_texts
+    assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_first_response_media(monkeypatch, tmp_path):
+    """Queued follow-ups must preserve explicit attachments from the first turn."""
+    media_path = tmp_path / "queued-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-media",
+        pending_text="queued follow-up",
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    assert {
+        "sent_texts": [call["content"] for call in adapter.sent],
+        "image_batches": adapter.image_batches,
+    } == {
+        "sent_texts": ["first response"],
+        "image_batches": [
+            {
+                "chat_id": "discord-thread",
+                "images": [(media_path.as_uri(), "")],
+                "metadata": {"thread_id": "discord-thread"},
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_streamed_first_response_media(
+    monkeypatch, tmp_path,
+):
+    """Streaming first-turn text must not suppress its explicit attachment."""
+    media_path = tmp_path / "queued-streamed-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-streamed-media",
+        pending_text="queued follow-up",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    all_text = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all("MEDIA:" not in text for text in all_text)
+    assert adapter.image_batches == [
+        {
+            "chat_id": "discord-thread",
+            "images": [(media_path.as_uri(), "")],
+            "metadata": {"thread_id": "discord-thread"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_silent_first_turn_and_processes_queued_followup(
+    monkeypatch, tmp_path,
+):
+    """Regression: queued direct-send must not leak NO_REPLY to the channel."""
+    QueuedSilenceAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedSilenceAgent,
+        session_id="sess-queued-silence",
+        pending_text="queued follow-up",
+        platform=Platform.SLACK,
+        chat_id="C123",
+        thread_id="1712345678.000100",
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert QueuedSilenceAgent.calls == 2
+    assert result["final_response"] == "follow-up processed"
+    assert "NO_REPLY" not in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_sends_normalized_failure_before_queued_followup(
+    monkeypatch, tmp_path,
+):
+    """Queued delivery uses finalized output, not the raw empty agent result."""
+    QueuedFailedEmptyAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedFailedEmptyAgent,
+        session_id="sess-queued-failed-empty",
+        pending_text="queued follow-up",
+        platform=Platform.SLACK,
+        chat_id="C123",
+        thread_id="1712345678.000100",
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert QueuedFailedEmptyAgent.calls == 2
+    assert result["final_response"] == "follow-up processed"
+    assert any("The request failed: provider exploded" in text for text in sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-bg-review-order",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_base_processing_releases_post_delivery_callback_after_main_send():
+    """Post-delivery callbacks on the adapter fire after the main response."""
+    adapter = ProgressCaptureAdapter()
+
+    async def _handler(event):
+        return "done"
+
+    adapter.set_message_handler(_handler)
+
+    released = []
+
+    def _post_delivery_cb():
+        released.append(True)
+        adapter.sent.append(
+            {
+                "chat_id": "bg-review",
+                "content": "💾 Skill 'prospect-scanner' created.",
+                "reply_to": None,
+                "metadata": None,
+            }
+        )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
+
+    await adapter._process_message_background(event, session_key)
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert sent_texts == ["done", "💾 Skill 'prospect-scanner' created."]
+    assert released == [True]
 
 
 @pytest.mark.asyncio

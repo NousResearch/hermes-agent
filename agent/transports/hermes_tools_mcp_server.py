@@ -9,7 +9,7 @@ cross-session search, image generation, TTS — is unreachable.
 This module exposes a curated subset of those Hermes tools to the
 spawned codex subprocess via stdio MCP. Codex registers it as a normal
 MCP server (per `~/.codex/config.toml [mcp_servers.hermes-tools]`) and
-the user gets full Hermes capability inside a Codex turn.
+the user gets this curated Hermes subset inside a Codex turn.
 
 Scope (what we expose):
   - web_search, web_extract              — Firecrawl, no codex equivalent
@@ -171,9 +171,10 @@ def _build_server() -> Any:
         instructions=(
             "Hermes Agent's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "
-            "doesn't cover: web search/extract, browser automation, "
-            "subagent delegation, vision, image generation, persistent "
-            "memory, skills, and cross-session search."
+            "doesn't cover and this stateless MCP callback can dispatch: "
+            "web search/extract, browser automation, vision analysis, "
+            "image generation, skills, text-to-speech, and kanban task "
+            "handoff."
         ),
     )
 

@@ -9,6 +9,8 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import sys
+from types import ModuleType
 from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
@@ -179,6 +181,54 @@ class TestModuleSurface:
                 f"{agent_loop_tool!r} requires the agent loop context "
                 "and can't be reached through a stateless MCP callback"
             )
+
+    def test_server_instructions_match_exposed_tool_surface(self, monkeypatch):
+        """MCP instructions must not advertise intentionally excluded tools."""
+        from agent.transports import hermes_tools_mcp_server as m
+
+        captured = {}
+
+        class FakeFastMCP:
+            def __init__(self, name, instructions):
+                captured["name"] = name
+                captured["instructions"] = instructions
+
+            def add_tool(self, *args, **kwargs):
+                return None
+
+        mcp_module = ModuleType("mcp")
+        server_module = ModuleType("mcp.server")
+        fastmcp_module = ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = FakeFastMCP
+
+        model_tools_module = ModuleType("model_tools")
+        model_tools_module.get_tool_definitions = lambda quiet_mode=True: []
+        model_tools_module.handle_function_call = lambda *args, **kwargs: ""
+
+        monkeypatch.setitem(sys.modules, "mcp", mcp_module)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_module)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+        monkeypatch.setitem(sys.modules, "model_tools", model_tools_module)
+
+        m._build_server()
+
+        instructions = captured["instructions"].lower()
+        for unavailable in (
+            "subagent delegation",
+            "persistent memory",
+            "cross-session search",
+            "delegate_task",
+            "session_search",
+        ):
+            assert unavailable not in instructions
+        for available in (
+            "web search",
+            "browser automation",
+            "vision",
+            "image generation",
+            "skills",
+        ):
+            assert available in instructions
 
     def test_kanban_worker_tools_exposed(self):
         """Kanban workers run as `hermes chat -q` subprocesses; if they

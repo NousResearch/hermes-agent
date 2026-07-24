@@ -1151,21 +1151,16 @@ def _handle_create(args: dict, **kw) -> str:
         or os.environ.get("HERMES_SESSION_ID")
     )
     priority = args.get("priority")
-    # Resolve workspace. Workspace sharing is always explicit: omitted fields
-    # mean a fresh scratch workspace, even when a dispatcher-spawned worker
-    # creates the task. Reusing a parent's literal path would let a child
-    # mutate review evidence or race the parent's checkout (#67567).
-    #
-    # Project identity is the one safe context to inherit implicitly. The DB
-    # resolves a project-linked scratch request into a fresh per-task worktree,
+    # Resolve workspace. Omitted workspace_kind/workspace_path is passed as None
+    # to create_task, which resolves it from the board's default_workdir.
+    # Project identity is inherited when omitted: the DB resolves a
+    # project-linked scratch request into a fresh per-task worktree,
     # preserving the repository/branch convention without sharing a checkout.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
     project_id = args.get("project") or args.get("project_id")
     project_source_task_id = None
     _inherit_project = workspace_kind is None and workspace_path is None
-    if workspace_kind is None:
-        workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
@@ -1216,7 +1211,7 @@ def _handle_create(args: dict, **kw) -> str:
                 parents=tuple(parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
-                workspace_kind=str(workspace_kind),
+                workspace_kind=str(workspace_kind) if workspace_kind is not None else None,
                 workspace_path=workspace_path,
                 project_id=project_id,
                 project_source_task_id=project_source_task_id,

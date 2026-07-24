@@ -95,13 +95,15 @@ def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     return {"state_type": st, "state_name": sn}
 
 
-def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
+def _parse_workspace_flag(value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """Parse ``--workspace`` into ``(kind, path|None)``.
 
     Accepts: ``scratch``, ``worktree``, ``worktree:<path>``, ``dir:<path>``.
+    When ``value`` is ``None`` or empty, returns ``(None, None)`` so the
+    board's ``default_workdir`` can be resolved by :func:`kanban_db.create_task`.
     """
     if not value:
-        return ("scratch", None)
+        return (None, None)
     v = value.strip()
     if v in {"scratch", "worktree"}:
         return (v, None)
@@ -1457,7 +1459,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 2
-    if branch_name and ws_kind != "worktree":
+    if ws_kind is not None and branch_name and ws_kind != "worktree":
         print("kanban: --branch is only valid with --workspace worktree", file=sys.stderr)
         return 2
     try:

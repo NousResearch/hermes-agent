@@ -523,3 +523,32 @@ def clear_credential_files() -> None:
     _get_registered().clear()
 
 
+def get_global_images_mount() -> Optional[Dict[str, str]]:
+    """Return a mount entry for the global ``~/.hermes/images/`` upload directory.
+
+    Desktop-app and CLI image uploads land under the *root* Hermes images
+    directory (``~/.hermes/images/`` in standard deployments), *not* the
+    profile-scoped ``cache/images`` subdirectory.
+
+    In single-profile deployments where ``HERMES_HOME`` is ``~/.hermes``,
+    the upload directory is the same as the root.
+
+    In multi-profile deployments where each gateway runs with
+    ``HERMES_HOME=~/.hermes/profiles/<name>``, a profile-scoped mount
+    would point at ``profiles/<name>/images`` while the actual upload is at
+    the *root* ``~/.hermes/images/``.  This helper returns that root-global
+    mount so it can be added to every Docker sandbox unconditionally.
+
+    Returns ``None`` when the root images directory does not exist.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    host_path = get_default_hermes_root() / "images"
+    if not host_path.is_dir():
+        return None
+    return {
+        "host_path": str(host_path),
+        "container_path": "/root/.hermes/images",
+    }
+
+

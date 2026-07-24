@@ -783,6 +783,29 @@ class DockerEnvironment(BaseEnvironment):
                     cache_mount["host_path"],
                     cache_mount["container_path"],
                 )
+
+            # Mount the global ~/.hermes/images/ upload directory so
+            # desktop-app and CLI image uploads are reachable from inside
+            # the sandbox.  In multi-profile deployments this is the *root*
+            # images dir, not the profile-scoped one.  Read-only because
+            # uploads are written by the host gateway, not by the agent.
+            try:
+                from tools.credential_files import get_global_images_mount
+                global_img_mount = get_global_images_mount()
+                if global_img_mount is not None:
+                    src = Path(global_img_mount["host_path"])
+                    if src.is_dir():
+                        volume_args.extend([
+                            "-v",
+                            f"{global_img_mount['host_path']}:{global_img_mount['container_path']}:ro",
+                        ])
+                        logger.info(
+                            "Docker: mounting global images dir %s -> %s",
+                            global_img_mount["host_path"],
+                            global_img_mount["container_path"],
+                        )
+            except Exception:
+                logger.debug("Docker: could not mount global images directory", exc_info=True)
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)
 

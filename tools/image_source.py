@@ -213,12 +213,17 @@ def _media_cache_roots() -> list:
     The only host paths vision may read under a non-local backend: gateway-
     downloaded inbound media and the tools' own URL-download temp dirs. Covers
     the consolidated ``cache/`` layout and the legacy flat directories.
+
+    NOTE: Must stay in sync with ``_CACHE_DIRS`` in
+    ``tools/credential_files.py`` — every directory mounted into the sandbox
+    should also be listed here so the host-read permission check permits it.
     """
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     return [
         home / "cache",  # cache/images, cache/vision, cache/video(s), cache/audio
+        home / "images",  # desktop-app & CLI image uploads
         home / "image_cache",
         home / "audio_cache",
         home / "video_cache",

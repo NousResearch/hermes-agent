@@ -75,6 +75,20 @@ class TestRefreshTools:
             assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
             assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
 
+    @pytest.mark.asyncio
+    async def test_skips_refresh_before_session_ready(self, mock_registry):
+        """Startup notifications can arrive before ClientSession is assigned."""
+        server = MCPServerTask("early_srv")
+        server._refresh_lock = asyncio.Lock()
+        server._config = {}
+        server.session = None
+        server._registered_tool_names = ["mcp_early_srv_old_tool"]
+
+        with patch("tools.registry.registry", mock_registry):
+            await server._refresh_tools()
+
+        assert server._registered_tool_names == ["mcp_early_srv_old_tool"]
+
 
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""

@@ -125,6 +125,33 @@ def _media_caption_split(text, media_files, *, max_caption_len):
     if len(stripped) > max_caption_len:
         return None, text
     return stripped, ""
+
+_TELEGRAM_HTML_TAG_RE = re.compile(r"</?([A-Za-z][A-Za-z0-9_-]*)(?:\s[^>]*)?/?>")
+# NOTE: ``span`` is only valid as ``<span class="tg-spoiler">`` per the
+# Telegram Bot API spec; a bare ``<span>`` or any other class is rejected
+# by the parser.  We accept the tag name here for simplicity — the send
+# path falls back to plain text on parse error, so the worst case is
+# cosmetic (lost formatting), not a hard delivery failure.
+_TELEGRAM_SUPPORTED_HTML_TAGS = frozenset(
+    {
+        "a",
+        "b",
+        "blockquote",
+        "code",
+        "del",
+        "em",
+        "i",
+        "ins",
+        "pre",
+        "s",
+        "span",
+        "strike",
+        "strong",
+        "tg-emoji",
+        "tg-spoiler",
+        "u",
+    }
+)
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -133,6 +160,28 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+
+
+def _message_uses_telegram_html(message: str) -> bool:
+    """Return True only when tag-like text is valid Telegram HTML.
+
+    Telegram supports a small HTML subset. Treating every ``<word>`` as HTML
+    makes ordinary technical text like ``<urlopen>`` fail parsing before the
+    plain-text fallback. Only opt into HTML mode when every detected tag is in
+    Telegram's supported set.
+
+    Uses ``all()`` (not ``any()``) deliberately: if even one tag-like token is
+    unsupported, the message is routed to MarkdownV2 rather than risk a parse
+    error. Switching to ``any()`` would reintroduce the failures this function
+    exists to prevent.
+    """
+    matches = list(_TELEGRAM_HTML_TAG_RE.finditer(message))
+    if not matches:
+        return False
+    return all(
+        match.group(1).lower() in _TELEGRAM_SUPPORTED_HTML_TAGS
+        for match in matches
+    )
 
 
 def _sanitize_error_text(text) -> str:
@@ -1181,7 +1230,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
-        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+        _has_html = _message_uses_telegram_html(message)
 
         if _has_html:
             formatted = message

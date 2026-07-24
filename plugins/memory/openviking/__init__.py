@@ -800,11 +800,31 @@ def _normalize_openviking_url(url: str) -> str:
     if lower.startswith("::1:"):
         return f"http://[::1]:{trimmed.rsplit(':', 1)[1]}"
     if "://" in trimmed:
-        return trimmed
-    host, _sep, port = trimmed.partition(":")
-    if host.lower() in {"localhost", "127.0.0.1"}:
-        return f"http://{host}:{port or '1933'}"
-    return trimmed
+        candidate = trimmed
+    else:
+        host, _sep, port = trimmed.partition(":")
+        if host.lower() in {"localhost", "127.0.0.1"}:
+            candidate = f"http://{host}:{port or '1933'}"
+        else:
+            candidate = trimmed
+
+    # Local / LAN self-host remains allowed; reject cloud-metadata and other
+    # always-blocked floors so a poisoned endpoint cannot SSRF via memory sync.
+    try:
+        from tools.url_safety import is_always_blocked_url
+
+        check_url = candidate if "://" in candidate else f"http://{candidate}"
+        if is_always_blocked_url(check_url):
+            logger.warning(
+                "OpenViking endpoint '%s' targets an always-blocked address; "
+                "falling back to the default local endpoint.",
+                candidate,
+            )
+            return _DEFAULT_ENDPOINT
+    except Exception as exc:
+        logger.debug("OpenViking always-blocked endpoint check skipped: %s", exc)
+
+    return candidate
 
 
 def _load_profile(path: Path, *, source: str, name: str) -> Optional[_OvcliProfile]:

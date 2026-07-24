@@ -116,6 +116,14 @@ export function useBackgroundQueueDrain({
 
           const runtimeSessionId = runtimeIdByStoredSessionIdRef.current.get(sessionKey) ?? null
 
+          // Orphaned entry: the session was never opened so no runtime mapping
+          // exists. This entry can never drain — remove it immediately instead
+          // of looping through MAX_AUTO_DRAIN_ATTEMPTS on every restart.
+          if (runtimeSessionId === null) {
+            removeQueuedPrompt(sessionKey, liveEntry.id)
+            return true
+          }
+
           const accepted = await Promise.resolve(
             submitTextRef.current(liveEntry.text, {
               attachments: liveEntry.attachments,

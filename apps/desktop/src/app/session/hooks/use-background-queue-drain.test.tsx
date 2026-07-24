@@ -126,18 +126,17 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    enqueueQueuedPrompt('stored-session-a', { text: 'orphaned entry', attachments: [] })
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
-      expect(submitText).toHaveBeenCalledWith('resume then send', {
-        attachments: [],
-        fromQueue: true,
-        sessionId: null,
-        storedSessionId: 'stored-session-a'
-      })
+      expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
     })
+
+    // The entry is removed without ever calling submitText since the session
+    // has no runtime mapping and can never be resolved.
+    expect(submitText).not.toHaveBeenCalled()
   })
 
   it('retries a rejected background drain without waiting for another queue or busy-state change', async () => {

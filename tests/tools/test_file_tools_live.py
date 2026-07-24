@@ -185,6 +185,20 @@ class TestReadFile:
         assert result.total_lines == 3
         _assert_clean(result.content)
 
+    def test_total_lines_no_trailing_newline(self, ops, tmp_path):
+        # Live LocalEnvironment-backed check: a file whose final line has no
+        # trailing LF must still be counted. Exercises the real
+        # `tail -c 1 | od | tr` pipeline through the shell backend rather
+        # than a stubbed _exec.
+        f = tmp_path / "no_trailing_lf.txt"
+        f.write_bytes(b"alpha\nbravo\ncharlie")  # note: no final newline
+        result = ops.read_file(str(f))
+        assert result.error is None
+        assert "alpha" in result.content
+        assert "charlie" in result.content
+        assert result.total_lines == 3
+        _assert_clean(result.content)
+
     def test_absolute_path(self, ops, tmp_path):
         f = tmp_path / "abs.txt"
         f.write_text("ABSOLUTE_PATH_CONTENT\n")

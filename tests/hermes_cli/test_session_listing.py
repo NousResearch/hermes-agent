@@ -97,3 +97,83 @@ class TestQuerySessionListingSearch:
 
     def test_plain_listing_still_hides_unnamed(self, db):
         assert self._ids(db, source="telegram") == ["sess_an94"]
+
+
+class TestQuerySessionListingLaneScope:
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        lane_key = "agent:main:telegram:dm:lane"
+        db.create_session(
+            "lane_current", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.set_session_title("lane_current", "Current lane")
+        db.create_session(
+            "lane_named", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.set_session_title("lane_named", "Needle lane")
+        db.create_session(
+            "lane_unnamed", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        for i in range(60):
+            db.create_session(
+                f"foreign_{i}", "telegram",
+                session_key=f"agent:main:telegram:dm:foreign-{i}",
+                user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
+            )
+            db.set_session_title(f"foreign_{i}", f"Needle foreign {i}")
+        yield db, lane_key
+        db.close()
+
+    def test_exact_lane_precedes_limit_and_current_session_exclusion(self, db):
+        session_db, lane_key = db
+
+        rows = query_session_listing(
+            session_db,
+            source="telegram",
+            session_key=lane_key,
+            current_session_id="lane_current",
+            limit=1,
+        )
+
+        assert [row["id"] for row in rows] == ["lane_named"]
+
+    def test_exact_lane_preserves_full_and_search_modes(self, db):
+        session_db, lane_key = db
+
+        full_rows = query_session_listing(
+            session_db,
+            source="telegram",
+            session_key=lane_key,
+            include_unnamed=True,
+            limit=10,
+        )
+        search_rows = query_session_listing(
+            session_db,
+            source="telegram",
+            session_key=lane_key,
+            search_query="needle",
+            limit=10,
+        )
+
+        assert {row["id"] for row in full_rows} == {
+            "lane_current", "lane_named", "lane_unnamed",
+        }
+        assert [row["id"] for row in search_rows] == ["lane_named"]
+
+    def test_omitted_session_key_keeps_source_scope(self, db):
+        session_db, _lane_key = db
+
+        rows = query_session_listing(
+            session_db,
+            source="telegram",
+            search_query="needle foreign 59",
+            limit=10,
+        )
+
+        assert [row["id"] for row in rows] == ["foreign_59"]

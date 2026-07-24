@@ -42,15 +42,27 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 VENV=""
+VENV_PYTHON=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
     VENV="$candidate"
+    VENV_PYTHON="$candidate/bin/python"
+    break
+  fi
+  # Native Windows venv layout: python.exe and activate live under
+  # Scripts/, and there is no bin/. Anyone running this script from
+  # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
+  # this branch — without it the canonical runner refuses to start.
+  # (Probe shape from #66496.)
+  if [ -f "$candidate/Scripts/activate" ]; then
+    VENV="$candidate"
+    VENV_PYTHON="$candidate/Scripts/python.exe"
     break
   fi
 done
 
 if [ -n "$VENV" ]; then
-  PYTHON="$VENV/bin/python"
+  PYTHON="$VENV_PYTHON"
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
     && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
   # Guard with an import check: HERMES_PYTHON may point at the RELEASE
@@ -91,6 +103,19 @@ echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
 echo "▶ launching test runner"
+# Windows (native, via Git Bash): CPython on Windows ignores HOME —
+# Path.home()/expanduser need USERPROFILE (or HOMEDRIVE+HOMEPATH), ssl and
+# sockets need SystemRoot, and tempfile needs TEMP/TMP.  With env -i
+# stripping them, every test that touches Path.home() dies at collection
+# with "RuntimeError: Could not determine home directory."  None of these
+# carry secrets, so passing them through preserves the hermetic intent
+# (credential vars stay stripped).  All are guarded on being set, so the
+# Linux/macOS environment is byte-identical to before.
+#
+# PYTHONUTF8=1: the runner and per-file subprocesses print ✓/⚠ glyphs;
+# Windows consoles default to a legacy codepage (cp1252) and crash with
+# UnicodeEncodeError.  UTF-8 mode is a no-op on Linux/macOS, where
+# LANG=C.UTF-8 already forces UTF-8.
 exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
@@ -98,6 +123,13 @@ exec env -i \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
+  PYTHONUTF8=1 \
+  ${USERPROFILE:+USERPROFILE="$USERPROFILE"} \
+  ${HOMEDRIVE:+HOMEDRIVE="$HOMEDRIVE"} \
+  ${HOMEPATH:+HOMEPATH="$HOMEPATH"} \
+  ${SYSTEMROOT:+SYSTEMROOT="$SYSTEMROOT"} \
+  ${TEMP:+TEMP="$TEMP"} \
+  ${TMP:+TMP="$TMP"} \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \

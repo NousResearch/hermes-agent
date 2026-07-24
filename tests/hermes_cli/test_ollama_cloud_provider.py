@@ -266,10 +266,10 @@ class TestOllamaCloudMergedDiscovery:
         # Make the cache appear stale by backdating it
         import json
         cache_path = tmp_path / "ollama_cloud_models_cache.json"
-        with open(cache_path) as f:
+        with open(cache_path, encoding="utf-8") as f:
             data = json.load(f)
         data["cached_at"] = 0  # epoch = very stale
-        with open(cache_path, "w") as f:
+        with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
 
         with patch("hermes_cli.models.fetch_api_models", return_value=None), \
@@ -400,17 +400,17 @@ class TestOllamaCloudProvidersNew:
         assert pdef.transport == "openai_chat"
 
 
-# ── Cloud Suffix Stripping ──
+# ── Cloud Suffix Deduplication ──
 
-class TestOllamaCloudSuffixStripping:
-    """models.dev appends :cloud / -cloud suffixes that the live API omits.
+class TestOllamaCloudSuffixDeduplication:
+    """models.dev may include :cloud / -cloud suffixes for Ollama Cloud IDs.
 
-    fetch_ollama_cloud_models() must normalise these before the dedup merge so
-    users never see broken IDs like 'kimi-k2.6:cloud' in the model picker.
+    fetch_ollama_cloud_models() uses normalized IDs only for deduplication so
+    the picker keeps the actual cloud model ID when models.dev is the source.
     """
 
-    def test_strips_colon_cloud_suffix(self, tmp_path, monkeypatch):
-        """:cloud suffix from models.dev is stripped before merge."""
+    def test_preserves_colon_cloud_suffix_from_models_dev(self, tmp_path, monkeypatch):
+        """:cloud suffix from models.dev is preserved in picker output."""
         from hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -424,11 +424,11 @@ class TestOllamaCloudSuffixStripping:
         with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
-        assert "kimi-k2.6" in result
-        assert "kimi-k2.6:cloud" not in result
+        assert "kimi-k2.6:cloud" in result
+        assert "kimi-k2.6" not in result
 
-    def test_strips_dash_cloud_suffix(self, tmp_path, monkeypatch):
-        """-cloud suffix from models.dev is stripped before merge."""
+    def test_preserves_dash_cloud_suffix_from_models_dev(self, tmp_path, monkeypatch):
+        """-cloud suffix from models.dev is preserved in picker output."""
         from hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -442,8 +442,8 @@ class TestOllamaCloudSuffixStripping:
         with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
-        assert "qwen3-coder:480b" in result
-        assert "qwen3-coder:480b-cloud" not in result
+        assert "qwen3-coder:480b-cloud" in result
+        assert "qwen3-coder:480b" not in result
 
     def test_no_duplicate_when_live_clean_and_mdev_suffixed(self, tmp_path, monkeypatch):
         """Live API returns clean ID; mdev has :cloud variant — result has exactly one entry."""
@@ -468,6 +468,25 @@ class TestOllamaCloudSuffixStripping:
         assert result.count("glm-5.1") == 1
         assert "kimi-k2.6:cloud" not in result
         assert "glm-5.1:cloud" not in result
+
+    def test_no_duplicate_when_live_suffixed_and_mdev_clean(self, tmp_path, monkeypatch):
+        """Live API may return a cloud ID; a clean mdev variant must not duplicate it."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {"qwen3-coder:480b": {"tool_call": True}}
+            }
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3-coder:480b-cloud"]), \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result.count("qwen3-coder:480b-cloud") == 1
+        assert "qwen3-coder:480b" not in result
 
     def test_unsuffixed_model_id_unchanged(self, tmp_path, monkeypatch):
         """Model IDs without :cloud / -cloud suffix are passed through unchanged."""

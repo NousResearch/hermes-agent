@@ -108,6 +108,17 @@ class ProviderProfile:
             return urlparse(self.base_url).hostname or ""
         return ""
 
+    def build_client(self, *, base_url: str, api_key: str | None = None,
+                     async_mode: bool = False, **context: Any):
+        """Return a custom OpenAI-SDK-shaped client for *base_url*, or None to
+        use the stock OpenAI()/AsyncOpenAI() construction.
+
+        The ONE seam that lets a provider plugin own client construction — what
+        the in-tree native clients hardcode today. Default None → every existing
+        provider keeps stock construction unchanged. async_mode=True should
+        return the async client form directly."""
+        return None
+
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Provider-specific message preprocessing.
 

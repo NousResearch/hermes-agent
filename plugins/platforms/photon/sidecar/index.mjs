@@ -697,6 +697,20 @@ function tokenOk(header) {
   return h.length === _tokenBuf.length && crypto.timingSafeEqual(h, _tokenBuf);
 }
 
+async function sendWithOptionalReply(space, builder, replyToId) {
+  if (!replyToId) return await space.send(builder);
+
+  const target =
+    knownMessages.get(replyToId) ?? (await space.getMessage(replyToId));
+  if (!target) {
+    console.error(
+      `photon-sidecar: reply target ${replyToId} not found; sending fresh message`
+    );
+    return await space.send(builder);
+  }
+  return await target.reply(builder);
+}
+
 const server = http.createServer(async (req, res) => {
   if (!tokenOk(req.headers["x-hermes-sidecar-token"])) {
     return unauthorized(res);
@@ -720,7 +734,7 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, format = "text" } = body || {};
+      const { spaceId, text, format = "text", replyToId } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
@@ -732,11 +746,11 @@ const server = http.createServer(async (req, res) => {
       // readable plain text on platforms that don't.
       const builder =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
-      const result = await space.send(builder);
+      const result = await sendWithOptionalReply(space, builder, replyToId);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
-      const { spaceId, path, name, mimeType, caption, kind } =
+      const { spaceId, path, name, mimeType, caption, kind, replyToId } =
         body || {};
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
@@ -754,7 +768,7 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const result = await space.send(builder);
+      const result = await sendWithOptionalReply(space, builder, replyToId);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.

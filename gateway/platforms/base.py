@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.
-_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
+_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.caf', '.flac'})
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either need to go through sendVoice (Opus/OGG) or must be
 # delivered as a regular document.
@@ -1480,7 +1480,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Video (embed inline where supported)
     ".mp4", ".mov", ".avi", ".mkv", ".webm",
     # Audio (delivered as voice/audio where supported)
-    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
+    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".caf", ".flac",
     # Documents (uploaded as file attachments)
     ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data

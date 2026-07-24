@@ -559,3 +559,74 @@ def test_lmstudio_load_post_drops_bearer_on_redirect(monkeypatch):
     assert method == "GET"
     assert "authorization" not in headers
     assert "content-type" not in headers
+
+
+class _LmStudioUnloadRedirectHandler(BaseHTTPRequestHandler):
+    redirect_to = ""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+
+        if self.path == "/api/v1/models/unload":
+            self.send_response(302)
+            self.send_header("Location", type(self).redirect_to)
+            self.end_headers()
+            return
+
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
+def test_lmstudio_unload_post_drops_bearer_on_redirect(monkeypatch):
+    from hermes_cli import models
+
+    sink = _server()
+    source = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        _LmStudioUnloadRedirectHandler,
+    )
+    Thread(target=source.serve_forever, daemon=True).start()
+
+    _RecordingHandler.requests = []
+    _LmStudioUnloadRedirectHandler.redirect_to = (
+        f"http://localhost:{sink.server_port}/sink"
+    )
+
+    monkeypatch.setattr(
+        models,
+        "_lmstudio_fetch_raw_models",
+        lambda **_kwargs: [
+            {
+                "id": "model",
+                "type": "llm",
+                "max_context_length": 8192,
+                "loaded_instances": [
+                    {
+                        "id": "model-instance",
+                        "config": {"context_length": 1024},
+                    }
+                ],
+            }
+        ],
+    )
+
+    try:
+        loaded = models.ensure_lmstudio_model_loaded(
+            "model",
+            f"http://127.0.0.1:{source.server_port}",
+            api_key="lm-secret",
+            target_context_length=4096,
+            timeout=3,
+        )
+    finally:
+        source.shutdown()
+        sink.shutdown()
+
+    assert loaded == 4096
+    method, headers = _RecordingHandler.requests[-1]
+    assert method == "GET"
+    assert "authorization" not in headers
+    assert "content-type" not in headers

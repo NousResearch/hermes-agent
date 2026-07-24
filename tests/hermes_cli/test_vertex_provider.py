@@ -76,8 +76,8 @@ def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
     with pytest.raises(AuthError) as exc:
         rp.resolve_runtime_provider(requested="vertex")
     msg = str(exc.value)
+    assert "API Key" in msg
     assert "OAuth2" in msg
-    assert "not a static API key" in msg
 
 
 def test_vertex_extra_body_thinking_config():

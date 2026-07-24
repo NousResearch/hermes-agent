@@ -101,8 +101,8 @@ def test_get_vertex_config_uses_adc_and_default_region(vertex_adapter):
     token, base = vertex_adapter.get_vertex_config()
     assert token == "ya29.FAKE"
     assert base == (
-        "https://aiplatform.googleapis.com/v1beta1/projects/adc-project/"
-        "locations/global/endpoints/openapi"
+        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/adc-project/"
+        "locations/us-central1/endpoints/openapi"
     )
 
 

@@ -243,6 +243,31 @@ class TestHooksDoctor:
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "All shell hooks look healthy" in out
 
+    def test_states_runtime_registration_limits(self, tmp_path):
+        """#69836: a healthy verdict must not read as "hooks will fire".
+        Registration state is in-process, so doctor cannot verify that any
+        live agent process registered the hooks — it has to say so and name
+        the entrypoints that do register (the #69825 failure mode was a
+        launch path that never reached the registration call while doctor
+        kept reporting ✓ healthy)."""
+        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+        shell_hooks._record_approval("on_session_start", str(script))
+        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="doctor"))
+        assert "cannot verify" in out
+        assert "register_from_config" in out
+        # The verdict itself is scoped to what doctor actually checked.
+        assert "All shell hooks look healthy (config, allowlist, synthetic run)" in out
+
+    def test_no_hooks_configured_skips_scope_note(self):
+        """With nothing configured there is no ✓ to over-trust; the early
+        return stays terse."""
+        with patch("hermes_cli.config.load_config", return_value={}):
+            out = _run(SimpleNamespace(hooks_action="doctor"))
+        assert "nothing to check" in out
+        assert "register_from_config" not in out
+
     def test_unallowlisted_script_is_not_executed(self, tmp_path):
         """Regression for M4: `hermes hooks doctor` used to run every
         listed script against a synthetic payload as part of its JSON

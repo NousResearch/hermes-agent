@@ -614,6 +614,7 @@ def _render_writer_unit(
         f"AssertPathExists={interpreter}",
         f"AssertPathExists={release / '.codex-source-commit'}",
         "AssertPathExists=/etc/muncho-canonical-writer/writer.json",
+        f"AssertPathExists={PHASE_B_RECEIPT_PATH}",
         "",
         "[Service]",
         "Type=notify",
@@ -632,7 +633,9 @@ def _render_writer_unit(
         (
             f"ExecStart={interpreter} -B -P -s -m "
             "gateway.canonical_writer_bootstrap --config "
-            "/etc/muncho-canonical-writer/writer.json"
+            "/etc/muncho-canonical-writer/writer.json "
+            f"--production-release-revision {revision} "
+            f"--production-phase-b-receipt {PHASE_B_RECEIPT_PATH}"
         ),
         "Restart=on-failure",
         "RestartSec=5s",
@@ -668,6 +671,7 @@ def _render_writer_unit(
         f"IPAddressAllow={inputs['database_ip']}",
         f"ReadOnlyPaths={release}",
         "ReadOnlyPaths=/etc/muncho-canonical-writer/writer.json",
+        f"ReadOnlyPaths={PHASE_B_RECEIPT_PATH}",
         "ReadOnlyPaths=/etc/muncho/keys/writer-capability-private.pem",
         "ReadOnlyPaths=/etc/muncho/keys/discord-edge-receipt-public.pem",
         "ReadWritePaths=/run/muncho-canonical-writer",

@@ -179,3 +179,24 @@ def test_connector_renderer_projects_the_complete_target_policy() -> None:
 
     assert all(value["discord"][name] == item for name, item in target.items())
     assert "opaque" not in rendered.decode("utf-8")
+
+
+def test_writer_unit_invokes_release_bound_production_readiness() -> None:
+    rendered = producer._render_writer_unit(
+        revision=REVISION,
+        inputs=_unit_inputs(),
+    ).decode("utf-8")
+    receipt = (
+        "/var/lib/muncho/canonical-writer-phase-b/runtime-receipt.json"
+    )
+
+    assert (
+        f"--production-release-revision {REVISION} "
+        f"--production-phase-b-receipt {receipt}"
+    ) in rendered
+    assert f"AssertPathExists={receipt}\n" in rendered
+    assert f"ReadOnlyPaths={receipt}\n" in rendered
+    assert (
+        "Requires=muncho-canonical-writer-phase-b-readiness.service\n"
+        in rendered
+    )

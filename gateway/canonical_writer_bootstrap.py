@@ -1410,6 +1410,35 @@ def publish_writer_runtime_readiness(
     return receipt
 
 
+def _validate_startup_phase_b_readiness(
+    config: CanonicalWriterServiceConfig,
+    *,
+    production_release_revision: str | None,
+    production_phase_b_receipt: str | None,
+) -> Mapping[str, Any]:
+    """Select exactly one canary or production startup-readiness contract."""
+
+    if bool(production_release_revision) != bool(production_phase_b_receipt):
+        raise ValueError(
+            "production writer readiness requires paired release and receipt"
+        )
+    if production_release_revision is not None:
+        from gateway.canonical_writer_production_readiness import (
+            validate_fixed_production_phase_b_readiness,
+        )
+
+        return validate_fixed_production_phase_b_readiness(
+            config,
+            release_revision=production_release_revision,
+            receipt_path=production_phase_b_receipt,
+        )
+    from gateway.canonical_writer_phase_b_runtime import (
+        validate_fixed_phase_b_runtime_readiness,
+    )
+
+    return validate_fixed_phase_b_runtime_readiness()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     harden_current_process_against_dumping()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1419,17 +1448,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="absolute writer-owned atomic event export path instead of serving",
     )
     parser.add_argument("--export-limit", type=int, default=200_000)
+    parser.add_argument(
+        "--production-release-revision",
+        help="exact 40-hex production release revision",
+    )
+    parser.add_argument(
+        "--production-phase-b-receipt",
+        help="fixed root-owned production Phase-B receipt",
+    )
     arguments = parser.parse_args(argv)
+    if bool(arguments.production_release_revision) != bool(
+        arguments.production_phase_b_receipt
+    ):
+        parser.error(
+            "--production-release-revision and "
+            "--production-phase-b-receipt must be supplied together"
+        )
+    if arguments.export_events and arguments.production_release_revision:
+        parser.error(
+            "production Phase-B readiness arguments are only valid in service mode"
+        )
     config = load_service_config(arguments.config)
     if not arguments.export_events:
-        # The non-root writer independently consumes the root-published exact
-        # current-head Phase-B handoff before constructing any DB-backed
-        # service object, binding a socket, or notifying READY.
-        from gateway.canonical_writer_phase_b_runtime import (
-            validate_fixed_phase_b_runtime_readiness,
+        # The non-root writer independently consumes the matching root-published
+        # readiness proof before constructing any DB-backed service object,
+        # binding a socket, or notifying READY.
+        _validate_startup_phase_b_readiness(
+            config,
+            production_release_revision=(
+                arguments.production_release_revision
+            ),
+            production_phase_b_receipt=(
+                arguments.production_phase_b_receipt
+            ),
         )
-
-        validate_fixed_phase_b_runtime_readiness()
     bootstrap = build_service(config)
     if arguments.export_events:
         count = export_projection_events(

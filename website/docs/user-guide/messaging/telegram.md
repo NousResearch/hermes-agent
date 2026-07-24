@@ -686,6 +686,10 @@ platforms:
 3. Each topic maps to an isolated session key: `agent:main:telegram:dm:{chat_id}:{thread_id}`
 4. Messages in each topic have their own conversation history, memory flush, and context window
 
+:::caution Read-state limitation
+Telegram private DM topics have a Bot API read-state limitation. Hermes can receive messages from a user-created topic and route replies back into that topic, but normal bot accounts don't expose a reliable API for marking the topic copy of an incoming user message as read. Telegram may show the root "All Messages" chat and the topic with different unread/read indicators. This is expected Telegram behaviour, not necessarily a Hermes processing failure.
+:::
+
 ### Root DM handling
 
 By default, messages sent to the root DM (outside any topic) are processed

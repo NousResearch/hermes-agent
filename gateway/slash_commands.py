@@ -1336,6 +1336,17 @@ class GatewaySlashCommandsMixin:
 
         _under_service = is_gateway_supervisor_process()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+        # Send feedback to the user before restarting the gateway, so they
+        # see confirmation even if the restart (50ms later) cuts delivery.
+        _restart_feedback = t("gateway.draining", count=active_agents) if active_agents else t("gateway.restart.restarting")
+        try:
+            adapter = self.adapters.get(event.source.platform) if event.source else None
+            if adapter:
+                await adapter.send(chat_id=event.source.chat_id, content=_restart_feedback)
+        except Exception:
+            logger.debug("Failed to send pre-restart feedback", exc_info=True)
+
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:

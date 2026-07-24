@@ -279,6 +279,42 @@ class TestIsSafeUrl:
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
 
+    def test_qq_c2c_grouptalk_hostname_allowed_with_benchmark_ip(self):
+        """grouptalk.c2c.qq.com is the QQ Bot C2C file-attachment download host.
+        When the local network (Clash TUN / corporate proxy / VPN) resolves it
+        to a 198.18.0.0/15 benchmark-range IP, downloads were silently
+        blocked because the host was missing from
+        _TRUSTED_PRIVATE_IP_HOSTS. Allowlist it (issue #47123)."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.2.16", 0)),
+        ]):
+            assert is_safe_url(
+                "https://grouptalk.c2c.qq.com/asn.com/qqdownloadftnv5?id=xxx"
+            ) is True
+
+    def test_qq_c2c_grouptalk_hostname_exception_is_exact_match(self):
+        """The allowlist is an exact-match frozenset. A subdomain like
+        evil.grouptalk.c2c.qq.com must still be blocked even with the
+        grouptalk.c2c.qq.com entry — the helper only matches the bare
+        hostname, not suffix matching."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.2.16", 0)),
+        ]):
+            assert is_safe_url(
+                "https://evil.grouptalk.c2c.qq.com/download?id=xxx"
+            ) is False
+
+    def test_qq_c2c_grouptalk_hostname_exception_requires_https(self):
+        """The bypass only applies to HTTPS. Plain HTTP must still be
+        blocked so a downgrade attack on the proxy cannot reach a private
+        IP via the allowlisted host."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.2.16", 0)),
+        ]):
+            assert is_safe_url(
+                "http://grouptalk.c2c.qq.com/asn.com/qqdownloadftnv5?id=xxx"
+            ) is False
+
 
 class TestAsyncIsSafeUrl:
     """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""

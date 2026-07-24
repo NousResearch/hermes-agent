@@ -181,8 +181,12 @@ _ALWAYS_BLOCKED_NETWORKS = (
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
 # This is intentionally narrow: QQ media downloads can legitimately resolve
 # to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+#   - multimedia.nt.qq.com.cn — QQ Bot media (image / video) downloads
+#   - grouptalk.c2c.qq.com    — QQ Bot C2C file-attachment downloads
+#     (issue #47123)
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
+    "grouptalk.c2c.qq.com",
 })
 
 _MAX_SSRF_CONNECT_IPS = 8

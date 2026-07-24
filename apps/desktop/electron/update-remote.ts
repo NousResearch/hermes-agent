@@ -1,12 +1,11 @@
 /**
  * Pure helpers for choosing a remote URL during passive update checks.
  *
- * A public install can end up with `origin=git@github.com:NousResearch/hermes-agent.git`.
- * If the user's GitHub SSH key is FIDO2/passkey-backed, a background `git fetch
- * origin` triggers an unexplained hardware-touch prompt. For passive checks
- * against the official repo we substitute the public HTTPS `ls-remote` path,
- * which needs no auth and cannot prompt. Active update/apply flows are left
- * unchanged.
+ * A public install can use an SSH or HTTPS origin. Passive checks against the
+ * official repo substitute the public HTTPS `ls-remote` path, which needs no
+ * auth and cannot prompt. This also avoids unexplained hardware-touch prompts
+ * for users with FIDO2/passkey-backed SSH keys. Active update/apply flows are
+ * left unchanged.
  *
  * Extracted from main.ts so the security-critical remote detection is unit
  * testable without booting Electron (main.ts requires('electron') at load).
@@ -62,4 +61,20 @@ function isOfficialSshRemote(url) {
   return isSshRemote(url) && canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
 }
 
-export { canonicalGitHubRemote, isOfficialSshRemote, isSshRemote, OFFICIAL_REPO_CANONICAL, OFFICIAL_REPO_HTTPS_URL }
+function isOfficialRemote(url) {
+  return canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
+}
+
+function nonInteractiveGitEnv(env = {}) {
+  return { ...env, GIT_TERMINAL_PROMPT: '0' }
+}
+
+export {
+  canonicalGitHubRemote,
+  isOfficialRemote,
+  isOfficialSshRemote,
+  isSshRemote,
+  nonInteractiveGitEnv,
+  OFFICIAL_REPO_CANONICAL,
+  OFFICIAL_REPO_HTTPS_URL
+}

@@ -853,7 +853,7 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'tool-call')).toHaveLength(2)
   })
 
-  it('does not duplicate sealed narration when final already includes it', () => {
+  it('does not duplicate sealed narration when final is sealed prefix + more', () => {
     const parts = [
       { type: 'text' as const, text: 'Let me check the files.' },
       {
@@ -873,6 +873,53 @@ describe('mergeFinalAssistantText', () => {
       text: 'Let me check the files. Everything looks good.'
     })
     expect(result.some(p => p.type === 'tool-call')).toBe(true)
+  })
+
+  it('keeps short sealed openers even when the final starts the same way', () => {
+    // "OK." is a common pre-tool ack. A final that also starts with "OK." is not
+    // a full-transcript restatement of the sealed half — keep both segments.
+    const parts = [
+      { type: 'text' as const, text: 'OK.' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc1',
+        toolName: 'terminal',
+        args: {} as never,
+        argsText: '{}'
+      },
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'OK. Everything looks fine after the check.')
+
+    expect(result.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+    expect(result[0]).toMatchObject({ text: 'OK.' })
+    expect(result[2]).toMatchObject({ text: 'OK. Everything looks fine after the check.' })
+  })
+
+  it('does not wipe sealed text when final only mentions it mid-string', () => {
+    const parts = [
+      { type: 'text' as const, text: 'I will search for the config next.' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc1',
+        toolName: 'search_files',
+        args: {} as never,
+        argsText: '{}'
+      },
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(
+      parts,
+      'After the tool ran I will search for the config next. Then we can edit it.'
+    )
+
+    expect(result.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+    expect(result[0]).toMatchObject({ text: 'I will search for the config next.' })
+    expect(result[2]).toMatchObject({
+      text: 'After the tool ran I will search for the config next. Then we can edit it.'
+    })
   })
 
   it('drops reasoning that the final text fully covers (reasoning ⊆ final)', () => {

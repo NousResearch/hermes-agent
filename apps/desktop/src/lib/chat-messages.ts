@@ -160,6 +160,38 @@ function sealedPrefixText(parts: readonly ChatMessagePart[]): string {
 }
 
 /**
+ * True when `finalNorm` is the sealed prefix itself, or a full-transcript
+ * complete that starts with that prefix and continues.
+ *
+ * Deliberately NOT a bare substring check: short sealed phrases like "OK."
+ * often appear inside a later reply. Treating that as a full restatement would
+ * wipe multi-step narration that should stay visible.
+ */
+function finalRestatesSealedPrefix(finalNorm: string, sealedNorm: string): boolean {
+  if (!finalNorm || !sealedNorm) {
+    return false
+  }
+
+  if (finalNorm === sealedNorm) {
+    return true
+  }
+
+  // Require a real prefix (not a mid-string hit) and enough sealed content that
+  // a coincidence is unlikely. Short openers like "OK." / "Sure." stay sealed.
+  const MIN_SEALED_CHARS = 20
+
+  if (sealedNorm.length < MIN_SEALED_CHARS || !finalNorm.startsWith(sealedNorm)) {
+    return false
+  }
+
+  const rest = finalNorm.slice(sealedNorm.length)
+
+  // Empty rest handled by === above. Continuation should look like more prose
+  // after the sealed block, not a glued different word ("files" + "ystem").
+  return rest.length === 0 || /^[\s.!?,:;)\]]/.test(rest)
+}
+
+/**
  * Merge the final assistant text into a message's parts.
  *
  * Streaming parts are segmented by non-text boundaries (tool-call, image, …):
@@ -173,12 +205,15 @@ function sealedPrefixText(parts: readonly ChatMessagePart[]): string {
  *   lived in `state.db` and reappeared after restart (#46606).
  * - If the final text already restates the sealed prefix (full-transcript
  *   complete / previewed reuse), fall back to replacing all text so we do not
- *   duplicate narration.
+ *   duplicate narration. See `finalRestatesSealedPrefix`.
  * - Keeps `reasoning` parts, but drops one that the final text fully covers
  *   (reasoning ⊆ final) — the final restates it. A short final ("Done.") must
  *   NOT swallow a longer reasoning block that merely starts with it (#61447).
  * - Keeps all other part types (tool-call, image, etc.).
  * - Appends the final text as a new text part on the open segment.
+ *
+ * Callers are responsible for image-echo stripping on `finalText` before
+ * calling this helper (see `use-message-stream`).
  */
 export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
   const dedupeReference = normalizeWs(finalText)
@@ -223,13 +258,7 @@ export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: str
   const sealedText = sealedPrefixText(prefix)
 
   // Final already restates sealed narration → avoid "Planning." + "Planning. Done."
-  if (
-    sealedText &&
-    dedupeReference &&
-    (dedupeReference === sealedText ||
-      dedupeReference.startsWith(sealedText) ||
-      dedupeReference.includes(sealedText))
-  ) {
+  if (finalRestatesSealedPrefix(dedupeReference, sealedText)) {
     return replaceOpenSegment(parts)
   }
 

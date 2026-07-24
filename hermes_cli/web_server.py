@@ -4158,6 +4158,12 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
             ],
             capture_output=True,
             text=True,
+            # git log emits UTF-8 (commit subjects can carry emoji/CJK). On
+            # Windows text=True defaults to the ANSI code page — a byte like
+            # 0x90 (3rd byte of 🐛) is undefined in cp1252 and crashed the
+            # stdlib _readerthread, killing the desktop backend (#52649).
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if out.returncode != 0:
@@ -5780,6 +5786,10 @@ def _run_setup_command(
         env=_memory_provider_setup_env(),
         capture_output=True,
         text=True,
+        # Lossy UTF-8 decode — setup tools emit UTF-8; never let a
+        # locale-mismatched byte raise in the reader thread (#52649).
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         check=False,
     )
@@ -8711,6 +8721,10 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
             cwd=str(bridge_dir),
             capture_output=True,
             text=True,
+            # npm output is UTF-8; guard the Windows ANSI-code-page default
+            # against undefined bytes crashing the reader thread (#52649).
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=with_hermes_node_path(),
             creationflags=windows_hide_flags(),
@@ -16199,6 +16213,8 @@ def _probe_docker_backend() -> tuple:
             ["docker", "info", "--format", "{{.ServerVersion}}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
         )
         if proc.returncode == 0:

@@ -151,8 +151,17 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
+        #
+        # Use the verified ContextVar instead of raw env so a nested
+        # ``hermes chat`` subprocess that inherited HERMES_KANBAN_* env
+        # vars never records a failure on the parent's task (#70809).
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        try:
+            from agent.delegation_context import is_kanban_worker_owner as _is_owner
+            _is_kanban_worker = _is_owner()
+        except Exception:
+            _is_kanban_worker = bool(_kanban_task)
+        if _kanban_task and _is_kanban_worker:
             try:
                 from hermes_cli import kanban_db as _kb
                 _conn = _kb.connect()

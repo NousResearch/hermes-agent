@@ -17,6 +17,11 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar(
     default=False,
 )
 
+_KANBAN_WORKER_OWNER: ContextVar[bool] = ContextVar(
+    "hermes_kanban_worker_owner",
+    default=False,
+)
+
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
@@ -52,6 +57,30 @@ def is_delegated_child_process_context() -> bool:
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(
         os.environ.get(DELEGATED_CHILD_ENV_MARKER)
     )
+
+
+def set_kanban_worker_owner() -> None:
+    """Mark the current execution context as a verified Kanban worker owner.
+
+    Called once at the CLI boundary after verifying that the dispatcher
+    query marker matches ``HERMES_KANBAN_TASK``.  Lifecycle code consumes
+    :func:`is_kanban_worker_owner` instead of re-reading ``os.environ``,
+    so a nested ``hermes chat`` subprocess that inherited
+    ``HERMES_KANBAN_*`` env vars is never treated as the parent owner.
+    """
+    _KANBAN_WORKER_OWNER.set(True)
+
+
+def is_kanban_worker_owner() -> bool:
+    """Return True only when this process has verified dispatcher ownership.
+
+    Unlike ``os.environ.get("HERMES_KANBAN_TASK")``, this ContextVar
+    cannot be inherited by a child subprocess.  A nested ``hermes chat``
+    that inherited ``HERMES_KANBAN_*`` env vars will get ``False`` here
+    because the verification step in the CLI entry point won't match the
+    arbitrary query.
+    """
+    return bool(_KANBAN_WORKER_OWNER.get())
 
 
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:

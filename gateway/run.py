@@ -1245,6 +1245,34 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
+def _build_runtime_model_note(model: str, runtime: Optional[Dict[str, Any]]) -> str:
+    """Build a short current-runtime note for gateway turns.
+
+    Long-lived gateway sessions can contain old assistant self-descriptions
+    ("I am running model X") after the user changes the global model.  The
+    actual API call uses the freshly resolved runtime, but the model may still
+    answer from historical transcript text.  Keep the correction in-band like
+    other gateway notes so it survives all providers without mutating history.
+    """
+    model_text = str(model or "").strip()
+    if not model_text:
+        return ""
+    runtime = runtime or {}
+    provider = str(runtime.get("provider") or "").strip()
+    base_url = str(runtime.get("base_url") or "").strip()
+    parts = [f"model={model_text}"]
+    if provider:
+        parts.append(f"provider={provider}")
+    if base_url:
+        parts.append(f"base_url={base_url}")
+    return (
+        "[System note: Current runtime for this turn is "
+        + ", ".join(parts)
+        + ". If earlier transcript messages mention a different model/provider, "
+        "treat them as historical, not current.]"
+    )
+
+
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
@@ -21820,6 +21848,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _msn = _pending_notes.pop(session_key, None) if session_key else None
             if _msn:
                 message = _msn + "\n\n" + message
+
+            _runtime_note = _build_runtime_model_note(
+                turn_route["model"],
+                turn_route.get("runtime"),
+            )
+            if _runtime_note:
+                message = _runtime_note + "\n\n" + message
 
             # Auto-continue: if the loaded history ends with a tool result,
             # the previous agent turn was interrupted mid-work (gateway

@@ -219,6 +219,12 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     description: 'Authenticate via AWS profile + region',
     docsUrl: 'https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html',
     priority: 23
+  },
+  {
+    prefix: 'AILAB_',
+    name: 'AILab',
+    description: 'Custom OpenAI-compatible proxy (gpt-5, claude, kimi, etc.)',
+    priority: 24
   }
 ]
 

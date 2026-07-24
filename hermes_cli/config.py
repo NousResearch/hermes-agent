@@ -3681,6 +3681,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "AILAB_API_KEY": {
+        "description": "AILab custom OpenAI-compatible proxy API key",
+        "prompt": "AILab API key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AILAB_BASE_URL": {
+        "description": "AILab base URL (OpenAI-compatible endpoint)",
+        "prompt": "AILab base URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "NVIDIA_API_KEY": {
         "description": "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
         "prompt": "NVIDIA NIM API key",

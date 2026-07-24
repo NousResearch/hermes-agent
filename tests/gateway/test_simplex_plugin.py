@@ -467,3 +467,186 @@ async def test_image_file_still_sets_photo_type():
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.PHOTO
+
+
+# ---------------------------------------------------------------------------
+# Group allowlist → gateway authorization (role_authorized)
+# ---------------------------------------------------------------------------
+
+def _make_group_text_chat_item(
+    group_id: int, member_id: int, display_name: str, text: str
+) -> dict:
+    """Minimal group rcvMsgContent text item from a named group member."""
+    return {
+        "chatInfo": {
+            "type": "group",
+            "groupInfo": {
+                "groupId": group_id,
+                "localDisplayName": f"grp{group_id}",
+            },
+        },
+        "chatItem": {
+            "chatDir": {
+                "type": "groupRcv",
+                "groupMember": {
+                    "memberId": member_id,
+                    "localDisplayName": display_name,
+                },
+            },
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": text},
+            },
+        },
+    }
+
+
+async def _drain_text_batches(adapter) -> None:
+    """Await any pending text-batch flush tasks so dispatch completes."""
+    for task in list(adapter._pending_text_batch_tasks.values()):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_group_message_from_allowed_group_is_role_authorized(monkeypatch):
+    """A message from a group in SIMPLEX_GROUP_ALLOWED must dispatch a source
+    with role_authorized=True.
+
+    The adapter already gated the group at intake; the gateway's
+    _is_user_authorized only honors that decision when role_authorized is set
+    (otherwise it re-checks the group member against SIMPLEX_ALLOWED_USERS — a
+    DM-contact allowlist — and drops every group message the operator opted
+    into)."""
+    from gateway.config import PlatformConfig
+
+    monkeypatch.setenv("SIMPLEX_GROUP_ALLOWED", "12")
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._text_batch_delay = 0.0
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(
+        _make_group_text_chat_item(12, 99, "bob", "hi from the group")
+    )
+    await _drain_text_batches(adapter)
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].source.chat_type == "group"
+    assert dispatched[0].source.chat_id == "group:12"
+    assert dispatched[0].source.role_authorized is True
+
+
+@pytest.mark.asyncio
+async def test_group_message_outside_allowlist_is_dropped(monkeypatch):
+    """A message from a group NOT in SIMPLEX_GROUP_ALLOWED is dropped at
+    intake — the group allowlist must keep fail-closed (no role_authorized
+    leakage to unlisted groups)."""
+    from gateway.config import PlatformConfig
+
+    monkeypatch.setenv("SIMPLEX_GROUP_ALLOWED", "12")
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._text_batch_delay = 0.0
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(
+        _make_group_text_chat_item(99, 7, "mallory", "let me in")
+    )
+    await _drain_text_batches(adapter)
+
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_dm_message_is_not_role_authorized():
+    """Regression guard: DM messages must NOT be role_authorized — they stay
+    gated by SIMPLEX_ALLOWED_USERS at the gateway."""
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("/tmp/report.pdf", "report.pdf"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].source.chat_type == "dm"
+    assert dispatched[0].source.role_authorized is False
+
+
+# ---------------------------------------------------------------------------
+# Gateway end-to-end: group allowlist is honored via role_authorized
+# ---------------------------------------------------------------------------
+
+def _make_bare_runner():
+    """GatewayRunner skeleton wired just enough for _is_user_authorized.
+
+    Mirrors tests/gateway/test_discord_bot_auth_bypass.py — uses
+    ``object.__new__`` to skip the heavy __init__ (AGENTS.md pitfall #17) and
+    stubs the pairing store so the real allowlist path is exercised.
+    """
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+    return runner
+
+
+def _make_simplex_group_source(role_authorized: bool):
+    from gateway.session import Platform, SessionSource
+
+    # user_id is a group memberId, deliberately NOT a DM contactId in
+    # SIMPLEX_ALLOWED_USERS — the scenario the fix targets.
+    return SessionSource(
+        platform=Platform("simplex"),
+        chat_id="group:12",
+        chat_type="group",
+        user_id="99",
+        user_name="bob",
+        role_authorized=role_authorized,
+    )
+
+
+def _clear_simplex_allow_all(monkeypatch):
+    for var in (
+        "SIMPLEX_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_gateway_authorizes_simplex_group_when_role_authorized(monkeypatch):
+    """End-to-end: a SimpleX group source carrying role_authorized=True clears
+    the gateway gate even though the group member is NOT in SIMPLEX_ALLOWED_USERS
+    (a DM-contact allowlist). This is the gateway half of the fix — the adapter
+    sets role_authorized once the SIMPLEX_GROUP_ALLOWED gate passes."""
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "alice")  # DM contact only
+    _clear_simplex_allow_all(monkeypatch)
+    runner = _make_bare_runner()
+    assert runner._is_user_authorized(_make_simplex_group_source(True)) is True
+
+
+def test_gateway_denies_simplex_group_without_role_authorized(monkeypatch):
+    """Contrast guard: the same group member WITHOUT role_authorized stays
+    denied. Proves role_authorized is the deciding signal — the DM allowlist
+    alone must never admit an arbitrary group member (no fail-open)."""
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "alice")
+    _clear_simplex_allow_all(monkeypatch)
+    runner = _make_bare_runner()
+    assert runner._is_user_authorized(_make_simplex_group_source(False)) is False

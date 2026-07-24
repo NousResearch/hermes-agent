@@ -610,12 +610,22 @@ class SimplexAdapter(BasePlatformAdapter):
                 "groupProfile", {}
             ).get("displayName", chat_id)
 
+        # A group message only reaches here after clearing the
+        # SIMPLEX_GROUP_ALLOWED gate above, so the group is an
+        # operator-authorized chat. Carry that intake decision to the gateway
+        # via role_authorized (access granted by the group allowlist, not by
+        # the sender's individual contactId) — the same signal the Discord
+        # adapter sets after a role check. Without it the gateway re-checks the
+        # group member against SIMPLEX_ALLOWED_USERS, a DM-contact allowlist
+        # that group members aren't in, and silently drops every group message
+        # the operator explicitly opted into.
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_name,
             chat_type="group" if is_group else "dm",
             user_id=sender_id,
             user_name=sender_name or sender_id,
+            role_authorized=is_group,
         )
 
         # Message type

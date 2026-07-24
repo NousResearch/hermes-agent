@@ -697,6 +697,17 @@ class TestAllowlistConcurrency:
         script.chmod(0o755)
         assert shell_hooks.script_is_executable(str(script))
 
+    def test_split_command_preserves_windows_backslashes(self, monkeypatch):
+        """Unquoted Windows paths must survive tokenization (#BUG-1)."""
+        monkeypatch.setattr(shell_hooks, "IS_WINDOWS", True)
+        cmd = r"C:\Users\foo\hook.py"
+        assert shell_hooks._split_command(cmd) == [cmd]
+
+    def test_command_script_path_windows_backslash(self, monkeypatch):
+        monkeypatch.setattr(shell_hooks, "IS_WINDOWS", True)
+        cmd = r"python.exe C:\Users\foo\hook.py"
+        assert shell_hooks._command_script_path(cmd) == r"C:\Users\foo\hook.py"
+
     def test_command_script_path_resolution(self):
         """Regression: ``_command_script_path`` used to return the first
         shlex token, which picked the interpreter (``python3``, ``bash``,

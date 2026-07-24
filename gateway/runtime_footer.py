@@ -140,6 +140,14 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+
+    # Only show footer when a fallback model was used (actual model ≠ primary model).
+    primary_model = ((user_config or {}).get("model") or {}).get("default") or ""
+    primary_model_short = _model_short(primary_model)
+    actual_model_short = _model_short(model)
+    if primary_model_short and actual_model_short == primary_model_short:
+        return ""
+
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,

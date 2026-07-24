@@ -902,6 +902,10 @@ _TERMINAL_EVENT_TYPES = frozenset({
 })
 
 
+class CodexMissingTerminalResponseError(RuntimeError):
+    """The Responses stream ended without a terminal event or usable output."""
+
+
 def _event_field(event: Any, name: str, default: Any = None) -> Any:
     """Field access that handles both attr-style (SDK objects) and dict (raw JSON) events."""
     value = getattr(event, name, None)
@@ -1191,7 +1195,7 @@ def _consume_codex_event_stream(
     # signal the SDK's high-level helper used to raise as
     # ``RuntimeError("Didn't receive a `response.completed` event.")``.
     if not saw_terminal and not output:
-        raise RuntimeError(
+        raise CodexMissingTerminalResponseError(
             "Codex Responses stream did not emit a terminal response"
         )
 
@@ -1206,6 +1210,7 @@ def _consume_codex_event_stream(
         model=model,
         incomplete_details=terminal_incomplete_details,
         error=terminal_error,
+        terminal_event_received=saw_terminal,
     )
     return final
 
@@ -1352,5 +1357,6 @@ __all__ = [
     "run_codex_stream",
     "run_codex_create_stream_fallback",
     "_consume_codex_event_stream",
+    "CodexMissingTerminalResponseError",
     "make_codex_app_server_event_bridge",
 ]

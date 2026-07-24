@@ -15,13 +15,16 @@ from unittest.mock import Mock
 import pytest
 
 import tools.browser_tool as browser_tool
+from agent import secret_scope
 
 
 @pytest.fixture(autouse=True)
 def _reset_resolver_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_cached_cloud_provider", None)
     monkeypatch.setattr(browser_tool, "_cloud_provider_resolved", False)
+    secret_scope.set_multiplex_active(False)
     yield
+    secret_scope.set_multiplex_active(False)
 
 
 class TestCloudProviderCachePolicy:
@@ -123,3 +126,21 @@ class TestCloudProviderCachePolicy:
             "browser-use" in r.message and r.levelno == logging.WARNING
             for r in caplog.records
         )
+
+    def test_multiplex_profiles_do_not_share_provider_cache(self, monkeypatch):
+        providers = {"browser-use": Mock(), "browserbase": Mock()}
+        configs = iter([
+            {"browser": {"cloud_provider": "browser-use"}},
+            {"browser": {"cloud_provider": "browserbase"}},
+        ])
+        monkeypatch.setattr(
+            browser_tool,
+            "_PROVIDER_REGISTRY",
+            {name: (lambda provider=provider: provider) for name, provider in providers.items()},
+        )
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: next(configs))
+        secret_scope.set_multiplex_active(True)
+
+        assert browser_tool._get_cloud_provider() is providers["browser-use"]
+        assert browser_tool._get_cloud_provider() is providers["browserbase"]
+        assert browser_tool._cloud_provider_resolved is False

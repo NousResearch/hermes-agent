@@ -32,6 +32,9 @@ class TestBrowserCleanup:
         self.orig_session_last_activity = browser_tool._session_last_activity.copy()
         self.orig_recording_sessions = browser_tool._recording_sessions.copy()
         self.orig_cleanup_done = browser_tool._cleanup_done
+        self.orig_cloud_cleanup_states = browser_tool._cloud_cleanup_states.copy()
+        self.orig_cloud_cleanup_pending = browser_tool._cloud_cleanup_pending.copy()
+        self.orig_cloud_cleanup_in_progress = browser_tool._cloud_cleanup_in_progress.copy()
 
     def teardown_method(self):
         self.browser_tool._active_sessions.clear()
@@ -41,6 +44,12 @@ class TestBrowserCleanup:
         self.browser_tool._recording_sessions.clear()
         self.browser_tool._recording_sessions.update(self.orig_recording_sessions)
         self.browser_tool._cleanup_done = self.orig_cleanup_done
+        self.browser_tool._cloud_cleanup_states.clear()
+        self.browser_tool._cloud_cleanup_states.update(self.orig_cloud_cleanup_states)
+        self.browser_tool._cloud_cleanup_pending.clear()
+        self.browser_tool._cloud_cleanup_pending.update(self.orig_cloud_cleanup_pending)
+        self.browser_tool._cloud_cleanup_in_progress.clear()
+        self.browser_tool._cloud_cleanup_in_progress.update(self.orig_cloud_cleanup_in_progress)
 
     def test_cleanup_browser_clears_tracking_state(self):
         browser_tool = self.browser_tool
@@ -63,7 +72,13 @@ class TestBrowserCleanup:
         assert "task-1" not in browser_tool._active_sessions
         assert "task-1" not in browser_tool._session_last_activity
         mock_stop.assert_called_once_with("task-1")
-        mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
+        mock_run.assert_called_once_with(
+            "task-1",
+            "close",
+            [],
+            timeout=10,
+            _allow_cleanup_pending=True,
+        )
 
     def test_cleanup_camofox_managed_persistence_skips_close(self):
         """When camofox mode + managed persistence, soft_cleanup fires instead of close."""
@@ -120,6 +135,44 @@ class TestBrowserCleanup:
 
         mock_soft.assert_called_once_with("task-1")
         mock_close.assert_called_once_with("task-1")
+
+    def test_failed_remote_close_is_retried_without_reusing_local_session(self):
+        browser_tool = self.browser_tool
+
+        class Provider:
+            attempts = 0
+
+            def close_session(self, _session_id):
+                self.attempts += 1
+                return self.attempts > 1
+
+        provider = Provider()
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": "remote-1",
+            "_cloud_cleanup_key": "cleanup-1",
+        }
+        browser_tool._session_last_activity["task-1"] = 123.0
+        browser_tool._cloud_cleanup_states["cleanup-1"] = (
+            provider,
+            "remote-1",
+            None,
+            "/owner",
+        )
+
+        with (
+            patch("tools.browser_tool._run_browser_command", return_value={}),
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch("tools.browser_tool.os.path.exists", return_value=False),
+        ):
+            browser_tool.cleanup_browser("task-1")
+            assert "task-1" not in browser_tool._active_sessions
+            assert "cleanup-1" in browser_tool._cloud_cleanup_pending
+            browser_tool._retry_pending_cloud_cleanups()
+
+        assert provider.attempts == 2
+        assert "cleanup-1" not in browser_tool._cloud_cleanup_states
+        assert "cleanup-1" not in browser_tool._cloud_cleanup_pending
 
     def test_emergency_cleanup_clears_all_tracking_state(self):
         browser_tool = self.browser_tool

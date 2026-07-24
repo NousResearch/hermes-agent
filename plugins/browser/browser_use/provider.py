@@ -29,7 +29,6 @@ Auth env vars (one of)::
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import uuid
 from typing import Any, Dict, Optional
@@ -37,6 +36,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from agent.browser_provider import BrowserProvider
+from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +79,11 @@ def _should_preserve_pending_create_key(response: requests.Response) -> bool:
     Drop the key on any other 4xx (auth failure, bad request, etc.) — those
     won't succeed by being retried.
     """
-    if response.status_code >= 500:
+    status_code = int(response.status_code or 0)
+    if status_code >= 500:
         return True
 
-    if response.status_code != 409:
+    if status_code != 409:
         return False
 
     try:
@@ -137,7 +138,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
 
         # Direct API key wins unless the user has explicitly opted into the
         # managed Nous gateway via ``tool_gateway.browser: gateway``.
-        api_key = os.environ.get("BROWSER_USE_API_KEY")
+        api_key = get_secret("BROWSER_USE_API_KEY")
         if api_key and not prefers_gateway("browser"):
             return {
                 "api_key": api_key,

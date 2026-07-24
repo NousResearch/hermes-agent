@@ -61,12 +61,24 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from agent.redact import redact_cdp_url
-from hermes_constants import agent_browser_runnable, get_hermes_home
+from agent.secret_scope import (
+    current_secret_scope,
+    is_multiplex_active,
+    reset_secret_scope,
+    set_secret_scope,
+)
+from hermes_constants import (
+    agent_browser_runnable,
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -680,7 +692,8 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     ``_is_legacy_provider_registry_overridden``.
     """
     global _cached_cloud_provider, _cloud_provider_resolved
-    if _cloud_provider_resolved:
+    use_cache = not is_multiplex_active()
+    if use_cache and _cloud_provider_resolved:
         return _cached_cloud_provider
 
     resolved: Optional[CloudBrowserProvider] = None
@@ -694,8 +707,9 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                 browser_cfg.get("cloud_provider")
             )
             if provider_key == "local":
-                _cached_cloud_provider = None
-                _cloud_provider_resolved = True
+                if use_cache:
+                    _cached_cloud_provider = None
+                    _cloud_provider_resolved = True
                 return None
         if provider_key:
             try:
@@ -762,9 +776,10 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
         # Transient None — credentials may self-heal. Don't poison the cache.
         return None
 
-    _cached_cloud_provider = resolved
-    _cloud_provider_resolved = True
-    return _cached_cloud_provider
+    if use_cache:
+        _cached_cloud_provider = resolved
+        _cloud_provider_resolved = True
+    return resolved
 
 
 from hermes_constants import is_termux as _is_termux_environment
@@ -1436,6 +1451,14 @@ def _socket_safe_tmpdir() -> str:
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
 _active_sessions: Dict[str, Dict[str, Any]] = {}  # session_key -> {session_name, ...}
 _recording_sessions: set = set()  # session_keys with active recordings
+_cloud_cleanup_states: Dict[str, Tuple[Any, str, Optional[Dict[str, str]], str]] = {}
+_cloud_cleanup_pending: set = set()
+_cloud_cleanup_in_progress: set = set()
+_CLOUD_CLEANUP_SECRET_KEYS = {
+    "browserbase": {"BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL"},
+    "browser-use": {"BROWSER_USE_API_KEY"},
+    "firecrawl": {"FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"},
+}
 
 # Tracks the most recent session_key used per task_id. Set by browser_navigate()
 # after it chooses a backend for a URL; read by every non-nav browser tool
@@ -1477,6 +1500,7 @@ BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
+_session_creations: Dict[str, Dict[str, Any]] = {}
 
 # Background cleanup thread state
 _cleanup_thread = None
@@ -1484,6 +1508,52 @@ _cleanup_running = False
 # Protects _session_last_activity AND _active_sessions for thread safety
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
+
+
+def _finish_session_creation(task_id: str, state: Dict[str, Any], error=None) -> None:
+    with _cleanup_lock:
+        if error is not None:
+            state["error"] = error
+        if _session_creations.get(task_id) is state:
+            _session_creations.pop(task_id, None)
+        state["event"].set()
+
+
+def _close_cloud_session(cleanup_key: str) -> bool:
+    with _cleanup_lock:
+        if cleanup_key in _cloud_cleanup_in_progress:
+            return False
+        state = _cloud_cleanup_states.get(cleanup_key)
+        if state is None:
+            return False
+        _cloud_cleanup_in_progress.add(cleanup_key)
+
+    provider, session_id, scope, home = state
+    secret_token = set_secret_scope(scope) if scope is not None else None
+    home_token = set_hermes_home_override(home)
+    try:
+        closed = provider.close_session(session_id) is True
+    except Exception as e:
+        logger.warning("Could not close cloud browser session: %s", e)
+        closed = False
+    finally:
+        reset_hermes_home_override(home_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+
+    with _cleanup_lock:
+        _cloud_cleanup_in_progress.discard(cleanup_key)
+        if closed:
+            _cloud_cleanup_states.pop(cleanup_key, None)
+            _cloud_cleanup_pending.discard(cleanup_key)
+    return closed
+
+
+def _retry_pending_cloud_cleanups() -> None:
+    with _cleanup_lock:
+        session_ids = list(_cloud_cleanup_pending)
+    for session_id in session_ids:
+        _close_cloud_session(session_id)
 
 
 def _emergency_cleanup_all_sessions():
@@ -1499,10 +1569,11 @@ def _emergency_cleanup_all_sessions():
     if _cleanup_done:
         return
     _cleanup_done = True
+    _stop_browser_cleanup_thread()
 
     # Clean up this process's own sessions first, so their owner_pid files
     # are removed before the reaper scans.
-    if _active_sessions:
+    if _active_sessions or _cloud_cleanup_pending:
         logger.info("Emergency cleanup: closing %s active session(s)...",
                     len(_active_sessions))
         try:
@@ -1514,6 +1585,9 @@ def _emergency_cleanup_all_sessions():
                 _active_sessions.clear()
                 _session_last_activity.clear()
                 _recording_sessions.clear()
+                _cloud_cleanup_states.clear()
+                _cloud_cleanup_pending.clear()
+                _cloud_cleanup_in_progress.clear()
 
     # Sweep orphans from other crashed hermes processes.  Safe even if we
     # never used the browser — uses owner_pid liveness to avoid reaping
@@ -1563,6 +1637,7 @@ def _cleanup_inactive_browser_sessions():
                     del _session_last_activity[task_id]
         except Exception as e:
             logger.warning("Error cleaning up inactive session %s: %s", task_id, e)
+    _retry_pending_cloud_cleanups()
 
 
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:
@@ -2040,7 +2115,11 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+def _get_session_info(
+    task_id: Optional[str] = None,
+    *,
+    allow_cleanup_pending: bool = False,
+) -> Dict[str, Any]:
     """
     Get or create session info for the given session key.
 
@@ -2067,10 +2146,23 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # Update activity timestamp for this session
     _update_session_activity(task_id)
 
-    with _cleanup_lock:
-        # Check if we already have a session for this task
-        if task_id in _active_sessions:
-            return _active_sessions[task_id]
+    while True:
+        with _cleanup_lock:
+            session_info = _active_sessions.get(task_id)
+            if session_info is not None:
+                if session_info.get("_cleanup_pending") and not allow_cleanup_pending:
+                    raise RuntimeError(f"Browser session cleanup in progress for task {task_id}")
+                return session_info
+            creation_state = _session_creations.get(task_id)
+            if creation_state is None:
+                creation_state = {"event": threading.Event(), "cancelled": False}
+                _session_creations[task_id] = creation_state
+                break
+        creation_state["event"].wait()
+        if creation_state.get("cancelled"):
+            raise RuntimeError(f"Browser session creation cancelled for task {task_id}")
+        if creation_state.get("error") is not None:
+            raise creation_state["error"]
 
     # Hybrid routing: session keys ending with ``::local`` force a local
     # Chromium regardless of the globally-configured cloud provider.  Public
@@ -2079,6 +2171,9 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     force_local = _is_local_sidecar_key(task_id)
 
     # Create session outside the lock (network call in cloud mode)
+    cloud_cleanup_state = None
+    cloud_session_id = ""
+    cloud_cleanup_key = ""
     cdp_override = _get_cdp_override()
     if cdp_override and not force_local:
         session_info = _create_cdp_session(task_id, cdp_override)
@@ -2099,6 +2194,23 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                     # CDP discovery URL instead of a raw websocket endpoint.
                     session_info = dict(session_info)
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+                cloud_session_id = str(session_info.get("bb_session_id") or "")
+                scope = current_secret_scope()
+                keys = _CLOUD_CLEANUP_SECRET_KEYS.get(
+                    provider.name,
+                    getattr(provider, "cleanup_secret_keys", ()),
+                )
+                cleanup_scope = None
+                if scope is not None:
+                    cleanup_scope = {key: scope[key] for key in keys if key in scope}
+                if cloud_session_id:
+                    cloud_cleanup_key = uuid.uuid4().hex
+                    cloud_cleanup_state = (
+                        provider,
+                        cloud_session_id,
+                        cleanup_scope,
+                        str(get_hermes_home()),
+                    )
             except Exception as e:
                 provider_name = type(provider).__name__
                 logger.warning(
@@ -2110,10 +2222,12 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                 try:
                     session_info = _create_local_session(task_id)
                 except Exception as local_error:
-                    raise RuntimeError(
+                    error = RuntimeError(
                         f"Cloud provider {provider_name} failed ({e}) and local "
                         f"fallback also failed ({local_error})"
-                    ) from e
+                    )
+                    _finish_session_creation(task_id, creation_state, error)
+                    raise error from e
                 # Mark session as degraded for observability
                 if isinstance(session_info, dict):
                     session_info = dict(session_info)
@@ -2122,15 +2236,30 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                     session_info["fallback_provider"] = provider_name
 
     with _cleanup_lock:
-        # Double-check: another thread may have created a session while we
-        # were doing the network call. Use the existing one to avoid leaking
-        # orphan cloud sessions.
-        if task_id in _active_sessions:
-            return _active_sessions[task_id]
-        session_info = dict(session_info)
-        session_info.setdefault("session_key", task_id)
-        session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
-        _active_sessions[task_id] = session_info
+        cancelled = bool(creation_state.get("cancelled"))
+        existing_session = _active_sessions.get(task_id)
+        if existing_session is None and not cancelled:
+            session_info = dict(session_info)
+            session_info.setdefault("session_key", task_id)
+            session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
+            _active_sessions[task_id] = session_info
+            if cloud_cleanup_state is not None:
+                session_info["_cloud_cleanup_key"] = cloud_cleanup_key
+                _cloud_cleanup_states[cloud_cleanup_key] = cloud_cleanup_state
+        elif cloud_cleanup_state is not None:
+            _cloud_cleanup_states[cloud_cleanup_key] = cloud_cleanup_state
+            _cloud_cleanup_pending.add(cloud_cleanup_key)
+        if _session_creations.get(task_id) is creation_state:
+            _session_creations.pop(task_id, None)
+        creation_state["event"].set()
+
+    if existing_session is not None or cancelled:
+        if cloud_cleanup_state is not None:
+            _close_cloud_session(cloud_cleanup_key)
+        if cancelled:
+            raise RuntimeError(f"Browser session creation cancelled for task {task_id}")
+        assert existing_session is not None
+        return existing_session
 
     # Lazy-start the CDP supervisor now that the session exists (if the
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
@@ -2303,6 +2432,7 @@ def _run_browser_command(
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _allow_cleanup_pending: bool = False,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -2366,7 +2496,11 @@ def _run_browser_command(
 
     # Get session info (creates Browserbase session with proxies if needed)
     try:
-        session_info = _get_session_info(task_id)
+        session_info = (
+            _get_session_info(task_id, allow_cleanup_pending=True)
+            if _allow_cleanup_pending
+            else _get_session_info(task_id)
+        )
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
@@ -4426,6 +4560,16 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
 
 def _cleanup_single_browser_session(task_id: str) -> None:
     """Internal: reap a single browser session by its exact session key."""
+    with _cleanup_lock:
+        creation_state = _session_creations.get(task_id)
+        if creation_state is not None:
+            creation_state["cancelled"] = True
+        session_info = _active_sessions.get(task_id)
+        if session_info is not None:
+            if session_info.get("_cleanup_pending"):
+                return
+            session_info["_cleanup_pending"] = True
+
     # Stop the CDP supervisor for this task FIRST so we close our WebSocket
     # before the backend tears down the underlying CDP endpoint.
     _stop_cdp_supervisor(task_id)
@@ -4445,13 +4589,9 @@ def _cleanup_single_browser_session(task_id: str) -> None:
     logger.debug("cleanup_browser called for task_id: %s", task_id)
     logger.debug("Active sessions: %s", list(_active_sessions.keys()))
 
-    # Check if session exists (under lock), but don't remove yet -
-    # _run_browser_command needs it to build the close command.
-    with _cleanup_lock:
-        session_info = _active_sessions.get(task_id)
-
     if session_info:
-        bb_session_id = session_info.get("bb_session_id", "unknown")
+        bb_session_id = str(session_info.get("bb_session_id") or "")
+        cleanup_key = str(session_info.get("_cloud_cleanup_key") or "")
         logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
 
         # Stop auto-recording before closing (saves the file)
@@ -4459,25 +4599,30 @@ def _cleanup_single_browser_session(task_id: str) -> None:
 
         # Try to close via agent-browser first (needs session in _active_sessions)
         try:
-            _run_browser_command(task_id, "close", [], timeout=10)
+            _run_browser_command(
+                task_id,
+                "close",
+                [],
+                timeout=10,
+                _allow_cleanup_pending=True,
+            )
             logger.debug("agent-browser close command completed for task %s", task_id)
         except Exception as e:
             logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
         # Now remove from tracking under lock
         with _cleanup_lock:
-            _active_sessions.pop(task_id, None)
-            _session_last_activity.pop(task_id, None)
+            if _active_sessions.get(task_id) is session_info:
+                _active_sessions.pop(task_id, None)
+                _session_last_activity.pop(task_id, None)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
-        if bb_session_id:
-            provider = _get_cloud_provider()
-            if provider is not None:
-                try:
-                    provider.close_session(bb_session_id)
-                except Exception as e:
-                    logger.warning("Could not close cloud browser session: %s", e)
+        if cleanup_key:
+            with _cleanup_lock:
+                if cleanup_key in _cloud_cleanup_states:
+                    _cloud_cleanup_pending.add(cleanup_key)
+            _close_cloud_session(cleanup_key)
 
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
@@ -4508,9 +4653,17 @@ def cleanup_all_browsers() -> None:
     Useful for cleanup on shutdown.
     """
     with _cleanup_lock:
+        creations = list(_session_creations.values())
+        for state in creations:
+            state["cancelled"] = True
+    for state in creations:
+        state["event"].wait()
+
+    with _cleanup_lock:
         task_ids = list(_active_sessions.keys())
     for task_id in task_ids:
         cleanup_browser(task_id)
+    _retry_pending_cloud_cleanups()
 
     # Tear down CDP supervisors for all tasks so background threads exit.
     try:

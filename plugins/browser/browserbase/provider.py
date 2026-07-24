@@ -39,6 +39,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from agent.browser_provider import BrowserProvider
+from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +67,15 @@ class BrowserbaseBrowserProvider(BrowserProvider):
     # ------------------------------------------------------------------
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
-        api_key = os.environ.get("BROWSERBASE_API_KEY")
-        project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
+        api_key = get_secret("BROWSERBASE_API_KEY")
+        project_id = get_secret("BROWSERBASE_PROJECT_ID")
         if api_key and project_id:
             return {
                 "api_key": api_key,
                 "project_id": project_id,
-                "base_url": os.environ.get(
+                "base_url": (get_secret(
                     "BROWSERBASE_BASE_URL", "https://api.browserbase.com"
-                ).rstrip("/"),
+                ) or "https://api.browserbase.com").rstrip("/"),
             }
         return None
 

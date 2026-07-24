@@ -16,9 +16,12 @@ platform the gateway truncates it and points the user at the dashboard / file.
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+import logging
+from typing import Callable, Dict, List, Optional
 
 from tools import write_approval as wa
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_state(subsystem: str) -> str:
@@ -56,6 +59,8 @@ def handle_pending_subcommand(
     args: List[str],
     *,
     memory_store=None,
+    memory_manager=None,
+    memory_metadata_builder: Optional[Callable[[], Dict[str, object]]] = None,
     set_mode_fn=None,
 ) -> Optional[str]:
     """Dispatch a /memory or /skills subcommand.
@@ -66,6 +71,11 @@ def handle_pending_subcommand(
         memory_store: live MemoryStore for applying approved memory writes
             (CLI passes ``self.agent._memory_store``; gateway applies against a
             freshly loaded store).
+        memory_manager: optional live MemoryManager used to mirror approved
+            memory writes to external providers, matching the foreground
+            built-in memory tool path.
+        memory_metadata_builder: optional callable that returns provenance
+            metadata for mirrored memory writes.
         set_mode_fn: optional callable ``(enabled: bool) -> None`` that
             persists the new write_approval boolean to config (gateway provides
             this; CLI uses its own ``save_config_value`` and passes a closure).
@@ -85,7 +95,7 @@ def handle_pending_subcommand(
         return _fmt_pending_list(subsystem)
 
     if sub in {"approve", "apply"}:
-        return _approve(subsystem, rest, memory_store)
+        return _approve(subsystem, rest, memory_store, memory_manager, memory_metadata_builder)
 
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
@@ -105,7 +115,13 @@ def _resolve_one(subsystem: str, rest: List[str]):
     return rest[0], None
 
 
-def _approve(subsystem: str, rest: List[str], memory_store) -> str:
+def _approve(
+    subsystem: str,
+    rest: List[str],
+    memory_store,
+    memory_manager=None,
+    memory_metadata_builder: Optional[Callable[[], Dict[str, object]]] = None,
+) -> str:
     target, err = _resolve_one(subsystem, rest)
     if err or target is None:
         return err or f"Usage: /{subsystem} approve <id>"
@@ -124,7 +140,7 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
     applied, failed = 0, []
     for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
+        ok, msg = _apply_one(subsystem, rec, memory_store, memory_manager, memory_metadata_builder)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
@@ -138,7 +154,31 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     return "\n".join(out)
 
 
-def _apply_one(subsystem: str, rec, memory_store):
+def _mirror_approved_memory_write(
+    memory_manager,
+    result,
+    payload,
+    memory_metadata_builder,
+) -> None:
+    if memory_manager is None:
+        return
+    try:
+        memory_manager.notify_memory_tool_write(
+            result,
+            payload,
+            build_metadata=memory_metadata_builder,
+        )
+    except Exception as e:
+        logger.debug("approved memory write mirror failed: %s", e)
+
+
+def _apply_one(
+    subsystem: str,
+    rec,
+    memory_store,
+    memory_manager=None,
+    memory_metadata_builder: Optional[Callable[[], Dict[str, object]]] = None,
+):
     payload = rec.get("payload", {})
     try:
         if subsystem == wa.MEMORY:
@@ -146,7 +186,15 @@ def _apply_one(subsystem: str, rec, memory_store):
                 return False, "memory store unavailable"
             from tools.memory_tool import apply_memory_pending
             result = apply_memory_pending(payload, memory_store)
-            return bool(result.get("success")), result.get("error", "")
+            ok = bool(result.get("success"))
+            if ok:
+                _mirror_approved_memory_write(
+                    memory_manager,
+                    result,
+                    payload,
+                    memory_metadata_builder,
+                )
+            return ok, result.get("error", "")
         else:
             from tools.skill_manager_tool import apply_skill_pending
             result = json.loads(apply_skill_pending(payload))

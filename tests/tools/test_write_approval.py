@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +31,34 @@ def _set_approval(subsystem, enabled):
     c = cfg.load_config()
     c.setdefault(subsystem, {})["write_approval"] = enabled
     cfg.save_config(c)
+
+
+class _RecordingMemoryProvider:
+    """Minimal external memory provider used by approval bridge tests."""
+
+    name = "recording"
+
+    def get_tool_schemas(self):
+        return []
+
+    def on_memory_write(self, action, target, content, metadata=None):
+        self.calls.append({
+            "action": action,
+            "target": target,
+            "content": content,
+            "metadata": dict(metadata or {}),
+        })
+
+    def __init__(self):
+        self.calls = []
+
+
+def _memory_manager_with_recording_provider():
+    from agent.memory_manager import MemoryManager
+    provider = _RecordingMemoryProvider()
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    return manager, provider
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +164,47 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     # The approved write landed in a freshly loaded on-disk store (MEMORY.md).
     reloaded = MemoryStore(); reloaded.load_from_disk()
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
+
+
+def test_cli_memory_approve_with_live_agent_mirrors_to_memory_manager(hermes_home, capsys):
+    """Approved staged writes should use the same MemoryManager bridge as
+    committed foreground memory tool writes, so external providers stay in sync.
+    """
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    _set_approval("memory", True)
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "user", "approved provider fact", store=store))
+    assert r.get("pending_id"), r
+
+    manager, provider = _memory_manager_with_recording_provider()
+    handler = CLICommandsMixin.__new__(CLICommandsMixin)
+    handler.agent = SimpleNamespace(
+        _memory_store=store,
+        _memory_manager=manager,
+        _build_memory_write_metadata=lambda **kwargs: {
+            "write_origin": kwargs.get("write_origin"),
+            "execution_context": kwargs.get("execution_context"),
+        },
+    )
+    handler._handle_memory_command(f"/memory approve {r['pending_id']}")
+
+    out = capsys.readouterr().out
+    assert "Approved 1" in out, out
+    assert wa.pending_count("memory") == 0
+    assert provider.calls == [
+        {
+            "action": "add",
+            "target": "user",
+            "content": "approved provider fact",
+            "metadata": {
+                "write_origin": "memory_approval",
+                "execution_context": "slash_command",
+            },
+        }
+    ]
 
 
 def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypatch):
@@ -261,6 +331,34 @@ def test_handle_approve_all(hermes_home):
     assert "Approved 2" in out
     assert wa.pending_count("memory") == 0
     assert len(store.user_entries) == 2
+
+
+def test_handle_approve_mirrors_memory_write_to_manager(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+
+    store = MemoryStore(); store.load_from_disk()
+    rec = wa.stage_write("memory", {"action": "add", "target": "memory", "content": "synced"},
+                         summary="synced", origin="foreground")
+    manager, provider = _memory_manager_with_recording_provider()
+
+    out = handle_pending_subcommand(
+        wa.MEMORY, ["approve", rec["id"]],
+        memory_store=store,
+        memory_manager=manager,
+        memory_metadata_builder=lambda: {"write_origin": "approval-test"},
+    )
+
+    assert "Approved 1" in out
+    assert provider.calls == [
+        {
+            "action": "add",
+            "target": "memory",
+            "content": "synced",
+            "metadata": {"write_origin": "approval-test"},
+        }
+    ]
 
 
 def test_handle_reject(hermes_home):

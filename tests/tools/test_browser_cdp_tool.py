@@ -556,33 +556,25 @@ def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
 
 
 def test_check_fn_false_when_no_cdp_url(monkeypatch):
-    """Gate closes when no CDP URL is set — even if the browser toolset is
-    otherwise configured."""
-    import tools.browser_tool as bt
-
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+    """Gate closes when no CDP URL is configured (env var nor config.yaml)."""
+    monkeypatch.setattr(
+        browser_cdp_tool, "_has_configured_cdp_endpoint", lambda: False
+    )
     assert browser_cdp_tool._browser_cdp_check() is False
 
 
 def test_check_fn_true_when_cdp_url_set(monkeypatch):
-    """Gate opens as soon as a CDP URL is resolvable."""
-    import tools.browser_tool as bt
-
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
+    """Gate opens when a CDP URL is configured — no I/O needed."""
     monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
+        browser_cdp_tool, "_has_configured_cdp_endpoint", lambda: True
     )
     assert browser_cdp_tool._browser_cdp_check() is True
 
 
-def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
-    """Even with a CDP URL, gate closes if the overall browser toolset is
-    unavailable (e.g. agent-browser not installed)."""
-    import tools.browser_tool as bt
-
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: False)
+def test_check_fn_false_when_websockets_missing(monkeypatch):
+    """Gate closes when websockets dependency is unavailable."""
+    monkeypatch.setattr(browser_cdp_tool, "_WS_AVAILABLE", False)
     monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
+        browser_cdp_tool, "_has_configured_cdp_endpoint", lambda: True
     )
     assert browser_cdp_tool._browser_cdp_check() is False

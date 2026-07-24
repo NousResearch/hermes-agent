@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
@@ -346,7 +347,7 @@ def _browser_cdp_via_supervisor(
             f"frame_id {frame_id!r} is not an out-of-process iframe (no "
             f"dedicated CDP session). For same-origin iframes, use "
             f"`browser_cdp(method='Runtime.evaluate', params={{'expression': "
-            f"\"document.querySelector('iframe').contentDocument.title\"}})` "
+            f"\\\"document.querySelector('iframe').contentDocument.title\\\"}})` "
             f"at the top-level page instead."
         )
 
@@ -634,34 +635,57 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _has_configured_cdp_endpoint() -> bool:
+    """Check whether a CDP endpoint is configured — env var or config.yaml.
+
+    **Pure configuration check — no HTTP/WebSocket I/O.**
+
+    Reads ``BROWSER_CDP_URL`` (set by ``/browser connect``) and
+    ``browser.cdp_url`` from ``config.yaml`` directly, without resolving
+    the endpoint via ``/json/version``.  A configured but temporarily offline
+    endpoint does **not** make the tool disappear from the schema.
+    """
+    if os.environ.get("BROWSER_CDP_URL", "").strip():
+        return True
+    try:
+        from hermes_cli.config import read_raw_config  # type: ignore[import-not-found]
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        if isinstance(browser_cfg, dict):
+            raw = str(browser_cfg.get("cdp_url", "") or "").strip()
+            if raw:
+                return True
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("browser_cdp config read: %s", exc)
+    return False
+
+
 def _browser_cdp_check() -> bool:
-    """Availability check for browser_cdp.
+    """Availability check for browser_cdp — dependency + config only.
 
-    The tool is only offered when the Python side can actually reach a CDP
-    endpoint right now — meaning a static URL is set via ``/browser connect``
-    (``BROWSER_CDP_URL``) or ``browser.cdp_url`` in ``config.yaml``.
+    The tool is offered when:
+    1. The ``websockets`` dependency is available (``_WS_AVAILABLE``), AND
+    2. A CDP endpoint URL is **configured** (via ``BROWSER_CDP_URL`` env var
+       or ``browser.cdp_url`` in ``config.yaml``).
 
-    Backends that do *not* currently expose CDP to us — Camofox (REST-only),
-    the default local agent-browser mode (Playwright hides its internal CDP
+    This is a **pure schema-time gate** with **zero network I/O**.  The
+    endpoint may be offline at this point — reachability is checked at
+    invocation time and returns a structured ``cdp_unavailable`` error.
+
+    Backends that do *not* currently expose CDP — Camofox (REST-only),
+    default local agent-browser mode (Playwright hides its internal CDP
     port), and cloud providers whose per-session ``cdp_url`` is not yet
     surfaced — are gated out so the model doesn't see a tool that would
-    reliably fail.  Cloud-provider CDP routing is a follow-up.
+    reliably fail.
 
     Kept in a thin wrapper so the registration statement stays at module top
     level (the tool-discovery AST scan only picks up top-level
     ``registry.register(...)`` calls).
     """
-    try:
-        from tools.browser_tool import (  # type: ignore[import-not-found]
-            _get_cdp_override,
-            check_browser_requirements,
-        )
-    except ImportError as exc:  # pragma: no cover — defensive
-        logger.debug("browser_cdp check: browser_tool import failed: %s", exc)
+    if not _WS_AVAILABLE:
         return False
-    if not check_browser_requirements():
-        return False
-    return bool(_get_cdp_override())
+    return _has_configured_cdp_endpoint()
 
 
 registry.register(

@@ -5937,6 +5937,47 @@ class SessionDB:
 
         return bool(self._execute_write(_do))
 
+    def update_message_content(self, message_row_id: int, content: Any, session_id: str) -> None:
+        """Update a single message row's stored content in place.
+
+        The incremental flush path (``run_agent._flush_messages_to_session_db``)
+        is append-only: each message dict is INSERTed once via
+        :meth:`append_message` and tracked by Python object id so it is never
+        written twice. That assumes a flushed message is never mutated
+        afterwards — but a mid-turn ``/steer`` appends an out-of-band marker to
+        an already-flushed ``role:"tool"`` result, so the live transcript and
+        the model both see the steered content while ``state.db`` keeps the
+        stale pre-steer row. This primitive lets the flush path
+        UPDATE the existing row instead of leaving stale content or inserting a
+        duplicate. The ``AFTER UPDATE`` triggers keep both FTS indexes in sync.
+
+        The UPDATE is scoped to *session_id* and ``active = 1`` as
+        defence-in-depth. ``message_row_id`` always comes from the caller's
+        in-turn flush map, which is reset on session switch and on compaction,
+        so in normal operation the guard never changes the outcome. But if a
+        future rewrite/compact/reset path ever left a stale id in that map, the
+        guard turns a corrupting cross-row (or archived-row) write into a
+        harmless 0-row no-op — and a 0-row match is logged so that latent bug
+        surfaces instead of silently overwriting the wrong history.
+        """
+        stored_content = self._encode_content(content)
+
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE messages SET content = ? "
+                "WHERE id = ? AND session_id = ? AND active = 1",
+                (stored_content, message_row_id, session_id),
+            )
+            return cur.rowcount
+
+        if self._execute_write(_do) == 0:
+            logger.warning(
+                "update_message_content matched no active row "
+                "(id=%s session_id=%s); stale flush-map entry?",
+                message_row_id,
+                session_id,
+            )
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 

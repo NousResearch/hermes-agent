@@ -1845,6 +1845,11 @@ def compress_context(
                     # identity, so only genuinely new turn messages get appended
                     # (no dup of the summary, no resurrection of dropped turns).
                     agent._flushed_db_message_ids = set()
+                    # Drop the row-id tracking too: the just-compacted rows are now
+                    # archived (active=0), so a post-compaction content drift must
+                    # not UPDATE them — the next turn re-INSERTs against the
+                    # compacted transcript (row tracking).
+                    agent._flushed_db_message_rows = {}
                     # Rotation-independent signal: the conversation was compacted in
                     # place (id unchanged). The gateway reads this (NOT an id-change
                     # diff) to re-baseline transcript handling.

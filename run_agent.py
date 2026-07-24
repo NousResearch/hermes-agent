@@ -1856,6 +1856,35 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
+    @staticmethod
+    def _db_normalized_content(content: Any) -> Any:
+        """Reduce a message's content to the scalar value written to state.db.
+
+        Multimodal tool results and OpenAI-style content-part lists are
+        collapsed to their text summary (base64 image/audio blocks would bloat
+        the session DB and aren't useful for cross-session replay); plain
+        scalar content passes through unchanged.
+
+        Deliberately override-independent: the persist user-message override is
+        applied ONLY to the value written by ``_flush_messages_to_session_db``
+        (it never mutates the live dict), whereas the drift baseline stored in
+        ``_flushed_db_message_rows`` is computed here — so a write-only override
+        can never be mistaken for an in-place mutation and re-written on a later
+        flush (#48677 stays closed).
+        """
+        if _is_multimodal_tool_result(content):
+            return _multimodal_text_summary(content)
+        if isinstance(content, list):
+            # List of OpenAI-style content parts: strip images, keep text.
+            _txt = []
+            for p in content:
+                if isinstance(p, dict) and p.get("type") == "text":
+                    _txt.append(str(p.get("text", "")))
+                elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
+                    _txt.append("[screenshot]")
+            return "\n".join(_txt) if _txt else None
+        return content
+
     def _flush_messages_to_session_db(
         self,
         messages: List[Dict],
@@ -1885,9 +1914,15 @@ class AIAgent:
         (translated to markers, then cleared each flush), not a persisted set.
 
         Note: the marker is stamped on the live/shared conversation dict, which
-        correctly makes re-persistence idempotent across turns. No code path
-        edits a persisted message's content/role in place expecting a re-write
-        (in-place compaction resets the seed and re-diffs by identity).
+        correctly makes re-persistence idempotent across turns. The one path
+        that DOES edit a persisted message's content in place expecting a
+        re-write is a mid-turn ``/steer`` marker appended to an already-flushed
+        ``role:"tool"`` result: for that, this session's INSERTs are tracked in
+        ``_flushed_db_message_rows`` (id(msg) -> (row_id, baseline)) so a later
+        flush UPDATEs the durable row on drift instead of skipping it by marker.
+        The comparison baseline is override-independent, and the marker guards
+        the id() map against the #50372 aliasing (a freed-then-reused address
+        yields a NEW, unmarked dict that can never reach the drift branch).
         """
         # Persistence-isolated agents (e.g. the background skill/memory review
         # fork) must NEVER write into the canonical session store. The fork
@@ -1943,11 +1978,28 @@ class AIAgent:
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
             if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
                 seed_ids = set()
+                # Drop the /steer row-drift map too: on a session switch or a
+                # fresh session there is no in-turn INSERT to update in place.
+                self._flushed_db_message_rows = {}
             else:
                 seed_ids = getattr(self, "_flushed_db_message_ids", None)
                 if not isinstance(seed_ids, set):
                     seed_ids = set()
             self._flushed_db_message_session_id = current_session_id
+            # Maps id(msg) -> (sqlite_row_id, override-independent normalized
+            # content) for the rows THIS path INSERTed. Lets a later flush in the
+            # same session notice that an already-persisted dict was mutated in
+            # place — a mid-turn /steer marker appended to an already-flushed
+            # tool result — and UPDATE the durable row instead of skipping it by
+            # _DB_PERSISTED_MARKER and leaving stale pre-steer content in
+            # state.db. _DB_PERSISTED_MARKER guards this id()-keyed map against
+            # the aliasing #50372 fixed: a freed-then-reused address yields a NEW
+            # dict without the marker, so it can never reach the drift branch and
+            # collide with a stale entry.
+            flushed_rows = getattr(self, "_flushed_db_message_rows", None)
+            if not isinstance(flushed_rows, dict):
+                flushed_rows = {}
+                self._flushed_db_message_rows = flushed_rows
             history_ids = {
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
@@ -1968,6 +2020,22 @@ class AIAgent:
                 if _is_ephemeral_scaffolding(msg):
                     continue
                 if msg.get(_DB_PERSISTED_MARKER):
+                    # Already durable. The one legitimate post-persist change is
+                    # an in-place content mutation — a mid-turn /steer marker
+                    # appended to an already-flushed tool result. If we still
+                    # hold this dict's row id from an INSERT this session, UPDATE
+                    # the durable row so state.db matches what the model saw;
+                    # otherwise skip as before. The baseline compared here is
+                    # override-independent (see _db_normalized_content), so a
+                    # write-only user-message override is never read as drift.
+                    prev = flushed_rows.get(id(msg))
+                    if prev is not None:
+                        new_content = self._db_normalized_content(msg.get("content"))
+                        if prev[1] != new_content:
+                            self._session_db.update_message_content(
+                                prev[0], new_content, session_id=self.session_id
+                            )
+                            flushed_rows[id(msg)] = (prev[0], new_content)
                     continue
                 # Already-durable messages: either carried over from the loaded
                 # history copy, or seeded by a caller. Stamp them so future
@@ -1976,7 +2044,13 @@ class AIAgent:
                     msg[_DB_PERSISTED_MARKER] = True
                     continue
                 role = msg.get("role", "unknown")
-                content = msg.get("content")
+                raw_content = msg.get("content")
+                # Override-independent normalized content: the drift baseline a
+                # later flush compares against to spot an in-place mutation. Kept
+                # separate from the WRITTEN value so the persist override is never
+                # read as drift (see the _DB_PERSISTED_MARKER branch above).
+                base_content = self._db_normalized_content(raw_content)
+                content = raw_content
                 # api_content sidecar: the exact bytes sent to the API when
                 # they differ from the clean content (stamped by the turn
                 # prologue for prefetch/plugin injections). Written verbatim
@@ -1986,10 +2060,11 @@ class AIAgent:
                     _row_api_content = None
                 _row_timestamp = msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
-                # (never to the live dict). A multimodal override is a complete
-                # clean replacement for an API-local noted payload. Preserve the
-                # historical text-only guard for a list payload, though: a plain
-                # text override must not erase its image/audio transcript summary.
+                # (never to the live dict, never to the drift baseline). A
+                # multimodal override is a complete clean replacement for an
+                # API-local noted payload. Preserve the historical text-only
+                # guard for a list payload, though: a plain text override must
+                # not erase its image/audio transcript summary.
                 # The close safety-net may flush a shortened snapshot while
                 # turn setup still owns its staged CLI dict. In that shape the
                 # normal turn index refers to the full history, not this list;
@@ -2051,17 +2126,7 @@ class AIAgent:
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
-                if _is_multimodal_tool_result(content):
-                    content = _multimodal_text_summary(content)
-                elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
-                    _txt = []
-                    for p in content:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                            _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
+                write_content = self._db_normalized_content(content)
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [
@@ -2070,10 +2135,10 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
+                row_id = self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
-                    content=content,
+                    content=write_content,
                     tool_name=msg.get("tool_name"),
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
@@ -2093,9 +2158,14 @@ class AIAgent:
                     ),
                 )
                 msg[_DB_PERSISTED_MARKER] = True
-            # The intrinsic markers are now the sole source of truth. Reset the
+                # Track this INSERT's row id + override-independent baseline so a
+                # same-session in-place /steer can UPDATE the row instead of being
+                # skipped by the marker next flush.
+                flushed_rows[id(msg)] = (row_id, base_content)
+            # The intrinsic markers are the primary source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
-            # allocated next turn at a recycled address.
+            # allocated next turn at a recycled address. (flushed_rows is kept —
+            # marker-guarded — so drift UPDATEs still work within the session.)
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)
         except Exception as e:

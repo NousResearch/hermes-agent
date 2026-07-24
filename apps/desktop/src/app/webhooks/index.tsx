@@ -3,8 +3,10 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
+import { Checkbox } from '@/components/ui/checkbox'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -21,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createWebhook,
@@ -32,7 +35,7 @@ import {
   type WebhooksResponse
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Check, Copy, Globe, Plus, RefreshCw, Trash2 } from '@/lib/icons'
+import { AlertTriangle, Globe, Plus, RefreshCw, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -59,26 +62,6 @@ const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack
 interface CreatedWebhook {
   secret: string
   url: string
-}
-
-function CopyButton({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false)
-
-  const onCopy = useCallback(() => {
-    navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 1500)
-      })
-      .catch(() => {})
-  }, [value])
-
-  return (
-    <Button aria-label={label} onClick={onCopy} size="icon-sm" title={label} variant="ghost">
-      {copied ? <Check /> : <Copy />}
-    </Button>
-  )
 }
 
 interface WebhooksViewProps {
@@ -312,38 +295,36 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const banners = (
     <>
       {!enabled && (
-        <div className="mb-4 flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <Globe className="mt-0.5 size-5 shrink-0 text-amber-500" />
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium">{w.disabledTitle}</span>
-              <span className="text-xs text-(--ui-text-tertiary)">{w.disabledBody}</span>
-            </div>
-          </div>
-          <Button className="shrink-0" disabled={enabling} onClick={() => void handleEnable()} size="sm">
-            <Globe />
-            {enabling ? w.enabling : w.enable}
-          </Button>
-        </div>
+        <Alert className="mb-4" variant="warning">
+          <Globe />
+          <AlertTitle>{w.disabledTitle}</AlertTitle>
+          <AlertDescription>
+            <p>{w.disabledBody}</p>
+            <Button className="mt-1" disabled={enabling} onClick={() => void handleEnable()} size="sm">
+              <Globe />
+              {enabling ? w.enabling : w.enable}
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
 
       {restartNeeded && (
-        <div className="mb-4 flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-2 text-sm">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
-            <span>{restartError ?? w.restartNeeded}</span>
-          </div>
-          <Button
-            className="shrink-0"
-            disabled={restarting}
-            onClick={() => void restartGatewayNow()}
-            size="sm"
-            variant="secondary"
-          >
-            <RefreshCw />
-            {restarting ? w.restartingGateway : w.restartGateway}
-          </Button>
-        </div>
+        <Alert className="mb-4" variant="warning">
+          <AlertTriangle />
+          <AlertDescription>
+            <p>{restartError ?? w.restartNeeded}</p>
+            <Button
+              className="mt-1"
+              disabled={restarting}
+              onClick={() => void restartGatewayNow()}
+              size="sm"
+              variant="secondary"
+            >
+              <RefreshCw />
+              {restarting ? w.restartingGateway : w.restartGateway}
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
     </>
   )
@@ -445,14 +426,14 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                 <span className="text-xs font-medium text-muted-foreground">{w.webhookUrl}</span>
                 <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.url}</span>
-                  <CopyButton label={w.copy} value={created.url} />
+                  <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.url} />
                 </div>
               </div>
               <div className="grid gap-1.5">
                 <span className="text-xs font-medium text-muted-foreground">{w.secretOnce}</span>
                 <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.secret}</span>
-                  <CopyButton label={w.copy} value={created.secret} />
+                  <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.secret} />
                 </div>
               </div>
               <DialogFooter>
@@ -514,11 +495,10 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                 <div className="grid gap-1.5">
                   <span className="text-xs font-medium text-muted-foreground">{w.fieldDeliverOnly}</span>
                   <label className="flex items-start gap-2 text-sm text-muted-foreground">
-                    <input
+                    <Checkbox
                       checked={deliverOnly}
-                      className="mt-[4px] shrink-0"
-                      onChange={e => setDeliverOnly(e.target.checked)}
-                      type="checkbox"
+                      className="mt-[3px] shrink-0"
+                      onCheckedChange={value => setDeliverOnly(value === true)}
                     />
                     <span className="leading-snug">{w.fieldDeliverOnlyHint}</span>
                   </label>
@@ -591,17 +571,14 @@ function WebhookDetail({
             </PanelPill>
             {sub.deliver_only && <PanelPill tone="warn">{w.deliverOnly}</PanelPill>}
           </div>
-          <div className="flex shrink-0 items-center gap-0.5">
-            <Button
-              className="gap-1.5 text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-foreground"
+          <div className="flex shrink-0 items-center gap-2">
+            <Switch
+              aria-label={sub.enabled ? w.disableRow : w.enableRow}
+              checked={sub.enabled}
               disabled={toggling}
-              onClick={onToggle}
-              size="sm"
-              variant="ghost"
-            >
-              <Codicon name={sub.enabled ? 'circle-slash' : 'check'} size="0.875rem" />
-              {sub.enabled ? w.disableRow : w.enableRow}
-            </Button>
+              onCheckedChange={onToggle}
+              size="xs"
+            />
             <Button
               aria-label={w.delete}
               className="text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-destructive"
@@ -650,7 +627,7 @@ function WebhookDetail({
 
         <div className="flex items-center gap-1 rounded bg-foreground/5 px-2.5 py-1.5 text-[0.7rem] text-muted-foreground">
           <span className="min-w-0 flex-1 truncate font-mono text-foreground/80">{sub.url}</span>
-          <CopyButton label={w.copy} value={sub.url} />
+          <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={sub.url} />
         </div>
       </header>
 

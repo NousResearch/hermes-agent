@@ -1095,7 +1095,14 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
 
 
 @pytest.mark.asyncio
-async def test_mattermost_dm_post_does_not_seed_thread_root():
+async def test_mattermost_dm_root_post_seeds_thread_id_for_session_continuity():
+    """DM root posts must seed thread_id=post_id so that threaded DM replies
+    land in the same session (PR #37144 — session-split fix extended to DMs).
+
+    Before this fix, root DM post → thread_id=None (session key = dm_chan)
+    while threaded reply → thread_id=root_id (session key = dm_chan:root_id),
+    causing the agent to lose all conversation context on the first reply.
+    """
     adapter = _make_adapter()
     adapter._reply_mode = "thread"
     adapter._bot_user_id = "bot_user_id"
@@ -1120,5 +1127,39 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     await adapter._handle_ws_event(event)
 
     msg_event = adapter.handle_message.call_args[0][0]
-    assert msg_event.source.thread_id is None
+    # Root DM post seeds thread_id = post_id so that threaded replies
+    # (which carry root_id=dm_post_123) resolve to the same session.
+    assert msg_event.source.thread_id == "dm_post_123"
     assert msg_event.source.message_id == "dm_post_123"
+
+
+@pytest.mark.asyncio
+async def test_mattermost_dm_reply_uses_root_id_as_thread_id():
+    """DM thread replies carry root_id; the session key must match the root post."""
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_reply_456",
+        "user_id": "user_123",
+        "channel_id": "dm_chan",
+        "message": "follow-up",
+        "root_id": "dm_post_123",  # threaded reply
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    # Reply carries root_id — session key must match the root post's thread_id.
+    assert msg_event.source.thread_id == "dm_post_123"
+    assert msg_event.source.message_id == "dm_reply_456"

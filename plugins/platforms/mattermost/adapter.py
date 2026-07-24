@@ -882,15 +882,21 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id. In
-        # thread mode, top-level channel posts are valid roots for progress.
+        # Thread support: if the post is in a thread, use root_id.
+        #
+        # A root post (the first message of a thread) has an empty root_id in
+        # Mattermost, while its replies carry root_id = <root post id>.  When
+        # reply_mode is "thread" the bot nests its replies under this root
+        # post, so every later reply in the thread will arrive with
+        # root_id = <this post's id>.  To keep the root message and all of its
+        # threaded replies in the SAME session, fall back to the post's own id
+        # as the thread_id for root posts.  Without this, the first message
+        # lands in session "...:<chat>" while every follow-up lands in
+        # "...:<chat>:<root_id>", so the agent loses all context on the first
+        # threaded reply.  DMs are included — the same session-split applies
+        # to DM threads.
         thread_id = post.get("root_id") or None
-        if (
-            not thread_id
-            and self._reply_mode == "thread"
-            and channel_type_raw != "D"
-            and post_id
-        ):
+        if thread_id is None and self._reply_mode == "thread":
             thread_id = post_id
 
         # Determine message type.

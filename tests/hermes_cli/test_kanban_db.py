@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -1730,6 +1731,360 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable
         assert kb.get_task(conn, c).status == "running"
 
 
+def test_complete_task_picks_up_next_same_profile_ready_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """A terminal worker release immediately claims one successor for the
+    same profile and leaves structured evidence on the releasing run."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, workspace))
+        return 4242
+
+    monkeypatch.setattr(kb, "_default_spawn", fake_spawn)
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        other_profile = kb.create_task(conn, title="other", assignee="bob")
+        kb.claim_task(conn, releasing)
+        releasing_task = kb.get_task(conn, releasing)
+        assert releasing_task is not None
+        release_run_id = releasing_task.current_run_id
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        successor_task = kb.get_task(conn, successor)
+        other_task = kb.get_task(conn, other_profile)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns and spawns[0][0] == successor
+    assert successor_task is not None
+    assert other_task is not None
+    assert successor_task.status == "running"
+    assert successor_task.worker_pid == 4242
+    assert other_task.status == "ready"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].run_id == release_run_id
+    assert pickup_events[0].payload["outcome"] == "spawned"
+    assert pickup_events[0].payload["release_task_id"] == releasing
+    assert pickup_events[0].payload["selected_task_id"] == successor
+    assert pickup_events[0].payload["spawned_run_id"] == successor_task.current_run_id
+
+
+def test_complete_task_pickup_records_capacity_when_profile_already_running(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """Post-release pickup is fail-closed when another same-profile run still
+    occupies the profile; the queued task remains ready with an evidence event."""
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        occupied = kb.create_task(conn, title="occupied", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        kb.claim_task(conn, releasing)
+        kb.claim_task(conn, occupied)
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        successor_task = kb.get_task(conn, successor)
+        occupied_task = kb.get_task(conn, occupied)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns == []
+    assert successor_task is not None
+    assert occupied_task is not None
+    assert successor_task.status == "ready"
+    assert occupied_task.status == "running"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].payload["outcome"] == "profile_occupied"
+    assert pickup_events[0].payload["selected_task_id"] == successor
+    assert pickup_events[0].payload["capacity"][0]["task_id"] == occupied
+
+
+def test_block_task_picks_up_next_same_profile_ready_task(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="blocked", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        kb.claim_task(conn, releasing)
+
+        assert kb.block_task(conn, releasing, reason="needs human", kind="needs_input") is True
+
+        releasing_task = kb.get_task(conn, releasing)
+        successor_task = kb.get_task(conn, successor)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns == [successor]
+    assert releasing_task is not None
+    assert successor_task is not None
+    assert releasing_task.status == "blocked"
+    assert successor_task.status == "running"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].payload["outcome"] == "spawned"
+    assert pickup_events[0].payload["selected_task_id"] == successor
+
+
+def test_complete_task_pickup_records_no_eligible_for_other_profile_only(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        other_profile = kb.create_task(conn, title="other", assignee="bob")
+        unassigned = kb.create_task(conn, title="unassigned")
+        kb.claim_task(conn, releasing)
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        other_task = kb.get_task(conn, other_profile)
+        unassigned_task = kb.get_task(conn, unassigned)
+        events = kb.list_events(conn, releasing)
+
+    assert spawns == []
+    assert other_task is not None
+    assert unassigned_task is not None
+    assert other_task.status == "ready"
+    assert unassigned_task.status == "ready"
+    pickup_events = [event for event in events if event.kind == "post_release_pickup"]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].payload is not None
+    assert pickup_events[0].payload["outcome"] == "no_eligible_work"
+    assert pickup_events[0].payload["selected_task_id"] is None
+
+
+def test_post_release_pickup_is_idempotent_per_released_run(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        successor = kb.create_task(conn, title="successor", assignee="alice")
+        kb.claim_task(conn, releasing)
+        release_task = kb.get_task(conn, releasing)
+        assert release_task is not None
+        release_run_id = release_task.current_run_id
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+        duplicate = kb.attempt_post_release_pickup(
+            conn,
+            releasing,
+            release_run_id=release_run_id,
+            assignee="alice",
+        )
+        events = kb.list_events(conn, releasing)
+        successor_task = kb.get_task(conn, successor)
+
+    assert spawns == [successor]
+    assert duplicate.outcome == "already_recorded"
+    assert successor_task is not None
+    assert successor_task.status == "running"
+    assert len([event for event in events if event.kind == "post_release_pickup"]) == 1
+
+
+def test_post_release_pickup_reconciles_self_resolvable_blocked_before_ready(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        blocked = kb.create_task(conn, title="blocked", assignee="alice", priority=100)
+        ready = kb.create_task(conn, title="ready", assignee="alice", priority=10)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', block_kind = 'transient' "
+                "WHERE id = ?",
+                (blocked,),
+            )
+            kb._append_event(
+                conn, blocked, "blocked", {"reason": "retry later", "kind": "transient"}
+            )
+        kb.claim_task(conn, releasing)
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        blocked_task = kb.get_task(conn, blocked)
+        ready_task = kb.get_task(conn, ready)
+        pickup = [
+            event for event in kb.list_events(conn, releasing)
+            if event.kind == "post_release_pickup"
+        ][0]
+        reconciled = [
+            event for event in kb.list_events(conn, blocked)
+            if event.kind == "post_release_blocker_reconciled"
+        ]
+
+    assert spawns == [blocked]
+    assert blocked_task is not None
+    assert ready_task is not None
+    assert blocked_task.status == "running"
+    assert ready_task.status == "ready"
+    assert pickup.payload is not None
+    assert pickup.payload["selected_task_id"] == blocked
+    assert pickup.payload["blocker"]["outcome"] == "unblocked_to_ready"
+    assert len(reconciled) == 1
+
+
+def test_post_release_pickup_external_blocker_routes_once_then_ready(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        blocked = kb.create_task(conn, title="needs-human", assignee="alice", priority=100)
+        releasing_1 = kb.create_task(conn, title="release-1", assignee="alice")
+        ready_1 = kb.create_task(conn, title="ready-1", assignee="alice", priority=10)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input' "
+                "WHERE id = ?",
+                (blocked,),
+            )
+            kb._append_event(
+                conn,
+                blocked,
+                "blocked",
+                {"reason": "needs human", "kind": "needs_input"},
+            )
+        kb.claim_task(conn, releasing_1)
+
+        assert kb.complete_task(conn, releasing_1, result="done") is True
+        waiting_after_first = [
+            event for event in kb.list_events(conn, blocked)
+            if event.kind == "post_release_blocker_waiting"
+        ]
+
+        # Same unchanged blocker is skipped on a later release; ready work still runs.
+        releasing_2 = kb.create_task(conn, title="release-2", assignee="alice")
+        ready_2 = kb.create_task(conn, title="ready-2", assignee="alice", priority=10)
+        conn.execute(
+            "UPDATE tasks SET status = 'done', current_run_id = NULL, worker_pid = NULL "
+            "WHERE id = ?",
+            (ready_1,),
+        )
+        kb.claim_task(conn, releasing_2)
+
+        assert kb.complete_task(conn, releasing_2, result="done") is True
+        waiting_after_second = [
+            event for event in kb.list_events(conn, blocked)
+            if event.kind == "post_release_blocker_waiting"
+        ]
+        blocked_task = kb.get_task(conn, blocked)
+        ready_2_task = kb.get_task(conn, ready_2)
+
+    assert spawns == [ready_1, ready_2]
+    assert blocked_task is not None
+    assert ready_2_task is not None
+    assert blocked_task.status == "blocked"
+    assert ready_2_task.status == "running"
+    assert len(waiting_after_first) == 1
+    assert len(waiting_after_second) == 1
+    assert waiting_after_first[0].payload is not None
+    assert waiting_after_first[0].payload["owner"] == "needs_input"
+
+
+def test_post_release_pickup_ready_beats_promotable_todo(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        todo = kb.create_task(conn, title="todo", assignee="alice", priority=100)
+        ready = kb.create_task(conn, title="ready", assignee="alice", priority=10)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (todo,))
+        kb.claim_task(conn, releasing)
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        todo_task = kb.get_task(conn, todo)
+        ready_task = kb.get_task(conn, ready)
+        pickup = [
+            event for event in kb.list_events(conn, releasing)
+            if event.kind == "post_release_pickup"
+        ][0]
+
+    assert spawns == [ready]
+    assert todo_task is not None
+    assert ready_task is not None
+    assert todo_task.status == "ready"
+    assert ready_task.status == "running"
+    assert pickup.payload is not None
+    assert pickup.payload["selected_task_id"] == ready
+    assert pickup.payload["todo"] is None
+
+
+def test_post_release_pickup_promotes_todo_only_after_dependencies(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    spawns = []
+    monkeypatch.setattr(
+        kb, "_default_spawn", lambda task, workspace: spawns.append(task.id) or 4242
+    )
+
+    with kb.connect() as conn:
+        releasing = kb.create_task(conn, title="release", assignee="alice")
+        parent = kb.create_task(conn, title="parent", assignee="bob")
+        waiting = kb.create_task(conn, title="waiting", assignee="alice", parents=[parent])
+        kb.claim_task(conn, releasing)
+
+        assert kb.complete_task(conn, releasing, result="done") is True
+
+        waiting_task = kb.get_task(conn, waiting)
+        pickup = [
+            event for event in kb.list_events(conn, releasing)
+            if event.kind == "post_release_pickup"
+        ][0]
+        waiting_events = [
+            event for event in kb.list_events(conn, waiting)
+            if event.kind == "post_release_todo_waiting"
+        ]
+
+    assert spawns == []
+    assert waiting_task is not None
+    assert waiting_task.status == "todo"
+    assert pickup.payload is not None
+    assert pickup.payload["outcome"] == "no_eligible_work"
+    assert pickup.payload["todo"]["outcome"] == "waiting_on_dependency"
+    assert len(waiting_events) == 1
+
+
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")
@@ -1791,6 +2146,58 @@ def test_dispatch_max_spawn_fills_remaining_capacity(
         assert spawns == [ready_a]
         assert kb.get_task(conn, ready_a).status == "running"
         assert kb.get_task(conn, ready_b).status == "ready"
+
+
+def test_dispatch_combines_max_spawn_and_max_in_progress_without_double_counting(
+    kanban_home, all_assignees_spawnable
+):
+    """Global caps share one live worker pool and only count running tasks once."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running_a = kb.create_task(conn, title="running-a", assignee="alice")
+        running_b = kb.create_task(conn, title="running-b", assignee="bob")
+        ready_a = kb.create_task(conn, title="ready-a", assignee="carol")
+        ready_b = kb.create_task(conn, title="ready-b", assignee="dave")
+        kb.claim_task(conn, running_a)
+        kb.claim_task(conn, running_b)
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=5,
+            max_in_progress=3,
+        )
+
+        assert len(res.spawned) == 1
+        assert spawns == [ready_a]
+        assert kb.get_task(conn, ready_a).status == "running"
+        assert kb.get_task(conn, ready_b).status == "ready"
+
+
+def test_dispatch_max_in_progress_blocks_review_without_ready_rows(
+    kanban_home, all_assignees_spawnable
+):
+    """kanban.max_in_progress caps review dispatch even when no ready task exists."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        review = kb.create_task(conn, title="review", assignee="bob")
+        kb.claim_task(conn, running)
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review,))
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=1)
+
+        assert res.spawned == []
+        assert spawns == []
+        assert kb.get_task(conn, review).status == "review"
 
 
 def test_dispatch_reclaims_stale_before_spawning(kanban_home):

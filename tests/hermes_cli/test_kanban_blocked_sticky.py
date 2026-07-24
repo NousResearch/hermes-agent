@@ -54,16 +54,17 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path) -> None:
-    """A standalone task that a worker explicitly blocks for review
+    """A standalone task that a worker explicitly blocks for human input
     must stay blocked across an arbitrary number of dispatcher ticks.
     Before #28712's fix, ``recompute_ready`` would silently flip it
     back to ``ready`` on the very next tick."""
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="needs human review")
+        tid = kb.create_task(conn, title="needs human approval")
         kb.claim_task(conn, tid)
         assert kb.block_task(
             conn, tid,
-            reason="review-required: please verify ACL change",
+            reason="auth-required: please approve ACL change",
+            kind="needs_input",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "blocked"
@@ -89,7 +90,8 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         kb.claim_task(conn, child)
         kb.block_task(
             conn, child,
-            reason="review-required: child needs sign-off",
+            reason="auth-required: child needs sign-off",
+            kind="needs_input",
             expected_run_id=kb.get_task(conn, child).current_run_id,
         )
         assert kb.get_task(conn, child).status == "blocked"
@@ -185,7 +187,8 @@ def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -
         kb.claim_task(conn, tid)
         kb.block_task(
             conn, tid,
-            reason="review-required: ...",
+            reason="auth-required: device consent needed",
+            kind="needs_input",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.unblock_task(conn, tid)
@@ -236,7 +239,8 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
         kb.claim_task(conn, tid)
         kb.block_task(
             conn, tid,
-            reason="review-required: human eyes please",
+            reason="auth-required: human approval needed",
+            kind="needs_input",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "blocked"

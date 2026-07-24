@@ -33,6 +33,16 @@ def _ensure_ssh_available() -> None:
         )
 
 
+def _load_hermes_env_vars() -> dict[str, str]:
+    """Load ~/.hermes/.env values without failing SSH command execution."""
+    try:
+        from hermes_cli.config import load_env
+
+        return load_env() or {}
+    except Exception:
+        return {}
+
+
 class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
@@ -80,7 +90,11 @@ class SSHEnvironment(BaseEnvironment):
 
         self.init_session()
 
-    def _build_ssh_command(self, extra_args: list | None = None) -> list:
+    def _build_ssh_command(
+        self,
+        extra_args: list | None = None,
+        send_env_keys: list[str] | None = None,
+    ) -> list:
         cmd = ["ssh"]
         cmd.extend(["-o", f"ControlPath={self.control_socket}"])
         cmd.extend(["-o", "ControlMaster=auto"])
@@ -88,6 +102,8 @@ class SSHEnvironment(BaseEnvironment):
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])
+        for key in send_env_keys or []:
+            cmd.extend(["-o", f"SendEnv={key}"])
         if self.port != 22:
             cmd.extend(["-p", str(self.port)])
         if self.key_path:
@@ -340,17 +356,48 @@ class SSHEnvironment(BaseEnvironment):
     # Execution
     # ------------------------------------------------------------------
 
+    def _get_passthrough_env(self) -> tuple[list[str], dict[str, str] | None]:
+        """Return SSH SendEnv keys and a child env containing their values."""
+        try:
+            from tools.env_passthrough import get_all_passthrough
+            from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+
+            passthrough_keys = set(get_all_passthrough()) - _HERMES_PROVIDER_ENV_BLOCKLIST
+        except Exception:
+            passthrough_keys = set()
+
+        if not passthrough_keys:
+            return [], None
+
+        child_env = dict(os.environ)
+        hermes_env = _load_hermes_env_vars()
+        send_env_keys: list[str] = []
+        for key in sorted(passthrough_keys):
+            value = child_env.get(key)
+            if value is None:
+                value = hermes_env.get(key)
+            if value is None:
+                continue
+            child_env[key] = value
+            send_env_keys.append(key)
+
+        if not send_env_keys:
+            return [], None
+        return send_env_keys, child_env
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         """Spawn an SSH process that runs bash on the remote host."""
-        cmd = self._build_ssh_command()
+        send_env_keys, child_env = self._get_passthrough_env()
+        cmd = self._build_ssh_command(send_env_keys=send_env_keys)
         if login:
             cmd.extend(["bash", "-l", "-c", shlex.quote(cmd_string)])
         else:
             cmd.extend(["bash", "-c", shlex.quote(cmd_string)])
 
-        return _popen_bash(cmd, stdin_data)
+        popen_kwargs = {"env": child_env} if child_env is not None else {}
+        return _popen_bash(cmd, stdin_data, **popen_kwargs)
 
     def cleanup(self):
         if self._sync_manager:

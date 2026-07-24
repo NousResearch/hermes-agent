@@ -66,6 +66,81 @@ class TestBuildSSHCommand:
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
 
+    def _bare_env(self):
+        env = SSHEnvironment.__new__(SSHEnvironment)
+        env.control_socket = "/tmp/hermes-ssh-test.sock"
+        env.host = "h"
+        env.user = "u"
+        env.port = 22
+        env.key_path = ""
+        return env
+
+    def test_send_env_flags_are_added_when_requested(self):
+        env = self._bare_env()
+        cmd = env._build_ssh_command(send_env_keys=["NEXTCLOUD_URL", "NEXTCLOUD_USER"])
+
+        assert "SendEnv=NEXTCLOUD_URL" in cmd
+        assert "SendEnv=NEXTCLOUD_USER" in cmd
+
+    def test_run_bash_forwards_allowed_env_without_provider_keys(self, monkeypatch):
+        import tools.env_passthrough as env_passthrough
+
+        env = self._bare_env()
+        monkeypatch.setenv("NEXTCLOUD_URL", "https://next.example")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-forward")
+        monkeypatch.setattr(
+            env_passthrough,
+            "get_all_passthrough",
+            lambda: frozenset({"NEXTCLOUD_URL", "OPENAI_API_KEY"}),
+        )
+
+        captured = {}
+
+        def _fake_popen(cmd, stdin_data=None, **kwargs):
+            captured["cmd"] = cmd
+            captured["stdin_data"] = stdin_data
+            captured["kwargs"] = kwargs
+            return MagicMock()
+
+        monkeypatch.setattr(ssh_env, "_popen_bash", _fake_popen)
+
+        env._run_bash("echo ok")
+
+        assert "SendEnv=NEXTCLOUD_URL" in captured["cmd"]
+        assert "SendEnv=OPENAI_API_KEY" not in captured["cmd"]
+        assert captured["kwargs"]["env"]["NEXTCLOUD_URL"] == "https://next.example"
+        assert captured["kwargs"]["env"]["OPENAI_API_KEY"] == "sk-should-not-forward"
+
+    def test_run_bash_uses_hermes_env_file_values_for_send_env(self, monkeypatch):
+        import tools.env_passthrough as env_passthrough
+
+        env = self._bare_env()
+        monkeypatch.delenv("NEXTCLOUD_URL", raising=False)
+        monkeypatch.setattr(
+            env_passthrough,
+            "get_all_passthrough",
+            lambda: frozenset({"NEXTCLOUD_URL"}),
+        )
+        monkeypatch.setattr(
+            ssh_env,
+            "_load_hermes_env_vars",
+            lambda: {"NEXTCLOUD_URL": "https://next.from-env-file"},
+        )
+
+        captured = {}
+
+        def _fake_popen(cmd, stdin_data=None, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return MagicMock()
+
+        monkeypatch.setattr(ssh_env, "_popen_bash", _fake_popen)
+
+        env._run_bash("echo ok")
+
+        assert "SendEnv=NEXTCLOUD_URL" in captured["cmd"]
+        assert captured["kwargs"]["env"]["NEXTCLOUD_URL"] == "https://next.from-env-file"
+
 
 class TestControlSocketPath:
     """Regression tests for issue #11840.

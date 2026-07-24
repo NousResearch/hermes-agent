@@ -625,6 +625,12 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"error": "Cannot parse body"}, status=400
                 )
 
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {"error": "Payload must be a JSON object or form data"},
+                status=400,
+            )
+
         # Check event type filter
         event_type = (
             request.headers.get("X-GitHub-Event", "")

@@ -500,6 +500,28 @@ class TestValidateSignature:
         assert adapter._validate_signature(req, body, secret) is True
 
 
+class TestHandleWebhookPayloadValidation:
+    """Tests for WebhookAdapter._handle_webhook payload validation."""
+
+    @pytest.mark.asyncio
+    async def test_handle_webhook_rejects_non_dict_json_payload(self):
+        """A JSON array or non-dict JSON body must return 400 Bad Request."""
+        from gateway.platforms.webhook import _INSECURE_NO_AUTH
+        adapter = _make_adapter(routes={"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}})
+        f = asyncio.Future()
+        f.set_result(b"[1, 2, 3]")
+        req = _mock_request(
+            headers={},
+            match_info={"route_name": "r1"},
+            content_length=9,
+        )
+        req.read = lambda: f
+        resp = await adapter._handle_webhook(req)
+        assert resp.status == 400
+        assert "JSON object" in resp.text
+
+
+
 # ===================================================================
 # Prompt rendering
 # ===================================================================

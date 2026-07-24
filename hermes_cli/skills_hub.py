@@ -53,7 +53,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     matches exist, shows them and asks the user to use the full identifier.
     Returns empty string if nothing found or ambiguous.
     """
-    from tools.skills_hub import unified_search
+    from tools.skills_hub import unified_search, _resolve_source_meta_and_bundle
 
     c = console or _console
     c.print(f"[dim]Resolving '{name}'...[/]")
@@ -82,6 +82,14 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         c.print(table)
         c.print("[bold]Use the full identifier to install a specific one.[/]\n")
         return ""
+
+    try:
+        _, bundle, _ = _resolve_source_meta_and_bundle(name, sources)
+        if bundle and getattr(bundle, "identifier", None):
+            c.print(f"[dim]Resolved directly via fallback: {bundle.identifier}[/]")
+            return bundle.identifier
+    except Exception:
+        pass
 
     # No exact match — check if there are partial matches to suggest
     if results:

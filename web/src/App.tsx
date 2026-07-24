@@ -160,14 +160,14 @@ function ChatRouteSink() {
   return null;
 }
 
-const BUILTIN_NAV_REST: NavItem[] = [
+const BUILTIN_NAV_REST = [
   {
     path: "/sessions",
     labelKey: "sessions",
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -184,21 +184,21 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
+  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
+  { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
+  { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
+  { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
   {
     path: "/docs",
     labelKey: "documentation",
     label: "Documentation",
     icon: BookOpen,
   },
-];
+] as const satisfies readonly NavItem[];
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
@@ -231,7 +231,7 @@ function resolveIcon(name: string): ComponentType<{ className?: string }> {
 }
 
 function buildNavItems(
-  builtIn: NavItem[],
+  builtIn: readonly NavItem[],
   manifests: PluginManifest[],
 ): NavItem[] {
   const items = [...builtIn];
@@ -267,7 +267,7 @@ function buildNavItems(
 
 /** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
 function partitionSidebarNav(
-  builtIn: NavItem[],
+  builtIn: readonly NavItem[],
   manifests: PluginManifest[],
 ): { coreItems: NavItem[]; pluginItems: NavItem[] } {
   const merged = buildNavItems(builtIn, manifests);
@@ -1305,7 +1305,7 @@ interface GatewayDotProps {
 interface NavItem {
   icon: ComponentType<{ className?: string }>;
   label: string;
-  labelKey?: string;
+  labelKey?: keyof Translations["app"]["nav"];
   path: string;
 }
 

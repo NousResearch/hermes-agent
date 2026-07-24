@@ -4,7 +4,10 @@ Each test calls build_kwargs twice — once with legacy flags, once with provide
 and asserts the output is identical. This catches any behavioral drift between the two paths.
 """
 
+from types import SimpleNamespace
+
 import pytest
+from agent.agent_init import request_overrides_for_turn
 from agent.transports.chat_completions import ChatCompletionsTransport
 from providers import get_provider_profile
 
@@ -294,3 +297,77 @@ class TestRequestOverridesParity:
             request_overrides={"top_p": 0.9},
         )
         assert kw["top_p"] == 0.9
+
+
+class TestReusedAgentTurnOverrides:
+    """Reused gateway agents must keep custom-provider extra_body per turn (#54922).
+
+    ``request_overrides_for_turn`` replaces the old reused-agent turn setup
+    (``agent.request_overrides = turn_route.get("request_overrides") or {}`` in
+    gateway/run.py), which clobbered the init-time ``custom_providers[].extra_body``
+    on messaging paths while the CLI kept working.
+    """
+
+    def _custom_agent(self, extra_body):
+        return SimpleNamespace(
+            provider="custom",
+            model="gpt-5.5",
+            base_url="http://my-endpoint/v1",
+            _custom_providers=[{
+                "name": "my-endpoint",
+                "base_url": "http://my-endpoint/v1",
+                "extra_body": dict(extra_body),
+            }],
+            request_overrides={},
+        )
+
+    def test_extra_body_preserved_when_turn_overrides_empty(self):
+        # No /fast → _resolve_turn_agent_config yields {}; extra_body must survive.
+        agent = self._custom_agent({"reasoning_effort": "xhigh"})
+        assert request_overrides_for_turn(agent, {})["extra_body"] == {"reasoning_effort": "xhigh"}
+
+    def test_extra_body_preserved_when_turn_overrides_none(self):
+        agent = self._custom_agent({"service_tier": "flex"})
+        assert request_overrides_for_turn(agent, None)["extra_body"] == {"service_tier": "flex"}
+
+    def test_turn_top_level_override_overlaid(self):
+        agent = self._custom_agent({"reasoning_effort": "xhigh"})
+        result = request_overrides_for_turn(agent, {"service_tier": "priority"})
+        assert result["service_tier"] == "priority"
+        assert result["extra_body"] == {"reasoning_effort": "xhigh"}
+
+    def test_transient_turn_override_does_not_leak_across_turns(self):
+        # Turn 1: /fast on. Turn 2: /fast off. The transient service_tier must
+        # not persist, but the durable custom-provider extra_body must.
+        agent = self._custom_agent({"reasoning_effort": "xhigh"})
+        agent.request_overrides = request_overrides_for_turn(agent, {"service_tier": "priority"})
+        assert agent.request_overrides["service_tier"] == "priority"
+        agent.request_overrides = request_overrides_for_turn(agent, {})
+        assert "service_tier" not in agent.request_overrides
+        assert agent.request_overrides["extra_body"] == {"reasoning_effort": "xhigh"}
+
+    def test_turn_extra_body_wins_per_key(self):
+        agent = self._custom_agent({"reasoning_effort": "xhigh", "enable_thinking": True})
+        result = request_overrides_for_turn(agent, {"extra_body": {"reasoning_effort": "low"}})
+        assert result["extra_body"] == {"reasoning_effort": "low", "enable_thinking": True}
+
+    def test_no_custom_extra_body_is_passthrough(self):
+        agent = SimpleNamespace(
+            provider="openai", model="gpt-5.5",
+            base_url="https://api.openai.com/v1",
+            _custom_providers=[], request_overrides={},
+        )
+        assert request_overrides_for_turn(agent, {"service_tier": "priority"}) == {"service_tier": "priority"}
+        assert request_overrides_for_turn(agent, {}) == {}
+        assert request_overrides_for_turn(agent, None) == {}
+
+    def test_extra_body_reaches_wire_after_reuse_turn(self, transport):
+        """E2E: preserved extra_body lands in the actual API kwargs on a reuse turn."""
+        agent = self._custom_agent({"reasoning_effort": "xhigh"})
+        overrides = request_overrides_for_turn(agent, {})
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("openrouter"),
+            request_overrides=overrides,
+        )
+        assert kw["extra_body"]["reasoning_effort"] == "xhigh"

@@ -96,23 +96,25 @@ logger = logging.getLogger(__name__)
 
 
 def _hermes_version() -> str:
-    """Return the hermes-agent version string, or "dev" if it can't be resolved.
+    """Return the canonical Hermes Agent version string.
 
-    Tries the installed package metadata first (authoritative for a pip/uv
-    install), then the in-tree ``hermes_cli.__version__`` (covers editable /
-    source checkouts where metadata may be stale or absent). Never raises —
-    a version probe must not be able to break the health endpoint.
+    ``hermes_cli.__version__`` is the runtime source of truth used by the CLI,
+    dashboard, portal tags, and release script. Prefer it over installed
+    distribution metadata because editable/source checkouts can retain stale
+    ``hermes_agent-*.dist-info`` after a source update until the environment is
+    reinstalled. Never raises — a version probe must not be able to break the
+    health endpoint.
     """
-    try:
-        from importlib.metadata import version
-
-        return version("hermes-agent")
-    except Exception:
-        pass
     try:
         from hermes_cli import __version__
 
         return __version__
+    except Exception:
+        pass
+    try:
+        from importlib.metadata import version
+
+        return version("hermes-agent")
     except Exception:
         return "dev"
 
@@ -125,6 +127,8 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
+_COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -162,6 +166,71 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return default
+
+
+def _message_text_prefix(content: Any) -> str:
+    if isinstance(content, str):
+        return content[:128]
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for item in content[:4]:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        if sum(len(part) for part in parts) >= 128:
+            break
+    return "\n".join(parts)[:128]
+
+
+def _is_compressed_summary_message(message: Any) -> bool:
+    if not isinstance(message, dict):
+        return False
+    if message.get(_COMPRESSED_SUMMARY_METADATA_KEY):
+        return True
+    prefix = _message_text_prefix(message.get("content"))
+    return prefix.startswith("[CONTEXT COMPACTION") or prefix.startswith("[CONTEXT SUMMARY]:")
+
+
+def _auto_truncate_response_history(
+    conversation_history: List[Dict[str, Any]],
+    *,
+    limit: int = RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT,
+) -> List[Dict[str, Any]]:
+    """Keep recent Responses history without dropping the compaction handoff.
+
+    Compaction summaries are preserved wherever they sit in the history —
+    the gateway /compress path can leave them after a retained system head
+    (see ``context_compressor`` force-user-leading handling), so a
+    leading-block-only scan would silently drop them.
+    """
+    if limit <= 0 or len(conversation_history) <= limit:
+        return conversation_history
+
+    summary_indices = [
+        index
+        for index, message in enumerate(conversation_history)
+        if _is_compressed_summary_message(message)
+    ]
+    if not summary_indices:
+        return conversation_history[-limit:]
+
+    kept_indices = set(summary_indices[:limit])
+    remaining = limit - len(kept_indices)
+    if remaining > 0:
+        summary_index_set = set(summary_indices)
+        for index in range(len(conversation_history) - 1, -1, -1):
+            if index in summary_index_set:
+                continue
+            kept_indices.add(index)
+            remaining -= 1
+            if remaining <= 0:
+                break
+
+    return [conversation_history[index] for index in sorted(kept_indices)]
 
 
 def _normalize_chat_content(
@@ -1069,7 +1138,13 @@ class APIServerAdapter(BasePlatformAdapter):
         active_api_runs = sum(
             1
             for status in self._run_statuses.values()
-            if status.get("status") in {"queued", "running", "waiting_for_approval"}
+            # "stopping" (set by _handle_stop_run) is not terminal: the run
+            # stays in this state, doing real executor-thread work, until the
+            # agent actually notices the interrupt and the task settles to
+            # "cancelled" — an unbounded window, not the old ~5s hard-timeout
+            # wait. Excluding it here undercounts active_api_runs for the
+            # whole duration of a cooperative stop.
+            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
         )
         process_depth = 0
         active_delegations = 0
@@ -1260,7 +1335,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._request_audit_log_suffix(request),
         )
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            {"error": {"message": "Invalid gateway API key (API_SERVER_KEY)", "type": "gateway_auth_error", "code": "gateway_auth_failed"}},
             status=401,
         )
 
@@ -1777,6 +1852,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from run_agent import AIAgent
         from gateway.run import (
+            _checkpoint_agent_kwargs,
             _current_max_iterations,
             _resolve_runtime_agent_kwargs,
             _resolve_gateway_model,
@@ -1858,6 +1934,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
+            **_checkpoint_agent_kwargs(user_config),
             max_iterations=max_iterations,
             quiet_mode=True,
             verbose_logging=False,
@@ -1900,6 +1977,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.status import (
             derive_gateway_busy,
             derive_gateway_drainable,
+            normalize_updated_at,
             parse_active_agents,
             read_runtime_status,
         )
@@ -1938,7 +2016,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_state=gw_state,
             ),
             "exit_reason": runtime.get("exit_reason"),
-            "updated_at": runtime.get("updated_at"),
+            # Contract: updated_at is RFC3339 string | null, never a number —
+            # the state file may carry legacy epoch floats or hand-edited junk.
+            "updated_at": normalize_updated_at(runtime.get("updated_at")),
             "pid": os.getpid(),
         })
 
@@ -3297,6 +3377,7 @@ class APIServerAdapter(BasePlatformAdapter):
             response_env: Dict[str, Any],
             *,
             conversation_history_snapshot: Optional[List[Dict[str, Any]]] = None,
+            session_id_snapshot: Optional[str] = None,
         ) -> None:
             if not store:
                 return
@@ -3307,7 +3388,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_env,
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": session_id_snapshot or session_id,
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
@@ -3710,9 +3791,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     result,
                     final_response_text,
                 )
+                # Compression-aware transcript substitution happens inside
+                # _build_response_conversation_history (result["_compressed"]);
+                # here we only propagate a compression-rotated session_id so
+                # previous_response_id chaining resumes the child session.
+                _result_sid = result.get("session_id") if isinstance(result, dict) else None
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
+                    session_id_snapshot=_result_sid if isinstance(_result_sid, str) and _result_sid else None,
                 )
                 terminal_snapshot_persisted = True
                 await _write_event("response.completed", {
@@ -3885,8 +3972,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         # Truncation support
-        if body.get("truncation") == "auto" and len(conversation_history) > 100:
-            conversation_history = conversation_history[-100:]
+        if body.get("truncation") == "auto":
+            conversation_history = _auto_truncate_response_history(conversation_history)
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
@@ -4025,6 +4112,16 @@ class APIServerAdapter(BasePlatformAdapter):
             final_response,
         )
 
+        # Persist the effective session ID surfaced by _run_agent so that
+        # compression-triggered session rotations propagate to the stored
+        # response and the X-Hermes-Session-Id header.  Without this,
+        # previous_response_id chaining keeps resuming the pre-rotation
+        # session and re-triggers compression on every subsequent request.
+        _effective_session_id = session_id
+        _result_sid = result.get("session_id") if isinstance(result, dict) else None
+        if isinstance(_result_sid, str) and _result_sid:
+            _effective_session_id = _result_sid
+
         # Build output items from the current turn only.  AIAgent returns a
         # full transcript in result["messages"], while older/mocked paths may
         # return only the current turn suffix.
@@ -4055,14 +4152,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": _effective_session_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
@@ -4419,7 +4516,16 @@ class APIServerAdapter(BasePlatformAdapter):
         result: Dict[str, Any],
         final_response: Any,
     ) -> List[Dict[str, Any]]:
-        """Build the stored Responses transcript without duplicating history."""
+        """Build the stored Responses transcript without duplicating history.
+
+        When context compression occurs during a turn the agent returns a
+        compressed full transcript in ``result["messages"]`` (starting with a
+        summary) and sets ``result["_compressed"] = True``.  Because the
+        compressed transcript does not share the input ``conversation_history``
+        prefix, the normal turn-start detection fails and old code would
+        concatenate the uncompressed history on front, bloating the stored
+        context and re-triggering compression on every subsequent request.
+        """
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         agent_messages = result.get("messages") if isinstance(result, dict) else None
@@ -4431,6 +4537,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 result,
             )
             if turn_start:
+                return list(agent_messages)
+
+            # turn_start == 0: agent_messages does not start with prior.
+            # This can happen because compression rewrote the transcript
+            # (summary prefix replaces original history), OR because
+            # agent_messages only carries the current turn without prior.
+            # The ``_compressed`` flag (set by _run_agent after compaction)
+            # distinguishes — skip the concatenation and use the compressed
+            # transcript directly.
+            if result.get("_compressed"):
                 return list(agent_messages)
 
             full_history = prior
@@ -4693,6 +4809,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
                         result["session_id"] = _eff_sid
+                    # Signal whether context compression occurred during this turn
+                    # so _build_response_conversation_history can skip the
+                    # prior-concatenation path and store the compressed transcript
+                    # directly.  Rotation mode changes agent.session_id; in-place
+                    # mode sets _last_compaction_in_place (see #38763).
+                    _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False))
+                    _session_rotated = (
+                        isinstance(_eff_sid, str) and isinstance(session_id, str)
+                        and _eff_sid != session_id
+                    )
+                    if _compacted_in_place or _session_rotated:
+                        result["_compressed"] = True
                     return result, usage
                 finally:
                     clear_session_vars(tokens)
@@ -4973,7 +5101,17 @@ class APIServerAdapter(BasePlatformAdapter):
                             # environment state.
                             approval_token = set_current_session_key(approval_session_key)
                             session_tokens = self._bind_api_server_session(
+                                # chat_id carries the raw session id (the
+                                # X-Hermes-Session-Id equivalent) exactly like
+                                # the other agent-entry routes bind it via
+                                # _run_agent(). Without it,
+                                # tools.async_delegation reads an empty
+                                # HERMES_SESSION_CHAT_ID on /v1/runs and
+                                # background delegations stay forced-sync
+                                # (no wake target).
+                                chat_id=session_id or "",
                                 session_key=approval_session_key,
+                                session_id=session_id or "",
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
                             r = agent.run_conversation(
@@ -5363,19 +5501,32 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             from hermes_cli.auth import has_usable_secret
-            if not has_usable_secret(self._api_key, min_length=16):
-                logger.error(
-                    "[%s] Refusing to start: API_SERVER_KEY is a "
-                    "placeholder or too short (<16 chars). This endpoint "
-                    "dispatches terminal-capable agent work — a guessable "
-                    "key is remote code execution. Generate a strong secret "
-                    "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
-                    "before starting the API server on %s.",
-                    self.name, self._host,
-                )
-                return False
-        except ImportError:
-            pass
+        except Exception as exc:
+            # Fail CLOSED. This guard is the only thing between a guessable
+            # key and a terminal-capable endpoint, so "the check could not be
+            # run" must not resolve to "start anyway" — the same posture
+            # tools/credential_files.py takes when its deny-list cannot be
+            # consulted.
+            logger.error(
+                "[%s] Refusing to start: API_SERVER_KEY strength could not be "
+                "verified (%s: %s), and this endpoint dispatches "
+                "terminal-capable agent work. Repair the installation before "
+                "starting the API server on %s.",
+                self.name, type(exc).__name__, exc, self._host,
+            )
+            return False
+
+        if not has_usable_secret(self._api_key, min_length=16):
+            logger.error(
+                "[%s] Refusing to start: API_SERVER_KEY is a "
+                "placeholder or too short (<16 chars). This endpoint "
+                "dispatches terminal-capable agent work — a guessable "
+                "key is remote code execution. Generate a strong secret "
+                "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
+                "before starting the API server on %s.",
+                self.name, self._host,
+            )
+            return False
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -5385,6 +5536,26 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         if not self._api_key_passes_startup_guard():
+            # A rejected API_SERVER_KEY is a configuration error, not a
+            # transient blip — the key will not become valid on its own. A
+            # bare ``return False`` makes the reconnect watcher in
+            # gateway.run treat it as retryable and loop forever at the
+            # backoff cap, re-instantiating the adapter (and its
+            # ResponseStore sqlite connection) every retry (#38803: ~501
+            # leaked connections / 1002 fds over 2.5 days until EMFILE took
+            # the whole gateway down). Non-retryable drops it from the
+            # reconnect queue — same treatment as the port-conflict guard
+            # (api_server_port_in_use). The guard already logged the
+            # specific rejection reason just above.
+            self._set_fatal_error(
+                "api_server_key_invalid",
+                "API_SERVER_KEY was rejected by the startup guard (missing, "
+                "placeholder/too short, or strength unverifiable — see the "
+                "error logged above). Generate a strong secret (e.g. "
+                "`openssl rand -hex 32`), set API_SERVER_KEY, then "
+                "`/platform resume api_server`.",
+                retryable=False,
+            )
             return False
 
         try:

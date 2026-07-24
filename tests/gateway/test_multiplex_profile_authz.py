@@ -127,6 +127,80 @@ def test_adapter_for_source_resolves_secondary_profile_adapter(monkeypatch):
     ) is default_adapter
 
 
+def test_chat_routed_source_keeps_receiving_shared_adapter(monkeypatch):
+    """A runtime-only profile route must not discard the shared transport.
+
+    ``source.profile`` selects the routed runtime/session namespace, but the
+    adapter that built the source still owns outbound delivery and intake
+    policy when that profile has no credential of its own.
+    """
+    runner, default_adapter, _secondary_adapter = _make_multiplex_runner(
+        monkeypatch
+    )
+    runner._profile_adapters["routed"] = {}
+
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="dm-chat",
+        user_name="allowed-user",
+        chat_type="dm",
+        profile="routed",
+    )
+    assert runner._adapter_for_source(source) is None
+    source._transport_adapter_ref = lambda: default_adapter
+    assert runner._adapter_for_source(source) is default_adapter
+    assert runner._is_user_authorized(source) is True
+
+
+def test_adapter_for_relay_delivered_source_uses_relay_transport(monkeypatch):
+    """A relayed Slack event keeps Slack session semantics but replies over relay."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    slack_adapter = SimpleNamespace(send=AsyncMock())
+    relay_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters = {
+        Platform.SLACK: slack_adapter,
+        Platform.RELAY: relay_adapter,
+    }
+    runner._profile_adapters = {}
+
+    source = SessionSource(
+        platform=Platform.SLACK,
+        user_id="U123",
+        chat_id="C123",
+        chat_type="channel",
+        profile="coder",
+        delivered_via_upstream_relay=True,
+    )
+
+    assert runner._adapter_for_source(source) is relay_adapter
+
+
+def test_adapter_for_direct_source_keeps_native_platform_adapter(monkeypatch):
+    """The relay routing rule must not affect direct Slack connector delivery."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    slack_adapter = SimpleNamespace(send=AsyncMock())
+    relay_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters = {
+        Platform.SLACK: slack_adapter,
+        Platform.RELAY: relay_adapter,
+    }
+    runner._profile_adapters = {}
+
+    source = SessionSource(
+        platform=Platform.SLACK,
+        user_id="U123",
+        chat_id="C123",
+        chat_type="channel",
+    )
+
+    assert runner._adapter_for_source(source) is slack_adapter
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

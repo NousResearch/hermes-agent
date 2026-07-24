@@ -23,6 +23,10 @@ export const DECODE_SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
 const TICK_MS = 45
 const HOLD_TICKS = 16
 
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+}
+
 function scrambled(tail: string, resolvedCount: number): string {
   return Array.from(tail, (ch, i) =>
     ch === ' ' || i < resolvedCount ? ch : DECODE_SCRAMBLE_CHARS[(Math.random() * DECODE_SCRAMBLE_CHARS.length) | 0]
@@ -57,6 +61,15 @@ export function DecodeText({
 
   useEffect(() => {
     if (!active) {
+      setTail(tailText)
+
+      return
+    }
+
+    // Under reduced motion, skip the scramble interval and render the fully
+    // resolved text immediately. The cursor blink (CSS animation) is also
+    // killed by the blanket reduced-motion CSS rule.
+    if (prefersReducedMotion()) {
       setTail(tailText)
 
       return

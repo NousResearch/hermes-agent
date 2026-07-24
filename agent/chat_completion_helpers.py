@@ -341,7 +341,10 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     if not model_id or not isinstance(model_id, str):
         return None
     name = model_id.strip().lower()
-    for prefix in ("us.", "eu.", "apac.", "ap.", "global.", "jp."):
+    for prefix in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    ):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
@@ -1709,6 +1712,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._config_context_length = None
         agent.model = fb_model
         agent.provider = fb_provider
+        agent.requested_provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
         if hasattr(agent, "_transport_cache"):
@@ -1942,7 +1946,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:
-                agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
+                # In MoA mode, agent.model is the virtual preset name,
+                # not the actual aggregator model.  Resolve the real
+                # aggregator model so Gemini preserves thought_signature.
+                _sanitize_model = agent.model
+                if agent.provider == "moa":
+                    _moa_client = getattr(agent, "client", None)
+                    if _moa_client is not None:
+                        _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
+                        if _agg_slot and _agg_slot.get("model"):
+                            _sanitize_model = _agg_slot["model"]
+                agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
@@ -2197,6 +2211,36 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
 
+def _build_partial_stream_stub(
+    role, full_content, full_reasoning, model_name, usage_obj, *,
+    dropped_tool_names=None,
+):
+    """Build a partial-stream-stub response for mid-stream drop scenarios.
+
+    Used when the SSE stream ends without a ``finish_reason`` after
+    delivering content (text-only drops, tool-call-arg drops).  The stub
+    is tagged ``PARTIAL_STREAM_STUB_ID`` with ``FINISH_REASON_LENGTH`` so
+    the conversation loop enters its continuation/retry path instead of
+    silently accepting truncated output as a complete turn (#32086).
+    """
+    mock_message = SimpleNamespace(
+        role=role,
+        content=full_content,
+        tool_calls=None,
+        reasoning_content=full_reasoning,
+    )
+    mock_choice = SimpleNamespace(
+        index=0,
+        message=mock_message,
+        finish_reason=FINISH_REASON_LENGTH,
+    )
+    return SimpleNamespace(
+        id=PARTIAL_STREAM_STUB_ID,
+        model=model_name,
+        choices=[mock_choice],
+        usage=usage_obj,
+        _dropped_tool_names=dropped_tool_names or None,
+    )
 
 
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
@@ -2429,7 +2473,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     request_client_holder = {"client": None, "diag": None, "owner_tid": None}
     # Transport kind of the registered request client — see the non-streaming
     # variant. Routes _close_request_client_once to anthropic vs openai abort/
-    # close helpers (#67142).
+    # close helpers (#67142). ``kind="stream"`` registers a per-request
+    # *stream handle* instead of a client — used under the MoA facade, whose
+    # singleton client has no per-request sockets to abort
+    # (_abort_request_openai_client is a no-op on it), so interrupts must
+    # close the stream object itself (#57354).
     request_client_kind = {"value": "openai"}
     request_client_lock = threading.Lock()
     # Request-local cancellation flag — see interruptible_api_call for the full
@@ -2449,6 +2497,44 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
+    def _stream_close_callable(stream):
+        close = getattr(stream, "close", None)
+        if callable(close):
+            return close
+        response = getattr(stream, "response", None)
+        close = getattr(response, "close", None)
+        if callable(close):
+            return close
+        return None
+
+    def _set_request_stream_handle(stream):
+        # Register the per-request *stream* under kind="stream" so an
+        # interrupt closes the stream handle itself. Under the MoA facade the
+        # registered "client" is the shared facade singleton whose
+        # per-request abort helpers are no-ops, leaving the underlying HTTP
+        # stream open until the provider drained it (#57354).
+        if _stream_close_callable(stream) is None:
+            return stream
+        with request_client_lock:
+            request_client_holder["client"] = stream
+            request_client_kind["value"] = "stream"
+            request_client_holder["owner_tid"] = threading.get_ident()
+        return stream
+
+    def _close_request_stream_handle(stream, reason: str) -> None:
+        close = _stream_close_callable(stream)
+        if close is None:
+            return
+        try:
+            close()
+            logger.info("Streaming response handle closed (%s)", reason)
+        except Exception as exc:
+            logger.debug(
+                "Streaming response handle close failed (%s): %s",
+                reason,
+                exc,
+            )
+
     def _close_request_client_once(reason: str) -> None:
         # See #29507 explanation in the non-streaming variant above. A
         # stranger thread (the interrupt-check / stale-stream detector loop)
@@ -2456,9 +2542,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # so the worker thread retains ownership of the FD release.
         with request_client_lock:
             request_client = request_client_holder.get("client")
+            request_kind = request_client_kind.get("value", "openai")
             owner_tid = request_client_holder.get("owner_tid")
+            # A registered stream handle (kind="stream", MoA facade path) is
+            # safe to close from any thread — closing IS the abort — so the
+            # stranger-thread ownership carve-out only applies to real
+            # per-request clients (#57354).
             stranger_thread = (
-                request_client is not None
+                request_kind != "stream"
+                and request_client is not None
                 and owner_tid is not None
                 and owner_tid != threading.get_ident()
             )
@@ -2467,8 +2559,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 request_client_holder["owner_tid"] = None
         if request_client is None:
             return
-        kind = request_client_kind.get("value", "openai")
-        if kind == "anthropic_messages":
+        if request_kind == "stream":
+            _close_request_stream_handle(request_client, reason)
+        elif request_kind == "anthropic_messages":
             if stranger_thread:
                 agent._abort_request_anthropic_client(request_client, reason=reason)
             else:
@@ -2647,6 +2740,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+        if agent.provider == "moa":
+            # The MoA facade is a shared singleton — abort/close of the
+            # registered client is a no-op, so register the stream handle
+            # itself for interrupt teardown (#57354).
+            stream = _set_request_stream_handle(stream)
         # Claim the delta sink for THIS attempt (#65991). If a prior attempt's
         # stream is somehow still alive (a stale-stream reconnect whose socket
         # abort raced), this claim supersedes it so its late chunks are fenced
@@ -2978,24 +3076,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "mid-tool-call stream drop, not an output-length truncation.",
                 _dropped_names,
             )
-            full_reasoning = "".join(reasoning_parts) or None
-            mock_message = SimpleNamespace(
-                role=role,
-                content=full_content,
-                tool_calls=None,
-                reasoning_content=full_reasoning,
+            return _build_partial_stream_stub(
+                role, full_content,
+                "".join(reasoning_parts) or None,
+                model_name, usage_obj,
+                dropped_tool_names=_dropped_names or None,
             )
-            mock_choice = SimpleNamespace(
-                index=0,
-                message=mock_message,
-                finish_reason=FINISH_REASON_LENGTH,
+
+        # Text-only stream drop: the upstream closed the connection (or the
+        # SSE stream simply ended) with no finish_reason after delivering
+        # text content but no tool calls.  Without this guard the partial
+        # text is silently stamped finish_reason="stop" and the turn ends as
+        # if complete — the model's intended next step is lost (#32086).
+        _text_only_dropped_no_finish = (
+            finish_reason is None
+            and content_parts
+            and not tool_calls_acc
+        )
+        if _text_only_dropped_no_finish:
+            logger.warning(
+                "Stream ended with no finish_reason after delivering text "
+                "with no tool calls; treating as a mid-stream drop."
             )
-            return SimpleNamespace(
-                id=PARTIAL_STREAM_STUB_ID,
-                model=model_name,
-                choices=[mock_choice],
-                usage=usage_obj,
-                _dropped_tool_names=_dropped_names or None,
+            return _build_partial_stream_stub(
+                role, full_content,
+                "".join(reasoning_parts) or None,
+                model_name, usage_obj,
             )
 
         effective_finish_reason = finish_reason or "stop"

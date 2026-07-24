@@ -10,10 +10,16 @@ import { frameHistogram, percentile } from '../lib/stats.mjs'
 
 const RECORDERS = `
   (() => {
+    // Generation guard: a prior run's rAF loop re-reads window.__FT__ each frame,
+    // so simply reassigning it would leave the old loop running and pushing into
+    // the new array (overlapping recorders inflate frame intervals on run 2+).
+    // Bumping the generation makes every stale loop exit on its next tick.
+    window.__FT_GEN__ = (window.__FT_GEN__ || 0) + 1
+    const ftGen = window.__FT_GEN__
     window.__FT__ = { times: [], stop: false }
     let last = performance.now()
     const tick = () => {
-      if (window.__FT__.stop) return
+      if (window.__FT_GEN__ !== ftGen || window.__FT__.stop) return
       const now = performance.now()
       window.__FT__.times.push(now - last)
       last = now
@@ -113,7 +119,14 @@ export default {
     const tokens = Number(opts.tokens ?? 400)
     const intervalMs = Number(opts.intervalMs ?? 16)
     const flushMinMs = Number(opts.flushMinMs ?? 33)
-    const chunk = opts.chunk ?? '**word** in _italic_ with `code`, a [link](https://x.dev) and prose. '
+    // Realistic default: a short markdown paragraph ending in a blank line, so
+    // blocks SETTLE as they stream — exactly how real LLM output behaves, and
+    // what block-memoization is designed for (only the growing tail re-renders).
+    // A chunk with NO paragraph break (e.g. `--chunk 'word '`) instead grows one
+    // ever-larger block that re-renders fully every flush — a useful worst-case
+    // stress, but not the typical number. No raw autolink (avoids DNS/link-embed
+    // noise unrelated to render cost).
+    const chunk = opts.chunk ?? 'A streamed sentence with **bold**, `code`, and ordinary prose like a normal reply.\n\n'
     const real = Boolean(opts.real)
 
     await cdp.send('Runtime.enable')

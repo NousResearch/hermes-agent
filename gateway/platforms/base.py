@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
+import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
@@ -104,6 +105,18 @@ def _reply_anchor_for_event(event) -> str | None:
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
+    raw_message = getattr(event, "raw_message", None)
+    if (
+        platform == "slack"
+        and isinstance(raw_message, dict)
+        and raw_message.get("_hermes_no_thread_response")
+    ):
+        # Slack reaction handoffs into a configured target channel are meant
+        # to create a new top-level message there. Returning the synthetic
+        # event's message_id as reply_to would make
+        # SlackAdapter._resolve_thread_ts() treat it as a thread anchor and
+        # reply in a (nonexistent) thread anyway.
+        return None
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
@@ -748,14 +761,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
+    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
     _log = logging.getLogger(__name__)
 
-    async with httpx.AsyncClient(
+    async with create_ssrf_safe_async_client(
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
@@ -868,14 +881,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
+    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
     _log = logging.getLogger(__name__)
 
-    async with httpx.AsyncClient(
+    async with create_ssrf_safe_async_client(
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1187,8 +1200,9 @@ def _media_delivery_denied_paths() -> List[Path]:
         os.path.join("auth", "google_oauth.json"),
         # Webhook subscription HMAC secrets.
         "webhook_subscriptions.json",
-        # Bitwarden Secrets Manager plaintext disk cache.
+        # Bitwarden Secrets Manager plaintext and encrypted disk caches.
         os.path.join("cache", "bws_cache.json"),
+        os.path.join("cache", "bws_cache.enc.json"),
     )
     # Directory trees whose every child is credential material.
     #
@@ -1824,14 +1838,15 @@ class MessageEvent:
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
+        return (self.text or "").lstrip().startswith("/")
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
         # Split on space and get first word, strip the /
-        parts = self.text.split(maxsplit=1)
+        command_text = (self.text or "").lstrip()
+        parts = command_text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
@@ -1844,7 +1859,8 @@ class MessageEvent:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        parts = self.text.split(maxsplit=1)
+        command_text = (self.text or "").lstrip()
+        parts = command_text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
@@ -2439,6 +2455,11 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Optional gateway-supplied fan-out for platform-native emoji
+        # reaction events (see ``set_reaction_handler``).
+        self._reaction_handler: Optional[
+            Callable[[Dict[str, Any]], Awaitable[None]]
+        ] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2448,6 +2469,12 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        # Cross-HERMES_HOME token takeover is armed by GatewayRunner only for
+        # an adapter's initial connect during an explicit ``gateway run
+        # --replace`` startup.  Ordinary starts and every reconnect fail safe
+        # through the existing retryable conflict path.
+        self._platform_lock_takeover_allowed = False
+        self._platform_lock_takeover_attempted = False
         
         # Track active message handlers per session for interrupt support.
         # _active_sessions stores the per-session interrupt Event; _session_tasks
@@ -2847,8 +2874,18 @@ class BasePlatformAdapter(ABC):
             await result
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
-        """Acquire a scoped lock for this adapter. Returns True on success."""
-        from gateway.status import acquire_scoped_lock
+        """Acquire a scoped lock for this adapter. Returns True on success.
+
+        A live cross-HERMES_HOME holder may be replaced only when the runner
+        explicitly arms this adapter for its initial ``--replace`` connect.
+        The status module validates PID/start-time/home ownership, places the
+        marker in the target's home, and performs the bounded termination.
+        """
+        from gateway.status import (
+            acquire_scoped_lock,
+            take_over_scoped_lock_holder,
+        )
+
         self._platform_lock_scope = scope
         self._platform_lock_identity = identity
         acquired, existing = acquire_scoped_lock(
@@ -2856,6 +2893,42 @@ class BasePlatformAdapter(ABC):
         )
         if acquired:
             return True
+
+        takeover_allowed = bool(
+            getattr(self, "_platform_lock_takeover_allowed", False)
+        )
+        takeover_attempted = bool(
+            getattr(self, "_platform_lock_takeover_attempted", False)
+        )
+        if takeover_allowed and not takeover_attempted and isinstance(existing, dict):
+            # Consume the authority before doing any I/O: one adapter connect
+            # gets at most one termination attempt, even if lock re-acquire or
+            # later initialization fails.
+            self._platform_lock_takeover_allowed = False
+            self._platform_lock_takeover_attempted = True
+            owner_pid = take_over_scoped_lock_holder(existing)
+            if owner_pid is not None:
+                logger.warning(
+                    "[%s] %s was held by gateway PID %d — explicit --replace "
+                    "handoff completed",
+                    self.name,
+                    resource_desc,
+                    owner_pid,
+                )
+                acquired, existing = acquire_scoped_lock(
+                    scope,
+                    identity,
+                    metadata={"platform": self.platform.value},
+                )
+                if acquired:
+                    logger.info(
+                        "[%s] Acquired %s after taking over PID %d",
+                        self.name,
+                        resource_desc,
+                        owner_pid,
+                    )
+                    return True
+
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
         message = (
             f'{resource_desc} already in use'
@@ -2931,6 +3004,25 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_reaction_handler(
+        self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
+    ) -> None:
+        """Set the handler for emoji-reaction events on platform messages.
+
+        Called by adapters that subscribe to platform-native reaction events
+        (currently the Slack adapter's ``reaction_added``/``reaction_removed``).
+        The handler receives a normalised event dict — ``platform``,
+        ``event_name`` ("reaction:added"/"reaction:removed"), ``reaction``,
+        ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``,
+        ``event_ts``, ``raw_event`` — and fans out via
+        ``HookRegistry.emit(event_name, ...)``.
+
+        Adapters without reaction support simply never call the handler.
+        """
+        # Assign defensively: subclasses initialized via ``object.__new__``
+        # in tests never run ``BasePlatformAdapter.__init__``.
+        self._reaction_handler = handler  # type: ignore[attr-defined]
 
     def set_authorization_check(
         self,
@@ -5725,6 +5817,7 @@ class BasePlatformAdapter(ABC):
                         user_id_alt=user_id_alt,
                         chat_id_alt=chat_id_alt,
                         is_bot=is_bot,
+                        scope_id=str(scope_id) if scope_id else None,
                         guild_id=str(guild_id) if guild_id else None,
                         parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
                         message_id=str(message_id) if message_id else None,
@@ -5736,7 +5829,7 @@ class BasePlatformAdapter(ABC):
                     self.platform, chat_id, exc_info=True,
                 )
 
-        return SessionSource(
+        source = SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
             chat_name=chat_name,
@@ -5757,6 +5850,11 @@ class BasePlatformAdapter(ABC):
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
         )
+        # In-process transport provenance is deliberately not serialized by
+        # SessionSource.to_dict(). The live receiving adapter is authoritative
+        # for this turn even when profile_routes selects a different runtime.
+        source._transport_adapter_ref = weakref.ref(self)
+        return source
     
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -5834,7 +5932,26 @@ class BasePlatformAdapter(ABC):
 
             # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
-                chunks.append(prefix + remaining)
+                final_chunk = prefix + remaining
+                # Check fence balance: if carry_lang was set, the chunk
+                # starts with an opening fence.  Walk the remaining text
+                # to see if the code block was closed; if not, close it.
+                _final_in_code = carry_lang is not None
+                _final_lang = carry_lang or ""
+                if _final_in_code:
+                    for _line in remaining.split("\n"):
+                        _stripped = _line.strip()
+                        if _stripped.startswith("```"):
+                            if _final_in_code:
+                                _final_in_code = False
+                                _final_lang = ""
+                            else:
+                                _final_in_code = True
+                                _tag = _stripped[3:].strip()
+                                _final_lang = _tag.split()[0] if _tag else ""
+                    if _final_in_code:
+                        final_chunk += FENCE_CLOSE
+                chunks.append(final_chunk)
                 break
 
             # Find a natural split point (prefer newlines, then spaces).

@@ -12,7 +12,7 @@ MOONSHOT = "https://api.moonshot.cn/anthropic"
 DEEPSEEK = "https://api.deepseek.com/anthropic"
 
 
-def _thinking_on_replay(base_url, signature=SIG):
+def _thinking_on_replay(base_url, signature=SIG, model="k3"):
     """Normalize a thinking+text turn, store it, convert to the next-turn request,
     and return its thinking blocks."""
     response = SimpleNamespace(
@@ -34,7 +34,7 @@ def _thinking_on_replay(base_url, signature=SIG):
         stored,
         {"role": "user", "content": "q2"},
     ]
-    _sys, out = convert_messages_to_anthropic(messages, base_url=base_url, model="k3")
+    _sys, out = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     return [b for b in assistant["content"] if isinstance(b, dict) and b.get("type") == "thinking"]
 
@@ -54,7 +54,21 @@ def test_moonshot_keeps_signed_thinking():
 
 
 def test_deepseek_still_strips_signed_thinking():
-    assert not _thinking_on_replay(DEEPSEEK)
+    # A DeepSeek model on the DeepSeek Anthropic endpoint must strip signed
+    # thinking on replay. (The model must be a real DeepSeek slug: the bare
+    # ``k3`` slug is now classified as Kimi family, and a Kimi-family MODEL
+    # name deliberately preserves thinking regardless of gateway hostname —
+    # the proxied-endpoint path, see _is_kimi_family_endpoint.)
+    assert not _thinking_on_replay(DEEPSEEK, model="deepseek-reasoner")
+
+
+def test_kimi_model_name_on_foreign_gateway_keeps_thinking():
+    """A Kimi-family model slug replayed through a non-Kimi gateway hostname
+    keeps its thinking blocks — upstream Kimi still enforces its replay
+    semantics no matter what host fronts it (hermes-agent#13848, #17057).
+    Covers both the named and bare Coding Plan slugs."""
+    for model in ("kimi-k2.5", "k3"):
+        assert _thinking_on_replay(DEEPSEEK, model=model), model
 
 
 def test_direct_anthropic_keeps_signed_on_latest():

@@ -352,18 +352,18 @@ gateway:
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
 
-## Interrupting the Agent
+## Redirecting the Agent
 
-Send any message while the agent is working to interrupt it. Key behaviors:
+Send a message while the agent is working to correct the active turn:
 
-- **In-progress terminal commands are killed immediately** (SIGTERM, then SIGKILL after 1s)
-- **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
-- **Multiple messages are combined** — messages sent during interruption are joined into one prompt
-- **`/stop` command** — interrupts without queuing a follow-up message
+- **Model generation restarts with context** — reasoning already shown and visible partial text are retained as an ordinary assistant checkpoint
+- **Completed work stays available** — prior tool calls and results remain in the turn
+- **Running tools finish safely** — the correction is applied at the next tool-result boundary instead of killing the tool
+- **`/stop` remains a hard stop** — use it to cancel the active turn and foreground work
 
 ### Queue vs interrupt vs steer (busy-input mode)
 
-By default, messaging a busy agent interrupts it. Two other modes are available:
+By default, messaging a busy agent redirects its active turn. Two other modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
@@ -376,7 +376,7 @@ display:
 
 The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
-If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. Your input is still queued/steered/interrupts as normal, only the chat reply is silenced.
+If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message is hidden.
 
 ## Tool Progress Notifications
 

@@ -12,7 +12,7 @@
 // spent regardless of the isolated backend.
 
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -69,15 +69,66 @@ function seedConfigFrom(sourceHome, targetHome) {
   }
 }
 
-function runNode(scriptRelPath, args = []) {
+// Resolve the vite CLI entry via its package.json `bin` (Vite 8's `exports`
+// blocks importing `vite/bin/vite.js` directly).
+function resolveViteBin() {
+  const pkgPath = require.resolve('vite/package.json')
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  const rel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.vite
+
+  if (!rel) {
+    throw new Error('could not resolve the vite CLI from vite/package.json')
+  }
+
+  return join(dirname(pkgPath), rel)
+}
+
+// Poll the perf driver's `connected()` until the gateway socket is open.
+// Returns false if the probe predates this helper or the timeout elapses.
+async function waitForConnected(cdp, timeoutMs) {
+  const hasProbe = await cdp.eval('typeof window.__PERF_DRIVE__.connected === "function"')
+
+  if (!hasProbe) {
+    return false
+  }
+
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (await cdp.eval('window.__PERF_DRIVE__.connected()')) {
+      return true
+    }
+
+    await sleep(500)
+  }
+
+  return false
+}
+
+function runProcess(command, args, { env } = {}) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, [join(DESKTOP_DIR, scriptRelPath), ...args], {
+    const child = spawn(command, args, {
       cwd: DESKTOP_DIR,
-      stdio: 'inherit'
+      stdio: 'inherit',
+      env: env ? { ...process.env, ...env } : process.env
     })
     child.on('error', reject)
-    child.on('exit', code => (code === 0 ? resolveRun() : reject(new Error(`${scriptRelPath} exited ${code}`))))
+    child.on('exit', code => (code === 0 ? resolveRun() : reject(new Error(`${command} ${args[0]} exited ${code}`))))
   })
+}
+
+function runNode(scriptRelPath, args = []) {
+  return runProcess(process.execPath, [join(DESKTOP_DIR, scriptRelPath), ...args])
+}
+
+// Build a production renderer WITH the perf probe included (VITE_PERF_PROBE=1),
+// plus the prod electron-main bundle, so the harness can measure a real,
+// minified React build instead of the ~3x-slower dev build. Slow (a full vite
+// build); do it once, then run/attach many times.
+export async function buildProdRenderer() {
+  const viteBin = resolveViteBin()
+  await runProcess(process.execPath, [viteBin, 'build'], { env: { VITE_PERF_PROBE: '1' } })
+  await runNode('scripts/bundle-electron-main.mjs')
 }
 
 /** Attach to a renderer already listening on `port` (launched via perf:serve or with --remote-debugging-port). */
@@ -93,13 +144,34 @@ export async function attach({ port = 9222, match } = {}) {
  * and return `{ cdp, teardown, devUrl, port }`. `teardown` kills both children
  * and removes any temp dirs it created.
  */
+// Chromium switches that stop frame-production throttling for a window that
+// isn't foregrounded (the perf window usually sits behind the IDE/terminal).
+const ANTI_THROTTLE_FLAGS = [
+  '--disable-background-timer-throttling',
+  '--disable-renderer-backgrounding',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-features=CalculateNativeWinOcclusion'
+]
+
+/**
+ * Spawn an isolated instance and connect the perf driver. Two render modes:
+ *   · dev (default): vite dev server + dev electron-main bundle.
+ *   · prod (`prod: true`): a production build (call buildProdRenderer first);
+ *     electron loads dist/index.html — representative, minified React.
+ * `coldStart: true` skips the gateway-connect wait and settle (for launch-time
+ * measurement) and returns `timings` (spawn→CDP, spawn→driver) plus renderer
+ * boot marks (FCP, time-to-composer).
+ */
 export async function startIsolatedInstance({
   port = 9222,
   devPort = 5174,
+  prod = false,
+  coldStart = false,
   hermesHome,
   userDataDir,
   seedConfig = true,
-  bootFakeStepMs = 120
+  settleMs = 2500,
+  connectTimeoutMs = 90000
 } = {}) {
   const children = []
   const tempDirs = []
@@ -113,9 +185,8 @@ export async function startIsolatedInstance({
 
   const home = hermesHome ?? mkTemp('hermes-perf-home-')
   const userData = userDataDir ?? mkTemp('hermes-perf-ud-')
-  const devUrl = `http://127.0.0.1:${devPort}`
+  const devUrl = prod ? null : `http://127.0.0.1:${devPort}`
 
-  // Only seed a temp home we created — never scribble into a user-provided one.
   if (seedConfig && !hermesHome) {
     seedConfigFrom(join(homedir(), '.hermes'), home)
   }
@@ -139,47 +210,58 @@ export async function startIsolatedInstance({
   }
 
   try {
-    // 1. Renderer: reuse an already-running dev server, else start one.
-    if (!(await reachable(devUrl))) {
-      const viteBin = require.resolve('vite/bin/vite.js')
-      const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(devPort)], {
-        cwd: DESKTOP_DIR,
-        stdio: ['ignore', 'inherit', 'inherit']
-      })
-      children.push(vite)
-      await waitFor(() => reachable(devUrl), { timeoutMs: 60000, label: `vite dev server on :${devPort}` })
+    if (prod) {
+      // Renderer + main are expected pre-built (buildProdRenderer). Cheap to
+      // re-bundle main so an isolated run always matches current source.
+      await runNode('scripts/bundle-electron-main.mjs')
+    } else {
+      if (!(await reachable(devUrl))) {
+        const viteBin = resolveViteBin()
+        const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(devPort)], {
+          cwd: DESKTOP_DIR,
+          stdio: ['ignore', 'inherit', 'inherit']
+        })
+        children.push(vite)
+        await waitFor(() => reachable(devUrl), { timeoutMs: 60000, label: `vite dev server on :${devPort}` })
+      }
+
+      await runNode('scripts/bundle-electron-main.mjs', ['--dev'])
     }
 
-    // 2. Electron main bundle (dev variant) — same step the dev script runs.
-    await runNode('scripts/bundle-electron-main.mjs', ['--dev'])
-
-    // 3. Isolated Electron. --user-data-dir gives it its own single-instance
-    //    lock scope; HERMES_HOME gives it its own backend + sessions.
+    // Isolated Electron: own --user-data-dir (single-instance lock scope) + own
+    // HERMES_HOME (backend + sessions). No DEV_SERVER env in prod → dist load.
     const electronBin = require('electron')
+    // NB: do NOT set HERMES_DESKTOP_BOOT_FAKE here — it injects artificial
+    // per-phase sleeps into the boot overlay, which inflates cold-start timing
+    // (and adds pointless startup latency to the steady-state runs). We want the
+    // real boot sequence.
+    const env = {
+      ...process.env,
+      HERMES_HOME: home,
+      XCURSOR_SIZE: '24'
+    }
+
+    if (devUrl) {
+      env.HERMES_DESKTOP_DEV_SERVER = devUrl
+    }
+
+    const spawnAt = Date.now()
     const electron = spawn(
       electronBin,
-      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`],
-      {
-        cwd: DESKTOP_DIR,
-        stdio: ['ignore', 'inherit', 'inherit'],
-        env: {
-          ...process.env,
-          HERMES_HOME: home,
-          HERMES_DESKTOP_DEV_SERVER: devUrl,
-          HERMES_DESKTOP_BOOT_FAKE: '1',
-          HERMES_DESKTOP_BOOT_FAKE_STEP_MS: String(bootFakeStepMs),
-          XCURSOR_SIZE: '24'
-        }
-      }
+      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS],
+      { cwd: DESKTOP_DIR, stdio: ['ignore', 'inherit', 'inherit'], env }
     )
     children.push(electron)
 
-    // 4. Wait for the renderer + the perf driver to be live.
+    // Wait for the renderer + perf driver. In prod the target URL is file://,
+    // so don't match on the dev port.
     let cdp = null
+    let cdpAt = 0
     await waitFor(
       async () => {
         try {
-          cdp = await CDP.connect({ port, match: String(devPort), timeoutMs: 2000 })
+          cdp = await CDP.connect({ port, match: devUrl ? String(devPort) : undefined, timeoutMs: 2000 })
+          cdpAt = cdpAt || Date.now()
 
           return await cdp.eval('!!(window.__PERF_DRIVE__ && window.__PERF_DRIVE__.stream)')
         } catch {
@@ -193,11 +275,46 @@ export async function startIsolatedInstance({
       },
       { timeoutMs: 120000, label: 'isolated renderer + __PERF_DRIVE__' }
     )
+    const driverAt = Date.now()
+
+    try {
+      await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    } catch {
+      // Older CDP / not supported — fall back to the anti-throttle flags.
+    }
+
+    // Renderer-side boot marks (relative to its own navigation start).
+    const bootMarks = await readBootMarks(cdp)
+    const timings = {
+      spawn_to_cdp_ms: cdpAt ? cdpAt - spawnAt : null,
+      spawn_to_driver_ms: driverAt - spawnAt,
+      ...bootMarks
+    }
+
+    let connected = true
+
+    if (!coldStart) {
+      // Steady-state scenarios: wait for the gateway to connect (reconnect churn
+      // contaminates frame pacing) and let residual cold-start work drain.
+      connected = await waitForConnected(cdp, connectTimeoutMs)
+
+      if (!connected) {
+        console.warn(
+          `[perf] gateway did not connect within ${connectTimeoutMs}ms — ` +
+            'stream/frame numbers may be inflated by reconnect churn.'
+        )
+      }
+
+      await sleep(settleMs)
+    }
 
     return {
+      connected,
       cdp,
       devUrl,
       port,
+      prod,
+      timings,
       teardown: () => {
         cdp?.close()
         teardown()
@@ -206,6 +323,95 @@ export async function startIsolatedInstance({
   } catch (err) {
     teardown()
     throw err
+  }
+}
+
+// Representative cold-start sampling. A fresh --user-data-dir means a COLD V8
+// code cache and worst-case bundle recompile every run (~+400ms measured); real
+// users reuse their profile, so a warm cache is the representative case. We reuse
+// ONE profile across runs: run 0 warms the cache (discarded), runs 1..N are the
+// warm samples. Each run steps the port so a just-killed instance can't be
+// re-attached, and we pause between runs so the single-instance lock releases.
+export async function coldStartSamples({ runs = 3, port = 9222, devPort = 5174, prod = false, warm = true } = {}) {
+  const pickNumeric = timings => Object.fromEntries(Object.entries(timings).filter(([, v]) => typeof v === 'number'))
+  const samples = []
+
+  if (warm) {
+    // Shared profile across runs: run 0 warms the V8 code cache (discarded),
+    // runs 1..N are the representative warm samples.
+    const home = mkdtempSync(join(tmpdir(), 'hermes-perf-cold-home-'))
+    const userDataDir = mkdtempSync(join(tmpdir(), 'hermes-perf-cold-ud-'))
+    seedConfigFrom(join(homedir(), '.hermes'), home)
+
+    try {
+      for (let i = 0; i <= runs; i++) {
+        const inst = await startIsolatedInstance({
+          port: port + i,
+          devPort: devPort + i,
+          prod,
+          coldStart: true,
+          hermesHome: home,
+          userDataDir,
+          seedConfig: false
+        })
+
+        if (i > 0) {
+          samples.push(pickNumeric(inst.timings))
+        }
+
+        inst.teardown()
+        await sleep(2500) // let the single-instance lock release before reuse
+      }
+    } finally {
+      for (const dir of [home, userDataDir]) {
+        try {
+          rmSync(dir, { recursive: true, force: true })
+        } catch {
+          // best-effort
+        }
+      }
+    }
+  } else {
+    // Worst case: a fresh profile per run → cold code cache every launch
+    // (first-launch-after-install). startIsolatedInstance makes+removes its dirs.
+    for (let i = 0; i < runs; i++) {
+      const inst = await startIsolatedInstance({ port: port + i, devPort: devPort + i, prod, coldStart: true })
+      samples.push(pickNumeric(inst.timings))
+      inst.teardown()
+      await sleep(2500)
+    }
+  }
+
+  return samples
+}
+
+// Read First Contentful Paint + time-to-composer from the renderer, relative to
+// its navigation start (the process-spawn deltas live in `timings`).
+async function readBootMarks(cdp) {
+  try {
+    return await cdp.eval(`(() => {
+      const paints = performance.getEntriesByType('paint')
+      const fcp = paints.find(p => p.name === 'first-contentful-paint')
+      const nav = performance.getEntriesByType('navigation')[0]
+      const composer = document.querySelector('[data-slot="composer-rich-input"]')
+      // Largest script resource ≈ the (intentionally single) renderer bundle.
+      // responseEnd → the script's own decode; the eval cost shows up as the gap
+      // between the bundle's responseEnd and domInteractive.
+      const scripts = performance.getEntriesByType('resource').filter(r => r.initiatorType === 'script')
+      const mainScript = scripts.sort((a, b) => (b.encodedBodySize || 0) - (a.encodedBodySize || 0))[0]
+      const round = n => (typeof n === 'number' ? Math.round(n) : null)
+      return {
+        fcp_ms: fcp ? round(fcp.startTime) : null,
+        dom_interactive_ms: nav ? round(nav.domInteractive) : null,
+        dom_content_loaded_ms: nav ? round(nav.domContentLoadedEventEnd) : null,
+        main_script_kb: mainScript ? round((mainScript.encodedBodySize || 0) / 1024) : null,
+        main_script_response_end_ms: mainScript ? round(mainScript.responseEnd) : null,
+        nav_to_read_ms: round(performance.now()),
+        composer_present: !!composer
+      }
+    })()`)
+  } catch {
+    return { fcp_ms: null, dom_interactive_ms: null, composer_present: false }
   }
 }
 

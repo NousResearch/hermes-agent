@@ -379,6 +379,21 @@ def cmd_setup(args) -> None:
     print("\n  Start a new session to activate.\n")
 
 
+def _env_line_safe(value) -> str:
+    """Neutralize characters that would break ``.env`` line structure.
+
+    ``.env`` is strictly line-oriented (one ``KEY=VALUE`` per line) and
+    values are interpolated straight into that line. A pasted secret with an
+    embedded CR/LF would spill onto a new line and be re-parsed as a
+    *separate* ``KEY=VALUE`` entry on the next read — injecting an arbitrary
+    variable into the credentials file. Strip every separator recognized by
+    ``str.splitlines()`` plus NUL so a value can only occupy its own line.
+    Mirrors the openviking plugin's writer and ``config.save_env_value``.
+    """
+    text = value if isinstance(value, str) else str(value)
+    return "".join(text.replace("\x00", "").splitlines())
+
+
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     """Append or update env vars in .env file."""
     env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,14 +407,14 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     for line in existing_lines:
         key_match = line.split("=", 1)[0].strip() if "=" in line else ""
         if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
+            new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}")
             updated_keys.add(key_match)
         else:
             new_lines.append(line)
 
     for key, val in env_writes.items():
         if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
+            new_lines.append(f"{key}={_env_line_safe(val)}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     # Restrict permissions — .env holds API keys and tokens.
@@ -422,8 +437,24 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
+    memory_enabled = mem_config.get("memory_enabled", True)
+    user_profile_enabled = mem_config.get("user_profile_enabled", True)
+
+    mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
+    user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
+
+    # Check if the memory tool is enabled for the CLI platform via the
+    # canonical resolver (handles composite toolsets like hermes-cli).
+    from hermes_cli.tools_config import _get_platform_tools
+    cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    memory_tool_enabled = "memory" in cli_tools
+    tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
+
     print("\nMemory status\n" + "─" * 40)
-    print("  Built-in:  always active")
+    print("  Built-in (MEMORY.md / USER.md):")
+    print(f"    Memory injection:   {mem_mark}")
+    print(f"    User profile:       {user_mark}")
+    print(f"    Memory tool:        {tool_mark}")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()

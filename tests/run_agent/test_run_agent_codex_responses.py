@@ -2371,6 +2371,37 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
     }
 
 
+def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
+    """_interim_content_was_streamed should return True when the streamed text
+    is a PREFIX of the final content (trailing delta added after stream, or
+    partial stream before verify nudge).  Exact equality is too strict — it
+    fails safe to a benign duplicate bubble instead of settling the interim.
+    (#65919 review: prefix-based match like the TUI's finalTail dedup.)"""
+    agent = _build_agent(monkeypatch)
+
+    # Exact match still works
+    agent._current_streamed_assistant_text = "hello world"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is a prefix of the final (trailing delta) — should match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is empty — should not match
+    agent._current_streamed_assistant_text = ""
+    assert agent._interim_content_was_streamed("hello world") is False
+
+    # Final is empty — should not match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("") is False
+
+    # Streamed is LONGER than final (reverse direction) — should NOT match.
+    # This is the unsafe direction: it could suppress a needed resend in the
+    # gateway path where already_streamed=True calls on_segment_break().
+    agent._current_streamed_assistant_text = "hello world extra"
+    assert agent._interim_content_was_streamed("hello") is False
+
+
 def test_interim_commentary_preserves_assistant_content(monkeypatch):
     """Interim commentary must not silently mutate assistant text containing
     literal <memory-context> markers — that's legitimate model output (docs,

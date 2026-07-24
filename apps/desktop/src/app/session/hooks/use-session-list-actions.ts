@@ -11,6 +11,7 @@ import {
 import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { $removedSessionIds } from '@/store/projects'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -123,16 +124,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right
   // after an agent turn surfaces a new job immediately; the interval poll keeps
-  // next-run/state fresh as the scheduler advances them.
+  // next-run/state fresh as the scheduler advances them. Jobs live per-profile
+  // on disk and the list endpoint aggregates 'all' by default, so scope the
+  // fetch to the sidebar's profile scope — a concrete profile sees only its
+  // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
     try {
-      const jobs = await getCronJobs()
+      const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
 
       setCronJobs(jobs)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
-  }, [])
+  }, [profileScope])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
@@ -177,12 +181,24 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       if (refreshSessionsRequestRef.current === requestId) {
         const recents = result.recents
 
+        // Drop rows the user just deleted/archived: a refresh can race an
+        // in-flight mutation and the backend page still carries the doomed row.
+        // Honoring the optimistic tombstone keeps the removal from flashing back
+        // (the tombstone self-clears once projects.tree confirms the delete).
+        const tombstones = $removedSessionIds.get()
+
+        const incoming = tombstones.size
+          ? recents.sessions.filter(
+              s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
+            )
+          : recents.sessions
+
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
         // that returns content-identical rows must keep the previous array
         // identity, or every sidebar memo keyed on $sessions recomputes and the
         // whole list re-renders once per turn/broadcast for nothing.
         setSessions(prev => {
-          const next = mergeSessionPage(prev, recents.sessions, sessionsToKeep())
+          const next = mergeSessionPage(prev, incoming, sessionsToKeep())
 
           return sameCronSignature(prev, next) ? prev : next
         })

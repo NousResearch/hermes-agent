@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
+import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
 
 /**
  * Two-stage model picker modal.
@@ -226,15 +227,30 @@ export function ModelPickerDialog(props: Props) {
     [providers, trimmedQuery],
   );
 
+  // A query that matched the SELECTED provider by name/slug (not its models)
+  // located that provider — it shouldn't also hide that provider's models
+  // just because their ids don't share a substring with the provider name
+  // (e.g. typing "aws" to find "AWS Build" then finding zero of its Claude
+  // model ids contain "aws"). Fall back to an unfiltered model list in that
+  // case; a query that also matches a model id keeps filtering normally.
+  const queryMatchesSelectedProviderOnly = useMemo(
+    () => queryMatchesProviderOnly(selectedProvider, models, trimmedQuery),
+    [trimmedQuery, selectedProvider, models],
+  );
+
   // Fuzzy-ranked models carrying the matched character positions so the model
   // list can highlight why each entry matched.
   const filteredModels = useMemo(
     () =>
-      fuzzyRank(models, trimmedQuery, (m) => m).map((r) => ({
+      fuzzyRank(
+        models,
+        queryMatchesSelectedProviderOnly ? "" : trimmedQuery,
+        (m) => m,
+      ).map((r) => ({
         model: r.item,
         positions: r.positions,
       })),
-    [models, trimmedQuery],
+    [models, trimmedQuery, queryMatchesSelectedProviderOnly],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;

@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
@@ -112,13 +113,11 @@ export function ProjectMenu({
 
   // Appearance writes route through the adopt-aware helper: an auto project is
   // materialized on its first change (its id then changes), so close the picker
-  // when that happens to avoid a second write double-creating from a stale node.
-  const applyAppearance = (patch: { color?: null | string; icon?: null | string }) => {
-    void setProjectAppearance(project, patch).then(adopted => {
-      if (adopted) {
-        setAppearanceOpen(false)
-      }
-    })
+  // on adopt to stop a second write double-creating from a now-stale node.
+  const applyAppearance = async (patch: { color?: null | string; icon?: null | string }) => {
+    if (await setProjectAppearance(project, patch)) {
+      setAppearanceOpen(false)
+    }
   }
 
   // Set color / pick an icon — shown for explicit projects and for auto ones
@@ -130,7 +129,14 @@ export function ProjectMenu({
     </DropdownMenuItem>
   )
 
-  const trigger = (
+  // The bare trigger button (no Tip, no anchor) — composed with whichever of
+  // Tip / PopoverAnchor apply below, always OUTSIDE the asChild chain that
+  // ends at this button, never wrapping it directly. asChild clones only its
+  // immediate child, so any of these wrappers placed inside another
+  // asChild-consuming component (instead of around it) would have its
+  // injected props silently swallowed by that inner component instead of
+  // reaching the real DOM button (see #67500).
+  const triggerButton = (
     <DropdownMenuTrigger asChild>
       <button
         aria-label={p.menu}
@@ -148,13 +154,24 @@ export function ProjectMenu({
     </DropdownMenuTrigger>
   )
 
+  // Tip always wraps the outermost element of whatever we render — either the
+  // trigger directly (anchorRef present: the popover anchors to the whole row
+  // via a separate virtualRef, so PopoverAnchor isn't involved here), or the
+  // PopoverAnchor-wrapped trigger (anchorRef absent: the popover anchors to
+  // this button itself). Either way, Tip > PopoverAnchor > DropdownMenuTrigger
+  // > button, so asChild composes props/ref all the way down to the real DOM
+  // node instead of stopping at an intermediate wrapper.
+  const trigger = (
+    <Tip label={p.menu}>{anchorRef ? triggerButton : <PopoverAnchor asChild>{triggerButton}</PopoverAnchor>}</Tip>
+  )
+
   return (
     <Popover onOpenChange={setAppearanceOpen} open={appearanceOpen}>
       {/* Position the appearance popover against the row (when a ref is wired);
           the kebab is only the dropdown trigger then. */}
       {anchorRef ? <PopoverAnchor virtualRef={anchorRef as React.RefObject<HTMLElement>} /> : null}
       <DropdownMenu>
-        {anchorRef ? trigger : <PopoverAnchor asChild>{trigger}</PopoverAnchor>}
+        {trigger}
         {/* Closing the menu refocuses the trigger (also the popover anchor),
             which the appearance popover would read as focus-outside and die on.
             Suppress that refocus so it survives. */}
@@ -168,12 +185,12 @@ export function ProjectMenu({
             // Inherited (auto) repos can still be themed — the change adopts the
             // repo as a real project. Rename / add-folder / set-active stay out
             // until then (they need the materialized record).
-            project.path ? (
+            project.path && (
               <>
                 {appearanceItem}
                 <DropdownMenuSeparator />
               </>
-            ) : null
+            )
           ) : (
             <>
               <DropdownMenuItem onSelect={() => openProjectRename(target)}>
@@ -224,7 +241,7 @@ export function ProjectMenu({
         <ColorSwatches
           clearIcon="circle-slash"
           clearLabel={p.noColor}
-          onChange={color => applyAppearance({ color })}
+          onChange={color => void applyAppearance({ color })}
           swatches={PROFILE_SWATCHES}
           value={project.color ?? null}
         />
@@ -232,19 +249,20 @@ export function ProjectMenu({
             profile picker's width (icons flex to fill, not fixed-width). */}
         <div className="mt-2 grid grid-cols-6 gap-1.5">
           {ICONS.map(name => (
-            <button
-              aria-label={name}
-              className={cn(
-                'grid aspect-square place-items-center rounded-md text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background)',
-                project.icon === name && 'bg-(--ui-control-active-background) text-foreground'
-              )}
-              key={name}
-              onClick={() => applyAppearance({ icon: project.icon === name ? null : name })}
-              style={project.icon === name && project.color ? { color: project.color } : undefined}
-              type="button"
-            >
-              <Codicon name={name} size="0.8125rem" />
-            </button>
+            <Tip key={name} label={name}>
+              <button
+                aria-label={name}
+                className={cn(
+                  'grid aspect-square place-items-center rounded-md text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background)',
+                  project.icon === name && 'bg-(--ui-control-active-background) text-foreground'
+                )}
+                onClick={() => void applyAppearance({ icon: project.icon === name ? null : name })}
+                style={project.icon === name && project.color ? { color: project.color } : undefined}
+                type="button"
+              >
+                <Codicon name={name} size="0.8125rem" />
+              </button>
+            </Tip>
           ))}
         </div>
       </PopoverContent>

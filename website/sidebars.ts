@@ -144,7 +144,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/apple/apple-apple-reminders',
                     'user-guide/skills/bundled/apple/apple-findmy',
                     'user-guide/skills/bundled/apple/apple-imessage',
-                    'user-guide/skills/bundled/apple/apple-macos-computer-use',
                   ],
                 },
                 {
@@ -155,6 +154,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
+                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
                   ],
@@ -181,24 +181,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/creative/creative-sketch',
                     'user-guide/skills/bundled/creative/creative-songwriting-and-ai-music',
                     'user-guide/skills/bundled/creative/creative-touchdesigner-mcp',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'data-science',
-                  key: 'skills-bundled-data-science',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'dogfood',
-                  key: 'skills-bundled-dogfood',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/dogfood/dogfood-dogfood',
                   ],
                 },
                 {
@@ -231,7 +213,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/media/media-gif-search',
-                    'user-guide/skills/bundled/media/media-heartmula',
                     'user-guide/skills/bundled/media/media-songsee',
                     'user-guide/skills/bundled/media/media-youtube-content',
                   ],
@@ -242,12 +223,10 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-mlops',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/mlops/mlops-models-audiocraft',
                     'user-guide/skills/bundled/mlops/mlops-huggingface-hub',
                     'user-guide/skills/bundled/mlops/mlops-inference-llama-cpp',
-                    'user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness',
-                    'user-guide/skills/bundled/mlops/mlops-models-segment-anything',
-                    'user-guide/skills/bundled/mlops/mlops-inference-vllm',
+                    'user-guide/skills/bundled/mlops/mlops-evaluation-evaluating-llms-harness',
+                    'user-guide/skills/bundled/mlops/mlops-inference-serving-llms-vllm',
                     'user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases',
                   ],
                 },
@@ -267,14 +246,16 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
+                    'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
                     'user-guide/skills/bundled/productivity/productivity-maps',
                     'user-guide/skills/bundled/productivity/productivity-nano-pdf',
                     'user-guide/skills/bundled/productivity/productivity-notion',
                     'user-guide/skills/bundled/productivity/productivity-ocr-and-documents',
-                    'user-guide/skills/bundled/productivity/productivity-petdex',
+                    'user-guide/skills/bundled/productivity/productivity-pdf',
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
+                    'user-guide/skills/bundled/productivity/productivity-xlsx',
                   ],
                 },
                 {
@@ -314,6 +295,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-software-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/software-development/software-development-dogfood',
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
                     'user-guide/skills/bundled/software-development/software-development-plan',
@@ -323,15 +305,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-spike',
                     'user-guide/skills/bundled/software-development/software-development-systematic-debugging',
                     'user-guide/skills/bundled/software-development/software-development-test-driven-development',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'yuanbao',
-                  key: 'skills-bundled-yuanbao',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/yuanbao/yuanbao-yuanbao',
                   ],
                 },
               ],
@@ -380,15 +353,27 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-creative',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
                     'user-guide/skills/optional/creative/creative-blender-mcp',
                     'user-guide/skills/optional/creative/creative-concept-diagrams',
                     'user-guide/skills/optional/creative/creative-creative-ideation',
+                    'user-guide/skills/optional/creative/creative-heartmula',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',
                     'user-guide/skills/optional/creative/creative-pixel-art',
+                    'user-guide/skills/optional/creative/creative-unreal-mcp',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'data-science',
+                  key: 'skills-optional-data-science',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/data-science/data-science-jupyter-notebook',
                   ],
                 },
                 {
@@ -506,6 +491,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mlops/mlops-pytorch-lightning',
                     'user-guide/skills/optional/mlops/mlops-qdrant',
                     'user-guide/skills/optional/mlops/mlops-saelens',
+                    'user-guide/skills/optional/mlops/mlops-models-segment-anything-model',
                     'user-guide/skills/optional/mlops/mlops-simpo',
                     'user-guide/skills/optional/mlops/mlops-slime',
                     'user-guide/skills/optional/mlops/mlops-stable-diffusion',
@@ -571,6 +557,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/security/security-godmode',
                     'user-guide/skills/optional/security/security-oss-forensics',
                     'user-guide/skills/optional/security/security-sherlock',
+                    'user-guide/skills/optional/security/security-unbroker',
                     'user-guide/skills/optional/security/security-web-pentest',
                   ],
                 },
@@ -591,7 +578,17 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-web-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'yuanbao',
+                  key: 'skills-optional-yuanbao',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/yuanbao/yuanbao-yuanbao',
                   ],
                 },
               ],

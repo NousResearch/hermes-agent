@@ -129,6 +129,7 @@ export const zh: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
+      gatewayAuthFailed: '网关认证失败 — 请检查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
@@ -164,12 +165,22 @@ export const zh: Translations = {
       turnDoneBody: '回复已就绪。',
       turnErrorTitle: '本轮失败',
       backgroundDoneTitle: '后台任务已完成',
-      backgroundFailedTitle: '后台任务失败'
+      backgroundFailedTitle: '后台任务失败',
+      creditsTitle: '额度'
     }
   },
 
   remoteDisplayBanner: {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
+  },
+
+  billingBlock: {
+    titleNous: 'Nous 额度已用尽',
+    titleProvider: provider => `额度已用尽 — ${provider}`,
+    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
+    openBilling: '打开账单',
+    addCredits: '添加额度',
+    dismiss: '忽略'
   },
 
   titlebar: {
@@ -220,7 +231,7 @@ export const zh: Translations = {
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
       'session.newTab': '新建会话标签',
-      'session.newWindow': '在新窗口中新建会话',
+      'session.newWindow': '新建窗口',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
       'session.slot.1': '切换到最近会话 1',
@@ -274,6 +285,7 @@ export const zh: Translations = {
       'composer.send': '发送消息',
       'composer.newline': '插入换行',
       'composer.steer': '引导正在运行的回合',
+      'composer.queue': '消息排队',
       'composer.sendQueued': '发送下一条排队消息',
       'composer.mention': '引用文件、文件夹、网址',
       'composer.slash': '斜杠命令面板',
@@ -305,6 +317,7 @@ export const zh: Translations = {
       providers: '提供方',
       providerAccounts: '账号',
       providerApiKeys: 'API 密钥',
+      providerCustomEndpoints: '自定义端点',
       gateway: '网关',
       apiKeys: '工具与密钥',
       keybinds: '键盘快捷键',
@@ -357,6 +370,10 @@ export const zh: Translations = {
         backgroundDone: {
           label: '后台任务完成',
           description: '后台终端命令已完成。'
+        },
+        credits: {
+          label: '额度提醒',
+          description: '额度访问被暂停或恢复。'
         }
       },
       test: '发送测试通知',
@@ -476,6 +493,11 @@ export const zh: Translations = {
       display: {
         personality: '人格',
         showReasoning: '推理过程块'
+      },
+      desktop: {
+        repoScanEnabled: '自动发现代码仓库',
+        repoScanRoots: '代码仓库扫描根目录',
+        repoScanExcludePaths: '排除的代码仓库路径'
       },
       agent: {
         maxTurns: '最大智能体步数',
@@ -632,6 +654,11 @@ export const zh: Translations = {
         personality: '新会话的默认助手风格。',
         showReasoning: '当后端提供推理内容时予以显示。'
       },
+      desktop: {
+        repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',
+        repoScanRoots: '要扫描的文件夹。留空时扫描主目录。',
+        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'
+      },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {
         imageInputMode: '控制图片附件如何发送给模型。',
@@ -719,7 +746,9 @@ export const zh: Translations = {
       failedLoad: '设置加载失败',
       autosaveFailed: '自动保存失败',
       imported: '配置已导入',
-      invalidJson: '配置 JSON 无效'
+      invalidJson: '配置 JSON 无效',
+      keepAwakeTitle: '保持电脑唤醒',
+      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。'
     },
     credentials: {
       pasteKey: '粘贴密钥',
@@ -836,7 +865,42 @@ export const zh: Translations = {
       signOutFailed: '退出登录失败',
       testFailed: '远程网关测试失败',
       applyFailed: '无法应用网关设置',
-      saveFailed: '无法保存网关设置'
+      saveFailed: '无法保存网关设置',
+      sshTitle: '通过 SSH 连接',
+      sshDesc:
+        'Hermes 会通过 SSH 在远程启动并以隧道连接到本应用——无需自行启动或暴露任何服务。前提：已具备到该主机的密钥 SSH 访问。',
+      sshTrustHint: '首次提供的主机密钥会被信任并固定；后续变更将被拒绝。',
+      sshHostTitle: '主机',
+      sshHostDesc: 'user@host，或 ~/.ssh/config 中的 Host 别名。',
+      sshHostPick: '选择主机…',
+      sshHostPickTitle: '主机',
+      sshHostPickDesc: '~/.ssh/config 中的 Host 别名，或选择"自定义"手动输入。',
+      sshHostCustom: '自定义（手动输入）…',
+      sshUserTitle: '用户',
+      sshUserDesc: '留空 = ~/.ssh/config 或当前用户。',
+      sshUserPlaceholder: '来自 ~/.ssh/config',
+      sshPortTitle: '端口',
+      sshPortDesc: '留空 = 22 或 ~/.ssh/config 中的端口。',
+      sshKeyTitle: '密钥文件',
+      sshKeyDesc: '私钥路径。留空 = ssh-agent 或 ~/.ssh/config。',
+      sshHermesPathTitle: 'Hermes 路径（可选）',
+      sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
+      sshHermesPathPlaceholder: '自动检测',
+      sshTestConnection: '测试 SSH',
+      sshConnect: '连接',
+      sshButtonsHint: '“保存”将在下次启动时生效，“连接”则立即重新连接。',
+      sshReachable: (host, platform) => `可连接：${host}（${platform}）——已找到 Hermes`,
+      sshIncompleteHost: '连接前请输入 SSH 主机。',
+      sshErrUnreachable: '无法通过 SSH 连接到该主机。请检查主机、端口和网络。',
+      sshErrAuth:
+        'SSH 认证失败。请将密钥加载到 ssh-agent（ssh-add），或在 ~/.ssh/config 中设置 IdentityFile——Hermes 以非交互方式运行 ssh。',
+      sshErrHostKey: '自上次连接以来主机密钥已更改。请确认这是预期的，然后运行 ssh-keygen -R <host> 并重新连接。',
+      sshErrNotInstalled:
+        '远程主机上未安装 Hermes。请在远程安装（curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh）或设置 Hermes 路径。',
+      sshErrPlatform: '不支持的远程平台。Hermes Desktop 的 SSH 模式支持 Linux、macOS 和 Windows 远程主机。',
+      sshErrTimeout: 'SSH 连接超时。主机可能无法访问或处于休眠状态。',
+      sshErrUpdateRequired: '使用 Desktop SSH 连接前，请更新远程主机上的 Hermes。',
+      sshErrUnknown: 'SSH 连接失败。'
     },
     keys: {
       loading: '正在加载 API 密钥和凭据...',
@@ -1224,6 +1288,7 @@ export const zh: Translations = {
     ageSeconds: seconds => `${seconds} 秒前`,
     ageMinutes: minutes => `${minutes} 分钟前`,
     ageHours: hours => `${hours} 小时前`,
+    ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 词元`
@@ -1976,6 +2041,7 @@ export const zh: Translations = {
     urlHintPre: '请包含完整 URL，例如 ',
     attach: '附加',
     queued: count => `${count} 条排队`,
+    queuedPaused: count => `${count} 条排队 — 已暂停`,
     attachmentOnly: '仅附件回合',
     emptyTurn: '空回合',
     attachments: count => `${count} 个附件`,
@@ -1985,6 +2051,8 @@ export const zh: Translations = {
     queueSendNext: '下一个',
     queueSend: '发送',
     queueDelete: '删除',
+    queueResume: '继续',
+    queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     previewUnavailable: '预览不可用',
@@ -2264,7 +2332,8 @@ export const zh: Translations = {
     proNeedsSubscription: 'Pro 模型需要付费 Nous 订阅。',
     free: '免费',
     freeTier: '免费层',
-    priceTitle: '每百万 token 的输入/输出价格'
+    priceTitle: '每百万 token 的输入/输出价格',
+    wasPrice: '原价'
   },
 
   modelVisibility: {
@@ -2336,6 +2405,12 @@ export const zh: Translations = {
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `远程: ${host}`,
+      connectionCloud: host => `云端: ${host}`,
+      connectionCloudTooltip: host => `已连接到 Hermes Cloud ${host} · 点击管理`,
+      connectionSshTooltip: host => `已通过 SSH 连接到 ${host} · 点击管理`,
+      connectionRemoteTooltip: host => `已连接到远程后端 ${host} · 点击管理`,
       backendLabel: version => `后端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
@@ -2536,6 +2611,7 @@ export const zh: Translations = {
     closeOthers: '关闭其他',
     closeToRight: '关闭右侧',
     closeAll: '全部关闭',
+    newSessionTab: '新建会话标签',
     split: dir => `向${dir}拆分`,
     move: dir => `向${dir}移动`,
     dirUp: '上',
@@ -2628,7 +2704,10 @@ export const zh: Translations = {
       placeholder: '输入你的答案…',
       skip: '跳过',
       skipped: '已跳过',
-      continueLabel: '继续'
+      continueLabel: '继续',
+      lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
+      lateAnswerTip: '将此回答起草为后续消息',
+      lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
     tool: {
       code: '代码',

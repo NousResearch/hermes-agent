@@ -129,6 +129,7 @@ export const zhHant = defineLocale({
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒絕了該 API 金鑰 (401)。',
+      gatewayAuthFailed: '閘道認證失敗 — 請檢查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
@@ -164,12 +165,22 @@ export const zhHant = defineLocale({
       turnDoneBody: '回覆已就緒。',
       turnErrorTitle: '本輪失敗',
       backgroundDoneTitle: '背景工作已完成',
-      backgroundFailedTitle: '背景工作失敗'
+      backgroundFailedTitle: '背景工作失敗',
+      creditsTitle: '額度'
     }
   },
 
   remoteDisplayBanner: {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
+  },
+
+  billingBlock: {
+    titleNous: 'Nous 額度已用盡',
+    titleProvider: provider => `額度已用盡 — ${provider}`,
+    fallbackMessage: '您的帳戶額度已用盡。請儲值以繼續使用。',
+    openBilling: '開啟帳單',
+    addCredits: '新增額度',
+    dismiss: '忽略'
   },
 
   titlebar: {
@@ -209,6 +220,7 @@ export const zhHant = defineLocale({
       providers: '提供方',
       providerAccounts: '帳號',
       providerApiKeys: 'API 金鑰',
+      providerCustomEndpoints: '自訂端點',
       gateway: '閘道',
       apiKeys: '工具與金鑰',
       keybinds: '鍵盤快捷鍵',
@@ -246,6 +258,10 @@ export const zhHant = defineLocale({
         backgroundDone: {
           label: '背景工作完成',
           description: '背景終端機指令已完成。'
+        },
+        credits: {
+          label: '額度提醒',
+          description: '額度存取被暫停或恢復。'
         }
       },
       test: '傳送測試通知',
@@ -365,6 +381,11 @@ export const zhHant = defineLocale({
       display: {
         personality: '人格',
         showReasoning: '推理區塊'
+      },
+      desktop: {
+        repoScanEnabled: '自動探索程式碼儲存庫',
+        repoScanRoots: '程式碼儲存庫掃描根目錄',
+        repoScanExcludePaths: '排除的程式碼儲存庫路徑'
       },
       agent: {
         maxTurns: '最大代理步數',
@@ -521,6 +542,11 @@ export const zhHant = defineLocale({
         personality: '新工作階段的預設助手風格。',
         showReasoning: '後端提供推理內容時顯示該區塊。'
       },
+      desktop: {
+        repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',
+        repoScanRoots: '要掃描的資料夾。留空時掃描主目錄。',
+        repoScanExcludePaths: '探索程式碼儲存庫時略過這些資料夾及其子目錄。'
+      },
       timezone: 'Hermes 需要本機時間上下文時使用。留空則使用系統時區。',
       agent: {
         imageInputMode: '控制圖片附件如何傳送給模型。',
@@ -608,7 +634,9 @@ export const zhHant = defineLocale({
       failedLoad: '設定載入失敗',
       autosaveFailed: '自動儲存失敗',
       imported: '設定已匯入',
-      invalidJson: '設定 JSON 無效'
+      invalidJson: '設定 JSON 無效',
+      keepAwakeTitle: '保持電腦喚醒',
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
     },
     credentials: {
       pasteKey: '貼上金鑰',
@@ -693,7 +721,42 @@ export const zhHant = defineLocale({
       signOutFailed: '登出失敗',
       testFailed: '遠端閘道測試失敗',
       applyFailed: '無法套用閘道設定',
-      saveFailed: '無法儲存閘道設定'
+      saveFailed: '無法儲存閘道設定',
+      sshTitle: '透過 SSH 連線',
+      sshDesc:
+        'Hermes 會透過 SSH 在遠端啟動並以通道連線到本應用程式——無需自行啟動或公開任何服務。前提：已具備到該主機的金鑰 SSH 存取。',
+      sshTrustHint: '首次提供的主機金鑰會被信任並固定；後續變更將被拒絕。',
+      sshHostTitle: '主機',
+      sshHostDesc: 'user@host，或 ~/.ssh/config 中的 Host 別名。',
+      sshHostPick: '選擇主機…',
+      sshHostPickTitle: '主機',
+      sshHostPickDesc: '~/.ssh/config 中的 Host 別名，或選擇「自訂」手動輸入。',
+      sshHostCustom: '自訂（手動輸入）…',
+      sshUserTitle: '使用者',
+      sshUserDesc: '留空 = ~/.ssh/config 或目前使用者。',
+      sshUserPlaceholder: '來自 ~/.ssh/config',
+      sshPortTitle: '連接埠',
+      sshPortDesc: '留空 = 22 或 ~/.ssh/config 中的連接埠。',
+      sshKeyTitle: '金鑰檔案',
+      sshKeyDesc: '私密金鑰路徑。留空 = ssh-agent 或 ~/.ssh/config。',
+      sshHermesPathTitle: 'Hermes 路徑（選用）',
+      sshHermesPathDesc: '遠端 hermes 執行檔的完整路徑。留空 = 自動偵測。',
+      sshHermesPathPlaceholder: '自動偵測',
+      sshTestConnection: '測試 SSH',
+      sshConnect: '連線',
+      sshButtonsHint: '「儲存」會在下次啟動時生效，「連線」則立即重新連線。',
+      sshReachable: (host, platform) => `可連線：${host}（${platform}）——已找到 Hermes`,
+      sshIncompleteHost: '連線前請輸入 SSH 主機。',
+      sshErrUnreachable: '無法透過 SSH 連線到該主機。請檢查主機、連接埠和網路。',
+      sshErrAuth:
+        'SSH 驗證失敗。請將金鑰載入 ssh-agent（ssh-add），或在 ~/.ssh/config 中設定 IdentityFile——Hermes 以非互動方式執行 ssh。',
+      sshErrHostKey: '自上次連線以來主機金鑰已變更。請確認這是預期的，然後執行 ssh-keygen -R <host> 並重新連線。',
+      sshErrNotInstalled:
+        '遠端主機上未安裝 Hermes。請在遠端安裝（curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh）或設定 Hermes 路徑。',
+      sshErrPlatform: '不支援的遠端平台。Hermes Desktop 的 SSH 模式支援 Linux、macOS 和 Windows 遠端主機。',
+      sshErrTimeout: 'SSH 連線逾時。主機可能無法存取或處於睡眠狀態。',
+      sshErrUpdateRequired: '使用 Desktop SSH 連線前，請更新遠端主機上的 Hermes。',
+      sshErrUnknown: 'SSH 連線失敗。'
     },
     keys: {
       loading: '正在載入 API 金鑰和憑證...',
@@ -977,6 +1040,7 @@ export const zhHant = defineLocale({
     ageSeconds: seconds => `${seconds} 秒前`,
     ageMinutes: minutes => `${minutes} 分鐘前`,
     ageHours: hours => `${hours} 小時前`,
+    ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 詞元`
@@ -1666,6 +1730,7 @@ export const zhHant = defineLocale({
     urlHintPre: '請輸入完整 URL，例如 ',
     attach: '附加',
     queued: count => `${count} 個排隊中`,
+    queuedPaused: count => `${count} 個排隊中 — 已暫停`,
     attachmentOnly: '僅附件回合',
     emptyTurn: '空回合',
     attachments: count => `${count} 個附件`,
@@ -1675,6 +1740,8 @@ export const zhHant = defineLocale({
     queueSendNext: '下一個',
     queueSend: '傳送',
     queueDelete: '刪除',
+    queueResume: '繼續',
+    queueResumeTip: '已被停止操作暫停 — 繼續傳送排隊的回合',
     queueStuckTitle: '佇列訊息未送出',
     queueStuckBody: '佇列中的對話多次傳送失敗。它仍在佇列中，請重試傳送。',
     previewUnavailable: '預覽不可用',
@@ -1953,7 +2020,8 @@ export const zhHant = defineLocale({
     proNeedsSubscription: 'Pro 模型需要付費 Nous 訂閱。',
     free: '免費',
     freeTier: '免費層',
-    priceTitle: '每百萬 Token 的輸入/輸出價格'
+    priceTitle: '每百萬 Token 的輸入/輸出價格',
+    wasPrice: '原價'
   },
 
   modelVisibility: {
@@ -2025,6 +2093,12 @@ export const zhHant = defineLocale({
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `後端 v${version}`,
       clientLabel: version => `用戶端 v${version}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `遠端: ${host}`,
+      connectionCloud: host => `雲端: ${host}`,
+      connectionCloudTooltip: host => `已連線到 Hermes Cloud ${host} · 點擊管理`,
+      connectionSshTooltip: host => `已透過 SSH 連線到 ${host} · 點擊管理`,
+      connectionRemoteTooltip: host => `已連線到遠端後端 ${host} · 點擊管理`,
       backendLabel: version => `後端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
@@ -2222,6 +2296,7 @@ export const zhHant = defineLocale({
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',
     closeAll: '全部關閉',
+    newSessionTab: '新增工作階段分頁',
     split: dir => `向${dir}分割`,
     move: dir => `向${dir}移動`,
     dirUp: '上',
@@ -2312,7 +2387,10 @@ export const zhHant = defineLocale({
       placeholder: '輸入您的答案…',
       skip: '略過',
       skipped: '已略過',
-      continueLabel: '繼續'
+      continueLabel: '繼續',
+      lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
+      lateAnswerTip: '將此回答起草為後續訊息',
+      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
     },
     tool: {
       code: '程式碼',

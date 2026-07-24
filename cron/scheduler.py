@@ -3709,6 +3709,9 @@ def run_job(
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        # Remove the process-wide cron sentinel so it does not leak into
+        # interactive gateway sessions running in the same process (#56771).
+        os.environ.pop("HERMES_CRON_SESSION", None)
         # Release the cwd lock now that the env is restored, so a waiting
         # workdir job (or queued reader) can proceed without seeing the override.
         if _holds_cwd_write:

@@ -8,6 +8,7 @@ export interface UpdaterChild {
 }
 
 export interface SpawnUpdaterProcessDeps {
+  desktopPid?: number
   isWindows?: boolean
   spawnProcess?: (command: string, args: string[], options: SpawnOptions) => UpdaterChild
 }
@@ -24,7 +25,20 @@ export function spawnUpdaterProcess(
   deps: SpawnUpdaterProcessDeps = {}
 ): UpdaterChild {
   const isWindows = deps.isWindows ?? process.platform === 'win32'
-  const spawnOptions = hiddenWindowsChildOptions(options, isWindows) as SpawnOptions
+
+  const desktopPid = deps.desktopPid ?? process.pid
+
+  const handoffOptions = isWindows
+    ? {
+        ...options,
+        env: {
+          ...options.env,
+          HERMES_DESKTOP_PID: String(desktopPid)
+        }
+      }
+    : options
+
+  const spawnOptions = hiddenWindowsChildOptions(handoffOptions, isWindows) as SpawnOptions
 
   const child = deps.spawnProcess
     ? deps.spawnProcess(updater, updaterArgs, spawnOptions)

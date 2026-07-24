@@ -46,6 +46,7 @@ const UPDATE_EXIT_CONCURRENT: i32 = 2;
 /// install tree before giving up and letting `hermes update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
+const DESKTOP_PID_ENV: &str = "HERMES_DESKTOP_PID";
 
 /// Guards against concurrent update runs. The frontend kicks `startUpdate()`
 /// from a mount effect, which can fire more than once (React strict-mode
@@ -198,7 +199,17 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // real progress instead of a frozen first bar.
     let started = Instant::now();
     emit_stage(&app, "handoff", StageState::Running, None, None);
-    wait_for_install_locks_free(&install_root, &app, "handoff").await;
+    if let Err(err) = wait_for_install_locks_free(&install_root, &app, "handoff").await {
+        let message = err.to_string();
+        emit_stage(
+            &app,
+            "handoff",
+            StageState::Failed,
+            Some(started.elapsed().as_millis() as u64),
+            Some(message),
+        );
+        return Err(err);
+    }
     emit_stage(
         &app,
         "handoff",
@@ -481,18 +492,39 @@ async fn run_update(app: AppHandle) -> Result<()> {
 }
 
 /// Poll until the venv shim AND packaged desktop app bundle are no longer locked
-/// (Windows) or a bounded timeout elapses. On non-Windows this is a short fixed
-/// grace since file locking isn't the failure mode there.
-pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHandle, stage: &str) {
+/// and the old desktop PID has exited (Windows) or a bounded timeout elapses.
+/// On non-Windows this is a short fixed grace since file locking isn't the
+/// failure mode there.
+pub(crate) async fn wait_for_install_locks_free(
+    install_root: &Path,
+    app: &AppHandle,
+    stage: &str,
+) -> Result<()> {
     let lock_targets = install_lock_probe_paths(install_root);
+    let desktop_pid = desktop_pid_from_env();
     let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
 
-    emit_log(app, Some(stage), LogStream::Stdout, "[handoff] waiting for Hermes to exit…");
+    if let Some(pid) = desktop_pid {
+        emit_log(
+            app,
+            Some(stage),
+            LogStream::Stdout,
+            &format!("[handoff] waiting for Hermes to exit (desktop PID {pid})…"),
+        );
+    } else {
+        emit_log(
+            app,
+            Some(stage),
+            LogStream::Stdout,
+            "[handoff] waiting for Hermes to exit…",
+        );
+    }
 
     loop {
         let locked = locked_paths(&lock_targets);
-        if locked.is_empty() {
-            return;
+        let desktop_alive = desktop_pid.map(desktop_pid_is_alive).unwrap_or(false);
+        if install_handoff_can_proceed(&locked, desktop_alive) {
+            return Ok(());
         }
         if Instant::now() >= deadline {
             // Last resort: a backend hermes.exe (or the desktop Hermes.exe
@@ -507,14 +539,13 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
                 app,
                 Some(stage),
                 LogStream::Stdout,
-                &format!(
-                    "[handoff] Hermes still holding install files ({}); force-killing stragglers…",
-                    format_locked_paths(&locked)
-                ),
+                &format_handoff_blockers(&locked, desktop_pid, desktop_alive),
             );
             force_kill_other_hermes();
             tokio::time::sleep(Duration::from_millis(800)).await;
             let locked_after_kill = locked_paths(&lock_targets);
+            let desktop_alive_after_kill = desktop_pid.map(desktop_pid_is_alive).unwrap_or(false);
+            ensure_desktop_exited_after_cleanup(desktop_pid, desktop_alive_after_kill)?;
             if locked_after_kill.is_empty() {
                 emit_log(
                     app,
@@ -533,7 +564,7 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
                     ),
                 );
             }
-            return;
+            return Ok(());
         }
         tokio::time::sleep(DESKTOP_EXIT_POLL).await;
     }
@@ -543,6 +574,23 @@ fn install_lock_probe_paths(install_root: &Path) -> Vec<PathBuf> {
     let mut paths = vec![venv_hermes(install_root)];
     paths.extend(desktop_app_payload_paths(install_root));
     paths
+}
+
+fn install_handoff_can_proceed(locked: &[PathBuf], desktop_alive: bool) -> bool {
+    locked.is_empty() && !desktop_alive
+}
+
+fn ensure_desktop_exited_after_cleanup(
+    desktop_pid: Option<u32>,
+    desktop_alive: bool,
+) -> Result<()> {
+    if let Some(pid) = desktop_pid.filter(|_| desktop_alive) {
+        return Err(anyhow!(
+            "Desktop process {pid} is still running after forced cleanup. Close all Hermes windows and retry the update."
+        ));
+    }
+
+    Ok(())
 }
 
 fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
@@ -568,6 +616,69 @@ fn locked_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
 
 fn format_locked_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+}
+
+fn format_handoff_blockers(
+    locked: &[PathBuf],
+    desktop_pid: Option<u32>,
+    desktop_alive: bool,
+) -> String {
+    match (locked.is_empty(), desktop_pid, desktop_alive) {
+        (true, Some(pid), true) => {
+            format!("[handoff] desktop PID {pid} is still alive; force-killing stragglers…")
+        }
+        (false, Some(pid), true) => format!(
+            "[handoff] Hermes still holding install files ({}) and desktop PID {pid} is still alive; force-killing stragglers…",
+            format_locked_paths(locked)
+        ),
+        _ => format!(
+            "[handoff] Hermes still holding install files ({}); force-killing stragglers…",
+            format_locked_paths(locked)
+        ),
+    }
+}
+
+fn desktop_pid_from_env() -> Option<u32> {
+    env::var_os(DESKTOP_PID_ENV)
+        .and_then(|raw| raw.into_string().ok())
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|pid| *pid > 0)
+}
+
+#[cfg(windows)]
+fn desktop_pid_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        );
+        if handle.is_null() {
+            let err = GetLastError();
+            // ERROR_INVALID_PARAMETER is Windows' "PID does not exist" signal.
+            // Any other probe failure means we cannot prove the old GUI exited,
+            // so fail closed and let the updater abort recoverably.
+            return err != ERROR_INVALID_PARAMETER;
+        }
+
+        let wait_result = WaitForSingleObject(handle, 0);
+        CloseHandle(handle);
+        // A signaled process handle is the only positive proof that the PID
+        // exited. WAIT_TIMEOUT and probe failures both stay fail-closed.
+        wait_result != WAIT_OBJECT_0
+    }
+}
+
+#[cfg(not(windows))]
+fn desktop_pid_is_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
@@ -1093,6 +1204,35 @@ mod tests {
         let probes = install_lock_probe_paths(root);
 
         assert!(locked_paths(&probes).is_empty());
+    }
+
+    #[test]
+    fn install_handoff_waits_for_live_desktop_pid_even_when_files_are_free() {
+        assert!(!install_handoff_can_proceed(&[], true));
+    }
+
+    #[test]
+    fn install_handoff_requires_both_free_files_and_a_dead_desktop_pid() {
+        assert!(install_handoff_can_proceed(&[], false));
+        assert!(!install_handoff_can_proceed(
+            &[PathBuf::from("/x/locked")],
+            false
+        ));
+    }
+
+    #[test]
+    fn post_cleanup_rejects_a_live_desktop_pid() {
+        let error = ensure_desktop_exited_after_cleanup(Some(4242), true).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Desktop process 4242 is still running"));
+    }
+
+    #[test]
+    fn post_cleanup_accepts_an_exited_or_missing_desktop_pid() {
+        assert!(ensure_desktop_exited_after_cleanup(Some(4242), false).is_ok());
+        assert!(ensure_desktop_exited_after_cleanup(None, false).is_ok());
     }
 
     #[test]

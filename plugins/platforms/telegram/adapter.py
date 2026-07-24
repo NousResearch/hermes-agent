@@ -833,6 +833,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
+        # Proactive pool maintenance task — periodically drains the general
+        # request pool to prevent CLOSE-WAIT socket accumulation (#70830).
+        self._proactive_maintenance_task: Optional[asyncio.Task] = None
 
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
@@ -2235,6 +2238,71 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] General request re-initialize failed after pool timeout (non-fatal)",
                     self.name, exc_info=True,
                 )
+
+    async def _proactive_pool_maintenance_loop(self) -> None:
+        """Periodically drain the general request pool to prevent CLOSE-WAIT
+        accumulation.
+
+        When Telegram's server closes a connection after responding, the local
+        TCP stack transitions to CLOSE-WAIT, waiting for the application (httpx)
+        to call close(). httpx's keepalive pool holds onto these connections
+        expecting to reuse them, but since the server already closed them they
+        sit in CLOSE-WAIT indefinitely — httpx's keepalive_expiry only affects
+        ESTABLISHED connections, not CLOSE-WAIT.
+
+        This loop runs on a 30s timer and calls shutdown() + initialize() on the
+        general request pool (``_request[1]``), which forces close of all
+        CLOSE-WAIT sockets before the pool can be exhausted.
+
+        Unlike the reactive ``_drain_general_connections_after_pool_timeout``
+        which only fires after httpx throws "All connections in the connection
+        pool are occupied", this runs proactively before the pool reaches
+        capacity.
+        """
+        MAINTENANCE_INTERVAL = 30  # seconds between proactive drains
+        while True:
+            try:
+                await asyncio.sleep(MAINTENANCE_INTERVAL)
+            except asyncio.CancelledError:
+                return
+
+            if getattr(self, "_polling_teardown_started", False):
+                return
+            if self.has_fatal_error:
+                return
+
+            bot = getattr(getattr(self, "_app", None), "bot", None) or getattr(self, "_bot", None)
+            if bot is None:
+                continue
+            try:
+                # PTB 22.x: _request is (get_updates_request, general_request).
+                general_req = bot._request[1]  # noqa: SLF001
+            except Exception:
+                continue
+
+            async with self._get_general_request_drain_lock():
+                try:
+                    await asyncio.wait_for(
+                        general_req.shutdown(), timeout=_DRAIN_TIMEOUT
+                    )
+                except Exception:
+                    logger.debug(
+                        "[%s] Proactive pool shutdown failed/timed out (non-fatal)",
+                        self.name, exc_info=True,
+                    )
+                try:
+                    await asyncio.wait_for(
+                        general_req.initialize(), timeout=_DRAIN_TIMEOUT
+                    )
+                    logger.debug(
+                        "[%s] Proactive pool drain completed (CLOSE-WAIT prevention)",
+                        self.name,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[%s] Proactive pool re-initialize failed/timed out (non-fatal)",
+                        self.name, exc_info=True,
+                    )
 
     def _schedule_polling_recovery(self, error: Exception, *, reason: str) -> None:
         """Schedule polling recovery without failing gateway startup.
@@ -3874,6 +3942,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_heartbeat_task = asyncio.ensure_future(
                     self._polling_heartbeat_loop()
                 )
+
+            # Proactive pool maintenance runs in both webhook and polling modes
+            # — the general request pool (_request[1]) is used for all Bot API
+            # calls (send_message, edit_message_text, etc.) regardless of how
+            # updates are received. Periodic shutdown + initialize forces close
+            # of CLOSE-WAIT sockets created when Telegram's server initiates a
+            # close after responding. Ref: #70830.
+            if self._proactive_maintenance_task and not self._proactive_maintenance_task.done():
+                self._proactive_maintenance_task.cancel()
+            self._proactive_maintenance_task = asyncio.ensure_future(
+                self._proactive_pool_maintenance_loop()
+            )
 
             # Command-menu registration, DM-topic setup, and the status
             # indicator each make Bot API calls that can stall for certain

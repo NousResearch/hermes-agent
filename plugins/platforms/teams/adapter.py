@@ -27,7 +27,8 @@ import html
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote
 
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
@@ -95,6 +96,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_bytes,
     cache_image_from_url,
     cache_media_bytes,
 )
@@ -466,6 +468,14 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
     "smba.infra.gov.teams.microsoft.us",
 })
 
+# A freshly-pasted Teams inline image briefly returns 401/403 from the Bot
+# Connector: at the instant the message is delivered the bot is not yet
+# authorized to read the just-created attachment, and it becomes readable a few
+# seconds later (observed in prod). Without a retry the transient window drops a
+# valid image permanently, so we re-GET with backoff. Worst case ~15s across 5
+# attempts; steady-state the first attempt succeeds.
+_IMAGE_FETCH_RETRY_DELAYS = (0.0, 1.0, 2.0, 4.0, 8.0)
+
 # Conservative pattern for Bot Framework conversation IDs.  Real values
 # combine digits, colons, hyphens, dots, '@', and the ``thread.skype`` /
 # ``thread.tacv2`` suffixes; reject anything outside this set so a hostile
@@ -495,6 +505,56 @@ def _validate_teams_service_url(raw: str) -> Optional[str]:
         return None
     normalized = raw if raw.endswith("/") else raw + "/"
     return normalized
+
+
+async def _mint_bot_connector_token(
+    *,
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    timeout: float = 15.0,
+) -> Tuple[str, int]:
+    """Mint a Bot Framework Connector bearer token (client_credentials).
+
+    Returns ``(access_token, expires_in_seconds)``; raises ``RuntimeError`` on
+    any failure.  The token has audience ``https://api.botframework.com`` and
+    is used both to POST outbound activities and to fetch token-gated inbound
+    attachment URLs (pasted inline images) on ``smba.trafficmanager.net``.
+    Single shared minter so the standalone-send and inbound-image-fetch paths
+    stay in lock-step (same tenant endpoint, scope, and failure handling).
+    """
+    if not (tenant_id and client_id and client_secret):
+        raise RuntimeError("missing Teams client credentials")
+    # A malformed tenant must never be interpolated into the STS URL (mirrors
+    # the guard _standalone_send applies), so both mint paths stay in lock-step.
+    if not _TEAMS_CONV_ID_RE.match(tenant_id):
+        raise RuntimeError("Teams tenant_id has unexpected characters")
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    import httpx
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://api.botframework.com/.default",
+            },
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"token request failed ({resp.status_code}): {resp.text[:200]}"
+        )
+    payload = resp.json()
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise RuntimeError("token response missing access_token")
+    try:
+        expires_in = int(payload.get("expires_in", 3600) or 3600)
+    except (TypeError, ValueError):
+        expires_in = 3600
+    return access_token, expires_in
 
 
 async def _standalone_send(
@@ -558,38 +618,26 @@ async def _standalone_send(
     if not _TEAMS_CONV_ID_RE.match(tenant_id):
         return {"error": "Teams standalone send: TEAMS_TENANT_ID contains characters outside the expected set"}
 
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
 
     if not AIOHTTP_AVAILABLE:
         return {"error": "Teams standalone send: aiohttp not installed"}
 
     try:
+        access_token, _ = await _mint_bot_connector_token(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    except Exception as e:
+        return {"error": f"Teams standalone send: {e}"}
+
+    try:
         import aiohttp as _aiohttp
 
-        # Per-request timeouts so a slow STS endpoint cannot starve the
-        # subsequent activity POST of its budget.
+        # Per-request timeout so a slow Connector cannot hang the send.
         per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
         async with _aiohttp.ClientSession(trust_env=True) as session:
-            async with session.post(
-                token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "scope": "https://api.botframework.com/.default",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=per_request_timeout,
-            ) as token_resp:
-                if token_resp.status >= 400:
-                    body = await token_resp.text()
-                    return {"error": f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}"}
-                token_payload = await token_resp.json()
-            access_token = token_payload.get("access_token")
-            if not access_token:
-                return {"error": "Teams standalone send: token response missing access_token"}
-
             activity = {
                 "type": "message",
                 "text": message,
@@ -711,6 +759,11 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        # Cached Bot Connector bearer (audience api.botframework.com), reused to
+        # fetch token-gated inbound image attachments. Refreshed before expiry.
+        self._bot_token: Optional[str] = None
+        self._bot_token_expiry: float = 0.0
+        self._bot_token_lock = asyncio.Lock()
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -803,6 +856,125 @@ class TeamsAdapter(BasePlatformAdapter):
         self._app = None
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
+
+    async def _acquire_bot_connector_token(self) -> Optional[str]:
+        """Return a cached Bot Connector bearer, minting one if needed.
+
+        Returns ``None`` (rather than raising) when credentials are missing or
+        the STS call fails, so the image fetch can fall back gracefully instead
+        of dropping the turn.  The token is cached until ~60s before its
+        advertised expiry.
+        """
+        now = time.monotonic()
+        if self._bot_token and now < self._bot_token_expiry:
+            return self._bot_token
+        if not (self._client_id and self._client_secret and self._tenant_id):
+            return None
+        async with self._bot_token_lock:
+            # Re-check under the lock: a concurrent caller may have minted so a
+            # burst of pasted images shares a single STS round-trip.
+            now = time.monotonic()
+            if self._bot_token and now < self._bot_token_expiry:
+                return self._bot_token
+            try:
+                token, expires_in = await _mint_bot_connector_token(
+                    tenant_id=self._tenant_id,
+                    client_id=self._client_id,
+                    client_secret=self._client_secret,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[teams] Failed to acquire Bot Connector token: %s", e
+                )
+                return None
+            # Refresh a minute early to avoid racing the expiry on a slow fetch.
+            self._bot_token = token
+            self._bot_token_expiry = now + max(0.0, expires_in - 60)
+            return token
+
+    async def _fetch_teams_image_bytes(self, url: str, timeout: float = 30.0) -> bytes:
+        """Fetch inline-image bytes, authenticating to the Bot Connector.
+
+        Unlike file uploads (pre-signed SharePoint ``downloadUrl``), a pasted
+        inline image arrives as a token-gated Bot Framework attachment URL on
+        ``smba.trafficmanager.net`` (``contentType image/*``, no ``downloadUrl``).
+        Fetching it requires the bot's ``api.botframework.com`` bearer — an
+        anonymous GET returns 401, which is why such images were previously
+        dropped.  The bearer is attached ONLY for known Bot Framework hosts so
+        a tampered ``contentUrl`` cannot exfiltrate the token to an arbitrary
+        origin.  ``data:`` URIs are decoded inline (no network).
+        """
+        if url.startswith("data:"):
+            import base64
+            import binascii
+
+            header, _, b64 = url.partition(",")
+            if ";base64" not in header:
+                raise ValueError("unsupported non-base64 data: image URI")
+            try:
+                return base64.b64decode(b64, validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise ValueError(f"invalid data: image URI: {e}")
+
+        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import (
+            _read_httpx_body_with_limit,
+            _ssrf_redirect_guard,
+        )
+
+        if not is_safe_url(url):
+            raise ValueError("Blocked unsafe image URL (SSRF protection)")
+
+        from urllib.parse import urlparse
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+            "Accept": "image/*",
+        }
+        # Attach the bot bearer ONLY for Bot Framework hosts — never leak it to
+        # an arbitrary origin a hostile contentUrl might point at.
+        bearer_attached = False
+        if (urlparse(url).hostname or "") in _ALLOWED_TEAMS_SERVICE_HOSTS:
+            token = await self._acquire_bot_connector_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                bearer_attached = True
+
+        import httpx
+
+        delays = _IMAGE_FETCH_RETRY_DELAYS
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
+            for attempt, delay in enumerate(delays):
+                if delay:
+                    await asyncio.sleep(delay)
+                async with client.stream("GET", url, headers=headers) as response:
+                    if response.status_code < 400:
+                        # Bounded streaming read: an oversized body is rejected
+                        # mid-stream instead of buffered whole via .content.
+                        return await _read_httpx_body_with_limit(
+                            response, media_type="image"
+                        )
+                    # Transient auth window on a freshly-pasted attachment
+                    # (401/403 only worth retrying when we actually
+                    # authenticated), plus the usual rate-limit / server-error
+                    # retryables.
+                    retryable = (
+                        (bearer_attached and response.status_code in (401, 403))
+                        or response.status_code in (408, 429)
+                        or response.status_code >= 500
+                    )
+                    if not retryable or attempt == len(delays) - 1:
+                        response.raise_for_status()
+                    logger.info(
+                        "[teams] image fetch got HTTP %s (attempt %d/%d), retrying",
+                        response.status_code, attempt + 1, len(delays),
+                    )
+        # The loop always returns bytes or raises; this is unreachable.
+        raise RuntimeError("image fetch retry loop exited without result")
 
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection.
@@ -929,14 +1101,34 @@ class TeamsAdapter(BasePlatformAdapter):
                 continue
 
             if content_url and content_type.startswith("image/"):
+                # Pasted inline images are token-gated Bot Connector URLs and
+                # need the bot bearer (see _fetch_teams_image_bytes); fetch the
+                # bytes ourselves and cache to a local path so run.py's native
+                # image pipeline (which keys off local file paths) can attach
+                # them. Falls back to the anonymous URL cache for the rare
+                # public/pre-authed image URL.
+                subtype = content_type.split("/", 1)[-1].split(";", 1)[0].strip()
+                ext = f".{subtype}" if subtype.isalnum() else ".jpg"
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    data = await self._fetch_teams_image_bytes(content_url)
+                    cached = cache_image_from_bytes(data, ext=ext)
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)
                         media_kinds.append("image")
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
+                    try:
+                        cached = await cache_image_from_url(content_url)
+                        if cached:
+                            media_urls.append(cached)
+                            media_types.append(content_type)
+                            media_kinds.append("image")
+                    except Exception as e2:
+                        logger.warning(
+                            "[teams] Anonymous fallback for image attachment also failed: %s",
+                            e2,
+                        )
                 continue
 
             if content_url:

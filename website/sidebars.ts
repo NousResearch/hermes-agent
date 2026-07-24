@@ -248,7 +248,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/media/media-gif-search',
-                    'user-guide/skills/bundled/media/media-heartmula',
                     'user-guide/skills/bundled/media/media-songsee',
                     'user-guide/skills/bundled/media/media-youtube-content',
                   ],
@@ -259,7 +258,6 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-mlops',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/mlops/mlops-models-audiocraft',
                     'user-guide/skills/bundled/mlops/mlops-huggingface-hub',
                     'user-guide/skills/bundled/mlops/mlops-inference-llama-cpp',
                     'user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness',
@@ -400,11 +398,13 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-creative',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/creative/creative-audiocraft',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
                     'user-guide/skills/optional/creative/creative-blender-mcp',
                     'user-guide/skills/optional/creative/creative-concept-diagrams',
                     'user-guide/skills/optional/creative/creative-creative-ideation',
+                    'user-guide/skills/optional/creative/creative-heartmula',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',

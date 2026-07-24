@@ -1,33 +1,17 @@
 ---
-title: "Audiocraft Audio Generation — AudioCraft: MusicGen text-to-music, AudioGen text-to-sound"
-sidebar_label: "Audiocraft Audio Generation"
-description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound"
+name: audiocraft-audio-generation
+description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound."
+version: 1.0.0
+author: Orchestra Research
+license: MIT
+dependencies: [audiocraft, torch>=2.0.0, transformers>=4.30.0]
+platforms: [linux, macos]
+metadata:
+  hermes:
+    tags: [Multimodal, Audio Generation, Text-to-Music, Text-to-Audio, MusicGen]
+    related_skills: [heartmula, songwriting-and-ai-music]
+
 ---
-
-{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
-
-# Audiocraft Audio Generation
-
-AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
-
-## Skill metadata
-
-| | |
-|---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/mlops/models/audiocraft` |
-| Version | `1.0.0` |
-| Author | Orchestra Research |
-| License | MIT |
-| Dependencies | `audiocraft`, `torch>=2.0.0`, `transformers>=4.30.0` |
-| Platforms | linux, macos |
-| Tags | `Multimodal`, `Audio Generation`, `Text-to-Music`, `Text-to-Audio`, `MusicGen` |
-
-## Reference: full SKILL.md
-
-:::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
-:::
 
 # AudioCraft: Audio Generation
 
@@ -147,7 +131,6 @@ torchaudio.save("sound.wav", wav[0].cpu(), sample_rate=16000)
 
 ### Architecture overview
 
-<!-- ascii-guard-ignore -->
 ```
 AudioCraft Architecture:
 ┌──────────────────────────────────────────────────────────────┐
@@ -167,7 +150,6 @@ AudioCraft Architecture:
 │        Converts tokens back to audio waveform                 │
 └──────────────────────────────────────────────────────────────┘
 ```
-<!-- ascii-guard-ignore-end -->
 
 ### Model variants
 
@@ -575,8 +557,8 @@ for desc in descriptions:
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/audiocraft/references/advanced-usage.md)** - Training, fine-tuning, deployment
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/audiocraft/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](references/advanced-usage.md)** - Training, fine-tuning, deployment
+- **[Troubleshooting](references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

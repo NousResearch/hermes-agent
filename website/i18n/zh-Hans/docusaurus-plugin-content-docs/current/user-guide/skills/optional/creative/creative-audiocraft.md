@@ -14,14 +14,15 @@ AudioCraft：MusicGen 文本转音乐，AudioGen 文本转声音。
 
 | | |
 |---|---|
-| 来源 | 内置（默认安装） |
-| 路径 | `skills/mlops/models/audiocraft` |
+| 来源 | 可选 — 通过 `hermes skills install official/creative/audiocraft` 安装 |
+| 路径 | `optional-skills/creative/audiocraft` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
 | 许可证 | MIT |
 | 依赖 | `audiocraft`, `torch>=2.0.0`, `transformers>=4.30.0` |
 | 平台 | linux, macos |
 | 标签 | `Multimodal`, `Audio Generation`, `Text-to-Music`, `Text-to-Audio`, `MusicGen` |
+| 相关 skill | [`heartmula`](/user-guide/skills/optional/creative/creative-heartmula), [`songwriting-and-ai-music`](/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
 
 ## 参考：完整 SKILL.md
 

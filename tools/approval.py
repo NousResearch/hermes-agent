@@ -621,9 +621,20 @@ DANGEROUS_PATTERNS = [
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
+    # Windows analogue of `chmod 777`: `icacls <path> /grant Everyone:(F)` makes
+    # a file world-writable. Match the Everyone group name or its well-known SID
+    # (S-1-1-0) followed by an (F)ull-control grant, so a narrower grant to a
+    # specific principal is not swept in.
+    (r'\bicacls\b.*(?:everyone|s-1-1-0)\s*:\s*\(?[a-z()]*f\)?', "grant Everyone full control (icacls)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
+    # Windows analogues of `mkfs`: `Format-Volume` (PowerShell cmdlet) and
+    # `diskpart` (partition tool) both destroy a volume's contents. Bare
+    # `format` is deliberately NOT matched — it collides with `git
+    # format-patch`, `str.format`, `xxd`-style output, etc. — but these two
+    # tokens are unambiguous.
+    (r'\b(?:format-volume|diskpart)\b', "format/repartition Windows volume"),
     (r'\bdd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
@@ -642,11 +653,22 @@ DANGEROUS_PATTERNS = [
     (r'\bkillall\s+(-[^\s]*\s+)*-(9|KILL|SIGKILL)\b', "force kill processes (killall -KILL)"),
     (r'\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b', "force kill processes (killall -s KILL)"),
     (r'\bkillall\s+(-[^\s]*\s+)*-r\b', "kill processes by regex (killall -r)"),
+    # Windows analogue of `pkill -9` / `kill -9 -1`: `taskkill /F` and
+    # `Stop-Process -Force` send an unconditional kill. Require the force flag
+    # so a graceful `Stop-Process -Name x` (which the target can still catch)
+    # is left to auto-approve.
+    (r'\b(?:taskkill|stop-process)\b.*(?:/f\b|-force\b)', "force-kill Windows process"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(). A regex
     # that merely searched a dash-token for "c" also matched --norc,
     # --rcfile, and --restricted.
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
+    # Windows analogue of `curl … | sh`: `iwr https://x | iex` (Invoke-WebRequest
+    # piped to Invoke-Expression) fetches and runs remote code with no local
+    # trace. `curl`/`wget` are PowerShell aliases for Invoke-WebRequest, so a
+    # `curl … | iex` pipeline is the same RCE. A plain `iwr … -OutFile x`
+    # download (no pipe into iex) is not matched.
+    (r'\b(?:iwr|invoke-webrequest|curl|wget)\b.*\|\s*(?:iex|invoke-expression)\b', "pipe remote content to PowerShell (iwr|iex)"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # Remote content executed via command substitution: eval/source/. $(curl ...)
     # or `wget ...`. Equivalent to piping remote content to a shell.

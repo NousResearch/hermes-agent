@@ -977,18 +977,40 @@ class GatewaySlashCommandsMixin:
         return await self._resume_target_allowed(source, sid, allow_override=False)
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
-        """Handle /agents command - list active agents and running tasks."""
+        """Handle /agents command - list active agents and running tasks.
+
+        Default scope is the caller's current gateway session only (same
+        privacy boundary as ``/resume`` / ``/sessions``). An explicit admin
+        ``--all`` override reveals every in-flight session and process.
+        Process-global async job counts have no session attribution, so they
+        are only shown under that admin override. Matrix replies redact
+        session keys the same way ``/status`` does.
+        """
         from gateway.run import _AGENT_PENDING_SENTINEL
         from tools.process_registry import format_uptime_short, process_registry
 
+        source = event.source
         now = time.time()
-        current_session_key = self._session_key_for_source(event.source)
+        current_session_key = self._session_key_for_source(source)
+
+        raw_args = event.get_command_args().strip()
+        try:
+            parts = shlex.split(raw_args) if raw_args else []
+        except ValueError:
+            parts = raw_args.split()
+        allow_all = "--all" in parts
+        # Same gate as /resume --all and /sessions all: require a real
+        # configured slash admin. Non-admins (and --all without admin) stay
+        # scoped to the caller's own session_key.
+        show_all = allow_all and self._resume_caller_is_admin(source)
 
         running_agents: dict = getattr(self, "_running_agents", {}) or {}
         running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
 
         agent_rows: list[dict] = []
-        for session_key, agent in running_agents.items():
+        for session_key, agent in list(running_agents.items()):
+            if not show_all and session_key != current_session_key:
+                continue
             started = float(running_started.get(session_key, now))
             elapsed = max(0, int(now - started))
             is_pending = agent is _AGENT_PENDING_SENTINEL
@@ -1006,17 +1028,28 @@ class GatewaySlashCommandsMixin:
 
         running_processes: list[dict] = []
         try:
+            if show_all:
+                candidates = process_registry.list_sessions()
+            else:
+                candidates = process_registry.list_sessions(
+                    session_key=current_session_key
+                )
             running_processes = [
-                p for p in process_registry.list_sessions()
-                if p.get("status") == "running"
+                p for p in candidates if p.get("status") == "running"
             ]
         except Exception:
             running_processes = []
 
-        background_tasks = [
-            t for t in (getattr(self, "_background_tasks", set()) or set())
-            if hasattr(t, "done") and not t.done()
-        ]
+        # GatewayRunner._background_tasks is process-global with no per-session
+        # owner. Exposing the count (or listing) to any caller is a cross-session
+        # side-channel — only admins with --all may see it.
+        background_tasks: list = []
+        if show_all:
+            background_tasks = [
+                task
+                for task in (getattr(self, "_background_tasks", set()) or set())
+                if hasattr(task, "done") and not task.done()
+            ]
 
         lines = [
             t("gateway.agents.header"),
@@ -1029,8 +1062,16 @@ class GatewaySlashCommandsMixin:
                 current = t("gateway.agents.this_chat") if row["session_key"] == current_session_key else ""
                 sid = f" · `{row['session_id']}`" if row["session_id"] else ""
                 model = f" · `{row['model']}`" if row["model"] else ""
+                display_key = row["session_key"]
+                # Redact Matrix keys even when the caller is on another platform
+                # (admin --all can list cross-platform rows into a shared chat).
+                key_parts = str(display_key).split(":")
+                if source.platform == Platform.MATRIX or (
+                    len(key_parts) >= 3 and key_parts[2] == "matrix"
+                ):
+                    display_key = self._redact_matrix_session_key(display_key)
                 lines.append(
-                    f"{idx}. `{row['session_key']}` · {row['state']} · "
+                    f"{idx}. `{display_key}` · {row['state']} · "
                     f"{format_uptime_short(row['elapsed'])}{sid}{model}{current}"
                 )
             if len(agent_rows) > 12:
@@ -1054,12 +1095,13 @@ class GatewaySlashCommandsMixin:
             if len(running_processes) > 12:
                 lines.append(t("gateway.agents.more", count=len(running_processes) - 12))
 
-        lines.extend(
-            [
-                "",
-                t("gateway.agents.async_jobs", count=len(background_tasks)),
-            ]
-        )
+        if show_all:
+            lines.extend(
+                [
+                    "",
+                    t("gateway.agents.async_jobs", count=len(background_tasks)),
+                ]
+            )
 
         if not agent_rows and not running_processes and not background_tasks:
             lines.append("")

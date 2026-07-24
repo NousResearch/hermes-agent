@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shopify Store Translator"
+  short_description: "Translate Shopify resources with locale checks, review artifacts, and approval-based writes"
+  default_prompt: "Use $shopify-store-translator to check locale and market setup, prepare review artifacts for this target language, and write approved translations only after confirmation."

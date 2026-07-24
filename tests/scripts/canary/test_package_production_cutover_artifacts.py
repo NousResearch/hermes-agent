@@ -1999,6 +1999,11 @@ def test_database_apply_bootstraps_exact_roles_before_legacy_reconcile(
     )
     monkeypatch.setattr(
         runtime,
+        "_bootstrap_writer_login",
+        lambda _plan: executed.append("writer-login-bootstrap"),
+    )
+    monkeypatch.setattr(
+        runtime,
         "_legacy_truth_decision_sql",
         lambda _plan: "legacy-truth-sql",
     )
@@ -2023,9 +2028,147 @@ def test_database_apply_bootstraps_exact_roles_before_legacy_reconcile(
     assert "REVOKE ALL ON SCHEMA public FROM PUBLIC" in executed[0]
     assert "GRANT USAGE ON SCHEMA public TO canonical_brain_migration_owner" in executed[0]
     assert "PASSWORD" not in executed[0]
-    assert runtime.LEGACY_RECONCILE_SQL in executed[1]
-    assert runtime.WRITER_MIGRATION_SQL in executed[2]
-    assert executed[3:] == ["legacy-truth-sql", "membership-sql"]
+    login_contract = executed[0].split(
+        "WHERE rolname = 'muncho_production_writer_login'",
+        2,
+    )[2]
+    assert "AND rolinherit" in login_contract
+    assert "AND NOT rolcanlogin" not in login_contract.split(") THEN", 1)[0]
+    assert executed[1] == "writer-login-bootstrap"
+    assert runtime.LEGACY_RECONCILE_SQL in executed[2]
+    assert runtime.WRITER_MIGRATION_SQL in executed[3]
+    assert executed[4:] == ["legacy-truth-sql", "membership-sql"]
+
+
+def test_production_writer_credential_is_create_only_and_replay_safe(
+    tmp_path,
+    monkeypatch,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    runtime = _load_artifact(
+        Path(manifest["artifacts"]["production-database-apply"]["path"]),
+        "production_writer_credential_store_artifact",
+    )
+    credential = tmp_path / "credentials" / "canonical-writer-db-password"
+    credential.parent.mkdir(mode=0o755)
+    monkeypatch.setattr(runtime, "WRITER_DATABASE_CREDENTIAL", credential)
+    monkeypatch.setattr(
+        runtime,
+        "_writer_credential_identity",
+        lambda _plan: (os.geteuid(), os.getegid()),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_prepare_writer_credential_directory",
+        lambda: None,
+    )
+    plan = {"plan_sha256": "f" * 64}
+
+    first = runtime._ensure_writer_database_credential(plan, create=True)
+    first_value = bytes(first)
+    assert len(first_value) == 64
+    assert runtime.WRITER_DATABASE_SECRET.fullmatch(first_value)
+    observed = credential.lstat()
+    assert stat.S_IMODE(observed.st_mode) == 0o400
+    assert observed.st_uid == os.geteuid()
+    assert observed.st_gid == os.getegid()
+    assert observed.st_nlink == 1
+
+    second = runtime._ensure_writer_database_credential(plan, create=True)
+    assert bytes(second) == first_value
+    assert credential.read_bytes() == first_value
+
+    stage = runtime._writer_secret_stage_path(plan)
+    os.link(credential, stage)
+    assert credential.lstat().st_nlink == 2
+    recovered = runtime._ensure_writer_database_credential(plan, create=True)
+    assert bytes(recovered) == first_value
+    assert not stage.exists()
+    assert credential.lstat().st_nlink == 1
+
+    first[:] = b"\x00" * len(first)
+    second[:] = b"\x00" * len(second)
+    recovered[:] = b"\x00" * len(recovered)
+
+
+def test_production_writer_password_uses_only_psql_copy_stdin(
+    tmp_path,
+    monkeypatch,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    runtime = _load_artifact(
+        Path(manifest["artifacts"]["production-database-apply"]["path"]),
+        "production_writer_password_copy_artifact",
+    )
+    plan = _cutover_plan("f" * 64)
+    password = bytearray(b"A" * 64)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        runtime,
+        "_postgres_env",
+        lambda _plan: {
+            "PATH": "/usr/bin:/bin",
+            "PGPASSFILE": "/root/pgpass",
+        },
+    )
+
+    def run(arguments, **kwargs):
+        captured["arguments"] = tuple(arguments)
+        captured["environment"] = dict(kwargs["env"])
+        captured["stdin"] = bytes(kwargs["input"])
+        return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    runtime._run_writer_password_copy(plan, password)
+
+    stdin = captured["stdin"]
+    assert isinstance(stdin, bytes)
+    assert stdin.count(bytes(password)) == 1
+    assert runtime.PRODUCTION_WRITER_PASSWORD_COPY_SQL.encode() in stdin
+    assert b"\\.\n" in stdin
+    assert b"'legacy_event_owner'" in stdin
+    assert bytes(password) not in repr(captured["arguments"]).encode()
+    assert bytes(password) not in repr(captured["environment"]).encode()
+    assert bytes(password) not in runtime.PRODUCTION_WRITER_PASSWORD_SETUP_SQL.encode()
+    assert bytes(password) not in runtime.PRODUCTION_WRITER_PASSWORD_APPLY_SQL.encode()
+    assert bytes(password) not in runtime.PRODUCTION_WRITER_PASSWORD_CLEANUP_SQL.encode()
+
+
+def test_production_writer_login_bootstrap_zeroizes_password(
+    tmp_path,
+    monkeypatch,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    runtime = _load_artifact(
+        Path(manifest["artifacts"]["production-database-apply"]["path"]),
+        "production_writer_password_zeroize_artifact",
+    )
+    secret = bytearray(b"B" * 64)
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_writer_database_credential",
+        lambda _plan, *, create: secret,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_run_writer_password_copy",
+        lambda _plan, password: (
+            password == bytearray(b"B" * 64)
+        ) or pytest.fail("password was cleared before CopyData"),
+    )
+
+    runtime._bootstrap_writer_login({"plan_sha256": "f" * 64})
+    assert secret == bytearray(64)
 
 
 def test_legacy_truth_modes_are_exact_and_selected_continuity_is_mechanical(

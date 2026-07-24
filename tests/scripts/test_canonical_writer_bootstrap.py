@@ -905,6 +905,90 @@ def test_writer_runtime_readiness_binds_socket_process_and_systemd_status(
     assert notifications[0][1] == {"ready": True}
 
 
+def test_startup_readiness_selects_production_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway import canonical_writer_phase_b_runtime as canary_readiness
+    from gateway import canonical_writer_production_readiness as production_readiness
+
+    config = object()
+    receipt = {"schema": "production"}
+    calls = []
+    monkeypatch.setattr(
+        production_readiness,
+        "validate_fixed_production_phase_b_readiness",
+        lambda supplied, **kwargs: (
+            calls.append((supplied, kwargs)) or receipt
+        ),
+    )
+    monkeypatch.setattr(
+        canary_readiness,
+        "validate_fixed_phase_b_runtime_readiness",
+        lambda: pytest.fail("canary validator must not run"),
+    )
+
+    observed = writer_bootstrap._validate_startup_phase_b_readiness(
+        config,
+        production_release_revision="3" * 40,
+        production_phase_b_receipt=(
+            "/var/lib/muncho/canonical-writer-phase-b/"
+            "runtime-receipt.json"
+        ),
+    )
+
+    assert observed == receipt
+    assert calls == [
+        (
+            config,
+            {
+                "release_revision": "3" * 40,
+                "receipt_path": (
+                    "/var/lib/muncho/canonical-writer-phase-b/"
+                    "runtime-receipt.json"
+                ),
+            },
+        )
+    ]
+
+
+def test_startup_readiness_preserves_canary_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway import canonical_writer_phase_b_runtime as canary_readiness
+
+    receipt = {"schema": "canary"}
+    monkeypatch.setattr(
+        canary_readiness,
+        "validate_fixed_phase_b_runtime_readiness",
+        lambda: receipt,
+    )
+
+    assert writer_bootstrap._validate_startup_phase_b_readiness(
+        object(),
+        production_release_revision=None,
+        production_phase_b_receipt=None,
+    ) == receipt
+
+
+@pytest.mark.parametrize(
+    ("revision", "receipt"),
+    (
+        ("3" * 40, None),
+        (None, "/var/lib/muncho/receipt.json"),
+    ),
+)
+def test_startup_readiness_requires_paired_production_arguments(
+    revision: str | None,
+    receipt: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="requires paired release and receipt"):
+        writer_bootstrap._validate_startup_phase_b_readiness(
+            object(),
+            production_release_revision=revision,
+            production_phase_b_receipt=receipt,
+        )
+
+
 def _snapshot_backend(tmp_path, monkeypatch, pages):
     config = _load(_write_config(tmp_path, _config_value(tmp_path)))
     sessions = []

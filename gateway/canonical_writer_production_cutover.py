@@ -188,6 +188,7 @@ LEGACY_API_BEARER_PATH = Path("/etc/muncho/keys/api-server-control.key")
 PRODUCTION_RELEASE_BASE = Path(
     "/opt/adventico-ai-platform/hermes-agent-releases"
 )
+PHASE_B_RECEIPT_DIRECTORY_MODE = 0o755
 SYSTEMCTL = "/usr/bin/systemctl"
 OPERATIONAL_EDGE_UNITS = frozenset(
     operational_edge_service_unit(domain)
@@ -8458,7 +8459,13 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
             plan=plan,
             artifact_name="database_postflight",
         )
-        activation._ensure_root_directory(PHASE_B_RECEIPT_PATH.parent)
+        # The receipt is deliberately secret-free and mode 0444.  Keep its
+        # root-owned parent traversable so the non-root writer can consume the
+        # fixed preflight without gaining write authority over the directory.
+        activation._ensure_root_directory(
+            PHASE_B_RECEIPT_PATH.parent,
+            mode=PHASE_B_RECEIPT_DIRECTORY_MODE,
+        )
         payload = _canonical_bytes(receipt)
         activation._install_exact_bytes(
             PHASE_B_RECEIPT_PATH,

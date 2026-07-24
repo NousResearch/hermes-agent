@@ -370,13 +370,9 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   return (
     <Panel onClose={onClose}>
       {!data ? (
-        <>
-          <PanelHeader subtitle={w.hint} title={w.subscriptions(0)} />
-          <PageLoader label={w.loading} />
-        </>
+        <PageLoader label={w.loading} />
       ) : subscriptions.length === 0 ? (
         <>
-          <PanelHeader actions={headerActions} subtitle={w.hint} title={w.subscriptions(0)} />
           {banners}
           <PanelEmpty
             action={

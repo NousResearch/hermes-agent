@@ -270,18 +270,20 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
 def get_vertex_config(
     credentials_path: Optional[str] = None,
     region: Optional[str] = None,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve (access_token_or_api_key, base_url) for Vertex AI.
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve (access_token_or_api_key, base_url, auth_header_type) for Vertex AI.
 
     Two authentication paths, chosen automatically:
 
     1. **API Key (Express Mode)** — if ``GOOGLE_VERTEX_API_KEY`` is set.
-       Returns (api_key, base_url_with_project). No ``google-auth`` needed.
+       Returns (api_key, base_url_with_project, ``"x-goog-api-key"``).
+       No ``google-auth`` needed. The caller must set the returned header
+       name (not ``Authorization: Bearer``) on each request.
 
-    2. **OAuth2 / ADC** — legacy path. Returns (oauth2_token, base_url).
+    2. **OAuth2 / ADC** — legacy path. Returns (oauth2_token, base_url, ``"Authorization"``).
        Requires ``google-auth`` and valid GCP credentials.
 
-    Returns (None, None) when no credentials can be resolved.
+    Returns (None, None, None) when no credentials can be resolved.
     """
     # --- Path 1: API Key (Express Mode) ---
     api_key = resolve_vertex_api_key()
@@ -292,23 +294,23 @@ def get_vertex_config(
                 "Vertex API key found but no project ID configured. "
                 "Set GOOGLE_VERTEX_PROJECT in ~/.hermes/.env."
             )
-            return None, None
+            return None, None, None
         effective_region = _resolve_region(region)
         base_url = build_vertex_api_key_base_url(project_id, effective_region)
         logger.debug(
             "get_vertex_config: using API key (Express Mode) for project %s in %s",
             project_id, effective_region,
         )
-        return api_key, base_url
+        return api_key, base_url, "x-goog-api-key"
 
     # --- Path 2: OAuth2 / ADC (legacy) ---
     token, project_id = get_vertex_credentials(credentials_path)
     if not token or not project_id:
-        return None, None
+        return None, None, None
 
     effective_region = _resolve_region(region)
     base_url = build_vertex_base_url(project_id, effective_region)
-    return token, base_url
+    return token, base_url, "Authorization"
 
 
 def has_vertex_credentials() -> bool:

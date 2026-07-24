@@ -70,7 +70,9 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
 def vertex_adapter(monkeypatch):
     """Fresh vertex_adapter with a fake google-auth and clean caches/env."""
     for var in ("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS",
-                "VERTEX_PROJECT_ID", "VERTEX_REGION", "GOOGLE_CLOUD_PROJECT"):
+                "VERTEX_PROJECT_ID", "VERTEX_REGION", "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_VERTEX_API_KEY", "GOOGLE_VERTEX_PROJECT",
+                "GOOGLE_VERTEX_LOCATION"):
         monkeypatch.delenv(var, raising=False)
     _install_fake_google_auth(monkeypatch)
     import agent.vertex_adapter as va
@@ -98,8 +100,9 @@ def test_build_base_url_regional(vertex_adapter):
 
 
 def test_get_vertex_config_uses_adc_and_default_region(vertex_adapter):
-    token, base = vertex_adapter.get_vertex_config()
+    token, base, auth_hdr = vertex_adapter.get_vertex_config()
     assert token == "ya29.FAKE"
+    assert auth_hdr == "Authorization"
     assert base == (
         "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/adc-project/"
         "locations/us-central1/endpoints/openapi"
@@ -111,8 +114,9 @@ def test_config_yaml_supplies_project_and_region(vertex_adapter, monkeypatch):
         vertex_adapter, "_vertex_config",
         lambda: {"project_id": "cfg-project", "region": "europe-west4"},
     )
-    token, base = vertex_adapter.get_vertex_config()
+    token, base, auth_hdr = vertex_adapter.get_vertex_config()
     assert token == "ya29.FAKE"
+    assert auth_hdr == "Authorization"
     assert "projects/cfg-project" in base
     assert "europe-west4-aiplatform.googleapis.com" in base
     assert "locations/europe-west4" in base
@@ -207,14 +211,17 @@ def test_adc_refuses_foreign_profile_google_application_credentials(
 def test_adc_still_works_when_not_multiplexed(vertex_adapter):
     """Single-profile (non-gateway) installs must see zero behavior change:
     ADC still resolves normally when multiplexing is off, scope or not."""
-    token, base = vertex_adapter.get_vertex_config()
+    token, base, auth_hdr = vertex_adapter.get_vertex_config()
     assert token == "ya29.FAKE"
+    assert auth_hdr == "Authorization"
     assert "adc-project" in base
 
 
 def test_adc_failure_falls_back_to_service_account(monkeypatch, tmp_path):
     """When ADC refresh fails but a service-account JSON exists, use the SA."""
-    for var in ("VERTEX_PROJECT_ID", "VERTEX_REGION", "GOOGLE_CLOUD_PROJECT"):
+    for var in ("VERTEX_PROJECT_ID", "VERTEX_REGION", "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_API_KEY",
+                "GOOGLE_VERTEX_LOCATION"):
         monkeypatch.delenv(var, raising=False)
     sa_file = tmp_path / "sa.json"
     sa_file.write_text('{"project_id": "sa-project"}')
@@ -285,13 +292,14 @@ def test_build_vertex_api_key_base_url_europe(vertex_adapter):
 
 
 def test_get_vertex_config_with_api_key(vertex_adapter, monkeypatch):
-    """get_vertex_config returns (api_key, base_url) when API key is set."""
+    """get_vertex_config returns (api_key, base_url, x-goog-api-key) when API key is set."""
     monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyApiKey")
     monkeypatch.setenv("GOOGLE_VERTEX_PROJECT", "api-key-project")
     monkeypatch.setenv("GOOGLE_VERTEX_LOCATION", "europe-west1")
 
-    token_or_key, base_url = vertex_adapter.get_vertex_config()
+    token_or_key, base_url, auth_hdr = vertex_adapter.get_vertex_config()
     assert token_or_key == "AIzaSyApiKey"
+    assert auth_hdr == "x-goog-api-key"
     assert "projects/api-key-project" in base_url
     assert "europe-west1-aiplatform.googleapis.com" in base_url
     assert "locations/europe-west1" in base_url
@@ -302,18 +310,19 @@ def test_get_vertex_config_api_key_precedence_over_adc(vertex_adapter, monkeypat
     monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyKey")
     monkeypatch.setenv("GOOGLE_VERTEX_PROJECT", "key-project")
 
-    token_or_key, base_url = vertex_adapter.get_vertex_config()
+    token_or_key, base_url, auth_hdr = vertex_adapter.get_vertex_config()
     assert token_or_key == "AIzaSyKey"  # API key, not OAuth token
+    assert auth_hdr == "x-goog-api-key"
     assert "projects/key-project" in base_url
 
 
 def test_get_vertex_config_api_key_missing_project(vertex_adapter, monkeypatch):
-    """get_vertex_config returns (None, None) when API key is set but project is not."""
+    """get_vertex_config returns (None, None, None) when API key is set but project is not."""
     monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyKey")
     # No project ID set anywhere
 
     result = vertex_adapter.get_vertex_config()
-    assert result == (None, None)
+    assert result == (None, None, None)
 
 
 def test_has_vertex_credentials_via_api_key(vertex_adapter, monkeypatch):

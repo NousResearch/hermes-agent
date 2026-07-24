@@ -1627,7 +1627,7 @@ def resolve_runtime_provider(
             has_vertex_api_key,
         )
 
-        token_or_key, base_url = get_vertex_config()
+        token_or_key, base_url, auth_header = get_vertex_config()
         if not token_or_key or not base_url:
             raise AuthError(
                 "Vertex AI credentials could not be resolved.\n\n"
@@ -1641,7 +1641,7 @@ def resolve_runtime_provider(
                 "  Set the GCP project/region under vertex: in config.yaml."
             )
         source = "vertex-api-key" if has_vertex_api_key() else "vertex-oauth"
-        return {
+        result = {
             "provider": "vertex",
             "api_mode": "chat_completions",
             "base_url": base_url.rstrip("/"),
@@ -1649,6 +1649,13 @@ def resolve_runtime_provider(
             "source": source,
             "requested_provider": requested_provider,
         }
+        # API key auth uses ``x-goog-api-key`` header instead of ``Authorization: Bearer``.
+        # Propagate this to the downstream OpenAI client constructor so it knows
+        # to set the correct auth header. The Hermes client factory reads
+        # ``auth_header`` from the runtime dict and configures the transport accordingly.
+        if auth_header and auth_header != "Authorization":
+            result["auth_header"] = auth_header
+        return result
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,

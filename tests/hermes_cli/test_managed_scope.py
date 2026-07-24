@@ -128,6 +128,14 @@ def test_load_managed_env_and_is_env_managed(tmp_path, monkeypatch):
     assert managed_scope.is_env_managed("OTHER") is False
 
 
+def test_load_managed_env_strips_export_prefix(tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+
+    _write_managed(tmp_path, monkeypatch, env="export OPENAI_API_KEY=sk-pinned\n")
+    assert managed_scope.load_managed_env() == {"OPENAI_API_KEY": "sk-pinned"}
+    assert managed_scope.is_env_managed("OPENAI_API_KEY") is True
+
+
 def test_editing_managed_config_invalidates_cache(tmp_path, monkeypatch):
     from hermes_cli import managed_scope
 

@@ -1287,6 +1287,64 @@ def try_recover_primary_transport(
 
 
 
+def _merge_adjacent_user_messages(
+    messages: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Merge consecutive ``user`` messages into one, preserving alternation.
+
+    Any pass that drops an assistant turn between two user turns must call
+    this afterward, or the wire payload violates the provider's strict
+    role-alternation invariant (never two same-role messages in a row).
+    Pure: never mutates the caller's dicts. Returns ``(merged, n_merges)``.
+    """
+    merged: List[Dict[str, Any]] = []
+    merges = 0
+    for m in messages:
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and prev.get("role") == "user"
+            and m.get("role") == "user"
+        ):
+            prev_content = prev.get("content", "")
+            cur_content = m.get("content", "")
+            # Work on a copy of ``prev`` so the caller's input dicts are
+            # never mutated. Callers already hand us per-call copies, but
+            # staying pure means we can be called safely from anywhere.
+            prev_copy = dict(prev)
+            # Only string-content merge is meaningful for role-alternation
+            # purposes. If either side is a list (multimodal), append as a
+            # separate block rather than collapsing.
+            if isinstance(prev_content, str) and isinstance(cur_content, str):
+                sep = "\n\n" if prev_content and cur_content else ""
+                prev_copy["content"] = prev_content + sep + cur_content
+            elif isinstance(prev_content, list) and isinstance(cur_content, list):
+                prev_copy["content"] = list(prev_content) + list(cur_content)
+            elif isinstance(prev_content, list) and isinstance(cur_content, str):
+                if cur_content:
+                    prev_copy["content"] = list(prev_content) + [
+                        {"type": "text", "text": cur_content}
+                    ]
+                else:
+                    prev_copy["content"] = list(prev_content)
+            elif isinstance(prev_content, str) and isinstance(cur_content, list):
+                new_blocks: List[Dict[str, Any]] = []
+                if prev_content:
+                    new_blocks.append({"type": "text", "text": prev_content})
+                new_blocks.extend(cur_content)
+                prev_copy["content"] = new_blocks
+            else:
+                # Unknown content shape — fall back to appending separately
+                # (violates alternation, but safer than raising in a hot path).
+                merged.append(m)
+                continue
+            merged[-1] = prev_copy
+            merges += 1
+        else:
+            merged.append(m)
+    return merged, merges
+
+
 def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]],
     *,
@@ -1324,52 +1382,7 @@ def drop_thinking_only_and_merge_users(
         return messages
 
     # Pass 2: merge any newly-adjacent user messages.
-    merged: List[Dict[str, Any]] = []
-    merges = 0
-    for m in kept:
-        prev = merged[-1] if merged else None
-        if (
-            prev is not None
-            and prev.get("role") == "user"
-            and m.get("role") == "user"
-        ):
-            prev_content = prev.get("content", "")
-            cur_content = m.get("content", "")
-            # Work on a copy of ``prev`` so the caller's input dicts are
-            # never mutated. ``_sanitize_api_messages`` upstream already
-            # hands us per-call copies, but staying pure here means we
-            # can be called safely from anywhere (tests, other loops).
-            prev_copy = dict(prev)
-            # Only string-content merge is meaningful for role-alternation
-            # purposes. If either side is a list (multimodal), append as a
-            # separate block rather than collapsing.
-            if isinstance(prev_content, str) and isinstance(cur_content, str):
-                sep = "\n\n" if prev_content and cur_content else ""
-                prev_copy["content"] = prev_content + sep + cur_content
-            elif isinstance(prev_content, list) and isinstance(cur_content, list):
-                prev_copy["content"] = list(prev_content) + list(cur_content)
-            elif isinstance(prev_content, list) and isinstance(cur_content, str):
-                if cur_content:
-                    prev_copy["content"] = list(prev_content) + [
-                        {"type": "text", "text": cur_content}
-                    ]
-                else:
-                    prev_copy["content"] = list(prev_content)
-            elif isinstance(prev_content, str) and isinstance(cur_content, list):
-                new_blocks: List[Dict[str, Any]] = []
-                if prev_content:
-                    new_blocks.append({"type": "text", "text": prev_content})
-                new_blocks.extend(cur_content)
-                prev_copy["content"] = new_blocks
-            else:
-                # Unknown content shape — fall back to appending separately
-                # (violates alternation, but safer than raising in a hot path).
-                merged.append(m)
-                continue
-            merged[-1] = prev_copy
-            merges += 1
-        else:
-            merged.append(m)
+    merged, merges = _merge_adjacent_user_messages(kept)
 
     _ra().logger.debug(
         "Pre-call sanitizer: dropped %d thinking-only assistant turn(s), "
@@ -2806,6 +2819,72 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: dropped empty/invalid tool_calls on %d "
             "assistant message(s)",
             dropped_empty_tool_calls,
+        )
+
+    # --- Drop null assistant turns (no payload at all) ---
+    # An assistant message with empty content, no tool_calls, no reasoning and
+    # no codex items carries zero information. Weak/quantized open-weight models
+    # can emit a run of these after tool results, and (unlike thinking-only
+    # turns, handled in drop_thinking_only_and_merge_users) they have no
+    # reasoning to gate on, so nothing else removes them. Left in place they
+    # accumulate on the wire (observed 36 in one request, #66429) and strict
+    # providers reject the empty assistant message outright with HTTP 400
+    # ("assistant message ... must not be empty"). Runs on the per-call copy
+    # only; the persisted transcript keeps its "(empty)" sentinel for the UI.
+    #
+    # Preserve any assistant turn carrying reasoning or Codex items even when
+    # its visible content is empty — dropping those breaks the Codex
+    # reasoning-replay contract
+    # (test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypted_content).
+    def _assistant_content_is_empty(content: Any) -> bool:
+        if content is None:
+            return True
+        if isinstance(content, str):
+            return not content.strip()
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    if block:
+                        return False
+                    continue
+                if block.get("type") == "text":
+                    if (block.get("text") or "").strip():
+                        return False
+                elif block.get("type") is not None:
+                    return False  # image/other non-text block = real content
+            return True
+        return False
+
+    def _is_null_assistant(m: Dict[str, Any]) -> bool:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            return False
+        if not _assistant_content_is_empty(m.get("content")):
+            return False
+        if isinstance(m.get("tool_calls"), list) and m["tool_calls"]:
+            return False
+        for _k in (
+            "reasoning", "reasoning_content", "reasoning_details",
+            "codex_reasoning_items", "codex_message_items",
+        ):
+            if m.get(_k):
+                return False
+        return True
+
+    _before_null = len(messages)
+    _kept_after_null = [m for m in messages if not _is_null_assistant(m)]
+    _dropped_null = _before_null - len(_kept_after_null)
+    if _dropped_null:
+        # Dropping an assistant turn between two user turns leaves them
+        # adjacent (``user → assistant(null) → user`` becomes ``user →
+        # user``), which violates strict role alternation. Repair the
+        # sequence with the same merge pass the thinking-only filter uses.
+        messages, _null_merges = _merge_adjacent_user_messages(_kept_after_null)
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped %d null assistant turn(s) "
+            "(no content, no tool_calls, no reasoning; #66429), "
+            "merged %d adjacent user message(s)",
+            _dropped_null,
+            _null_merges,
         )
 
     # --- Repair tool_calls whose function.name is empty/missing ---

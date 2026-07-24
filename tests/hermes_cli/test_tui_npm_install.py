@@ -70,6 +70,109 @@ def test_no_install_when_only_optional_peer_package_missing_from_hidden_lock(tmp
     assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
+def test_no_install_when_unrelated_workspace_missing_from_hidden_lock(tmp_path: Path, main_mod) -> None:
+    """Scoped TUI installs do not actualize every root workspace package."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"version":"0.0.0","dependencies":{"foo":"1.0.0"}},'
+        '"ui-tui/packages/hermes-ink":{"version":"0.0.0"},'
+        '"apps/bootstrap-installer":{"version":"0.0.1","dependencies":{"bar":"1.0.0"}},'
+        '"web":{"version":"0.0.0"},'
+        '"node_modules/foo":{"version":"1.0.0"},'
+        '"node_modules/bar":{"version":"1.0.0"}'
+        '}}'
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"version":"0.0.0"},'
+        '"ui-tui/packages/hermes-ink":{"version":"0.0.0"},'
+        '"node_modules/foo":{"version":"1.0.0"}'
+        '}}'
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_no_install_when_workspace_dependency_resolves_to_nested_lock_entry(
+    tmp_path: Path, main_mod
+) -> None:
+    """npm may install a dependency under its parent instead of the root.
+
+    The freshness check must follow package-lock paths the same way Node/npm
+    resolution does; otherwise a root entry for an unrelated version of the
+    same package name can force a reinstall even though the workspace's actual
+    nested dependency is installed.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"version":"0.0.0","dependencies":{"strip-ansi":"^7.0.0"}},'
+        '"node_modules/strip-ansi":{"version":"7.1.2","dependencies":{"ansi-regex":"^6.0.1"}},'
+        '"node_modules/strip-ansi/node_modules/ansi-regex":{"version":"6.2.2"},'
+        '"node_modules/ansi-regex":{"version":"5.0.1"}'
+        '}}'
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"version":"0.0.0"},'
+        '"node_modules/strip-ansi":{"version":"7.1.2","dependencies":{"ansi-regex":"^6.0.1"}},'
+        '"node_modules/strip-ansi/node_modules/ansi-regex":{"version":"6.2.2"}'
+        '}}'
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_install_when_nested_workspace_dependency_missing_from_hidden_lock(
+    tmp_path: Path, main_mod
+) -> None:
+    """A root package with the same name does not satisfy a nested dependency."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"version":"0.0.0","dependencies":{"strip-ansi":"^7.0.0"}},'
+        '"node_modules/strip-ansi":{"version":"7.1.2","dependencies":{"ansi-regex":"^6.0.1"}},'
+        '"node_modules/strip-ansi/node_modules/ansi-regex":{"version":"6.2.2"},'
+        '"node_modules/ansi-regex":{"version":"5.0.1"}'
+        '}}'
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"version":"0.0.0"},'
+        '"node_modules/strip-ansi":{"version":"7.1.2","dependencies":{"ansi-regex":"^6.0.1"}},'
+        '"node_modules/ansi-regex":{"version":"5.0.1"}'
+        '}}'
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_install_when_tui_workspace_dependency_missing_from_hidden_lock(
+    tmp_path: Path, main_mod
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages":{'
+        '"ui-tui":{"version":"0.0.0","dependencies":{"foo":"1.0.0"}},'
+        '"node_modules/foo":{"version":"1.0.0"}'
+        '}}'
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{"ui-tui":{"version":"0.0.0"}}}'
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
 def test_no_install_when_only_peer_annotation_differs(tmp_path: Path, main_mod) -> None:
     """npm 9 drops the ``peer`` flag from the hidden lock on dev-deps that are
     *also* declared as peers.  That's a cosmetic difference — the package is

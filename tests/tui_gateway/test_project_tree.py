@@ -401,6 +401,62 @@ def test_nested_project_folders_pick_the_deepest_match():
     assert by_id["p_outer"]["sessionCount"] == 1  # /work/other → only the outer project
 
 
+def test_linked_worktree_named_project_beats_common_root_project():
+    """A worktree with its own named project must not dual-list under the main repo project.
+
+    Repro: create a Desktop project whose folder is a linked worktree of another
+    named project (common git root = main checkout). After restart the session's
+    cwd points at the worktree while git_repo_root points at the main repo. Both
+    folders are equal depth, so order-sensitive dual matching put the same
+    session id under both projects.
+    """
+    main = _project("p_main", "Main", ["/repo"])
+    companion = _project("p_wt", "Companion", ["/elsewhere/wt"])
+    resolve = _resolver(
+        {
+            "/repo": ("/repo", "/repo"),
+            "/elsewhere/wt": ("/repo", "/elsewhere/wt"),
+        }
+    )
+    session = _session(
+        "/elsewhere/wt",
+        branch="feat/companion",
+        repo_root="/repo",
+        id="20260723_201022_9c1373",
+    )
+
+    tree = pt.build_tree([main, companion], [session], [], resolve, hydrate=True)
+    by_id = {p["id"]: p for p in tree["projects"]}
+    owners = [
+        p["id"]
+        for p in tree["projects"]
+        for r in p["repos"]
+        for g in r["groups"]
+        for s in g["sessions"]
+        if s["id"] == session["id"]
+    ]
+
+    assert owners == ["p_wt"]
+    assert by_id["p_wt"]["sessionCount"] == 1
+    assert by_id["p_main"]["sessionCount"] == 0
+    assert tree["scoped_session_ids"].count(session["id"]) == 1
+    # Still folds under the common repo path *inside* the worktree's project.
+    assert by_id["p_wt"]["repos"][0]["path"] == "/repo"
+    assert any(
+        g["id"] == "/elsewhere/wt" for r in by_id["p_wt"]["repos"] for g in r["groups"]
+    )
+
+
+def test_cwd_less_session_still_groups_by_persisted_repo_root():
+    main = _project("p_main", "Main", ["/repo"])
+    session = _session(None, repo_root="/repo", id="root-only")
+
+    tree = pt.build_tree([main], [session], [], resolve=None, hydrate=True)
+
+    assert tree["scoped_session_ids"] == ["root-only"]
+    assert next(p for p in tree["projects"] if p["id"] == "p_main")["sessionCount"] == 1
+
+
 def test_junk_root_never_becomes_an_auto_project():
     # A session whose git root is HERMES_HOME (config/state) must not spawn a
     # phantom project; it falls through to flat Recents (unscoped). A real repo

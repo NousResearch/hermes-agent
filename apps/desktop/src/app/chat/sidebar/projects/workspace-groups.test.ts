@@ -10,6 +10,7 @@ import {
   mergeRepoWorktreeGroups,
   overlayLiveLanes,
   overlayLivePreviews,
+  sessionOwnedByProjectOverlay,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -545,6 +546,49 @@ describe('liveSessionProjectId', () => {
       '/work/notes'
     )
   })
+
+  it('prefers the worktree cwd project over the common-root project (no dual membership)', () => {
+    // Linked worktree is its own named project; common git root is another named
+    // project. Equal-depth dual matching used to pick whichever project came
+    // first in the list and dual-list the session after restart.
+    const projects = [
+      makeProject('p_main', ['/Users/tim/Projects/hermes-agent']),
+      makeProject('p_wt', ['/Users/tim/Projects/hermes-agent-visual-design-companion'])
+    ]
+    const session = makeSession('/Users/tim/Projects/hermes-agent-visual-design-companion', {
+      git_repo_root: '/Users/tim/Projects/hermes-agent',
+      git_branch: 'feat/visual-design-companion',
+      id: '20260723_201022_9c1373'
+    })
+
+    expect(liveSessionProjectId(session, projects)).toBe('p_wt')
+    // Order of the projects list must not matter.
+    expect(liveSessionProjectId(session, [...projects].reverse())).toBe('p_wt')
+  })
+
+  it('still matches via repo root when cwd is outside every named project folder', () => {
+    expect(
+      liveSessionProjectId(makeSession('/www/elsewhere', { git_repo_root: '/home/u/proj' }), [
+        makeProject('p_proj', ['/home/u/proj'])
+      ])
+    ).toBe('p_proj')
+  })
+})
+
+describe('sessionOwnedByProjectOverlay', () => {
+  it('blocks injecting a worktree session into the common-root named project', () => {
+    const projects = [
+      makeProject('p_main', ['/Users/tim/Projects/hermes-agent']),
+      makeProject('p_wt', ['/Users/tim/Projects/hermes-agent-visual-design-companion'])
+    ]
+    const session = makeSession('/Users/tim/Projects/hermes-agent-visual-design-companion', {
+      git_repo_root: '/Users/tim/Projects/hermes-agent',
+      id: '20260723_201022_9c1373'
+    })
+
+    expect(sessionOwnedByProjectOverlay(session, 'p_main', projects)).toBe(false)
+    expect(sessionOwnedByProjectOverlay(session, 'p_wt', projects)).toBe(true)
+  })
 })
 
 describe('sessionProjectColor', () => {
@@ -788,6 +832,74 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups.map(g => g.id)).toEqual(['/www/app::branch::main'])
     expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['keep'])
     expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('does not inject a linked-worktree session owned by another named project', () => {
+    // After restart, git worktree list paints an empty companion lane under the
+    // main repo project. Path matching alone would pull the live session in;
+    // membership must refuse because another named project owns the cwd.
+    const projects = [
+      makeProject('p_main', ['/Users/tim/Projects/hermes-agent']),
+      makeProject('p_wt', ['/Users/tim/Projects/hermes-agent-visual-design-companion'])
+    ]
+    const session = makeSession('/Users/tim/Projects/hermes-agent-visual-design-companion', {
+      git_repo_root: '/Users/tim/Projects/hermes-agent',
+      git_branch: 'feat/visual-design-companion',
+      id: '20260723_201022_9c1373'
+    })
+    const main = projectNode({
+      id: 'p_main',
+      path: '/Users/tim/Projects/hermes-agent',
+      repos: [
+        {
+          id: '/Users/tim/Projects/hermes-agent',
+          label: 'hermes-agent',
+          path: '/Users/tim/Projects/hermes-agent',
+          sessionCount: 0,
+          groups: [
+            lane({
+              id: '/Users/tim/Projects/hermes-agent-visual-design-companion',
+              label: 'hermes-agent-visual-design-companion',
+              path: '/Users/tim/Projects/hermes-agent-visual-design-companion',
+              sessions: []
+            })
+          ]
+        }
+      ]
+    })
+    const companion = projectNode({
+      id: 'p_wt',
+      path: '/Users/tim/Projects/hermes-agent-visual-design-companion',
+      repos: [
+        {
+          id: '/Users/tim/Projects/hermes-agent',
+          label: 'hermes-agent',
+          path: '/Users/tim/Projects/hermes-agent',
+          sessionCount: 0,
+          groups: [
+            lane({
+              id: '/Users/tim/Projects/hermes-agent-visual-design-companion',
+              label: 'companion',
+              path: '/Users/tim/Projects/hermes-agent-visual-design-companion',
+              sessions: []
+            })
+          ]
+        }
+      ]
+    })
+
+    const overMain = overlayLiveLanes(main, [session], undefined, projects)
+    const overCompanion = overlayLiveLanes(companion, [session], undefined, projects)
+    const previews = overlayLivePreviews([main, companion], [session], projects, 3)
+
+    expect(overMain.repos.flatMap(r => r.groups.flatMap(g => g.sessions.map(s => s.id)))).toEqual([])
+    expect(overCompanion.repos.flatMap(r => r.groups.flatMap(g => g.sessions.map(s => s.id)))).toEqual([
+      '20260723_201022_9c1373'
+    ])
+    expect(previews['/Users/tim/Projects/hermes-agent']?.map(s => s.id) ?? []).toEqual([])
+    expect(previews['/Users/tim/Projects/hermes-agent-visual-design-companion']?.map(s => s.id)).toEqual([
+      '20260723_201022_9c1373'
+    ])
   })
 })
 

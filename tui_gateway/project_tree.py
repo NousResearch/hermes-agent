@@ -417,20 +417,30 @@ def _project_for_path(index: _FolderIndex, target: str) -> Optional[dict]:
 
 
 def _project_for_session(session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
-    cwd = (session.get("cwd") or "").strip()
-    if not cwd:
-        return None
-    repo_root = _session_repo_root(session, resolve)
-    candidates = [cwd, repo_root] if repo_root and repo_root != cwd else [cwd]
+    """Pick the explicit project that owns ``session``.
 
-    best: Optional[dict] = None
-    best_len = -1
-    for target in candidates:
-        match, length = index.match(target)
-        if match and length > best_len:
-            best_len = length
-            best = match
-    return best
+    The workspace cwd is authoritative. A linked git worktree can share a common
+    repo root with another named project (main checkout project A, worktree
+    project B). Matching on both cwd and common-root and taking the longest
+    equal-depth hit is order-sensitive and lets the same session land under both
+    projects once the desktop live overlay re-derives membership after restart.
+    Prefer cwd when it sits under any project folder; only fall back to the
+    common repo root when the cwd itself is unowned.
+    """
+    cwd = (session.get("cwd") or "").strip()
+    if cwd:
+        match = index.match(cwd)[0]
+        if match:
+            return match
+    else:
+        # cwd-less rows (older/imported) still group by persisted common root.
+        repo_root = (session.get("git_repo_root") or "").strip()
+        return index.match(repo_root)[0] if repo_root else None
+
+    repo_root = _session_repo_root(session, resolve)
+    if repo_root and repo_root != cwd:
+        return index.match(repo_root)[0]
+    return None
 
 
 # ---------------------------------------------------------------------------

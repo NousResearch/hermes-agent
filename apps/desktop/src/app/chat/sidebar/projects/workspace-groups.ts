@@ -348,6 +348,39 @@ function isPathUnder(folder: string, target: string): boolean {
   return f.every((seg, i) => seg === t[i])
 }
 
+/** Longest-prefix explicit project folder match for a single path anchor. */
+function explicitProjectIdForPath(target: string, explicitProjects: ProjectInfo[]): null | string {
+  const path = (target || '').trim()
+
+  if (!path) {
+    return null
+  }
+
+  let projectId = ''
+  let bestLen = -1
+
+  for (const project of explicitProjects) {
+    if (project.archived) {
+      continue
+    }
+
+    for (const folder of project.folders) {
+      if (!isPathUnder(folder.path, path)) {
+        continue
+      }
+
+      const len = segments(folder.path).length
+
+      if (len > bestLen) {
+        bestLen = len
+        projectId = project.id
+      }
+    }
+  }
+
+  return projectId || null
+}
+
 /**
  * The project a live session belongs to (overview membership) — explicit project
  * by longest-prefix folder, else the repo root (the auto-project id). An IN-TREE
@@ -358,10 +391,14 @@ function isPathUnder(folder: string, target: string): boolean {
  * null only for sessions we genuinely can't place from the row alone: cwd-less,
  * kanban-task worktrees (they fold into the kanban bucket), or a worktree that
  * lives OUTSIDE the repo root (a sibling dir) AND under no explicit project
- * folder. An explicit-project folder match always places the row — even when
- * the row's cwd sits outside its recorded repo root (a mid-session relocation,
- * or a sibling worktree of a project repo), the folder match is authoritative;
- * only the repo-root AUTO-project fallback needs cwd-under-root confidence.
+ * folder.
+ *
+ * Workspace cwd is authoritative for explicit membership. When a linked worktree
+ * is its own named project while the common git root is another named project,
+ * matching both anchors at equal depth is order-sensitive and dual-lists the
+ * same session under both projects after restart. Prefer a cwd folder hit; only
+ * fall back to the repo-root folder when the cwd itself is unowned. Repo-root
+ * AUTO-project fallback still needs cwd-under-root confidence.
  */
 export function liveSessionProjectId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
   const cwd = (session.cwd || '').trim()
@@ -376,28 +413,18 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
     return null
   }
 
-  let projectId = ''
-  let bestLen = -1
+  const fromCwd = cwd ? explicitProjectIdForPath(cwd, explicitProjects) : null
 
-  for (const project of explicitProjects) {
-    if (project.archived) {
-      continue
-    }
-
-    for (const folder of project.folders) {
-      if (isPathUnder(folder.path, cwd) || isPathUnder(folder.path, repoRoot)) {
-        const len = segments(folder.path).length
-
-        if (len > bestLen) {
-          bestLen = len
-          projectId = project.id
-        }
-      }
-    }
+  if (fromCwd) {
+    return fromCwd
   }
 
-  if (projectId) {
-    return projectId
+  if (repoRoot && repoRoot !== cwd) {
+    const fromRoot = explicitProjectIdForPath(repoRoot, explicitProjects)
+
+    if (fromRoot) {
+      return fromRoot
+    }
   }
 
   // AUTO-project fallback (the repo root itself): with a cwd present it must
@@ -409,6 +436,29 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   }
 
   return repoRoot
+}
+
+/**
+ * Whether the live overlay may inject ``session`` into ``projectId``.
+ *
+ * Path/lane matching alone is not enough: a linked worktree can appear as a
+ * visual lane under the common-root project while its cwd belongs to a different
+ * named project. Never inject into a project when a different explicit project
+ * already owns the row. Null/auto owners still allow path-based lane joins so
+ * sibling worktrees without their own project keep optimistic placement.
+ */
+export function sessionOwnedByProjectOverlay(
+  session: SessionInfo,
+  projectId: string,
+  explicitProjects: ProjectInfo[]
+): boolean {
+  const owner = liveSessionProjectId(session, explicitProjects)
+
+  if (owner && owner.startsWith('p_') && owner !== projectId) {
+    return false
+  }
+
+  return true
 }
 
 /**
@@ -476,9 +526,12 @@ const NO_REMOVED: ReadonlySet<string> = new Set()
 export function overlayRepoLanes(
   repo: SidebarWorkspaceTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  options?: { explicitProjects?: ProjectInfo[]; projectId?: string }
 ): SidebarWorkspaceTree {
   const repoRootKey = pathKey(repo.path)
+  const explicitProjects = options?.explicitProjects ?? []
+  const projectId = options?.projectId ?? ''
   let changed = false
 
   // Snapshot lanes minus anything the user just deleted/archived.
@@ -498,6 +551,10 @@ export function overlayRepoLanes(
     const cwd = (session.cwd || '').trim()
 
     if (removed.has(session.id) || !cwd) {
+      continue
+    }
+
+    if (projectId && !sessionOwnedByProjectOverlay(session, projectId, explicitProjects)) {
       continue
     }
 
@@ -569,12 +626,14 @@ export function overlayRepoLanes(
 export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  explicitProjects: ProjectInfo[] = []
 ): SidebarProjectTree {
   let changed = false
+  const options = { explicitProjects, projectId: project.id }
 
   const repos = project.repos.map(repo => {
-    const next = overlayRepoLanes(repo, live, removed)
+    const next = overlayRepoLanes(repo, live, removed, options)
 
     changed ||= next !== repo
 

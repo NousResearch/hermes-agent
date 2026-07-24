@@ -986,12 +986,14 @@ def cmd_mcp_configure(args):
 
     tool_names = [t[0] for t in all_tools]
 
-    if include and isinstance(include, list):
+    # An explicit empty list (``include: []``) means "block every tool" —
+    # do not treat it the same as an absent filter (which registers all).
+    if isinstance(include, list):
         include_set = set(include)
         pre_selected = {
             i for i, tn in enumerate(tool_names) if tn in include_set
         }
-    elif exclude and isinstance(exclude, list):
+    elif isinstance(exclude, list):
         exclude_set = set(exclude)
         pre_selected = {
             i for i, tn in enumerate(tool_names) if tn not in exclude_set

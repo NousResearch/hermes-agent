@@ -3888,6 +3888,22 @@ class TestMCPSelectiveToolLoading:
         assert registered == ["mcp__ink_no_caps__create_service"]
         assert set(mock_registry.get_all_tool_names()) == {"mcp__ink_no_caps__create_service"}
 
+    def test_empty_include_list_blocks_every_tool(self):
+        """Regression for #12865: ``tools.include: []`` saved by
+        ``hermes mcp configure`` when the operator deselects every tool
+        must disable all tools, not silently fall back to 'no filter'."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"include": []},
+        }
+        registered, _ = self._run_discover(
+            "ink_empty",
+            ["create_service", "delete_service", "list_services"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == []
+
     def test_no_filter_registers_all_server_tools_when_no_utilities_supported(self):
         registered, _ = self._run_discover(
             "ink_no_filter",

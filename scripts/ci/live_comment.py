@@ -384,6 +384,8 @@ def run(
     start = time.time()
     last_body = ""
     quiet_grace_used = False
+    prev_completed: dict[str, str] = {}
+    prev_pending: list[str] = []
 
     # Parse the base statuses once (from review-labels, lockfile-diff, etc.)
     try:
@@ -407,8 +409,22 @@ def run(
 
         completed, pending, job_urls = classify_jobs(jobs)
         total = len(completed) + len(pending)
-        print(f"  [{elapsed:.0f}s] {len(completed)} completed, {len(pending)} pending "
-              f"({total} total jobs)")
+        infra_count = len(jobs) - total
+        print(f"  [{elapsed:.0f}s] fetched {len(jobs)} jobs from API "
+              f"({infra_count} infra filtered) → {len(completed)} completed, "
+              f"{len(pending)} pending ({total} review jobs)")
+
+        # Log transitions since last poll.
+        new_completed = {k: v for k, v in completed.items() if k not in prev_completed}
+        new_pending = [j for j in pending if j not in prev_pending]
+        gone_pending = [j for j in prev_pending if j not in pending and j not in completed]
+        if new_completed:
+            parts = [f"{name}={result}" for name, result in new_completed.items()]
+            print(f"  → {len(new_completed)} job(s) newly completed: {', '.join(parts)}")
+        if new_pending:
+            print(f"  → {len(new_pending)} job(s) newly appeared: {', '.join(new_pending)}")
+        if gone_pending:
+            print(f"  → {len(gone_pending)} job(s) disappeared from pending: {', '.join(gone_pending)}")
 
         # Try to fetch ci-timings artifact statuses (may not exist yet).
         artifact_statuses = _fetch_artifact_statuses(
@@ -427,19 +443,39 @@ def run(
         )
 
         if body != last_body:
+            change_reasons = []
+            if new_completed:
+                change_reasons.append(f"{len(new_completed)} new completion(s)")
+            if new_pending:
+                change_reasons.append(f"{len(new_pending)} new pending job(s)")
+            if gone_pending:
+                change_reasons.append(f"{len(gone_pending)} job(s) left pending")
+            if artifact_statuses:
+                change_reasons.append("artifact statuses updated")
+            if not change_reasons:
+                change_reasons.append("initial post")
+            reason = "; ".join(change_reasons)
+
             if dry_run:
+                print(f"  Comment body changed ({reason}) — DRY RUN:")
                 print("--- DRY RUN — comment body ---")
                 print(body)
                 print("--- END ---")
             else:
                 cid = upsert_comment(token, repo, pr_number, body)
                 if cid:
-                    print(f"  Updated comment {cid}")
+                    print(f"  Updated comment {cid} ({reason})")
                 else:
-                    print("  Failed to update comment (will retry)", file=sys.stderr)
+                    print(f"  Failed to update comment ({reason}, will retry)", file=sys.stderr)
             last_body = body
         else:
-            print("  No change since last poll.")
+            if pending:
+                print(f"  No change since last poll. Still waiting on: {', '.join(pending)}")
+            else:
+                print("  No change since last poll.")
+
+        prev_completed = completed
+        prev_pending = pending
 
         if not pending and not quiet_grace_used:
             quiet_grace_used = True

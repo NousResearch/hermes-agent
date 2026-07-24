@@ -3049,7 +3049,9 @@ async def get_status(profile: Optional[str] = None):
     # skills-module attributes that a concurrent request would cross-restore
     # across that await. Status only resolves get_hermes_home() at call time
     # (config/env/gateway state), which the task-local contextvar covers.
+    profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
+        profile_dir = _resolve_profile_dir(requested_profile)
         status_scope = _config_profile_scope(requested_profile)
         status_scope.__enter__()
 
@@ -3059,7 +3061,17 @@ async def get_status(profile: Optional[str] = None):
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
         # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid_cached()
+        #
+        # When ?profile=<name> was given, scope PID and state reads to that
+        # profile's directory — gateway identity files (PID, lock, runtime
+        # status) are written to the per-profile home, not the process-level
+        # HERMES_HOME (see issue #69143). Plain /api/status keeps the exact
+        # zero-arg call so its behavior (and cache signature) is unchanged.
+        gateway_pid = (
+            get_running_pid_cached(pid_path=profile_dir / "gateway.pid")
+            if profile_dir
+            else get_running_pid_cached()
+        )
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 
@@ -3099,7 +3111,17 @@ async def get_status(profile: Optional[str] = None):
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
-        local_runtime = read_runtime_status()
+        #
+        # When ?profile=<name> was given, read from the profile's directory so
+        # the state file resolves to the per-profile gateway_state.json, not
+        # the fixed process-level HERMES_HOME (see issue #69143). Plain
+        # /api/status keeps the exact zero-arg call so existing behavior
+        # (and monkeypatched call shapes) are unchanged.
+        local_runtime = (
+            read_runtime_status(path=profile_dir / "gateway_state.json")
+            if profile_dir
+            else read_runtime_status()
+        )
         runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body
@@ -3109,7 +3131,16 @@ async def get_status(profile: Optional[str] = None):
         # is display-only. (Running os.kill on a remote PID is both wrong and
         # trips the test live-system guard.)
         if not gateway_running and local_runtime is not None:
-            runtime_pid = get_runtime_status_running_pid(local_runtime)
+            # expected_home scopes the OS-identity check to the requested
+            # profile so a recycled PID belonging to a different profile's
+            # live gateway is not reported running for this one.
+            runtime_pid = (
+                get_runtime_status_running_pid(
+                    local_runtime, expected_home=profile_dir
+                )
+                if profile_dir
+                else get_runtime_status_running_pid(local_runtime)
+            )
             if runtime_pid is not None:
                 gateway_running = True
                 gateway_pid = runtime_pid

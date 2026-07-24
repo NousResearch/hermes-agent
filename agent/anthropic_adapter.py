@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
+from providers.base import hermes_user_agent
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
 
@@ -807,12 +808,12 @@ def build_anthropic_client(
     )
 
     if _is_kimi_coding_endpoint(base_url):
-        # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
-        # to be recognized as a valid Coding Agent. Without it, returns 403.
+        # Kimi's /coding endpoint requires third-party agents to retain their
+        # real identity. See https://www.kimi.com/code/docs/en/
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
         kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
-            "User-Agent": "claude-code/0.1.0",
+            "User-Agent": hermes_user_agent(),
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
     elif _requires_bearer_auth(normalized_base_url):

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pytest
 
+from hermes_cli import __version__
+
 
 @pytest.fixture
 def kimi_profile():
@@ -33,6 +35,11 @@ def kimi_profile():
 
 class TestKimiReasoningWireShape:
     """``build_api_kwargs_extras`` never emits thinking + reasoning_effort together."""
+
+    def test_profile_declares_real_hermes_identity(self, kimi_profile):
+        assert kimi_profile.default_headers["User-Agent"] == (
+            f"hermes-agent/{__version__}"
+        )
 
     def test_no_config_enables_thinking_without_effort(self, kimi_profile):
         """No reasoning_config → thinking on, server picks the depth.

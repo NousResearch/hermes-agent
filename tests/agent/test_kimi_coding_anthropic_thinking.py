@@ -19,7 +19,12 @@ in ``ChatCompletionsTransport`` (#13503).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
+
+from hermes_cli import __version__
 
 
 class TestKimiCodingAnthropicThinking:
@@ -207,3 +212,34 @@ class TestKimiFamilyGetsAdaptiveThinking:
         ]
         assert len(thinking_blocks) == 1
         assert thinking_blocks[0]["thinking"] == "planning the tool call"
+
+
+def test_kimi_anthropic_client_uses_real_hermes_identity() -> None:
+    from agent import anthropic_adapter
+
+    anthropic_ctor = MagicMock(return_value=MagicMock())
+    fake_sdk = SimpleNamespace(Anthropic=anthropic_ctor)
+
+    with patch.object(anthropic_adapter, "_get_anthropic_sdk", return_value=fake_sdk):
+        anthropic_adapter.build_anthropic_client(
+            "sk-kimi-test",
+            base_url="https://api.kimi.com/coding",
+        )
+
+    headers = anthropic_ctor.call_args.kwargs["default_headers"]
+    assert headers["User-Agent"] == f"hermes-agent/{__version__}"
+
+
+def test_kimi_auxiliary_async_client_uses_real_hermes_identity() -> None:
+    from agent.auxiliary_client import _to_async_client
+
+    sync_client = SimpleNamespace(
+        api_key="sk-kimi-test",
+        base_url="https://api.kimi.com/coding/v1",
+    )
+
+    with patch("openai.AsyncOpenAI", return_value=MagicMock()) as async_openai:
+        _to_async_client(sync_client, "kimi-for-coding")
+
+    headers = async_openai.call_args.kwargs["default_headers"]
+    assert headers["User-Agent"] == f"hermes-agent/{__version__}"

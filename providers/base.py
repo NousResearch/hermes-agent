@@ -35,6 +35,15 @@ def _profile_user_agent() -> str:
         return "hermes-cli"
 
 
+def hermes_user_agent() -> str:
+    """Return Hermes Agent's versioned HTTP product identity."""
+    try:
+        from hermes_cli import __version__ as _ver  # lazy: avoid layer cycle at import time
+        return f"hermes-agent/{_ver}"
+    except Exception:
+        return "hermes-agent"
+
+
 @dataclass
 class ProviderProfile:
     """Base provider profile — subclass or instantiate with overrides."""

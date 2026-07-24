@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from hermes_cli import __version__
 from run_agent import AIAgent
 
 
@@ -40,6 +41,43 @@ def test_routermint_base_url_applies_user_agent_header(mock_openai):
 
     headers = agent._client_kwargs["default_headers"]
     assert headers["User-Agent"].startswith("HermesAgent/")
+
+
+@patch("run_agent.OpenAI")
+def test_kimi_initial_client_uses_real_hermes_identity(mock_openai):
+    mock_openai.return_value = MagicMock()
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.kimi.com/coding/v1",
+        model="kimi-for-coding",
+        provider="kimi-coding",
+        api_mode="chat_completions",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"] == f"hermes-agent/{__version__}"
+
+
+@patch("run_agent.OpenAI")
+def test_kimi_header_refresh_uses_real_hermes_identity(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.kimi.com/coding/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"] == f"hermes-agent/{__version__}"
 
 
 @patch("run_agent.OpenAI")

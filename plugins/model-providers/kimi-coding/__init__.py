@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from providers import register_provider
-from providers.base import OMIT_TEMPERATURE, ProviderProfile
+from providers.base import OMIT_TEMPERATURE, ProviderProfile, hermes_user_agent
 
 
 def _is_confirmed_kimi_coding_url(base_url: str) -> bool:
@@ -102,7 +102,7 @@ kimi = KimiProfile(
     base_url="https://api.moonshot.ai/v1",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    default_headers={"User-Agent": hermes_user_agent()},
     default_aux_model="kimi-k2-turbo-preview",
 )
 
@@ -113,7 +113,7 @@ kimi_cn = KimiProfile(
     base_url="https://api.moonshot.cn/v1",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    default_headers={"User-Agent": hermes_user_agent()},
     default_aux_model="kimi-k2-turbo-preview",
 )
 

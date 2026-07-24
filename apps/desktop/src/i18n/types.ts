@@ -91,6 +91,7 @@ export interface Translations {
   }
 
   fileMenu: {
+    insertIntoChat: string
     revealFinder: string
     revealExplorer: string
     revealFileManager: string

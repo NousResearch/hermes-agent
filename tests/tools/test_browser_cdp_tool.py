@@ -586,3 +586,168 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
         bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is False
+
+
+# ---------------------------------------------------------------------------
+# _resolve_cdp_endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_cdp_endpoint_returns_stripped_url(monkeypatch):
+    """_resolve_cdp_endpoint strips whitespace from the override."""
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "  ws://localhost:9222  ")
+    assert browser_cdp_tool._resolve_cdp_endpoint() == "ws://localhost:9222"
+
+
+def test_resolve_cdp_endpoint_returns_empty_when_none(monkeypatch):
+    """_resolve_cdp_endpoint returns '' when override is None."""
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_get_cdp_override", lambda: None)
+    assert browser_cdp_tool._resolve_cdp_endpoint() == ""
+
+
+# ---------------------------------------------------------------------------
+# _run_async with running loop
+# ---------------------------------------------------------------------------
+
+
+def test_run_async_with_running_loop():
+    """_run_async uses a thread pool when called from inside a running loop."""
+    import asyncio
+
+    async def _outer():
+        # We're inside a running loop — _run_async should detect this
+        # and use a ThreadPoolExecutor.
+        async def _inner():
+            return 42
+
+        return browser_cdp_tool._run_async(_inner())
+
+    result = asyncio.run(_outer())
+    assert result == 42
+
+
+def test_websocket_error_handler(monkeypatch):
+    """WebSocketException returns the reconnect-specific error."""
+    endpoint = "ws://localhost:9222/devtools/browser/fake"
+    monkeypatch.setattr(
+        browser_cdp_tool, "_resolve_cdp_endpoint",
+        lambda: endpoint,
+    )
+
+    async def raise_websocket_error(*_args, **_kwargs):
+        raise browser_cdp_tool.WebSocketException("connection closed")
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", raise_websocket_error)
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Target.getTargets")
+    )
+    assert result["error"].startswith(
+        f"WebSocket error talking to CDP at {endpoint}: connection closed."
+    )
+    assert "try '/browser connect' again" in result["error"]
+    assert result.get("method") == "Target.getTargets"
+
+
+# ---------------------------------------------------------------------------
+# frame_id routing — supervisor error paths
+# ---------------------------------------------------------------------------
+
+
+def test_frame_id_no_supervisor_attached(monkeypatch):
+    """browser_cdp with frame_id but no supervisor → helpful error."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda _task_id: None)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="frame-1",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "No CDP supervisor" in result["error"]
+
+
+def test_frame_id_not_found_in_supervisor(monkeypatch):
+    """browser_cdp with frame_id not in supervisor state → error."""
+    from types import SimpleNamespace
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    snap = SimpleNamespace(frame_tree={"top": {"frame_id": "other"}, "children": []})
+    supervisor = SimpleNamespace(
+        snapshot=lambda: snap,
+        _state_lock=__import__("threading").Lock(),
+        _frames={},
+        _loop=None,
+    )
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda _task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="nonexistent",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_frame_id_same_origin_no_session(monkeypatch):
+    """browser_cdp with frame_id that has no session_id → error about OOPIF."""
+    from types import SimpleNamespace
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    snap = SimpleNamespace(
+        frame_tree={"top": {"frame_id": "top-1"}, "children": [{"frame_id": "child-1"}]}
+    )
+    supervisor = SimpleNamespace(
+        snapshot=lambda: snap,
+        _state_lock=__import__("threading").Lock(),
+        _frames={},
+        _loop=None,
+    )
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda _task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="child-1",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "out-of-process" in result["error"]
+
+
+def test_frame_id_supervisor_loop_not_running(monkeypatch):
+    """browser_cdp with frame_id but supervisor loop is None → error."""
+    from types import SimpleNamespace
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    snap = SimpleNamespace(
+        frame_tree={"top": {}, "children": [{"frame_id": "f1", "session_id": "s1"}]}
+    )
+    supervisor = SimpleNamespace(
+        snapshot=lambda: snap,
+        _state_lock=__import__("threading").Lock(),
+        _frames={},
+        _loop=None,
+    )
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda _task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="f1",
+            task_id="default",
+        )
+    )
+    assert "error" in result
+    assert "not running" in result["error"]

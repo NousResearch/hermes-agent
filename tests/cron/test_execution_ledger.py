@@ -319,3 +319,43 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_cronjob_formatter_exposes_newer_unknown_attempt_over_stale_success(
+    monkeypatch, tmp_path
+):
+    """A prior successful completion cannot stand in for a newer attempt."""
+    import sqlite3
+
+    import cron.jobs as jobs
+    from tools.cronjob_tools import _format_job
+
+    monkeypatch.setattr(jobs, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    job = jobs.create_job(prompt="audit me", schedule="every 1h", name="audit")
+    jobs.mark_job_run(job["id"], success=True)
+    completed_job = jobs.get_job(job["id"])
+    assert completed_job is not None
+    completed_at = completed_job["last_run_at"]
+
+    attempt = executions.create_execution(job["id"], source="builtin")
+    executions.mark_execution_running(attempt["id"])
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            "UPDATE executions SET process_id=?, pid=? WHERE id=?",
+            ("old-process", -1, attempt["id"]),
+        )
+    assert executions.recover_interrupted_executions() == 1
+
+    formatted = _format_job(jobs.list_jobs(include_disabled=True)[0])
+
+    # The job summary remains useful as historical completion data, but the
+    # model-facing shape must also carry the newer occurrence's truth.
+    assert formatted["last_run_at"] == completed_at
+    assert formatted["last_status"] == "ok"
+    assert formatted["latest_execution"]["id"] == attempt["id"]
+    assert formatted["latest_execution"]["status"] == "unknown"
+    assert formatted["latest_execution"]["claimed_at"] > completed_at

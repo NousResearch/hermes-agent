@@ -380,6 +380,7 @@ export const zh: Translations = {
     resetScopeToast: "{scope}已恢复为默认值 — 请检查并保存以生效",
     rawYaml: "原始 YAML 配置",
     searchResults: "搜索结果",
+    searchPlaceholder: "搜索配置字段...",
     fields: "个字段",
     noFieldsMatch: '没有匹配"{query}"的字段',
     configSaved: "配置已保存",

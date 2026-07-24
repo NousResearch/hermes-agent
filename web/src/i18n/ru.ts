@@ -385,6 +385,7 @@ export const ru: Translations = {
     resetScopeToast: "{scope} сброшено к значениям по умолчанию — проверьте и сохраните",
     rawYaml: "Исходная YAML-конфигурация",
     searchResults: "Результаты поиска",
+    searchPlaceholder: "Поиск полей конфигурации...",
     fields: "пол{s}",
     noFieldsMatch: 'Нет полей, соответствующих "{query}"',
     configSaved: "Конфигурация сохранена",

@@ -385,6 +385,7 @@ export const hu: Translations = {
     resetScopeToast: "{scope} visszaállítva alapértelmezettre — ellenőrizze és mentse a megőrzéshez",
     rawYaml: "Nyers YAML-konfiguráció",
     searchResults: "Keresési eredmények",
+    searchPlaceholder: "Konfigurációs mezők keresése...",
     fields: "mező{s}",
     noFieldsMatch: 'Nincs a(z) "{query}" keresésnek megfelelő mező',
     configSaved: "Konfiguráció mentve",

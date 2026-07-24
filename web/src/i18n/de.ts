@@ -385,6 +385,7 @@ export const de: Translations = {
     resetScopeToast: "{scope} auf Standardwerte zurückgesetzt — überprüfen und Speichern, um zu übernehmen",
     rawYaml: "Rohe YAML-Konfiguration",
     searchResults: "Suchergebnisse",
+    searchPlaceholder: "Konfigurationsfelder durchsuchen...",
     fields: "Feld{s}",
     noFieldsMatch: 'Keine Felder entsprechen "{query}"',
     configSaved: "Konfiguration gespeichert",

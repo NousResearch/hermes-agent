@@ -386,6 +386,7 @@ export const uk: Translations = {
     resetScopeToast: "{scope} скинуто до значень за замовчуванням — перегляньте та збережіть, щоб застосувати",
     rawYaml: "Сирий YAML-конфіг",
     searchResults: "Результати пошуку",
+    searchPlaceholder: "Шукати поля конфігурації...",
     fields: "поле(ів)",
     noFieldsMatch: 'Немає полів, що відповідають "{query}"',
     configSaved: "Конфігурацію збережено",

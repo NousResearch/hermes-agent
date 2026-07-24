@@ -385,6 +385,7 @@ export const tr: Translations = {
     resetScopeToast: "{scope} varsayılanlara sıfırlandı — gözden geçirip kalıcı kılmak için Kaydet'e basın",
     rawYaml: "Ham YAML Yapılandırması",
     searchResults: "Arama Sonuçları",
+    searchPlaceholder: "Yapılandırma alanlarında ara...",
     fields: "alan{s}",
     noFieldsMatch: '"{query}" ile eşleşen alan yok',
     configSaved: "Yapılandırma kaydedildi",

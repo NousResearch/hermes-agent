@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import nullcontext
 from typing import Optional
 
 _mcp_discovery_lock = threading.Lock()
@@ -24,23 +25,57 @@ def _has_configured_mcp_servers() -> bool:
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
-    """Spawn one shared background MCP discovery thread for this process."""
+    """Spawn one shared background MCP discovery thread for this process.
+
+    If the first background discovery run exits without connecting any MCP
+    server (for example after startup cancellation / OOM restart), later calls
+    are allowed to retry instead of permanently pinning the process in a
+    "discovery already started" state with zero MCP tools.
+    """
     global _mcp_discovery_started, _mcp_discovery_thread
 
     with _mcp_discovery_lock:
         if _mcp_discovery_started:
-            return
+            thread = _mcp_discovery_thread
+            if thread is not None and thread.is_alive():
+                return
+            try:
+                from tools.mcp_tool import get_mcp_status
+
+                status = get_mcp_status() or []
+                if any(entry.get("connected") for entry in status):
+                    return
+            except Exception:
+                return
+            logger.warning(
+                "Background MCP discovery previously exited with no connected "
+                "servers; retrying discovery thread"
+            )
+            _mcp_discovery_started = False
+            _mcp_discovery_thread = None
+
         _mcp_discovery_started = True
         if not _has_configured_mcp_servers():
             return
 
         def _discover() -> None:
             try:
-                from tools.mcp_tool import discover_mcp_tools
-
-                discover_mcp_tools()
+                _discover_mcp_tools_without_interactive_oauth()
+                try:
+                    from tools.mcp_tool import get_mcp_status
+                    status = get_mcp_status() or []
+                    if not any(entry.get("connected") for entry in status):
+                        logger.warning(
+                            "Background MCP discovery completed with zero connected servers"
+                        )
+                except Exception:
+                    logger.debug("Failed to inspect MCP status after background discovery", exc_info=True)
             except Exception:
                 logger.debug("Background MCP tool discovery failed", exc_info=True)
+            finally:
+                with _mcp_discovery_lock:
+                    global _mcp_discovery_thread, _mcp_discovery_started
+                    _mcp_discovery_thread = None
 
         thread = threading.Thread(
             target=_discover,
@@ -72,6 +107,19 @@ def _resolve_discovery_timeout(explicit: "float | None") -> float:
         return 1.5
 
 
+def _discover_mcp_tools_without_interactive_oauth() -> None:
+    """Run MCP discovery without letting OAuth read from the user's stdin."""
+    try:
+        from tools.mcp_oauth import suppress_interactive_oauth
+    except Exception:
+        suppress_interactive_oauth = nullcontext
+
+    with suppress_interactive_oauth():
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+
+
 def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
     """Wait for background MCP discovery before the first tool snapshot.
 
@@ -86,3 +134,33 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
     if thread is None or not thread.is_alive():
         return
     thread.join(timeout=_resolve_discovery_timeout(timeout))
+
+
+def mcp_discovery_in_flight() -> bool:
+    """Return True if THIS module's background discovery thread is still running.
+
+    Mirrors ``tui_gateway.entry.mcp_discovery_in_flight`` for the surfaces that
+    start discovery through ``start_background_mcp_discovery`` here (the desktop
+    app + dashboard WebSocket sidecar via ``tui_gateway/ws.py``, and
+    ``hermes dashboard``).  Those processes populate THIS module's
+    ``_mcp_discovery_thread``, not ``tui_gateway.entry``'s, so the late-refresh
+    scheduler must consult both to decide whether a slow server's tools are
+    still pending (see #51587).
+    """
+    thread = _mcp_discovery_thread
+    return thread is not None and thread.is_alive()
+
+
+def join_mcp_discovery(timeout: "float | None" = None) -> bool:
+    """Block until THIS module's background discovery finishes, up to ``timeout``.
+
+    Returns True if discovery has completed (thread absent or no longer alive),
+    False if it is still running after the timeout.  Unlike
+    ``wait_for_mcp_discovery`` this accepts an unbounded/long wait and reports
+    the outcome, for the off-critical-path late-refresh waiter.
+    """
+    thread = _mcp_discovery_thread
+    if thread is None:
+        return True
+    thread.join(timeout=timeout)
+    return not thread.is_alive()

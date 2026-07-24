@@ -1,9 +1,9 @@
 """Tests for the WS-upgrade auth helper (Phase 5 task 5.2).
 
-The dashboard's four WS endpoints (``/api/pty``, ``/api/ws``, ``/api/pub``,
-``/api/events``) share an auth gate: ``_ws_auth_ok``. In loopback mode it
-accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts a single-use
-``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
+The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
+``/api/pub``, ``/api/events``) share an auth gate: ``_ws_auth_ok``. In
+loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
+a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
 
 These tests exercise the helper at the unit level (no actual WS upgrade)
 plus the ticket-mint endpoint under realistic gated-mode setup. We don't
@@ -17,12 +17,6 @@ from types import SimpleNamespace
 
 import pytest
 
-# Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
-# at module level. Run them in the same xdist worker so they don't race
-# against each other (and against any other file that also touches
-# ``app.state``) — the marker name is shared across all dashboard-auth test
-# files that gate the app.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
@@ -321,9 +315,10 @@ class TestWsRequestIsAllowedGated:
     (intended only for unauthenticated loopback dev) must not also reject
     those upgrades: the OAuth gate + single-use ticket is the auth.
 
-    Regression coverage: every WS endpoint (``/api/pty``, ``/api/ws``,
-    ``/api/pub``, ``/api/events``) calls ``_ws_request_is_allowed`` after
-    ``_ws_auth_ok``. If the peer-IP check rejects gated mode, the chat
+    Regression coverage: every WS endpoint (``/api/pty``, ``/api/console``,
+    ``/api/ws``, ``/api/pub``, ``/api/events``) calls
+    ``_ws_request_is_allowed`` after ``_ws_auth_ok``. If the peer-IP check
+    rejects gated mode, the chat
     tab + sidebar tool feed silently fail to connect even after a
     successful OAuth login.
     """

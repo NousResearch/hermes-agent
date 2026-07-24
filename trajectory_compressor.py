@@ -352,11 +352,6 @@ class TrajectoryCompressor:
         # Initialize OpenRouter client
         self._init_summarizer()
         
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%H:%M:%S'
-        )
         self.logger = logging.getLogger(__name__)
     
     def _init_tokenizer(self):
@@ -836,6 +831,18 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens
             return trajectory, metrics
 
+        # If the region we can safely compress is no larger than the summary
+        # that would replace it, compression cannot reduce the token count --
+        # it would grow the trajectory and still spend a summarization call.
+        if (
+            sum(turn_tokens[compress_start:compress_until])
+            <= self.config.summary_target_tokens
+        ):
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
         # Record compression region
         metrics.turns_compressed_start_idx = compress_start
         metrics.turns_compressed_end_idx = compress_until
@@ -946,6 +953,18 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         compress_until = self._snap_boundary(trajectory, compress_until, compress_start, compress_end)
         if compress_until <= compress_start:
             # Snapping collapsed the region; nothing can be safely compressed.
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
+        # If the region we can safely compress is no larger than the summary
+        # that would replace it, compression cannot reduce the token count --
+        # it would grow the trajectory and still spend a summarization call.
+        if (
+            sum(turn_tokens[compress_start:compress_until])
+            <= self.config.summary_target_tokens
+        ):
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens
@@ -1270,7 +1289,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         skipped_pct = (skipped / max(total, 1)) * 100
         over_limit_pct = (over_limit / max(total, 1)) * 100
         
-        print(f"\n")
+        print("\n")
         print(f"╔{'═'*70}╗")
         print(f"║{'TRAJECTORY COMPRESSION REPORT':^70}║")
         print(f"╠{'═'*70}╣")
@@ -1353,7 +1372,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             ratios = self.aggregate_metrics.compression_ratios
             tokens_saved_list = self.aggregate_metrics.tokens_saved_list
             
-            print(f"\n📊 Distribution Summary:")
+            print("\n📊 Distribution Summary:")
             print(f"   Compression ratios: min={min(ratios):.2%}, max={max(ratios):.2%}, median={sorted(ratios)[len(ratios)//2]:.2%}")
             print(f"   Tokens saved:       min={min(tokens_saved_list):,}, max={max(tokens_saved_list):,}, median={sorted(tokens_saved_list)[len(tokens_saved_list)//2]:,}")
 
@@ -1436,7 +1455,7 @@ def main(
     is_file_input = input_path.is_file()
     
     if is_file_input:
-        print(f"📄 Input mode: Single JSONL file")
+        print("📄 Input mode: Single JSONL file")
         
         # For file input, default output is file with _compressed suffix
         if output:
@@ -1466,7 +1485,7 @@ def main(
             print(f"   Sampled {len(entries):,} trajectories ({sample_percent}% of {total_entries:,})")
         
         if dry_run:
-            print(f"\n🔍 DRY RUN MODE - analyzing without writing")
+            print("\n🔍 DRY RUN MODE - analyzing without writing")
             print(f"📄 Would process: {len(entries):,} trajectories")
             print(f"📄 Would output to: {output_path}")
             return
@@ -1502,12 +1521,12 @@ def main(
                 shutil.copy(metrics_file, metrics_output)
                 print(f"💾 Metrics saved to {metrics_output}")
         
-        print(f"\n✅ Compression complete!")
+        print("\n✅ Compression complete!")
         print(f"📄 Output: {output_path}")
         
     else:
         # Directory input - original behavior
-        print(f"📁 Input mode: Directory of JSONL files")
+        print("📁 Input mode: Directory of JSONL files")
         
         if output:
             output_path = Path(output)
@@ -1553,7 +1572,7 @@ def main(
                 print(f"   Sampled {total_sampled:,} from {total_original:,} total trajectories")
                 
                 if dry_run:
-                    print(f"\n🔍 DRY RUN MODE - analyzing without writing")
+                    print("\n🔍 DRY RUN MODE - analyzing without writing")
                     print(f"📁 Would process: {temp_input_dir}")
                     print(f"📁 Would output to: {output_path}")
                     return
@@ -1563,7 +1582,7 @@ def main(
                 compressor.process_directory(temp_input_dir, output_path)
         else:
             if dry_run:
-                print(f"\n🔍 DRY RUN MODE - analyzing without writing")
+                print("\n🔍 DRY RUN MODE - analyzing without writing")
                 print(f"📁 Would process: {input_path}")
                 print(f"📁 Would output to: {output_path}")
                 return

@@ -23,6 +23,11 @@ except ModuleNotFoundError:
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
+else:
+    # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch directory from
+    # shadowing Hermes's own modules — ``hermes acp`` can be started from any
+    # cwd, including a project that has same-named packages on its path.
+    hermes_bootstrap.harden_import_path()
 
 import argparse
 import asyncio
@@ -185,7 +190,7 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
     """Bootstrap agent-browser + Chromium.
 
     Routes through dep_ensure -> install.{sh,ps1} --ensure, sharing code
-    with ``hermes postinstall`` and the runtime lazy installer.
+    with the runtime lazy installer.
 
     Returns 0 on success, 1 on failure.
     """

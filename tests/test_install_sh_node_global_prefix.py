@@ -53,3 +53,6 @@ def test_node_bootstrap_redirects_bundled_npm_global_prefix_to_link_dir() -> Non
     ensure_node_body = text.split("ensure_node()", 1)[1]
     assert "_nb_configure_npm_prefix" in ensure_node_body
     assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text
+    assert "heal_managed_node()" in text
+    assert "_nb_managed_tool_broken" in text
+    assert "for tool in node npm npx" in text

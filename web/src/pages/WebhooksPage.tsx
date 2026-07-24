@@ -26,7 +26,6 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
-import { useI18n } from "@/i18n";
 
 interface CreatedWebhook {
   url: string;
@@ -34,7 +33,6 @@ interface CreatedWebhook {
 }
 
 function CopyButton({ value }: { value: string }) {
-  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     navigator.clipboard
@@ -49,8 +47,8 @@ function CopyButton({ value }: { value: string }) {
     <Button
       ghost
       size="icon"
-      title={t.webhooks.copySecret}
-      aria-label={t.webhooks.copySecret}
+      title="Copy"
+      aria-label="Copy"
       onClick={handleCopy}
       className="text-muted-foreground hover:text-foreground"
     >
@@ -60,7 +58,6 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export default function WebhooksPage() {
-  const { t } = useI18n();
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabling, setEnabling] = useState(false);
@@ -306,7 +303,7 @@ export default function WebhooksPage() {
       {createModalOpen && (
         <div
           ref={createModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) => e.target === e.currentTarget && closeCreateModal()}
           role="dialog"
           aria-modal="true"
@@ -454,7 +451,7 @@ export default function WebhooksPage() {
                     disabled={creating}
                     prefix={creating ? <Spinner /> : undefined}
                   >
-                    {creating ? t.webhooks.creating : t.webhooks.create}
+                    {creating ? "Creating…" : "Create"}
                   </Button>
                 </div>
               </div>
@@ -600,8 +597,8 @@ export default function WebhooksPage() {
                   ghost
                   destructive
                   size="icon"
-                  title={t.webhooks.delete}
-                  aria-label={t.webhooks.delete}
+                  title="Delete"
+                  aria-label="Delete"
                   onClick={() => webhookDelete.requestDelete(sub.name)}
                 >
                   <Trash2 />

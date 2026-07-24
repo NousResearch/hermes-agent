@@ -1,6 +1,8 @@
 import { parseSlashCommand } from '../domain/slash.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
 import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
+import { launchWidget } from '../sdk/host.js'
+import { getWidgetApp } from '../sdk/registry.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
 import { findSlashCommand } from './slash/registry.js'
@@ -41,6 +43,19 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
     if (found) {
       found.run(parsed.arg, runCtx, cmd)
+
+      return true
+    }
+
+    // Registry-first fallback: widget apps registered AFTER the static
+    // command table was built (user widgets from $HERMES_HOME/tui-widgets,
+    // /widgets-reload) dispatch straight off the live registry.
+    if (getWidgetApp(parsed.name)) {
+      const err = launchWidget(parsed.name, parsed.arg)
+
+      if (err) {
+        sys(err)
+      }
 
       return true
     }
@@ -99,6 +114,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         if (d.notice?.trim()) {
           sys(d.notice)
         }
+
         return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
       }
 
@@ -109,6 +125,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         if (d.notice?.trim()) {
           sys(d.notice)
         }
+
         if (d.message) {
           ctx.composer.setInput(d.message)
         }

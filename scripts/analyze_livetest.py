@@ -59,7 +59,7 @@ def main():
     scenarios = sorted({row["scenario"] for row in summary})
 
     print(f"{'='*78}")
-    print(f"  Live test results: tool_search ENABLED vs DISABLED")
+    print("  Live test results: tool_search ENABLED vs DISABLED")
     print(f"{'='*78}\n")
 
     fails = 0
@@ -73,7 +73,7 @@ def main():
         print(f"┌─ {sid}  ({en['scenario_description']})")
         print(f"│  Prompt: {en['prompt'][:120]}")
         print(f"│  Expected underlying tools: {sorted(expected) or '(none)'}")
-        print(f"│")
+        print("│")
 
         for label, rec in [("ENABLED ", en), ("DISABLED", di)]:
             called_under = [c["name"] for c in rec["underlying_tool_calls"]]
@@ -104,7 +104,7 @@ def main():
         print(f"│  Δ round-trip cost: enabled used {en_bridges + en_underlying} calls vs disabled {di_underlying}  →  +{overhead}")
         print(f"│  Final (enabled):  {(en.get('final_response') or '')[:140]}")
         print(f"│  Final (disabled): {(di.get('final_response') or '')[:140]}")
-        print(f"└──")
+        print("└──")
         print()
 
     print(f"\nFails: {fails}/{2*len(scenarios)}")

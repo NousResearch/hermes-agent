@@ -47,7 +47,7 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - OpenAI Codex
 - Copilot / Copilot ACP
 - Anthropic (native)
-- Google / Gemini (`gemini`, `google-gemini-cli`, `google-antigravity`)
+- Google / Gemini (`gemini`)
 - Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
 - DeepSeek
 - Z.AI

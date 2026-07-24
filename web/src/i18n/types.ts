@@ -124,6 +124,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
+    disabled?: string;
     disconnected: string;
     error: string;
     failed: string;
@@ -138,6 +139,8 @@ export interface Translations {
     activeSessions: string;
     recentSessions: string;
     restartGateway: string;
+    restartGatewayConfirmMessage?: string;
+    restartGatewayConfirmTitle?: string;
     restartingGateway: string;
     running: string;
     runningRemote: string;
@@ -146,6 +149,9 @@ export interface Translations {
     startedInBackground: string;
     stopped: string;
     updateHermes: string;
+    updateHermesConfirmMessage?: string;
+    updateHermesConfirmNow?: string;
+    updateHermesConfirmTitle?: string;
     updatingHermes: string;
     waitingForOutput: string;
   };
@@ -500,6 +506,14 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
+    customTitle: string;
+    customHint: string;
+    customConfigured: string;
+    addCustomKey: string;
+    customKeyName: string;
+    customKeyNamePlaceholder: string;
+    add: string;
+    invalidKeyName: string;
   };
 
   // ── OAuth ──
@@ -516,6 +530,8 @@ export interface Translations {
     disconnect: string;
     managedExternally: string;
     copied: string;
+    copyCode: string;
+    copyFailed: string;
     cli: string;
     copyCliCommand: string;
     connect: string;
@@ -810,401 +826,25 @@ export interface Translations {
     workspacePathOptional: string;
     logTruncated: string;
     logAt: string;
-  };
-
-  // ── Channels (Messaging Platforms) ──
-  channels: {
-    addServer: string;
-    configure: string;
-    setupGuide: string;
-    saveEnable: string;
-    saving: string;
-    cancel: string;
-    restartGateway: string;
-    restarting: string;
-    restartNow: string;
-    changesSavedBanner: string;
-    gatewayNotRunning: string;
-    configuredCount: string;
-    nothingToSave: string;
-    requiredField: string;
-    fixFields: string;
-    saved: string;
-    testError: string;
-    restartingGateway: string;
-  };
-
-  // ── System page ──
-  system: {
-    host: string;
-    portal: string;
-    curator: string;
-    gateway: string;
-    memory: string;
-    credentialPool: string;
-    shellHooks: string;
-    checkpoints: string;
-    debugShare: string;
-    os: string;
-    arch: string;
-    hostname: string;
-    python: string;
-    hermes: string;
-    cpu: string;
-    cores: string;
-    disk: string;
-    uptime: string;
-    loadAvg: string;
-    psutilHint: string;
-    checkForUpdates: string;
-    updateNow: string;
-    updateWith: string;
-    latest: string;
-    behind: string;
-    updateAvailable: string;
-    loggedIn: string;
-    notLoggedIn: string;
-    inferenceProvider: string;
-    manageSubscription: string;
-    toolGatewayRouting: string;
-    loginWith: string;
-    paused: string;
-    active: string;
-    disabled: string;
-    every: string;
-    lastRun: string;
-    neverRun: string;
-    resume: string;
-    pause: string;
-    runNow: string;
-    running: string;
-    stopped: string;
-    start: string;
-    restart: string;
-    stop: string;
-    externalProvider: string;
-    builtinOnly: string;
-    changeInPlugins: string;
-    newCredentials: string;
-    builtinFiles: string;
-    resetMemory: string;
-    resetUser: string;
-    resetAll: string;
-    provider: string;
-    apiKey: string;
-    label: string;
-    addCredential: string;
-    adding: string;
-    noCredentials: string;
-    newShellHook: string;
-    event: string;
-    command: string;
-    matcherOptional: string;
-    timeoutSec: string;
-    approveNow: string;
-    approveNowDesc: string;
-    shellHookWarning: string;
-    createHook: string;
-    creating: string;
-    pruneCheckpoints: string;
-    pruneCheckpointsDesc: string;
-    prune: string;
-    debugShareDesc: string;
-    share: string;
-    sharing: string;
-    redact: string;
-    copyUrl: string;
-    copied: string;
-    removeCredential: string;
-    removeCredentialDesc: string;
-    remove: string;
-    resetMemoryConfirm: string;
-    resetMemoryDesc: string;
-    removeHook: string;
-    removeHookDesc: string;
-  };
-
-  // ── Profile Builder (step-by-step wizard) ──
-  profileBuilder: {
-    title: string;
-    cancel: string;
-    steps: {
-      identity: string;
-      model: string;
-      skills: string;
-      mcp: string;
-      review: string;
-    };
-    identity: {
-      nameLabel: string;
-      namePlaceholder: string;
-      nameRule: string;
-      descLabel: string;
-      descPlaceholder: string;
-    };
-    model: {
-      hint: string;
-      filterPlaceholder: string;
-      loading: string;
-      useDefault: string;
-    };
-    skills: {
-      keepAllLabel: string;
-      chooseHint: string;
-      filterPlaceholder: string;
-      loading: string;
-      hubLabel: string;
-      hubSearchPlaceholder: string;
-      search: string;
-      searching: string;
-      add: string;
-      remove: string;
-    };
-    mcp: {
-      hint: string;
-      namePlaceholder: string;
-      urlPlaceholder: string;
-      commandPlaceholder: string;
-      argsPlaceholder: string;
-      addServer: string;
-      remove: string;
-      nameRequired: string;
-      urlOrCommandRequired: string;
-    };
-    review: {
-      name: string;
-      description: string;
-      model: string;
-      defaultModel: string;
-      skills: string;
-      keepAll: string;
-      keptCount: string;
-      mcp: string;
-      none: string;
-      createProfile: string;
-      creating: string;
-      created: string;
-      createdPending: string;
-      createFailed: string;
-      invalidName: string;
-      selectModel: string;
-    };
-  };
-
-  // ── Cron Blueprints ──
-  blueprints: {
-    setup: string;
-    cancel: string;
-    scheduleIt: string;
-    loading: string;
-    loadError: string;
-    noBlueprints: string;
-    scheduled: string;
-    tabLabel: string;
-  };
-
-  // ── Files page ──
-  files: {
-    title: string;
-    pathPlaceholder: string;
-    go: string;
-    upload: string;
-    create: string;
-    uploading: string;
-    dropHere: string;
-    releaseToUpload: string;
-    chooseFiles: string;
-    loading: string;
-    noFiles: string;
-    name: string;
-    size: string;
-    modified: string;
-    actions: string;
-    createFolder: string;
-    folderName: string;
-    cancel: string;
-    createBtn: string;
-    creating: string;
-    target: string;
-    pathRequired: string;
-    folderNameRequired: string;
-    folderCreated: string;
-    createFailed: string;
-    uploadFailed: string;
-    deleteFailed: string;
-    deleted: string;
-    directoryUnavailable: string;
-  };
-
-  // ── MCP page ──
-  mcpPage: {
-    addServer: string;
-    removeServer: string;
-    removeConfirm: string;
-    name: string;
-    transport: string;
-    url: string;
-    command: string;
-    args: string;
-    env: string;
-    envPlaceholder: string;
-    add: string;
-    adding: string;
-    nameRequired: string;
-    urlRequired: string;
-    commandRequired: string;
-    install: string;
-    installTitle: string;
-    installHint: string;
-    installing: string;
-    installed: string;
-    installFailed: string;
-    installBackground: string;
-    testTools: string;
-    testFailed: string;
-    toggleNote: string;
-    addFailed: string;
-    deleteSuccess: string;
-  };
-
-  // ── Webhooks page ──
-  webhooks: {
-    title: string;
-    newWebhook: string;
-    name: string;
-    namePlaceholder: string;
-    description: string;
-    descriptionPlaceholder: string;
-    events: string;
-    create: string;
-    creating: string;
-    created: string;
-    webhookUrl: string;
-    secret: string;
-    secretShownOnce: string;
-    copySecret: string;
-    copied: string;
-    delete: string;
-    deleteConfirmTitle: string;
-    deleteConfirmMessage: string;
-    deleteSuccess: string;
-    noWebhooks: string;
-    test: string;
-    testSent: string;
-    testFailed: string;
-    refresh: string;
-  };
-
-  // ── Model Info Card ──
-  modelInfo: {
-    contextWindow: string;
-    maxOutput: string;
-    supportsVision: string;
-    supportsTools: string;
-    supportsReasoning: string;
-    loading: string;
-    noInfo: string;
-  };
-
-  // ── Skill Editor Dialog ──
-  skillEditor: {
-    createTitle: string;
-    editTitle: string;
-    name: string;
-    namePlaceholder: string;
-    category: string;
-    categoryOptional: string;
-    content: string;
-    save: string;
-    saving: string;
-    saved: string;
-    saveFailed: string;
-    cancel: string;
-  };
-  // ── Auth Widget ──
-  auth: {
-    logOut: string;
-    statusUnavailable: string;
-    loggedInAs: string;
-    via: string;
-  };
-
-  // ── Model Picker Dialog ──
-  modelPicker: {
-    close: string;
-    switch_: string;
-    cancel: string;
-    filterPlaceholder: string;
-    persistLabel: string;
-    savesToConfig: string;
-    expensiveWarning: string;
-    switchAnyway: string;
-    loading: string;
-    noMatches: string;
-    noProviders: string;
-    current: string;
-    unknown: string;
-    models: string;
-    title: string;
-  };
-
-  // ── Model Reload Confirm ──
-  modelReload: {
-    title: string;
-    description: string;
-    reload: string;
-  };
-
-  // ── Toolset Config Drawer ──
-  toolsetConfig: {
-    close: string;
-    enableToolset: string;
-    active: string;
-    inactive: string;
-    enabled: string;
-    disabled: string;
-    noBackends: string;
-    noProviders: string;
-    select: string;
-    selected: string;
-    saveKeys: string;
-    saved: string;
-    nothingToSave: string;
-    enterValue: string;
-    savedPlaceholder: string;
-    getKey: string;
-    needsInstall: string;
-    runSetup: string;
-    installing: string;
-    postSetupComplete: string;
-    postSetupErrors: string;
-    lostTrack: string;
-    failedToggle: string;
-    failedSelect: string;
-    failedSave: string;
-    failedSetup: string;
-    providerSet: string;
-    enabledMsg: string;
-    disabledMsg: string;
-  };
-
-  // ── Pairing Page ──
-  pairing: {
-    pendingRequests: string;
-    noPending: string;
-    approvedUsers: string;
-    noApproved: string;
-    approve: string;
-    revoke: string;
-    revokeAccess: string;
-    revokeDesc: string;
-    clearPending: string;
-    clearAllConfirm: string;
-    cleared: string;
-    missingCode: string;
-    approvedMsg: string;
-    revokedMsg: string;
-    loadFailed: string;
-    ago: string;
+    // Optional keys added with the modal create-task dialog, board-settings
+    // dialog, and comment workflow hint. Non-English locales fall back to
+    // the English literal in the plugin bundle until translated, so these
+    // are optional to avoid churning every locale file.
+    newTaskTitle?: string;
+    taskTitleLabel?: string;
+    assigneeLabel?: string;
+    assigneeLabelHint?: string;
+    skillsLabel?: string;
+    skillsLabelHint?: string;
+    parentLabel?: string;
+    parentLabelHint?: string;
+    create?: string;
+    boardSettings?: string;
+    boardSettingsTitle?: string;
+    boardSettingsTitleFor?: string;
+    projectDirectoryOverrideHint?: string;
+    saving?: string;
+    commentHint?: string;
+    commentHintTitle?: string;
   };
 }

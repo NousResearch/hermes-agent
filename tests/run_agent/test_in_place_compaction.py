@@ -184,9 +184,11 @@ class TestInPlaceCompaction:
             assert calls["n"] == 1
 
 
-class TestRotationStillDefault:
+class TestRotationFallbackWhenFlagOff:
     def test_rotation_when_flag_off(self):
-        """Regression guard: flag off => legacy rotation is unchanged."""
+        """Rotation is now the OPT-OUT fallback (default flipped to in-place in
+        #38763). With in_place=False explicitly set, legacy rotation is
+        unchanged — forks a renamed continuation session."""
         from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
@@ -211,8 +213,14 @@ class TestRotationStillDefault:
             ).fetchall()
             assert len(child) == 1
             assert child[0]["title"] == "my-research #2"
-            # Flush cursor reset for the new row.
-            assert agent._last_flushed_db_idx == 0
+            # The compacted child is persisted atomically at the rotation
+            # boundary, so a headless process killed before finalization can
+            # still resume it without duplicating the two handoff messages.
+            assert agent._last_flushed_db_idx == 2
+            assert [m.get("content") for m in db.get_messages_as_conversation(agent.session_id)] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
 
@@ -247,10 +255,12 @@ class TestInPlaceSignalForGateway:
 
 
 class TestInPlaceConfigDefault:
-    def test_flag_defaults_off(self):
+    def test_flag_defaults_on(self):
+        """In-place is the default as of #38763 (rotation is now opt-out via
+        compression.in_place: false)."""
         from hermes_cli.config import DEFAULT_CONFIG
 
-        assert DEFAULT_CONFIG["compression"].get("in_place") is False
+        assert DEFAULT_CONFIG["compression"].get("in_place") is True
 
 
 class TestCompactedTurnsStaySearchable:
@@ -313,4 +323,3 @@ class TestCompactedTurnsStaySearchable:
                 "ZEBRAWORD", role_filter=["user", "assistant"], include_inactive=True
             )
             assert len(recovered) == 1
-

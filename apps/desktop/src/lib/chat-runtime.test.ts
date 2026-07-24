@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
+import {
+  attachmentDisplayText,
+  coerceThinkingText,
+  optimisticAttachmentRef,
+  parseCommandDispatch,
+  parseSlashCommand
+} from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -35,6 +41,32 @@ describe('optimisticAttachmentRef', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'file', refText: '@file:src/a.ts', previewUrl: DATA_URL }))).toBe(
       '@file:src/a.ts'
     )
+  })
+
+  // Session switches / draft restores can leave undefined|null holes in the
+  // composer attachments array. AttachmentList already filters them (#49624),
+  // but the submit path maps the same array through these helpers — an unguarded
+  // hole threw "Cannot read properties of undefined (reading 'refText')",
+  // crashing the chat surface (blank pane). The helpers must no-op on holes.
+  it('returns null for an undefined attachment instead of throwing', () => {
+    expect(() => optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).not.toThrow()
+    expect(optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).toBeNull()
+  })
+
+  it('returns null for a null attachment instead of throwing', () => {
+    expect(optimisticAttachmentRef(null as unknown as ComposerAttachment)).toBeNull()
+  })
+})
+
+describe('attachmentDisplayText', () => {
+  it('returns null for undefined|null instead of reading .kind/.refText on a hole', () => {
+    expect(() => attachmentDisplayText(undefined as unknown as ComposerAttachment)).not.toThrow()
+    expect(attachmentDisplayText(undefined as unknown as ComposerAttachment)).toBeNull()
+    expect(attachmentDisplayText(null as unknown as ComposerAttachment)).toBeNull()
+  })
+
+  it('still resolves a normal file ref', () => {
+    expect(attachmentDisplayText(attachment({ kind: 'file', refText: '@file:src/a.ts' }))).toBe('@file:src/a.ts')
   })
 })
 
@@ -78,5 +110,43 @@ describe('parseCommandDispatch', () => {
 
   it('rejects a prefill directive missing its message', () => {
     expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
+  })
+})
+
+describe('parseSlashCommand', () => {
+  it('parses a single-line command', () => {
+    expect(parseSlashCommand('/some-skill do something')).toEqual({
+      arg: 'do something',
+      name: 'some-skill'
+    })
+  })
+
+  it('keeps a multiline arg intact instead of failing the whole parse (#41323)', () => {
+    expect(parseSlashCommand('/goal Write a Python script\nthat prints Hello World')).toEqual({
+      arg: 'Write a Python script\nthat prints Hello World',
+      name: 'goal'
+    })
+  })
+
+  it('parses a skill command with a long pasted multi-paragraph context (#55510)', () => {
+    const context = 'summarize this:\n\nparagraph one\nparagraph two\n\nparagraph three'
+
+    expect(parseSlashCommand(`/some-skill ${context}`)).toEqual({
+      arg: context,
+      name: 'some-skill'
+    })
+  })
+
+  it('takes the name across a newline boundary like the CLI and gateway (split on any whitespace)', () => {
+    expect(parseSlashCommand('/goal\npasted block')).toEqual({ arg: 'pasted block', name: 'goal' })
+  })
+
+  it('keeps truly empty slash input empty', () => {
+    expect(parseSlashCommand('/')).toEqual({ arg: '', name: '' })
+    expect(parseSlashCommand('/   ')).toEqual({ arg: '', name: '' })
+  })
+
+  it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
+    expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
   })
 })

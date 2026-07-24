@@ -186,8 +186,8 @@ async def test_notifier_second_blocked_delivers(kanban_home):
         tid = kb.create_task(conn, title="test task", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
 
-        # Cycle 1: blocked
-        kb.block_task(conn, tid, reason="first block")
+        # Cycle 1: blocked for one reason
+        kb.block_task(conn, tid, reason="first block", kind="needs_input")
     finally:
         conn.close()
 
@@ -197,14 +197,18 @@ async def test_notifier_second_blocked_delivers(kanban_home):
             timeout=10.0,
         )
 
-    # Cycle 2: unblock → block run again
+    # Cycle 2: unblock → block again for a DIFFERENT reason. A distinct
+    # block cause must still notify. (A *same*-cause re-block instead trips
+    # the unblock-loop breaker and routes to triage — covered by
+    # test_kanban_block_kinds.py; here we exercise two genuinely different
+    # blocks, which is the case the user wants notified twice.)
     runner._running = True
     tick_count = 0
 
     conn = kb.connect()
     try:
         kb.unblock_task(conn, tid)
-        kb.block_task(conn, tid, reason="second block")
+        kb.block_task(conn, tid, reason="second block", kind="capability")
     finally:
         conn.close()
 

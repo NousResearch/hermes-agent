@@ -9,12 +9,17 @@ const buildOverlayState = (): OverlayState => ({
   billing: null,
   clarify: null,
   confirm: null,
+  ambient: [],
+  widget: null,
+  journey: false,
   modelPicker: false,
   pager: null,
+  petPicker: false,
   pluginsHub: false,
   secret: null,
   sessions: false,
   skillsHub: false,
+  subscription: null,
   sudo: null
 })
 
@@ -22,20 +27,41 @@ export const $overlayState = atom<OverlayState>(buildOverlayState())
 
 export const $isBlocked = computed(
   $overlayState,
-  ({ agents, approval, billing, clarify, confirm, modelPicker, pager, pluginsHub, secret, sessions, skillsHub, sudo }) =>
+  ({
+    agents,
+    approval,
+    billing,
+    clarify,
+    confirm,
+    journey,
+    modelPicker,
+    pager,
+    petPicker,
+    pluginsHub,
+    secret,
+    sessions,
+    skillsHub,
+    subscription,
+    sudo,
+    widget
+  }) =>
     Boolean(
       agents ||
-        approval ||
-        billing ||
-        clarify ||
-        confirm ||
-        modelPicker ||
-        pager ||
-        pluginsHub ||
-        secret ||
-        sessions ||
-        skillsHub ||
-        sudo
+      approval ||
+      billing ||
+      clarify ||
+      confirm ||
+      journey ||
+      modelPicker ||
+      pager ||
+      petPicker ||
+      pluginsHub ||
+      secret ||
+      sessions ||
+      skillsHub ||
+      subscription ||
+      sudo ||
+      widget
     )
 )
 
@@ -60,7 +86,11 @@ export const resetFlowOverlays = () =>
     ...buildOverlayState(),
     agents: $overlayState.get().agents,
     agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
+    ambient: $overlayState.get().ambient,
+    widget: $overlayState.get().widget,
+    journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,
+    petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,
     sessions: $overlayState.get().sessions,
     skillsHub: $overlayState.get().skillsHub

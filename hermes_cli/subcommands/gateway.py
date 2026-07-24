@@ -85,6 +85,16 @@ def build_gateway_parser(
             "gateway's exit code. No effect outside an s6 container."
         ),
     )
+    gateway_run.add_argument(
+        "--external-supervisor",
+        action="store_true",
+        help=(
+            "Declare that an external process manager owns this foreground "
+            "gateway. In-chat restarts and updates exit back to that manager "
+            "instead of spawning a detached replacement. Use this when a "
+            "launchd/systemd wrapper strips its native environment markers."
+        ),
+    )
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
@@ -169,26 +179,26 @@ def build_gateway_parser(
         dest="start_now",
         action="store_true",
         default=None,
-        help=argparse.SUPPRESS,
+        help="Start the gateway service immediately after installing",
     )
     gateway_install.add_argument(
         "--no-start-now",
         dest="start_now",
         action="store_false",
-        help=argparse.SUPPRESS,
+        help="Do not start the gateway service after installing",
     )
     gateway_install.add_argument(
         "--start-on-login",
         dest="start_on_login",
         action="store_true",
         default=None,
-        help=argparse.SUPPRESS,
+        help="Enable the service to start automatically on login/boot",
     )
     gateway_install.add_argument(
         "--no-start-on-login",
         dest="start_on_login",
         action="store_false",
-        help=argparse.SUPPRESS,
+        help="Do not enable the service to start on login/boot",
     )
     gateway_install.add_argument(
         "--elevated-handoff",
@@ -280,6 +290,19 @@ def build_gateway_parser(
         help=(
             "A stable id for this gateway instance (kill-switch granularity). "
             "Defaults to gw-<hostname>."
+        ),
+    )
+    gateway_enroll.add_argument(
+        "--wake-url",
+        dest="wake_url",
+        default=None,
+        help=(
+            "Phase 5 §5.2 wake URL: a reachable URL the connector pokes "
+            "(payload-free GET) to wake this gateway when buffered work arrives "
+            "while it's idle/suspended, so it reconnects and drains. Persisted as "
+            "GATEWAY_RELAY_WAKE_URL in ~/.hermes/.env and forwarded at provision. "
+            "Optional — without it the gateway still drains whenever it next "
+            "reconnects on its own."
         ),
     )
     gateway_enroll.set_defaults(func=cmd_gateway_enroll)

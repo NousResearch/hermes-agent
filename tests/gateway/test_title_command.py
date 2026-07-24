@@ -32,6 +32,10 @@ def _make_runner(session_db=None):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    # Gateway holds the async facade; the slash handlers await it.
+    if session_db is not None:
+        from hermes_state import AsyncSessionDB
+        session_db = AsyncSessionDB(session_db)
     runner._session_db = session_db
 
     # Mock session_store that returns a session entry with a known session_id
@@ -296,7 +300,7 @@ class TestResetCommandWithTitle:
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._pending_approvals = {}
-        runner._session_db = MagicMock()
+        runner._session_db = AsyncMock()
         runner._agent_cache = {}
         runner._agent_cache_lock = None
         runner._is_user_authorized = lambda _source: True
@@ -356,7 +360,7 @@ class TestResetCommandWithTitle:
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._pending_approvals = {}
-        runner._session_db = MagicMock()
+        runner._session_db = AsyncMock()
         runner._session_db.set_session_title.side_effect = ValueError(
             "Title 'Dup' is already in use by session abc-123"
         )

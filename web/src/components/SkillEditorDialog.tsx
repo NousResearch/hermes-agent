@@ -11,7 +11,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@nous-research/ui/ui/components/dialog";
-import { useI18n } from "@/i18n";
 
 /* ------------------------------------------------------------------ */
 /*  SkillEditorDialog — create or edit a SKILL.md from the dashboard   */
@@ -79,7 +78,6 @@ function EditorBody({
   onClose,
   onSaved,
 }: Omit<SkillEditorDialogProps, "open">) {
-  const { t } = useI18n();
   const isEdit = editName !== null;
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
@@ -104,7 +102,7 @@ function EditorBody({
   const handleSave = async () => {
     setError(null);
     if (!isEdit && !name.trim()) {
-      setError(t.skillEditor.name + " " + t.common.save.toLowerCase());
+      setError("Skill name is required.");
       return;
     }
     if (!content.trim()) {
@@ -140,7 +138,7 @@ function EditorBody({
     <>
       <DialogHeader>
         <DialogTitle>
-          {isEdit ? t.skillEditor.editTitle.replace("{name}", editName ?? "") : t.skillEditor.createTitle}
+          {isEdit ? `Edit skill: ${editName}` : "New skill"}
         </DialogTitle>
         <DialogDescription>
           {isEdit
@@ -153,17 +151,17 @@ function EditorBody({
         {!isEdit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-name">{t.skillEditor.name}</Label>
+              <Label htmlFor="skill-editor-name">Name</Label>
               <Input
                 id="skill-editor-name"
                 autoFocus
-                placeholder={t.skillEditor.namePlaceholder}
+                placeholder="my-skill"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-category">{t.skillEditor.category}</Label>
+              <Label htmlFor="skill-editor-category">Category (optional)</Label>
               <Input
                 id="skill-editor-category"
                 placeholder="devops"
@@ -175,7 +173,7 @@ function EditorBody({
         )}
 
         <div className="grid gap-1.5">
-          <Label htmlFor="skill-editor-content">{t.skillEditor.content}</Label>
+          <Label htmlFor="skill-editor-content">SKILL.md</Label>
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <Spinner className="text-xl text-primary" />
@@ -199,7 +197,7 @@ function EditorBody({
 
         <div className="flex items-center justify-end gap-2">
           <Button ghost size="sm" onClick={onClose} disabled={saving}>
-            {t.skillEditor.cancel}
+            Cancel
           </Button>
           <Button
             size="sm"
@@ -208,7 +206,7 @@ function EditorBody({
             disabled={saving || loading}
             prefix={saving ? <Spinner /> : undefined}
           >
-            {saving ? t.skillEditor.saving : isEdit ? t.skillEditor.save : t.skillEditor.save}
+            {saving ? "Saving…" : isEdit ? "Save changes" : "Create skill"}
           </Button>
         </div>
       </div>

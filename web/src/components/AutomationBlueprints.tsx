@@ -12,7 +12,6 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { api } from "@/lib/api";
 import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api";
 import { cn, themedBody } from "@/lib/utils";
-import { useI18n } from "@/i18n";
 
 interface AutomationBlueprintsProps {
   profile: string;
@@ -78,7 +77,6 @@ function BlueprintCard({
   showToast: (message: string, type: "error" | "success") => void;
   onCreated?: () => void;
 }) {
-  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string>>(() => initialValues(blueprint));
   const [submitting, setSubmitting] = useState(false);
@@ -90,7 +88,7 @@ function BlueprintCard({
     try {
       const job = await api.instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile);
       const when = job.schedule_display ? ` — ${job.schedule_display}` : "";
-      showToast(t.blueprints.scheduled.replace("{title}", blueprint.title).replace("{when}", when), "success");
+      showToast(`${blueprint.title} scheduled${when}`, "success");
       setOpen(false);
       setValues(initialValues(blueprint));
       onCreated?.();
@@ -126,7 +124,7 @@ function BlueprintCard({
             size="sm"
             onClick={() => setOpen((o) => !o)}
           >
-            {open ? t.blueprints.cancel : t.blueprints.setup}
+            {open ? "Cancel" : "Set up"}
           </Button>
         </div>
 
@@ -156,7 +154,7 @@ function BlueprintCard({
                 disabled={submitting}
                 prefix={submitting ? <Spinner /> : <Clock />}
               >
-                {t.blueprints.scheduleIt}
+                Schedule it
               </Button>
             </div>
           </div>
@@ -173,7 +171,6 @@ function BlueprintCard({
  * via the same create_job path as everything else.
  */
 export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprintsProps) {
-  const { t } = useI18n();
   const { toast, showToast } = useToast();
   const [blueprints, setBlueprints] = useState<AutomationBlueprint[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -194,17 +191,17 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
   }, []);
 
   if (loadError) {
-    return <p className="text-sm text-red-500">{t.blueprints.loadError.replace("{error}", String(loadError))}</p>;
+    return <p className="text-sm text-red-500">Couldn't load blueprints: {loadError}</p>;
   }
   if (blueprints === null) {
     return (
       <div className="flex items-center gap-2 opacity-70">
-        <Spinner className="h-4 w-4" /> {t.blueprints.loading}
+        <Spinner className="h-4 w-4" /> Loading blueprints…
       </div>
     );
   }
   if (blueprints.length === 0) {
-    return <p className="opacity-70">{t.blueprints.noBlueprints}</p>;
+    return <p className="opacity-70">No automation blueprints available.</p>;
   }
 
   return (

@@ -1275,6 +1275,38 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error               TEXT
 );
 
+CREATE TABLE IF NOT EXISTS board_meta (
+    singleton         INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+    board_instance_id TEXT NOT NULL UNIQUE
+        CHECK (
+            length(board_instance_id) = 32
+            AND board_instance_id NOT GLOB '*[^0-9a-f]*'
+        )
+) WITHOUT ROWID;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_runs_id_task_id
+    ON task_runs(id, task_id);
+
+CREATE TABLE IF NOT EXISTS worker_session_links (
+    board_instance_id   TEXT NOT NULL,
+    task_id             TEXT NOT NULL,
+    run_id              INTEGER NOT NULL,
+    profile_name        TEXT NOT NULL CHECK (profile_name <> ''),
+    state_db_instance_id TEXT NOT NULL,
+    session_id          TEXT NOT NULL,
+    state               TEXT NOT NULL
+        CHECK (state IN ('allocated', 'attached', 'retired', 'orphaned')),
+
+    PRIMARY KEY (state_db_instance_id, session_id),
+
+    FOREIGN KEY (board_instance_id)
+        REFERENCES board_meta(board_instance_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    FOREIGN KEY (run_id, task_id)
+        REFERENCES task_runs(id, task_id)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+
 -- Files attached to a task (PDFs, images, source documents). The blob
 -- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
 -- this row carries metadata + the absolute ``stored_path`` so the
@@ -1316,6 +1348,8 @@ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, c
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
+CREATE INDEX IF NOT EXISTS idx_worker_session_links_run
+    ON worker_session_links(board_instance_id, task_id, run_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
@@ -1662,6 +1696,288 @@ class KanbanDbCorruptError(RuntimeError):
         super().__init__(
             f"Refusing to open corrupt kanban DB at {db_path}: {reason}. "
             f"Original preserved; backup at {backup_str}."
+        )
+
+
+class KanbanWorkerSessionLinkError(RuntimeError):
+    """Raised when Kanban worker-session provenance cannot be established."""
+
+
+def _is_valid_instance_identity(value: Any) -> bool:
+    text = str(value or "").strip()
+    return len(text) == 32 and not any(ch not in "0123456789abcdef" for ch in text)
+
+
+def _new_worker_session_id() -> str:
+    return f"{time.strftime('%Y%m%d_%H%M%S', time.localtime())}_{secrets.token_hex(3)}"
+
+
+@contextlib.contextmanager
+def _init_write_txn(conn: sqlite3.Connection):
+    """BEGIN IMMEDIATE helper for schema/identity initialization paths."""
+    _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+    else:
+        _execute_boundary_with_retry(conn, "COMMIT")
+
+
+def _live_board_instance_id(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT board_instance_id FROM board_meta WHERE singleton = 1"
+    ).fetchone()
+    board_instance_id = row["board_instance_id"] if row is not None else None
+    if not _is_valid_instance_identity(board_instance_id):
+        raise KanbanWorkerSessionLinkError(
+            "kanban board identity is missing or malformed"
+        )
+    return str(board_instance_id)
+
+
+def _ensure_board_instance_id(conn: sqlite3.Connection) -> str:
+    candidate = secrets.token_hex(16)
+    with _init_write_txn(conn):
+        conn.execute(
+            """
+            INSERT INTO board_meta (singleton, board_instance_id)
+            VALUES (1, ?)
+            ON CONFLICT(singleton) DO NOTHING
+            """,
+            (candidate,),
+        )
+        board_instance_id = _live_board_instance_id(conn)
+    return board_instance_id
+
+
+def _profile_state_db_instance_id(profile_name: str) -> str:
+    if not profile_name:
+        raise KanbanWorkerSessionLinkError("worker profile is required")
+    from hermes_cli.profiles import resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_state import SessionDB
+
+    hermes_home = resolve_profile_env(profile_name)
+    token = set_hermes_home_override(hermes_home)
+    try:
+        db = SessionDB(db_path=Path(hermes_home) / "state.db")
+        try:
+            state_db_instance_id = db.get_state_db_instance_id()
+        finally:
+            db.close()
+    finally:
+        reset_hermes_home_override(token)
+    if not _is_valid_instance_identity(state_db_instance_id):
+        raise KanbanWorkerSessionLinkError(
+            f"state DB identity unavailable for profile {profile_name!r}"
+        )
+    return str(state_db_instance_id)
+
+
+def _orphan_allocated_worker_links(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: Optional[int],
+) -> None:
+    if run_id is None:
+        return
+    conn.execute(
+        """
+        UPDATE worker_session_links
+           SET state = 'orphaned'
+         WHERE task_id = ?
+           AND run_id = ?
+           AND state = 'allocated'
+        """,
+        (task_id, int(run_id)),
+    )
+
+
+def _allocate_worker_session_link(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    profile_name: str,
+) -> str:
+    board_instance_id = _live_board_instance_id(conn)
+    state_db_instance_id = _profile_state_db_instance_id(profile_name)
+    session_id = _new_worker_session_id()
+    conn.execute(
+        """
+        INSERT INTO worker_session_links (
+            board_instance_id, task_id, run_id, profile_name,
+            state_db_instance_id, session_id, state
+        ) VALUES (?, ?, ?, ?, ?, ?, 'allocated')
+        """,
+        (
+            board_instance_id,
+            task_id,
+            int(run_id),
+            profile_name,
+            state_db_instance_id,
+            session_id,
+        ),
+    )
+    return session_id
+
+
+def _worker_session_link_row(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    session_id: str,
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT board_instance_id, task_id, run_id, profile_name,
+               state_db_instance_id, session_id, state
+          FROM worker_session_links
+         WHERE task_id = ? AND run_id = ? AND session_id = ?
+        """,
+        (task_id, int(run_id), session_id),
+    ).fetchone()
+
+
+def get_allocated_worker_session_id(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+) -> str:
+    rows = conn.execute(
+        """
+        SELECT session_id
+          FROM worker_session_links
+         WHERE task_id = ? AND run_id = ? AND state = 'allocated'
+        """,
+        (task_id, int(run_id)),
+    ).fetchall()
+    if len(rows) != 1:
+        raise KanbanWorkerSessionLinkError(
+            f"expected exactly one allocated worker session for {task_id}/{run_id}"
+        )
+    return str(rows[0]["session_id"])
+
+
+def read_allocated_worker_session_link(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    session_id: str,
+    claim_lock: str,
+    profile_name: str,
+) -> dict[str, Any]:
+    row = _worker_session_link_row(
+        conn, task_id=task_id, run_id=run_id, session_id=session_id
+    )
+    if row is None or row["state"] != "allocated":
+        raise KanbanWorkerSessionLinkError(
+            "kanban worker session allocation is missing or no longer allocated"
+        )
+
+    task_row = conn.execute(
+        """
+        SELECT status, current_run_id, claim_lock, claim_expires, assignee
+          FROM tasks
+         WHERE id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+    if task_row is None or task_row["status"] != "running":
+        raise KanbanWorkerSessionLinkError("kanban task is no longer runnable")
+    if int(task_row["current_run_id"] or 0) != int(run_id):
+        raise KanbanWorkerSessionLinkError("kanban run id no longer matches the task")
+
+    now = int(time.time())
+    run_row = conn.execute(
+        """
+        SELECT claim_lock, claim_expires, status, ended_at
+          FROM task_runs
+         WHERE id = ? AND task_id = ?
+        """,
+        (int(run_id), task_id),
+    ).fetchone()
+    if (
+        task_row["claim_lock"] != claim_lock
+        or not task_row["claim_expires"]
+        or int(task_row["claim_expires"]) < now
+        or run_row is None
+        or run_row["claim_lock"] != claim_lock
+        or not run_row["claim_expires"]
+        or int(run_row["claim_expires"]) < now
+        or run_row["status"] != "running"
+        or run_row["ended_at"] is not None
+    ):
+        raise KanbanWorkerSessionLinkError(
+            "kanban claim lock is not the exact live unexpired claim"
+        )
+    if str(task_row["assignee"] or "") != str(profile_name or ""):
+        raise KanbanWorkerSessionLinkError("kanban worker profile no longer matches")
+
+    live_board_instance_id = _live_board_instance_id(conn)
+    if live_board_instance_id != str(row["board_instance_id"] or ""):
+        raise KanbanWorkerSessionLinkError("kanban board identity no longer matches")
+
+    return {
+        "board_instance_id": str(row["board_instance_id"]),
+        "task_id": str(row["task_id"]),
+        "run_id": int(row["run_id"]),
+        "profile_name": str(row["profile_name"]),
+        "state_db_instance_id": str(row["state_db_instance_id"]),
+        "session_id": str(row["session_id"]),
+        "state": str(row["state"]),
+    }
+
+
+def attach_worker_session_link(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    session_id: str,
+    claim_lock: str,
+    profile_name: str,
+) -> None:
+    link = read_allocated_worker_session_link(
+        conn,
+        task_id=task_id,
+        run_id=run_id,
+        session_id=session_id,
+        claim_lock=claim_lock,
+        profile_name=profile_name,
+    )
+    cur = conn.execute(
+        """
+        UPDATE worker_session_links
+           SET state = 'attached'
+         WHERE board_instance_id = ?
+           AND task_id = ?
+           AND run_id = ?
+           AND profile_name = ?
+           AND state_db_instance_id = ?
+           AND session_id = ?
+           AND state = 'allocated'
+        """,
+        (
+            link["board_instance_id"],
+            link["task_id"],
+            link["run_id"],
+            link["profile_name"],
+            link["state_db_instance_id"],
+            link["session_id"],
+        ),
+    )
+    if cur.rowcount != 1:
+        raise KanbanWorkerSessionLinkError(
+            "kanban worker session attach compare-and-swap failed"
         )
 
 
@@ -2156,6 +2472,7 @@ def connect(
                     # stale PRAGMA snapshots during gateway startup.
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
+                    _ensure_board_instance_id(conn)
                     _INITIALIZED_PATHS.add(resolved)
         except Exception:
             conn.close()
@@ -3789,6 +4106,7 @@ def _end_run(
             run_id,
         ),
     )
+    _orphan_allocated_worker_links(conn, task_id, run_id)
     conn.execute(
         "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
     )
@@ -4036,6 +4354,9 @@ def claim_task(
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
+            _orphan_allocated_worker_links(
+                conn, task_id, int(stale["current_run_id"])
+            )
             conn.execute(
                 """
                 UPDATE task_runs
@@ -4092,6 +4413,13 @@ def claim_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        if trow and trow["assignee"]:
+            _allocate_worker_session_link(
+                conn,
+                task_id=task_id,
+                run_id=int(run_id),
+                profile_name=str(trow["assignee"]),
+            )
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id},
@@ -4174,6 +4502,13 @@ def claim_review_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        if trow and trow["assignee"]:
+            _allocate_worker_session_link(
+                conn,
+                task_id=task_id,
+                run_id=int(run_id),
+                profile_name=str(trow["assignee"]),
+            )
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
@@ -5723,6 +6058,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        if stale and stale["current_run_id"]:
+            _orphan_allocated_worker_links(
+                conn, task_id, int(stale["current_run_id"])
+            )
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
@@ -8773,6 +9112,13 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    if task.current_run_id is not None:
+        with connect_closing(board=board) as conn:
+            env["HERMES_KANBAN_SESSION_ID"] = get_allocated_worker_session_id(
+                conn,
+                task_id=task.id,
+                run_id=int(task.current_run_id),
+            )
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.

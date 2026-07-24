@@ -4229,9 +4229,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
-        
+
+        kanban_task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+        kanban_session_id = (os.environ.get("HERMES_KANBAN_SESSION_ID") or "").strip()
+
         # Session ID: reuse existing one when resuming, otherwise generate fresh
-        if resume:
+        if kanban_task_id:
+            if not kanban_session_id:
+                raise ValueError(
+                    "dispatcher-pinned Kanban worker is missing HERMES_KANBAN_SESSION_ID"
+                )
+            if resume and resume != kanban_session_id:
+                raise ValueError(
+                    "dispatcher-pinned Kanban worker session_id does not match --resume"
+                )
+            self.session_id = kanban_session_id
+            self._resumed = False
+        elif resume:
             self.session_id = resume
             self._resumed = True
         else:

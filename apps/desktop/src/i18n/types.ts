@@ -723,12 +723,14 @@ export interface Translations {
         title: string
         description: string
         presetPlaceholder: string
+        enabled: string
         setDefault: string
         deletePreset: string
         newPresetPlaceholder: string
         addPreset: string
         defaultLabel: string
         referenceTitle: (index: number) => string
+        toggleReference: (index: number, enabled: boolean) => string
         removeReference: string
         addReference: string
         aggregatorTitle: string

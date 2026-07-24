@@ -823,12 +823,14 @@ export const en: Translations = {
         description:
           'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
         presetPlaceholder: 'Preset',
+        enabled: 'Enabled',
         setDefault: 'Set default',
         deletePreset: 'Delete',
         newPresetPlaceholder: 'new preset',
         addPreset: 'Add preset',
         defaultLabel: 'Default:',
         referenceTitle: index => `Reference ${index}`,
+        toggleReference: (index, enabled) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
         removeReference: 'Remove',
         addReference: 'Add reference model',
         aggregatorTitle: 'Aggregator'

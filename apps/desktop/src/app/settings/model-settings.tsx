@@ -1005,7 +1005,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               </SelectContent>
             </Select>
             <label className="flex items-center gap-2 rounded-sm border border-border px-2 py-1 text-xs">
-              Enabled
+              {m.moa.enabled}
               <Switch
                 checked={currentMoaPreset.enabled !== false}
                 disabled={applying}
@@ -1091,7 +1091,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               <ListRow
                 action={
                   <Switch
-                    aria-label={`${slot.enabled !== false ? 'Disable' : 'Enable'} reference ${index + 1}`}
+                    aria-label={m.moa.toggleReference(index + 1, slot.enabled !== false)}
                     checked={slot.enabled !== false}
                     disabled={applying}
                     onCheckedChange={checked =>

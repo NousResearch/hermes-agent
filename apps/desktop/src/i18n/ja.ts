@@ -1005,12 +1005,14 @@ export const ja = defineLocale({
         description:
           'Mixture of Agents プロバイダーの下にモデルとして表示される名前付きプリセットを設定します。アグリゲーターが実際に応答するモデルです。',
         presetPlaceholder: 'プリセット',
+        enabled: '有効',
         setDefault: 'デフォルトに設定',
         deletePreset: '削除',
         newPresetPlaceholder: '新しいプリセット名',
         addPreset: 'プリセットを追加',
         defaultLabel: 'デフォルト:',
         referenceTitle: index => `リファレンス ${index}`,
+        toggleReference: (index, enabled) => `リファレンス ${index} を${enabled ? '無効にする' : '有効にする'}`,
         removeReference: '削除',
         addReference: 'リファレンスモデルを追加',
         aggregatorTitle: 'アグリゲーター'

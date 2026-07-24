@@ -490,6 +490,10 @@ def _build_server_config(
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+        elif entry.auth.type == "api_key":
+            from hermes_cli.mcp_config import _bearer_auth_headers
+
+            cfg["headers"] = _bearer_auth_headers(entry.name)
     return cfg
 
 

@@ -191,6 +191,34 @@ describe('toChatMessages', () => {
       'background agent work finished'
     ])
   })
+
+  it('handles async_delegation_complete with string display_metadata from database', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'done',
+        display_kind: 'async_delegation_complete',
+        display_metadata: '{"delegation_id":"deleg_abc","task_count":3,"completed_count":3}',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('3 background agents finished')
+  })
+
+  it('handles async_delegation_complete with object display_metadata', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'done',
+        display_kind: 'async_delegation_complete',
+        display_metadata: { delegation_id: 'deleg_abc', task_count: 1 },
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('1 background agent finished')
+  })
 })
 
 describe('renderMediaTags', () => {

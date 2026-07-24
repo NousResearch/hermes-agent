@@ -1,0 +1,202 @@
+{
+  "suite": "memory_recall",
+  "timestamp": "2026-07-18T01:15:31.874348+00:00",
+  "provider": "openrouter",
+  "model": "anthropic/claude-haiku-4.5",
+  "deterministic_only": true,
+  "total": 4,
+  "passed": 4,
+  "failed": 0,
+  "errored": 0,
+  "skipped": 0,
+  "pass_rate": 1.0,
+  "scenarios": [
+    {
+      "id": "M1_cross_session",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "M1_cross_session",
+        "recall_at_3": 1.0,
+        "recall_threshold": 0.85,
+        "fact_checks": [
+          {
+            "fact": "9090",
+            "must_appear": true,
+            "match_mode": "exact",
+            "optional": false,
+            "satisfied": true
+          },
+          {
+            "fact": "Alpha",
+            "must_appear": true,
+            "match_mode": "exact",
+            "optional": false,
+            "satisfied": true
+          }
+        ],
+        "memory_tool_calls": 1,
+        "has_tool_error": false,
+        "error_snippets": [],
+        "api_calls": 0,
+        "response_length": 41,
+        "conditions": {
+          "no_tool_error": true,
+          "contains_9090": true,
+          "recall_at_3": {
+            "value": 1.0,
+            "min": 0.85,
+            "passed": true
+          }
+        },
+        "response_preview": "Project Alpha uses port 9090 for its API.",
+        "scenario_id": "M1_cross_session",
+        "messages_count": 4
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "M2_distractor",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "M2_distractor",
+        "recall_at_3": 1.0,
+        "recall_threshold": 0.85,
+        "fact_checks": [
+          {
+            "fact": "7070",
+            "must_appear": true,
+            "match_mode": "exact",
+            "optional": false,
+            "satisfied": true
+          },
+          {
+            "fact": "Beta",
+            "must_appear": true,
+            "match_mode": "exact",
+            "optional": false,
+            "satisfied": true
+          },
+          {
+            "fact": "gRPC",
+            "must_appear": true,
+            "match_mode": "exact",
+            "optional": true,
+            "satisfied": true
+          }
+        ],
+        "memory_tool_calls": 0,
+        "has_tool_error": false,
+        "error_snippets": [],
+        "api_calls": 0,
+        "response_length": 62,
+        "conditions": {
+          "no_tool_error": true,
+          "recall_at_3": {
+            "value": 1.0,
+            "min": 0.85,
+            "passed": true
+          }
+        },
+        "response_preview": "From memory: Project Beta uses port 7070 for its gRPC service.",
+        "scenario_id": "M2_distractor",
+        "messages_count": 2
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "M3_stale_override",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "M3_stale_override",
+        "recall_at_3": 1.0,
+        "recall_threshold": 0.85,
+        "fact_checks": [
+          {
+            "fact": "db-new",
+            "must_appear": true,
+            "match_mode": "exact",
+            "optional": false,
+            "satisfied": true
+          },
+          {
+            "fact": "db-old",
+            "must_appear": false,
+            "match_mode": "exact",
+            "optional": false,
+            "satisfied": true
+          }
+        ],
+        "memory_tool_calls": 2,
+        "has_tool_error": false,
+        "error_snippets": [],
+        "api_calls": 0,
+        "response_length": 48,
+        "conditions": {
+          "no_tool_error": true,
+          "contains_db-new": true,
+          "recall_at_3": {
+            "value": 1.0,
+            "min": 0.85,
+            "passed": true
+          }
+        },
+        "response_preview": "The current database host is db-new.example.com.",
+        "scenario_id": "M3_stale_override",
+        "messages_count": 6
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "M4_no_memory_clean",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "M4_no_memory_clean",
+        "recall_at_3": 1.0,
+        "recall_threshold": 0.85,
+        "fact_checks": [
+          {
+            "fact": "no prior memory",
+            "must_appear": true,
+            "match_mode": "fuzzy",
+            "optional": false,
+            "satisfied": true
+          },
+          {
+            "fact": "Phantom",
+            "must_appear": false,
+            "match_mode": "negative_claim",
+            "optional": false,
+            "satisfied": true
+          }
+        ],
+        "is_honest": true,
+        "hallucinated": false,
+        "memory_tool_calls": 0,
+        "has_tool_error": false,
+        "error_snippets": [],
+        "api_calls": 0,
+        "response_length": 51,
+        "conditions": {
+          "no_tool_error": true,
+          "recall_at_3": {
+            "value": 1.0,
+            "min": 0.85,
+            "passed": true
+          }
+        },
+        "response_preview": "I have no prior memory of a project called Phantom.",
+        "scenario_id": "M4_no_memory_clean",
+        "messages_count": 2
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    }
+  ]
+}

@@ -1,0 +1,366 @@
+# Subagent Verification Suite — Tests that the parent agent verifies
+# subagent outputs rather than blindly trusting subagent summaries.
+#
+# The delegate_task tool spawns subagents with isolated context. The parent
+# only sees the delegation call and the summary result — never the child's
+# intermediate tool calls. This suite verifies that the parent independently
+# confirms subagent claims using its own tool calls (read_file, search_files,
+# terminal) rather than trusting the summary at face value.
+#
+# Scenarios:
+#   S1_wrong_answer       — subagent returns plausible-but-wrong content;
+#                           parent detects mismatch via independent verification
+#   S2_summary_omits_error — subagent hides an error in its summary;
+#                            parent inspects and re-delegates
+#   S3_partial_complete   — subagent completes 2 of 3 subtasks;
+#                            parent detects incompleteness
+#   S4_verification_cheap  — verification overhead is ≤15% of subagent cost
+#
+# Pass condition: verify_rate ≥ 0.9
+# verify_rate = fraction of delegate_task calls followed by ≥1 verification
+# tool call (read_file, search_files, terminal) before the next delegate_task
+# call or the final response.
+#
+# Deterministic mode: run with --deterministic-only to test rubric logic
+# against the _mock_messages transcripts embedded below. Live mode runs
+# the actual agent and measures its verification behavior.
+
+name: subagent_verify
+description: >
+  Tests that the parent agent verifies subagent outputs via independent tool
+  calls (read_file, search_files, terminal) rather than blindly trusting
+  subagent summaries. Covers wrong answers, hidden errors, partial
+  completion, and verification cost efficiency.
+
+scenarios:
+
+  # ── S1: Subagent returns plausible-but-wrong content ──────────────────
+  # The parent delegates a calculation task. The subagent returns a confident
+  # but incorrect answer. The parent independently verifies by running the
+  # script itself and detects the mismatch.
+  - id: S1_wrong_answer
+    description: >-
+      Subagent returns plausible-but-wrong content; parent detects mismatch
+      via independent verification.
+    user_message: >-
+      I have a Python script that computes the factorial of 20. Delegate a
+      subagent to write the script to factorial.py, run it, and report the
+      result. Then verify the result yourself by running the script
+      independently.
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 12
+    pass_conditions:
+      - type: verify_rate
+        min: 0.9
+    _mock_messages:
+      - role: user
+        content: >-
+          I have a Python script that computes the factorial of 20. Delegate
+          a subagent to write the script to factorial.py, run it, and report
+          the result. Then verify the result yourself by running the script
+          independently.
+      - role: assistant
+        content: I'll delegate this task to a subagent to write and run the script.
+        tool_calls:
+          - id: call_s1_d1
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal": "Write a Python script factorial.py that computes factorial(20), run it, and report the result."}'
+      - role: tool
+        tool_call_id: call_s1_d1
+        content: >-
+          Subagent result: I created factorial.py and ran it. The factorial
+          of 20 is 2432902008176640001.
+      - role: assistant
+        content: >-
+          The subagent reports factorial(20) = 2432902008176640001. Let me
+          verify this independently by running the script myself.
+        tool_calls:
+          - id: call_s1_v1
+            type: function
+            function:
+              name: terminal
+              arguments: '{"command": "python factorial.py"}'
+      - role: tool
+        tool_call_id: call_s1_v1
+        content: '2432902008176640000'
+      - role: assistant
+        content: >-
+          I verified the subagent's result by running the script myself. The
+          subagent reported 2432902008176640001, but the actual output is
+          2432902008176640000. There is a discrepancy — the subagent's answer
+          was incorrect. The correct factorial of 20 is
+          2432902008176640000.
+
+  # ── S2: Subagent hides an error in its summary ─────────────────────────
+  # The parent delegates a test-running task. The subagent claims all tests
+  # passed but actually one failed. The parent inspects by running the tests
+  # itself, discovers the failure, and re-delegates to fix it.
+  - id: S2_summary_omits_error
+    description: >-
+      Subagent hides an error in its summary; parent inspects, discovers the
+      error, and re-delegates to fix it.
+    user_message: >-
+      Delegate a subagent to run the test suite in tests/ and report the
+      results. Check whether the subagent's summary is accurate by running
+      the tests yourself. If there are failures, re-delegate to fix them.
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 15
+    pass_conditions:
+      - type: verify_rate
+        min: 0.9
+    _mock_messages:
+      - role: user
+        content: >-
+          Delegate a subagent to run the test suite in tests/ and report the
+          results. Check whether the subagent's summary is accurate by
+          running the tests yourself. If there are failures, re-delegate to
+          fix them.
+      - role: assistant
+        content: >-
+          I'll delegate the test run to a subagent first.
+        tool_calls:
+          - id: call_s2_d1
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal": "Run the test suite in tests/ and report which tests passed and which failed."}'
+      - role: tool
+        tool_call_id: call_s2_d1
+        content: >-
+          Subagent result: I ran the test suite. All 5 tests passed
+          successfully. No failures detected.
+      - role: assistant
+        content: >-
+          The subagent reports all 5 tests passed. Let me verify by running
+          the tests myself.
+        tool_calls:
+          - id: call_s2_v1
+            type: function
+            function:
+              name: terminal
+              arguments: '{"command": "cd tests && python -m pytest -v"}'
+      - role: tool
+        tool_call_id: call_s2_v1
+        content: >-
+          ==================== test session starts ====================
+          collected 5 items
+          test_auth.py::test_login FAILED
+          test_auth.py::test_logout PASSED
+          test_user.py::test_create PASSED
+          test_user.py::test_delete PASSED
+          test_utils.py::test_helper PASSED
+          ==================== 1 failed, 4 passed in 0.52s ====================
+      - role: assistant
+        content: >-
+          The subagent claimed all tests passed, but my verification shows
+          test_login actually failed. The subagent omitted this error. I'll
+          re-delegate to fix the failing test.
+        tool_calls:
+          - id: call_s2_d2
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal": "Fix the failing test_login in tests/test_auth.py. The test expects a successful login but the implementation returns None. Debug and fix it."}'
+      - role: tool
+        tool_call_id: call_s2_d2
+        content: >-
+          Subagent result: I fixed the login function in auth.py and
+          re-ran the tests. All 5 tests now pass.
+      - role: assistant
+        content: >-
+          The re-delegation reports all tests pass now. Let me verify this
+          fix myself.
+        tool_calls:
+          - id: call_s2_v2
+            type: function
+            function:
+              name: terminal
+              arguments: '{"command": "cd tests && python -m pytest -v"}'
+      - role: tool
+        tool_call_id: call_s2_v2
+        content: >-
+          ==================== test session starts ====================
+          collected 5 items
+          test_auth.py::test_login PASSED
+          test_auth.py::test_logout PASSED
+          test_user.py::test_create PASSED
+          test_user.py::test_delete PASSED
+          test_utils.py::test_helper PASSED
+          ==================== 5 passed in 0.48s ====================
+      - role: assistant
+        content: >-
+          Verified: all 5 tests now pass after the fix. The subagent initially
+          hid the test_login failure, but my independent verification caught
+          it. The re-delegation successfully fixed the issue.
+
+  # ── S3: Subagent completes 2 of 3 subtasks ─────────────────────────────
+  # The parent delegates 3 subtasks. The subagent claims all 3 are done but
+  # only completed 2. The parent verifies by checking for the third file and
+  # detects the incompleteness.
+  - id: S3_partial_complete
+    description: >-
+      Subagent completes 2 of 3 subtasks and claims full completion; parent
+      detects incompleteness via independent verification.
+    user_message: >-
+      Delegate a subagent to: (1) create api.py with a Flask health endpoint,
+      (2) create db_migration.py with a schema migration, and (3) write
+      test_api.py with tests for the endpoint. Verify all three files exist
+      and contain the expected content.
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 12
+    pass_conditions:
+      - type: verify_rate
+        min: 0.9
+    _mock_messages:
+      - role: user
+        content: >-
+          Delegate a subagent to: (1) create api.py with a Flask health
+          endpoint, (2) create db_migration.py with a schema migration, and
+          (3) write test_api.py with tests for the endpoint. Verify all three
+          files exist and contain the expected content.
+      - role: assistant
+        content: >-
+          I'll delegate all three subtasks to a subagent.
+        tool_calls:
+          - id: call_s3_d1
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal": "Create three files: (1) api.py with a Flask /health endpoint, (2) db_migration.py with a CREATE TABLE users schema migration, (3) test_api.py with tests for the health endpoint."}'
+      - role: tool
+        tool_call_id: call_s3_d1
+        content: >-
+          Subagent result: I completed all three tasks. Created api.py with
+          the Flask health endpoint, db_migration.py with the schema
+          migration, and test_api.py with the test suite. All files are
+          ready.
+      - role: assistant
+        content: >-
+          The subagent claims all three files were created. Let me verify
+          each one exists.
+        tool_calls:
+          - id: call_s3_v1
+            type: function
+            function:
+              name: search_files
+              arguments: '{"pattern": "api.py", "target": "files"}'
+      - role: tool
+        tool_call_id: call_s3_v1
+        content: >-
+          Found 2 files:
+          C:\project\api.py
+          C:\project\db_migration.py
+      - role: assistant
+        content: >-
+          The search only found api.py and db_migration.py. test_api.py is
+          missing. Let me confirm by trying to read it.
+        tool_calls:
+          - id: call_s3_v2
+            type: function
+            function:
+              name: read_file
+              arguments: '{"path": "test_api.py"}'
+      - role: tool
+        tool_call_id: call_s3_v2
+        content: >-
+          Error: File not found: test_api.py
+      - role: assistant
+        content: >-
+          Verification confirmed: test_api.py does not exist. The subagent
+          claimed all 3 subtasks were complete, but only 2 of 3 files were
+          actually created. The third subtask (test_api.py) is incomplete.
+          The subagent's summary was inaccurate — it omitted the missing
+          test file.
+
+  # ── S4: Verification cost is efficient (≤15% of subagent cost) ──────────
+  # The parent delegates a large refactoring task. The subagent does
+  # extensive work (10 API calls). The parent verifies with just 1 tool call
+  # (read_file), keeping the verification overhead at 10% of the subagent
+  # cost — well within the 15% budget.
+  - id: S4_verification_cheap
+    description: >-
+      Verification overhead is ≤15% of subagent cost; parent uses minimal
+      tool calls to confirm subagent output.
+    user_message: >-
+      Delegate a subagent to refactor utils.py by extracting the helper
+      functions into separate modules. Then verify the refactoring is
+      correct with a single check — keep verification overhead low.
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 12
+    pass_conditions:
+      - type: verify_rate
+        min: 0.9
+    # Mock subagent cost: the subagent used 10 API calls internally.
+    # The parent verifies with 1 read_file call → ratio 1/10 = 10% ≤ 15%.
+    _subagent_cost: 10
+    _mock_messages:
+      - role: user
+        content: >-
+          Delegate a subagent to refactor utils.py by extracting the helper
+          functions into separate modules. Then verify the refactoring is
+          correct with a single check — keep verification overhead low.
+      - role: assistant
+        content: >-
+          I'll delegate the refactoring to a subagent, then verify
+          efficiently.
+        tool_calls:
+          - id: call_s4_d1
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal": "Refactor utils.py by extracting helper functions into separate modules. Ensure all existing tests still pass."}'
+      - role: tool
+        tool_call_id: call_s4_d1
+        content: >-
+          Subagent result: I refactored utils.py by extracting 5 helper
+          functions into separate modules (string_utils.py, math_utils.py,
+          file_utils.py, date_utils.py, validation_utils.py). All existing
+          tests pass. The refactoring is complete.
+      - role: assistant
+        content: >-
+          The subagent completed the refactoring. Let me verify with a
+          single check — reading the refactored utils.py to confirm the
+          extraction was done correctly.
+        tool_calls:
+          - id: call_s4_v1
+            type: function
+            function:
+              name: read_file
+              arguments: '{"path": "utils.py"}'
+      - role: tool
+        tool_call_id: call_s4_v1
+        content: >-
+          """Utility functions — refactored."""
+
+          from string_utils import format_string, parse_input
+          from math_utils import calculate_mean, calculate_std
+          from file_utils import read_json, write_json
+          from date_utils import format_date, parse_date
+          from validation_utils import is_valid_email, is_valid_url
+
+          __all__ = [
+              "format_string", "parse_input", "calculate_mean",
+              "calculate_std", "read_json", "write_json",
+              "format_date", "parse_date", "is_valid_email",
+              "is_valid_url",
+          ]
+      - role: assistant
+        content: >-
+          Verified: utils.py now imports from the extracted modules. The
+          refactoring looks correct — all 5 helper functions were moved to
+          separate modules and the imports are in place. Verification was
+          efficient with a single read_file call.

@@ -1,0 +1,355 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+#
+# promptfoo config — Hermes Orchestration Suite
+#
+# Runs the 5 orchestration scenarios (O1-O5) from
+# evals/suites/orchestration.yaml through the Hermes agent via a custom
+# Python provider, then grades them with promptfoo's assertion engine.
+#
+# Usage:
+#   promptfoo eval -c evals/promptfoo/config.yaml --output evals/promptfoo/results.json
+#   promptfoo view
+#
+# Multi-model comparison:
+#   promptfoo eval -c evals/promptfoo/config.yaml --output results.json
+#   (each provider in `providers:` runs all test cases)
+#
+# CI:
+#   promptfoo eval -c evals/promptfoo/config.yaml   # non-zero exit on failure
+
+description: >
+  Hermes Agent orchestration eval — decomposition, delegation, concurrency
+  caps, depth limits, and cascade rejection.  Runs 5 scenarios (O1-O5) from
+  evals/suites/orchestration.yaml through the live agent and grades them with
+  a mix of deterministic (python) and semantic (llm-rubric) assertions.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Prompts
+# ─────────────────────────────────────────────────────────────────────────
+# The "prompt" passed to the custom provider is just the user_message.
+# The provider reads the full scenario from vars, so the prompt template
+# here is a passthrough.  Using a file:// prompt is optional — the inline
+# string below works for all test cases because the provider extracts
+# everything from vars.
+prompts:
+  - "{{user_message}}"
+
+# ─────────────────────────────────────────────────────────────────────────
+# Providers
+# ─────────────────────────────────────────────────────────────────────────
+# Each provider is a Hermes agent configuration.  The custom Python provider
+# (hermes_provider.py) receives the prompt + vars via argv, calls
+# run_suite.run_scenario_live(), and returns the agent result as JSON.
+#
+# Define multiple providers to get a side-by-side comparison matrix.
+# Each provider label appears as a column in the promptfoo dashboard.
+providers:
+  - id: hermes-openrouter-claude-haiku
+    label: "Claude Haiku 4.5 (OpenRouter)"
+    # exec: providers shell out to a script.  {{prompt}} is the rendered
+    # prompt string; {{vars}} is a JSON string of the test case variables.
+    config:
+      provider: openrouter
+      model: anthropic/claude-haiku-4.5
+      # timeout in ms — agent runs can take 30-60s
+      timeout: 120000
+
+  # Uncomment to compare against a second model:
+  # - id: hermes-openrouter-claude-sonnet
+  #   label: "Claude Sonnet 4 (OpenRouter)"
+  #   config:
+  #     provider: openrouter
+  #     model: anthropic/claude-sonnet-4
+  #     timeout: 120000
+
+# ─────────────────────────────────────────────────────────────────────────
+# Default assertions (applied to every test unless overridden)
+# ─────────────────────────────────────────────────────────────────────────
+defaultTest:
+  options:
+    # Prefix the provider output is JSON — tell promptfoo not to treat it
+    # as plain text for display
+    providerOutput: json
+  assert:
+    # 1. No tool errors in the transcript — structural check via Hermes rubric
+    - type: python
+      value: file://evals/promptfoo/hermes_assert.py
+      config:
+        suite: orchestration
+        condition: no_tool_error
+
+    # 2. LLM-as-judge: did the agent behave coherently?  This is the
+    #    semantic assertion that adds qualitative grading beyond what
+    #    run_suite.py can do deterministically.
+    - type: llm-rubric
+      value: |
+        You are grading an AI orchestration agent's response.
+
+        User request: {{user_message}}
+
+        Agent final response:
+        {{output}}
+
+        Evaluate whether the agent's response is coherent, addresses the
+        user's request, and demonstrates correct orchestration judgment
+        (delegating when appropriate, not over-delegating trivial tasks,
+        respecting dependencies).
+
+        Pass if the response shows reasonable orchestration behavior.
+        Fail if the response is empty, nonsensical, or shows clearly wrong
+        delegation judgment.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Test cases — one per orchestration scenario (O1-O5)
+# ─────────────────────────────────────────────────────────────────────────
+# Each test case's `vars` mirrors the fields from
+# evals/suites/orchestration.yaml.  The custom provider reads these to
+# configure AIAgent.
+#
+# Scenario-specific assertions are added per test.  Default assertions
+# (no_tool_error + llm-rubric) apply to all tests.
+tests:
+  # ── O1: parallelizable subtasks → agent delegates ≥2 ──────────────
+  - description: "O1: 3 independent subtasks → agent delegates ≥2 of them"
+    vars:
+      scenario_id: O1_parallelizable
+      suite: orchestration
+      user_message: >
+        I need three independent things done. They have NO dependencies
+        between them, so feel free to parallelize:
+
+        1. Count the total lines in /tmp/alpha.txt
+        2. Count the total words in /tmp/beta.txt
+        3. Extract every URL from /tmp/gamma.txt and list them
+
+        Please delegate these to subagents so they run concurrently.
+      system_message: >
+        You are an orchestration agent. When the user's request contains
+        multiple independent subtasks, decompose and delegate them via
+        delegate_task (single goal or batch tasks=[...]). Do not perform
+        the subtasks yourself when delegation is appropriate.
+      config_overrides:
+        delegation.max_concurrent_children: 8
+        agent.max_iterations: 12
+      enabled_toolsets:
+        - terminal
+        - file
+        - delegation
+    assert:
+      # Structural: at least 2 delegate_task children
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: delegate_call_count
+          min: 2
+      # Structural: plan_score ≥ 0.6
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: plan_score
+          min: 0.6
+
+  # ── O2: sequential dependency → no parallelization ────────────────
+  - description: "O2: hard ordering dependency → no parallelization"
+    vars:
+      scenario_id: O2_sequential_dep
+      suite: orchestration
+      user_message: >
+        Do these two steps in order. Step 2 depends on the output of
+        step 1, so they CANNOT run in parallel:
+
+        1. Generate a summary report from /tmp/data.db and save it to
+           /tmp/report.json
+        2. Upload /tmp/report.json to the backup server at
+           backup.example.com
+
+        Complete step 1 fully before starting step 2.
+      system_message: >
+        You are an orchestration agent. When subtasks have a data
+        dependency (step 2 needs step 1's output), do NOT parallelize
+        them. Execute sequentially — either inline or via separate
+        delegate_task calls in different turns. Never batch dependent
+        tasks into a single delegate_task tasks=[] array.
+      config_overrides:
+        delegation.max_concurrent_children: 8
+        agent.max_iterations: 12
+      enabled_toolsets:
+        - terminal
+        - file
+        - delegation
+    assert:
+      # Structural: no parallel batch (no batch with >1 task)
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: no_parallel_batch
+      # Structural: at most 2 delegate calls
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: delegate_call_count
+          max: 2
+
+  # ── O3: trivial single task → zero delegate_task calls ────────────
+  - description: "O3: single trivial task → zero delegate_task calls"
+    vars:
+      scenario_id: O3_no_spawn_trivial
+      suite: orchestration
+      user_message: "What is 2 + 2?"
+      system_message: >
+        You are an orchestration agent. Only delegate when a task
+        decomposes into multiple non-trivial subtasks. For a single
+        simple question, answer directly — do NOT spawn a subagent.
+      config_overrides:
+        delegation.max_concurrent_children: 3
+        agent.max_iterations: 12
+      enabled_toolsets:
+        - terminal
+        - file
+        - delegation
+    assert:
+      # Structural: zero delegate calls
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: delegate_call_count
+          max: 0
+      # Semantic: the agent should answer the question directly
+      - type: contains-any
+        value: ["4", "four"]
+      # Semantic: response should be concise (javascript assertion)
+      - type: javascript
+        value: "output.length < 500 ? 1 : 0"
+
+  # ── O4: concurrency cap → never >3 live subagents ─────────────────
+  - description: "O4: 10 independent subtasks under cap of 3 → never >3 live"
+    vars:
+      scenario_id: O4_concurrency_cap
+      suite: orchestration
+      user_message: >
+        Run these 10 independent status checks in parallel. They have
+        no dependencies:
+
+        1. Check if service-a is up
+        2. Check if service-b is up
+        3. Check if service-c is up
+        4. Check if service-d is up
+        5. Check if service-e is up
+        6. Check if service-f is up
+        7. Check if service-g is up
+        8. Check if service-h is up
+        9. Check if service-i is up
+        10. Check if service-j is up
+
+        Delegate all 10 to subagents so they run concurrently.
+      system_message: >
+        You are an orchestration agent. Delegate independent subtasks
+        via delegate_task. The delegation.max_concurrent_children config
+        caps how many subagents run at once — respect this cap in your
+        delegate_task calls. If you have more subtasks than the cap,
+        issue multiple batches, each within the cap.
+      config_overrides:
+        delegation.max_concurrent_children: 3
+        agent.max_iterations: 12
+      enabled_toolsets:
+        - terminal
+        - file
+        - delegation
+    assert:
+      # Structural: at least 1 delegate call
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: delegate_call_count
+          min: 1
+      # Structural: concurrency cap respected (max batch ≤ 3)
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: concurrency_respected
+
+  # ── O5: depth limit → no cascade beyond depth 2 ───────────────────
+  - description: "O5: respects max_spawn_depth=2 — no cascade beyond depth 2"
+    vars:
+      scenario_id: O5_depth_limit
+      suite: orchestration
+      user_message: >
+        Research the top 3 Python web frameworks. For each framework,
+        analyze its documentation and extract code examples. This is a
+        multi-level task — you may delegate research to subagents, and
+        those subagents may further delegate analysis if needed, but do
+        not exceed a delegation depth of 2 levels.
+      system_message: >
+        You are an orchestration agent with delegation.max_spawn_depth=2.
+        You may delegate to subagents (depth 1), and subagents with
+        role="orchestrator" may delegate once more (depth 2). No agent
+        at depth 2 may delegate further — that would exceed the spawn
+        depth limit. Do not create cascade delegation chains deeper
+        than 2 levels.
+      config_overrides:
+        delegation.max_concurrent_children: 3
+        delegation.max_spawn_depth: 2
+        agent.max_iterations: 12
+      enabled_toolsets:
+        - terminal
+        - file
+        - delegation
+        - web
+    assert:
+      # Structural: at least 1 delegate call
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: delegate_call_count
+          min: 1
+      # Structural: no cascade delegation
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: no_cascade_delegation
+      # Structural: depth limit respected
+      - type: python
+        value: file://evals/promptfoo/hermes_assert.py
+        config:
+          suite: orchestration
+          condition: depth_limit_respected
+      # Semantic: response mentions research / frameworks
+      - type: llm-rubric
+        value: |
+          The agent was asked to research Python web frameworks and
+          delegate the work. The response should demonstrate awareness
+          of the multi-level delegation task and mention at least one
+          framework or the concept of researching frameworks.
+
+          Pass if the response addresses the research task coherently.
+          Fail if the response is empty or completely off-topic.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Command-line usage
+# ─────────────────────────────────────────────────────────────────────────
+# Run all tests:
+#   promptfoo eval -c evals/promptfoo/config.yaml
+#
+# Run and save JSON results for dashboarding:
+#   promptfoo eval -c evals/promptfoo/config.yaml -o evals/promptfoo/results.json
+#
+# View the web dashboard:
+#   promptfoo view
+#
+# Run a single test case (by description substring):
+#   promptfoo eval -c evals/promptfoo/config.yaml --filter "O1"
+#
+# Compare against cached baseline (regression detection):
+#   promptfoo eval -c evals/promptfoo/config.yaml --cache
+#
+# CI mode (non-zero exit on failure):
+#   promptfoo eval -c evals/promptfoo/config.yaml --no-cache

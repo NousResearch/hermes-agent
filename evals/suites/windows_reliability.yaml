@@ -1,0 +1,96 @@
+name: windows_reliability
+description: Tests Hermes Agent reliability on Windows 10/11 with MSYS2 git-bash shell
+scenarios:
+- id: W1_encoding
+  description: Non-ASCII path and content handling (Arabic, CJK, emoji)
+  user_message: Create a file named 'اختبار_🖥️.txt' in E:\d with content 'مرحبا بالعالم 🎉'. Then read
+    it back and confirm the content matches.
+  enabled_toolsets:
+  - terminal
+  - file
+  skip_memory: true
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 6
+  pass_conditions:
+  - type: response_contains
+    value: مرحبا بالعالم
+  - type: no_tool_error
+  _mock_final_response: 'Created file and confirmed content: مرحبا بالعالم 🎉'
+  _mock_messages:
+  - role: user
+    content: create unicode file
+  - role: assistant
+    content: writing
+    tool_calls:
+    - id: w1
+      type: function
+      function:
+        name: write_file
+        arguments: '{"path":"اختبار_🖥️.txt","content":"مرحبا بالعالم 🎉"}'
+  - role: tool
+    tool_call_id: w1
+    content: wrote ok
+  - role: assistant
+    content: 'Created file and confirmed content: مرحبا بالعالم 🎉'
+- id: W2_longpath
+  description: Path longer than 260 characters handling
+  user_message: Create a deeply nested directory structure under E:\d\longpath_test with at least 10 levels
+    (each level named 'subdir_N'). Create a file at the deepest level containing 'deep file content'.
+    Then read it back.
+  enabled_toolsets:
+  - terminal
+  - file
+  skip_memory: true
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 10
+  pass_conditions:
+  - type: response_contains
+    value: deep file content
+  - type: no_tool_error
+  _mock_final_response: 'Created deep path and read back: deep file content'
+  _mock_messages:
+  - role: user
+    content: create long path
+  - role: assistant
+    content: 'Created deep path and read back: deep file content'
+- id: W3_home_spaces
+  description: HERMES_HOME with spaces in path
+  user_message: List all files in the current directory and count how many Python files (*.py) there are.
+    Report the count.
+  enabled_toolsets:
+  - terminal
+  - file
+  skip_memory: true
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 5
+  pass_conditions:
+  - type: no_tool_error
+  _mock_final_response: Found 12 Python files (*.py) in the current directory.
+  _mock_messages:
+  - role: user
+    content: count py files
+  - role: assistant
+    content: Found 12 Python files (*.py) in the current directory.
+- id: W4_unicode_arg
+  description: Emoji and RTL text in user goal
+  user_message: احسب عدد الملفات في المجلد الحالي 🎯 وأخبرني بالنتيجة بالعربية
+  enabled_toolsets:
+  - terminal
+  - file
+  skip_memory: true
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 5
+  pass_conditions:
+  - type: response_contains
+    value: ملف
+  - type: no_tool_error
+  _mock_final_response: يوجد 8 ملفات في المجلد الحالي.
+  _mock_messages:
+  - role: user
+    content: احسب عدد الملفات
+  - role: assistant
+    content: يوجد 8 ملفات في المجلد الحالي.

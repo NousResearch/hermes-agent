@@ -1,0 +1,108 @@
+# Code Task Suite — Live Model (Tier 2)
+# Tests end-to-end coding capability: bug fixes, feature implementation, refactoring.
+# Requires OPENROUTER_API_KEY or equivalent.
+
+name: code_task
+description: End-to-end coding tasks against real temp repos using terminal + file tools
+
+scenarios:
+  - id: C1_bugfix_repro
+    description: Reproduce a failing test, fix the bug, verify test passes
+    user_message: |
+      I have a bug in my Python project. Create a file buggy.py with this content:
+      ```python
+      def divide(a, b):
+          return a / b
+
+      def test_divide():
+          assert divide(10, 2) == 5
+          assert divide(0, 5) == 0
+          # This will fail:
+          assert divide(5, 0) == "cannot divide by zero"
+      ```
+      Run the tests, find the bug, fix it so all tests pass, and verify.
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 15
+    pass_conditions:
+      - type: no_tool_error
+      - type: response_contains
+        value: "pass"
+
+  - id: C2_feature_tdd
+    description: Implement a feature from a spec and test stub
+    user_message: |
+      Create a file spec.py with this test:
+      ```python
+      def test_fibonacci():
+          assert fibonacci(0) == 0
+          assert fibonacci(1) == 1
+          assert fibonacci(2) == 1
+          assert fibonacci(5) == 5
+          assert fibonacci(10) == 55
+          assert fibonacci(-1) == None  # invalid input
+      ```
+      Implement the fibonacci function so all tests pass. Run the tests and confirm.
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 12
+    pass_conditions:
+      - type: no_tool_error
+      - type: response_contains
+        value: "pass"
+
+  - id: C3_refactor_extract
+    description: Extract a function from a god-file, preserving behavior
+    user_message: |
+      Create a file god.py with:
+      ```python
+      import math
+
+      def process_data(items):
+          total = sum(items)
+          count = len(items)
+          mean = total / count if count > 0 else 0
+          squared_diffs = [(x - mean) ** 2 for x in items]
+          variance = sum(squared_diffs) / count if count > 0 else 0
+          std_dev = math.sqrt(variance)
+          return {"mean": mean, "std_dev": std_dev, "count": count}
+
+      # Tests
+      result = process_data([1, 2, 3, 4, 5])
+      assert abs(result["mean"] - 3.0) < 0.001
+      assert abs(result["std_dev"] - 1.414) < 0.01
+      assert result["count"] == 5
+      print("PASS")
+      ```
+      Refactor: extract the statistics calculation into a separate function called `calculate_stats` that returns (mean, std_dev). The `process_data` function should call `calculate_stats`. Tests must still pass.
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 15
+    pass_conditions:
+      - type: no_tool_error
+      - type: response_contains
+        value: "PASS"
+
+  - id: C5_self_test
+    description: Agent writes its own test for its change, then runs it
+    user_message: |
+      Create a function `is_valid_email(email)` in a file validator.py that:
+      - Returns True if the string contains exactly one '@' and at least one '.' after the '@'
+      - Returns False otherwise
+
+      After implementing it, write your own test that covers: valid emails, missing '@', missing '.', multiple '@', empty string. Run the tests and confirm they pass.
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 12
+    pass_conditions:
+      - type: no_tool_error
+      - type: response_contains
+        value: "pass"

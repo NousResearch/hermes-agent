@@ -311,10 +311,11 @@ TOOLSETS = {
     },
 
     "feishu_drive": {
-        "description": "Feishu/Lark document comment operations (list, reply, add)",
+        "description": "Feishu/Lark document comments plus read-only validated Open API reads",
         "tools": [
             "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
             "feishu_drive_reply_comment", "feishu_drive_add_comment",
+            "feishu_request",
         ],
         "includes": []
     },

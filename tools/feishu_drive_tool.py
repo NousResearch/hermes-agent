@@ -43,7 +43,7 @@ def _do_request(client, method, uri, paths=None, queries=None, body=None):
     from lark_oapi.core.enum import HttpMethod
     from lark_oapi.core.model.base_request import BaseRequest
 
-    http_method = HttpMethod.GET if method == "GET" else HttpMethod.POST
+    http_method = getattr(HttpMethod, str(method).upper(), HttpMethod.GET)
 
     builder = (
         BaseRequest.builder()

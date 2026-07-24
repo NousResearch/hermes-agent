@@ -707,7 +707,7 @@ def redeem_codex_reset_credit(
         try:
             from hermes_cli.auth import clear_codex_pool_quota_cooldowns
 
-            clear_codex_pool_quota_cooldowns()
+            clear_codex_pool_quota_cooldowns(api_key)
         except Exception:
             logger.debug(
                 "Failed to clear Codex pool cooldowns after reset redemption",

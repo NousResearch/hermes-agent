@@ -3912,7 +3912,7 @@ def resolve_codex_runtime_credentials(
                 logger.info(
                     "Codex quota restored upstream — clearing stale pool cooldown(s)."
                 )
-                clear_codex_pool_quota_cooldowns()
+                clear_codex_pool_quota_cooldowns(stale_token)
                 pool_token = _pool_codex_access_token()
                 if pool_token:
                     base_url = (
@@ -4133,10 +4133,10 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     ``exhausted`` entries whose error metadata is 429/quota-shaped — DEAD
     (terminal auth) entries and non-rate-limit failures are untouched.
 
-    When *access_token* is given, only the matching entry is cleared;
-    otherwise every rate-limited entry clears (a redeemed banked reset
-    restores the whole account, and any entry that is genuinely still
-    exhausted just re-freezes with fresh metadata on its next 429).
+    When *access_token* is given, only the matching entry is cleared. Callers
+    handling an account-specific live probe or reset redemption must pass it
+    so one recovered account cannot reactivate unrelated exhausted accounts.
+    Omitting it is reserved for an explicit whole-pool administrative reset.
 
     Returns the number of entries cleared.
     """

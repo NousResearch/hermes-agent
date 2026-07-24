@@ -568,6 +568,41 @@ def test_build_slash_event_uses_group_context_for_channels(adapter):
     assert "TestGuild / #general" == event.source.chat_name
 
 
+def test_build_slash_event_carries_guild_id_for_profile_routing(adapter):
+    """Native slash commands (/profile, /model, ...) must carry guild_id so
+    gateway.profile_routes matching (which keys off guild_id) resolves the
+    same routed profile a regular message would get. See #69178: without
+    this, slash commands silently fell back to the default profile."""
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild_id=456,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    event = adapter._build_slash_event(interaction, "/status")
+
+    assert event.source.guild_id == "456"
+    assert event.source.parent_chat_id is None
+
+
+def test_build_slash_event_carries_parent_chat_id_for_thread(adapter):
+    """A slash command run inside a thread must carry parent_chat_id (the
+    parent channel) the same way the regular message path does, so
+    profile_routes channel-route matching also works inside threads."""
+    interaction = SimpleNamespace(
+        channel=_FakeThreadChannel(channel_id=555, name="Planning", parent_id=100),
+        channel_id=555,
+        guild_id=456,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    event = adapter._build_slash_event(interaction, "/status")
+
+    assert event.source.guild_id == "456"
+    assert event.source.parent_chat_id == "100"
+
+
 # ------------------------------------------------------------------
 # Auto-thread: _auto_create_thread
 # ------------------------------------------------------------------

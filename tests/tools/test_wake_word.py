@@ -302,6 +302,106 @@ def test_sherpa_requirements_probe_uses_sherpa_feature(monkeypatch):
     assert r["phrase"] == "anything at all"
 
 
+# ── Multi-profile phrase routing ─────────────────────────────────────────
+
+
+def test_sherpa_engine_enrolls_all_profile_phrases(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        ww, "enrolled_profile_phrases",
+        lambda: {"coder": "hey coder", "trader": "hey trader"},
+    )
+    eng = ww._SherpaKwsEngine({
+        "provider": "sherpa", "phrase": "hey hermes",
+        "sherpa": {"model_dir": str(model_dir)},
+    })
+    with open(eng._keywords_file, encoding="utf-8") as f:
+        lines = f.read().strip().splitlines()
+    assert len(lines) == 3
+    assert eng._display_to_profile == {
+        "HEY_HERMES": "default",
+        "HEY_CODER": "coder",
+        "HEY_TRADER": "trader",
+    }
+    eng.close()
+
+
+def test_sherpa_engine_profile_routing_can_be_disabled(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        ww, "enrolled_profile_phrases", lambda: {"coder": "hey coder"}
+    )
+    eng = ww._SherpaKwsEngine({
+        "provider": "sherpa", "phrase": "hey hermes", "profile_routing": False,
+        "sherpa": {"model_dir": str(model_dir)},
+    })
+    assert eng._display_to_profile == {"HEY_HERMES": "default"}
+    eng.close()
+
+
+def test_sherpa_engine_match_maps_back_to_profile(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        ww, "enrolled_profile_phrases", lambda: {"coder": "hey coder"}
+    )
+    eng = ww._SherpaKwsEngine({
+        "provider": "sherpa", "phrase": "hey hermes",
+        "sherpa": {"model_dir": str(model_dir)},
+    })
+    frame = [0] * eng.frame_length
+    calls["results"].append("HEY_CODER")
+    assert eng.process(frame) is True
+    assert eng.last_match == ("hey coder", "coder")
+    calls["results"].append("HEY_HERMES")
+    assert eng.process(frame) is True
+    assert eng.last_match == ("hey hermes", "default")
+
+
+def test_enrolled_profile_phrases_reads_profile_configs(monkeypatch, tmp_path):
+    profiles_root = tmp_path / "profiles"
+    for name, body in (
+        ("coder", "wake_word:\n  enabled: true\n  phrase: hey coder\n"),
+        ("trader", "wake_word:\n  enabled: true\n"),        # phrase defaults
+        ("quiet", "wake_word:\n  enabled: false\n"),         # not enrolled
+        ("empty", ""),                                        # no wake_word at all
+    ):
+        d = profiles_root / name
+        d.mkdir(parents=True)
+        (d / "config.yaml").write_text(body, encoding="utf-8")
+
+    class _Info:
+        def __init__(self, name):
+            self.name = name
+
+    import types as _types
+    fake_profiles = _types.ModuleType("hermes_cli.profiles")
+    fake_profiles.list_profiles = lambda: [
+        _Info(p.name) for p in sorted(profiles_root.iterdir())
+    ]
+    fake_profiles.get_profile_dir = lambda name: str(profiles_root / name)
+    fake_profiles.get_active_profile_name = lambda: "default"
+    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_profiles)
+
+    phrases = ww.enrolled_profile_phrases()
+    assert phrases == {"coder": "hey coder", "trader": "hey trader"}
+
+
+def test_get_last_match_reads_detector_engine(monkeypatch):
+    class _Eng:
+        last_match = ("hey coder", "coder")
+
+    class _Det:
+        engine = _Eng()
+
+    monkeypatch.setattr(ww, "_detector", _Det())
+    assert ww.get_last_match() == ("hey coder", "coder")
+    monkeypatch.setattr(ww, "_detector", None)
+    assert ww.get_last_match() is None
+
+
 # ── Detector loop ────────────────────────────────────────────────────────
 
 

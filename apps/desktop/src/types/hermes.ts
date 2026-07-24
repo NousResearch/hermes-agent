@@ -149,7 +149,10 @@ export interface MemoryProviderConfig {
   name: string
 }
 
+export type CustomEndpointApiMode = '' | 'anthropic_messages' | 'chat_completions' | 'codex_responses'
+
 export interface CustomEndpoint {
+  api_mode: CustomEndpointApiMode
   api_key_preview?: null | string
   base_url: string
   context_length?: null | number
@@ -175,6 +178,7 @@ export interface CustomEndpointsResponse {
 }
 
 export interface CustomEndpointUpdate {
+  api_mode?: CustomEndpointApiMode
   api_key?: string
   base_url: string
   context_length?: number

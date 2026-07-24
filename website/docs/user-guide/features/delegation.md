@@ -118,6 +118,7 @@ delegate_task(
 When a top-level agent provides a `tasks` array, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
+- **Session-total cap:** A parent session may spawn 10 children in total by default across all `delegate_task` calls, independent of the per-batch concurrency limit. Configure `delegation.max_children_per_session`; set it to `0` to disable the cap.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
@@ -290,6 +291,7 @@ For **durable execution** that must survive session closure or process restart, 
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  # max_children_per_session: 10            # Total children one parent session may spawn across calls (default: 10; 0 = unlimited)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override

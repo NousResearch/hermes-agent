@@ -3377,6 +3377,42 @@ class TestBulkDeleteSessions:
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
 
+    def test_cleans_all_cascade_delegate_budgets(self, db):
+        from tools.delegate_tool import (
+            _session_children_counts,
+            _session_children_lock,
+            cleanup_session_budget,
+        )
+
+        db.create_session("bulk-budget-parent", "cli")
+        db.create_session(
+            "bulk-budget-orchestrator",
+            "cli",
+            parent_session_id="bulk-budget-parent",
+            model_config={"_delegate_from": "bulk-budget-parent"},
+        )
+        db.create_session(
+            "bulk-budget-worker",
+            "cli",
+            parent_session_id="bulk-budget-orchestrator",
+            model_config={"_delegate_from": "bulk-budget-orchestrator"},
+        )
+        budget_ids = {
+            "bulk-budget-parent",
+            "bulk-budget-orchestrator",
+            "bulk-budget-worker",
+        }
+        with _session_children_lock:
+            _session_children_counts.update(dict.fromkeys(budget_ids, 1))
+
+        try:
+            assert db.delete_sessions(["bulk-budget-parent"]) == 1
+            with _session_children_lock:
+                assert budget_ids.isdisjoint(_session_children_counts)
+        finally:
+            for session_id in budget_ids:
+                cleanup_session_budget(session_id)
+
 
 class TestDeleteEmptySessions:
     """``delete_empty_sessions`` sweeps every ended, non-archived session
@@ -4755,6 +4791,42 @@ class TestListSessionsRich:
         assert db.delete_session("parent") is True
         assert db.get_session("delegate") is None
         assert db.get_session("branch") is not None
+
+    def test_delete_parent_cleans_all_cascade_delegate_budgets(self, db):
+        from tools.delegate_tool import (
+            _session_children_counts,
+            _session_children_lock,
+            cleanup_session_budget,
+        )
+
+        db.create_session("budget-parent", "cli")
+        db.create_session(
+            "budget-orchestrator",
+            "cli",
+            parent_session_id="budget-parent",
+            model_config={"_delegate_from": "budget-parent"},
+        )
+        db.create_session(
+            "budget-worker",
+            "cli",
+            parent_session_id="budget-orchestrator",
+            model_config={"_delegate_from": "budget-orchestrator"},
+        )
+        budget_ids = {
+            "budget-parent",
+            "budget-orchestrator",
+            "budget-worker",
+        }
+        with _session_children_lock:
+            _session_children_counts.update(dict.fromkeys(budget_ids, 1))
+
+        try:
+            assert db.delete_session("budget-parent") is True
+            with _session_children_lock:
+                assert budget_ids.isdisjoint(_session_children_counts)
+        finally:
+            for session_id in budget_ids:
+                cleanup_session_budget(session_id)
 
     def test_v16_migration_tags_linked_delegate_rows(self, tmp_path):
         """Pre-marker linked subagent rows get tagged, then cascade with parent."""

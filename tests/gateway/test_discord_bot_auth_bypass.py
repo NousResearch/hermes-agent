@@ -28,6 +28,7 @@ def _isolate_discord_env(monkeypatch):
     """
     for var in (
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_ALLOWED_BOTS",
         "DISCORD_ALLOWED_USERS",
         "DISCORD_ALLOWED_ROLES",
         "DISCORD_ALLOW_ALL_USERS",
@@ -107,6 +108,23 @@ def test_discord_bot_authorized_when_allow_bots_all(monkeypatch):
 
     source = _make_discord_bot_source()
     assert runner._is_user_authorized(source) is True
+
+
+def test_discord_bot_authorized_when_id_is_allowlisted(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOTS", "999888777,111222333")
+
+    assert runner._is_user_authorized(_make_discord_bot_source("999888777")) is True
+
+
+def test_discord_bot_rejected_when_id_is_not_allowlisted(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOTS", "111222333")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "999888777")
+
+    assert runner._is_user_authorized(_make_discord_bot_source("999888777")) is False
 
 
 def test_discord_bot_NOT_authorized_when_allow_bots_none(monkeypatch):

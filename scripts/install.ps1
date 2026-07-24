@@ -2922,9 +2922,10 @@ function Install-Desktop {
     # apps/desktop/package.json's build.win block, electron-builder never
     # invokes signtool and therefore never fetches/extracts winCodeSign
     # (whose macOS symlinks crash 7-Zip on non-admin Windows -- a dead end we
-    # are NOT trying to work around). The Hermes icon + product name are
-    # stamped onto Hermes.exe by our own rcedit step (Set-DesktopExeIdentity)
-    # AFTER this build, completely decoupled from electron-builder signing.
+    # are NOT trying to work around). Do not edit Hermes.exe after
+    # electron-builder stages it: PE resource edits invalidate the Electron
+    # binary's Authenticode signature. Package metadata and the separately
+    # shipped shortcut icon provide Hermes branding without changing the exe.
     #
     # WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD explicitly cleared as
     # belt-and-suspenders: if the user's environment has them set
@@ -3056,13 +3057,9 @@ function Install-Desktop {
         throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
     }
 
-    # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
-    #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.mjs)
-    #     during `npm run pack` above -- for every build, so the installer's
-    #     --update rebuild stays branded too. No separate stamp step needed here.
-    #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
-    #     =false) because enabling it drags in signtool -> winCodeSign -> the
-    #     unfixable symlink crash; the afterPack hook runs rcedit directly.
+    # 3b. Keep the staged executable byte-for-byte unchanged after this point.
+    #     Editing PE resources would invalidate its Authenticode signature and
+    #     make Smart App Control reject the rebuilt desktop on Windows.
 
     # 3c. Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked app
     #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with
@@ -3103,8 +3100,8 @@ function New-DesktopShortcuts {
         # embedded resource. An explicit .ico path is more stable across update
         # cycles: pointing at "$TargetExe,0" makes Windows cache the icon it
         # extracted from the exe at shortcut-creation time, and that cached
-        # bitmap can persist (showing the OLD/Electron icon) even after the exe
-        # is re-stamped on update. A dedicated .ico sidesteps that extraction.
+        # bitmap can persist across updates. A dedicated .ico sidesteps that
+        # extraction while leaving the signed executable unchanged.
         $iconIco = Join-Path $workDir 'resources\icon.ico'
         if (Test-Path $iconIco) {
             $iconLocation = "$iconIco,0"
@@ -3136,10 +3133,9 @@ function New-DesktopShortcuts {
         }
 
         # Bust the Windows shell icon cache so the desktop/Start-Menu shortcut
-        # repaints with the (possibly newly-stamped) icon instead of a stale
-        # cached bitmap. Critical on the --update path: the exe was re-stamped
-        # with the Hermes icon, but without this the shortcut can keep drawing
-        # the old Electron icon until the user manually refreshes / reboots.
+        # repaints with the dedicated Hermes icon instead of a stale cached
+        # bitmap. This is especially useful after an update, when Windows may
+        # otherwise keep drawing an earlier shortcut icon until refresh/reboot.
         # Best-effort and silent -- never fail the install over a cosmetic cache.
         try {
             & ie4uinit.exe -show 2>$null

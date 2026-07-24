@@ -83,7 +83,7 @@ python batch_runner.py --list_distributions
 
 | 参数 | 说明 |
 |-----------|-------------|
-| `--reasoning_effort` | 推理力度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh` |
+| `--reasoning_effort` | 推理力度：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra` |
 | `--reasoning_disabled` | 完全禁用推理/思考 token |
 
 ### 高级选项

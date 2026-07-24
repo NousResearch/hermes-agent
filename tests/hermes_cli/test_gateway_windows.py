@@ -72,8 +72,10 @@ def test_exec_schtasks_decodes_with_replace_errors(monkeypatch):
     assert captured["text"] is True
 
 
-def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
-    """Avoid uv's venv pythonw launcher because it respawns console python.exe."""
+def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
+    """No pythonw / base-interpreter detour: the venv console python.exe is
+    launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden
+    console instead of flashing their own (#54220/#56747)."""
 
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
@@ -105,11 +107,10 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
 
-    assert argv[:3] == [str(base_pythonw), "-m", "hermes_cli.main"]
+    assert argv[:3] == [str(venv_python), "-m", "hermes_cli.main"]
     assert cwd == str(hermes_home.resolve())
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
-    assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
 
 
 class TestStableWindowsGatewayWorkingDir:
@@ -188,12 +189,14 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     return script_path, calls
 
 
-def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypatch):
-    """Scheduled Task wrapper should launch pythonw once and avoid replace loops."""
+def test_gateway_cmd_script_uses_console_python_without_replace_or_start_churn(monkeypatch):
+    """Scheduled Task wrapper launches the console python once (hidden by the
+    .vbs window-style-0 chain, NOT console-less pythonw — see #54220/#56747)
+    and avoids replace loops."""
     monkeypatch.setattr(
         gateway_windows,
         "_resolve_detached_python",
-        lambda exe: (exe.replace("python.exe", "pythonw.exe"), r"C:\\Hermes\\hermes-agent\\venv", []),
+        lambda exe: (exe, r"C:\\Hermes\\hermes-agent\\venv", []),
     )
 
     content = gateway_windows._build_gateway_cmd_script(
@@ -203,15 +206,23 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
         "--profile alice",
     )
 
-    assert "pythonw.exe" in content
+    assert "python.exe" in content
+    assert "pythonw.exe" not in content
     assert "gateway run" in content
     assert "--replace" not in content
     assert "start \"\"" not in content
     assert "exit /b 0" in content
 
 
-def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
-    """Scheduled Task wrapper should share the detached uv-venv workaround."""
+def test_gateway_launcher_scripts_keep_console_python_for_uv_venv(monkeypatch, tmp_path):
+    """The launcher must NOT detour to uv's base pythonw.exe.
+
+    The old uv-venv workaround swapped in the base ``pythonw.exe`` +
+    PYTHONPATH overlay. That console-less daemon made every console-subsystem
+    descendant allocate a visible flashing conhost (#54220/#56747). The venv
+    console ``python.exe`` under the hidden-console launch chain is correct —
+    the uv shim re-execs the base interpreter windowless because the child
+    inherits the shim's hidden console."""
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
     site_packages = project / "venv" / "Lib" / "site-packages"
@@ -239,14 +250,16 @@ def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
         "",
     )
 
-    assert str(base_pythonw) in content
+    assert str(venv_python) in content
     assert f'set "VIRTUAL_ENV={project / "venv"}"' in content
-    assert str(site_packages) in content
+    assert str(base_pythonw) not in content
     assert str(venv_pythonw) not in content
 
 
-def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
-    """UAC handoff should not leave a second elevated cmd.exe window open."""
+def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
+    """UAC handoff launches console python with SW_HIDE — a single hidden
+    console, not console-less pythonw (#54220/#56747), and no visible
+    elevated cmd.exe window left open."""
     calls = []
 
     class FakeShell32:
@@ -259,7 +272,6 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_current_profile_cli_args", lambda: ["--profile", "alice"])
-    monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: exe.replace("python.exe", "pythonw.exe"))
     monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Hermes\venv\Scripts\python.exe")
     monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
 
@@ -268,7 +280,7 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
     assert len(calls) == 1
     _hwnd, verb, executable, params, cwd, show = calls[0]
     assert verb == "runas"
-    assert executable.endswith("pythonw.exe")
+    assert executable == r"C:\Hermes\venv\Scripts\python.exe"
     assert "--profile alice gateway install --start-now --elevated-handoff" in params
     assert show == 0
     assert cwd
@@ -749,7 +761,7 @@ def test_stop_writes_planned_stop_marker_before_killing(monkeypatch):
 
 
 def test_stop_waits_for_graceful_drain_before_force_kill(monkeypatch):
-    """When drain succeeds, stop() should NOT force-kill the gateway.
+    """When drain succeeds, stop() should NOT force-terminate the gateway.
 
     drained=True means the gateway exited cleanly after seeing the
     marker — escalating to taskkill /F afterwards would be wasted
@@ -760,30 +772,36 @@ def test_stop_waits_for_graceful_drain_before_force_kill(monkeypatch):
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
 
     from gateway import status as status_mod
-    monkeypatch.setattr(status_mod, "write_planned_stop_marker", lambda p: True)
+
+    def fake_write_marker(target_pid):
+        events.append(("write_marker", target_pid))
+        return True
+
+    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write_marker)
 
     # Simulate the gateway exiting cleanly after one poll tick.
     poll_count = [0]
+
     def fake_pid_exists(check_pid):
         poll_count[0] += 1
         return poll_count[0] < 2  # alive on first poll, gone on second
+
     monkeypatch.setattr(status_mod, "_pid_exists", fake_pid_exists)
     monkeypatch.setattr(status_mod, "get_running_pid", lambda: pid)
 
-    def fake_kill(**kwargs):
-        events.append(("kill", kwargs.get("force", False)))
-        return 0
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
+    def fake_terminate_pid(target_pid, force=False):
+        events.append(("terminate", target_pid, force))
+
+    monkeypatch.setattr(status_mod, "terminate_pid", fake_terminate_pid)
     monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
 
     gateway_windows.stop()
 
-    # kill_gateway_processes is still called as the no-op sweep, but
-    # NOT with force=True — drain succeeded, gateway is already gone.
-    assert events == [("kill", False)], (
-        f"After clean drain, force kill should be disabled (events={events})"
+    assert events == [("write_marker", pid)], (
+        f"After clean drain, force termination should be skipped (events={events})"
     )
 
 
@@ -799,35 +817,34 @@ def test_stop_escalates_to_force_kill_when_drain_times_out(monkeypatch):
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
 
     from gateway import status as status_mod
     monkeypatch.setattr(status_mod, "write_planned_stop_marker", lambda p: True)
-    # PID never exits — drain times out.
     monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: True)
     monkeypatch.setattr(status_mod, "get_running_pid", lambda: pid)
+    monkeypatch.setattr(gateway_windows, "_drain_gateway_pid", lambda *_args: False)
 
-    def fake_kill(**kwargs):
-        events.append(("kill", kwargs.get("force", False)))
-        return 1
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
-    # Tiny drain timeout to keep the test fast.
-    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 1.0)
+    def fake_terminate_pid(target_pid, force=False):
+        events.append(("terminate", target_pid, force))
+
+    monkeypatch.setattr(status_mod, "terminate_pid", fake_terminate_pid)
 
     gateway_windows.stop()
 
-    # When drain times out, kill is invoked with force=True so taskkill /T /F
-    # walks the process tree.
-    assert events == [("kill", True)], (
-        f"After drain timeout, kill must use force=True (events={events})"
+    assert events == [("terminate", pid, True)], (
+        f"After drain timeout, known PID must be force terminated (events={events})"
     )
 
 
 def test_stop_no_running_gateway_skips_drain(monkeypatch):
-    """When no gateway is running, skip the drain wait entirely."""
+    """When no gateway PID file is running, skip drain but clear known strays."""
     events = []
+    stray_pid = 42424
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [stray_pid])
 
     from gateway import status as status_mod
     monkeypatch.setattr(status_mod, "get_running_pid", lambda: None)
@@ -836,24 +853,24 @@ def test_stop_no_running_gateway_skips_drain(monkeypatch):
         events.append(("write_marker", target_pid))
         return True
     monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write_marker)
-    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: False)
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: check_pid == stray_pid)
 
-    def fake_kill(**kwargs):
-        events.append(("kill", kwargs.get("force", False)))
-        return 0
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
+    def fake_terminate_pid(target_pid, force=False):
+        events.append(("terminate", target_pid, force))
+
+    monkeypatch.setattr(status_mod, "terminate_pid", fake_terminate_pid)
     monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
 
     gateway_windows.stop()
 
-    # With no PID to drain, no marker is written.  Kill sweep still runs
-    # (defensive — covers the case where a stray gateway is alive without
-    # a PID file).  force=True because drained=False.
+    # With no PID to drain, no marker is written. The bounded profile scan can
+    # still find and terminate a known stray without falling back to a broad
+    # process sweep.
     assert ("write_marker", None) not in events
     assert all(e[0] != "write_marker" for e in events), (
         f"Should not write marker when no PID is running (events={events})"
     )
-    assert events == [("kill", True)]
+    assert events == [("terminate", stray_pid, True)]
 
 
 def test_drain_helper_handles_invalid_pid(monkeypatch):

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional
@@ -35,25 +34,32 @@ _RUNTIME_PLATFORMS = frozenset({"darwin", "win32", "linux"})
 _BOOLS = ("accessibility", "screen_recording", "screen_recording_capturable")
 
 
-def _driver_cmd(override: Optional[str]) -> str:
-    if override:
-        return override
-    try:
-        from hermes_cli.tools_config import _cua_driver_cmd
+def _resolve_driver_cmd(override: Optional[str]) -> Optional[str]:
+    """Use the runtime resolver for UI status and permission commands too."""
+    from tools.computer_use.cua_backend import resolve_cua_driver_cmd
 
-        return _cua_driver_cmd()
-    except Exception:
-        return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
+    return resolve_cua_driver_cmd(override)
 
 
 def _child_env() -> Dict[str, str]:
-    """cua-driver child env honoring the Hermes telemetry opt-in policy."""
+    """cua-driver child env: telemetry opt-in policy + secret sanitization.
+
+    cua-driver is a third-party binary — it must never inherit provider
+    API keys (#53503/#55709/#58889 lineage). Each layer degrades
+    gracefully so permission probes never break on a helper import error.
+    """
     try:
         from tools.computer_use.cua_backend import cua_driver_child_env
 
-        return cua_driver_child_env()
+        env = cua_driver_child_env()
     except Exception:
-        return dict(os.environ)
+        env = dict(os.environ)
+    try:
+        from tools.environments.local import _sanitize_subprocess_env
+
+        return _sanitize_subprocess_env(env)
+    except Exception:
+        return env
 
 
 def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess:
@@ -117,7 +123,7 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     unknown (binary missing / probe failed). ``can_grant`` is macOS-only.
     """
     plat = sys.platform
-    binary = shutil.which(_driver_cmd(driver_cmd))
+    binary = _resolve_driver_cmd(driver_cmd)
     out: Dict[str, Any] = {
         "platform": plat,
         "platform_supported": plat in _RUNTIME_PLATFORMS,
@@ -164,7 +170,7 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
         print("Computer Use permissions are a macOS concept; nothing to grant here.")
         return 64
 
-    binary = shutil.which(_driver_cmd(driver_cmd))
+    binary = _resolve_driver_cmd(driver_cmd)
     if not binary:
         print("cua-driver: not installed. Run: hermes computer-use install")
         return 2

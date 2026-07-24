@@ -1,19 +1,15 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { DecodeText } from '@/components/ui/decode-text'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
+import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $gatewayState } from '@/store/session'
 
-// Static, always-legible prefix; only TAIL ever scrambles. Splitting them at
-// the render level means no timer logic (even a stale HMR one) can ever
-// scramble "CONN".
-const PREFIX = 'CONN'
-const TAIL = 'ECTING'
-// Even-weight mono ascii so cycling glyphs don't jump width (matches the
-// nousnet-web download-button decode effect).
-const SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
-const TICK_MS = 45
+// Decode mechanics live in the shared <DecodeText> primitive
+// (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
+const TEXT = 'CONNECTING'
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
 const TEXT_OUT_MS = 360
@@ -39,18 +35,28 @@ function forcedPreview(): boolean {
   }
 }
 
-function scrambledTail(resolvedCount: number): string {
-  return Array.from(TAIL, (ch, i) =>
-    i < resolvedCount ? ch : SCRAMBLE_CHARS[(Math.random() * SCRAMBLE_CHARS.length) | 0]
-  ).join('')
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
 }
 
 export function GatewayConnectingOverlay() {
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
+  const gatewaySwitching = useStore($gatewaySwitching)
   const [previewing] = useState(forcedPreview)
-  const [tail, setTail] = useState(TAIL)
+  const reduce = prefersReducedMotion()
+  // Under reduced motion, skip the multi-phase exit choreography (text-out →
+  // hold → overlay fade) and jump straight to gone so the overlay unmounts
+  // the instant the gateway opens. E2E screenshots rely on this to avoid
+  // catching the overlay mid-fade.
   const [phase, setPhase] = useState<Phase>('live')
+  // Once cold boot has completed once, never resurrect the fullscreen overlay
+  // — soft gateway switches keep the shell and reskeleton the sidebar instead.
+  const coldBootDoneRef = useRef(false)
+
+  if (!boot.running && boot.progress >= 100 && !boot.error) {
+    coldBootDoneRef.current = true
+  }
 
   // The full-screen connecting overlay is for initial boot only. After a
   // healthy boot, flaky networks / sleep-wake can drop the socket and flip the
@@ -58,7 +64,10 @@ export function GatewayConnectingOverlay() {
   // the chat then — users should still be able to type drafts, open settings,
   // and recover instead of staring at a modal CONNECTING screen.
   const initialBootActive = boot.visible || boot.running || boot.progress < 100
-  const connecting = gatewayState !== 'open' && !boot.error && initialBootActive
+
+  const connecting =
+    !coldBootDoneRef.current && !gatewaySwitching && gatewayState !== 'open' && !boot.error && initialBootActive
+
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase
   // kicks in doesn't unmount us and cause a flash.
@@ -68,36 +77,6 @@ export function GatewayConnectingOverlay() {
     shownRef.current = true
   }
 
-  // Decode loop — only while live (freeze the resolved word during the exit).
-  useEffect(() => {
-    if (phase !== 'live' || (!previewing && !connecting)) {
-      return
-    }
-
-    let resolved = 0
-    let hold = 0
-
-    const id = window.setInterval(() => {
-      if (resolved >= TAIL.length) {
-        hold += 1
-
-        if (hold > 16) {
-          resolved = 0
-          hold = 0
-        }
-
-        setTail(TAIL)
-
-        return
-      }
-
-      resolved += 0.5
-      setTail(scrambledTail(Math.floor(resolved)))
-    }, TICK_MS)
-
-    return () => window.clearInterval(id)
-  }, [phase, previewing, connecting])
-
   // Kick off the exit when connected: real connect, or a faked timer in preview.
   useEffect(() => {
     if (phase !== 'live') {
@@ -105,19 +84,19 @@ export function GatewayConnectingOverlay() {
     }
 
     if (previewing) {
-      const id = window.setTimeout(() => {
-        setTail(TAIL)
-        setPhase('text-out')
-      }, PREVIEW_CONNECT_MS)
+      const id = window.setTimeout(() => setPhase('text-out'), PREVIEW_CONNECT_MS)
 
       return () => window.clearTimeout(id)
     }
 
     if (gatewayState === 'open' && shownRef.current) {
-      setTail(TAIL)
-      setPhase('text-out')
+      // Under reduced motion, skip the multi-phase exit choreography
+      // (text-out → hold → overlay fade) and jump straight to gone so the
+      // overlay unmounts the instant the gateway opens. E2E screenshots
+      // rely on this to avoid catching the overlay mid-fade.
+      setPhase(reduce ? 'gone' : 'text-out')
     }
-  }, [phase, previewing, gatewayState])
+  }, [phase, previewing, gatewayState, reduce])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -135,10 +114,7 @@ export function GatewayConnectingOverlay() {
 
     // Preview replays so we can keep watching the transition.
     if (phase === 'gone' && previewing) {
-      const id = window.setTimeout(() => {
-        setTail(TAIL)
-        setPhase('live')
-      }, PREVIEW_REPLAY_MS)
+      const id = window.setTimeout(() => setPhase('live'), PREVIEW_REPLAY_MS)
 
       return () => window.clearTimeout(id)
     }
@@ -169,21 +145,16 @@ export function GatewayConnectingOverlay() {
         overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
     >
-      <style>{'@keyframes gco-cursor { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }'}</style>
-      <span
+      <DecodeText
+        active={phase === 'live' && (previewing || connecting)}
         className={cn(
-          'inline-flex items-center pl-[0.4em] font-mono text-[0.64rem] font-semibold uppercase tracking-[0.4em] tabular-nums text-(--theme-primary) transition duration-300 ease-out',
+          'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
           leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
         )}
-      >
-        {PREFIX}
-        {tail}
-        <span
-          aria-hidden="true"
-          className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px]"
-          style={{ animation: 'gco-cursor 1s step-end infinite' }}
-        />
-      </span>
+        cursor
+        prefix={4}
+        text={TEXT}
+      />
     </div>
   )
 }

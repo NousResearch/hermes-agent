@@ -3,9 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
+    _preflight_codex_input_items,
 )
 
 
@@ -49,6 +51,12 @@ def test_normalize_codex_response_drops_transient_rs_tmp_reasoning_items():
 
 
 def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
+    """Summary-only reasoning keeps the continuation path for Codex backends.
+
+    Since #64434, an unrecognized issuer with ``response.status="completed"``
+    trusts the provider and returns ``stop`` — so this test pins the Codex
+    backend explicitly, where reasoning-only still means "still thinking".
+    """
     response = SimpleNamespace(
         status="completed",
         output=[
@@ -61,12 +69,29 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
         ],
     )
 
-    assistant_message, finish_reason = _normalize_codex_response(response)
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
 
     assert finish_reason == "incomplete"
     assert assistant_message.content == ""
     assert assistant_message.reasoning == "still thinking"
     assert assistant_message.codex_reasoning_items is None
+
+
+def test_normalize_codex_response_maps_incomplete_content_filter_to_refusal():
+    response = SimpleNamespace(
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="content_filter"),
+        output=[],
+        output_text="",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "content_filter"
+    assert assistant_message.content == ""
+    assert response.output
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +162,149 @@ def test_normalize_codex_response_in_progress_message_still_incomplete():
     _assistant_message, finish_reason = _normalize_codex_response(response)
 
     assert finish_reason == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# Replayed assistant message items with an oversized server-assigned ``id``
+# (Codex issues 400+ char base64 blobs) must never reach the API — the
+# Responses endpoint caps input[].id at 64 chars and rejects the whole
+# request with a non-retryable HTTP 400, permanently bricking the session
+# (every subsequent turn replays the same bad id). Short ids (msg_...) are
+# still worth keeping for prefix-cache hits, so this is a length guard, not
+# a blanket strip.
+# ---------------------------------------------------------------------------
+
+_OVERSIZED_ITEM_ID = "x" * 408
+_VALID_ITEM_ID = "msg_abc123"
+
+
+def test_chat_messages_to_responses_input_drops_oversized_message_id():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _OVERSIZED_ITEM_ID,
+                    "phase": "final_answer",
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert "id" not in message_item
+    assert message_item["phase"] == "final_answer"
+    assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_keeps_short_message_id():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _VALID_ITEM_ID,
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert message_item["id"] == _VALID_ITEM_ID
+
+
+def test_preflight_codex_input_items_drops_oversized_message_id():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _OVERSIZED_ITEM_ID,
+                "phase": "final_answer",
+            }
+        ]
+    )
+
+    assert "id" not in items[0]
+    assert items[0]["phase"] == "final_answer"
+
+
+def test_preflight_codex_input_items_keeps_short_message_id():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _VALID_ITEM_ID,
+            }
+        ]
+    )
+
+    assert items[0]["id"] == _VALID_ITEM_ID
+
+
+def test_preflight_codex_input_items_drops_short_id_for_github_responses():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _VALID_ITEM_ID,
+                "phase": "final_answer",
+            }
+        ],
+        is_github_responses=True,
+    )
+
+    assert "id" not in items[0]
+    assert items[0]["status"] == "in_progress"
+    assert items[0]["phase"] == "final_answer"
+    assert items[0]["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
+    kwargs = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5.5",
+            "instructions": "You are Hermes.",
+            "input": [
+                {"role": "user", "content": "ping"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _OVERSIZED_ITEM_ID,
+                    "phase": "final_answer",
+                },
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    message_item = next(item for item in kwargs["input"] if item.get("type") == "message")
+    assert "id" not in message_item
 
 
 # ---------------------------------------------------------------------------
@@ -284,3 +452,88 @@ def test_normalize_codex_response_failed_with_message_only():
     )
     with pytest.raises(RuntimeError, match=r"^model error$"):
         _normalize_codex_response(response)
+
+
+# ---------------------------------------------------------------------------
+# Reasoning-channel answer salvage (xAI grok) — grok-4.x on the xAI
+# /v1/responses surface sometimes emits its final answer inside the
+# reasoning item, delimited by grok's internal "<response>" tag, with no
+# ``message`` output item at all.  Because those reasoning items carry no
+# encrypted_content, the interim message replays as nothing and every
+# continuation request is byte-identical — the turn burns 3 retries and
+# fails even though the answer was produced.  Observed live with grok-4.20
+# on xai-oauth (2026-07-13).
+# ---------------------------------------------------------------------------
+
+
+def _xai_reasoning_only_response(reasoning_text):
+    return SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content=None,
+                summary=[SimpleNamespace(text=reasoning_text)],
+            )
+        ],
+    )
+
+
+def test_normalize_codex_response_salvages_xai_reasoning_channel_answer():
+    response = _xai_reasoning_only_response(
+        "The process is still running.\n<response>\nAll good, process running."
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "All good, process running."
+    assert assistant_message.reasoning == "The process is still running."
+
+
+def test_normalize_codex_response_salvage_strips_closing_tag():
+    response = _xai_reasoning_only_response(
+        "Thinking.\n<response>The answer.</response>"
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "The answer."
+
+
+def test_normalize_codex_response_salvage_is_xai_scoped():
+    """Non-xAI special-cased issuers (Codex backend) keep the reasoning-only →
+    incomplete classification; the Codex backend replays encrypted reasoning,
+    so its continuation genuinely progresses and must not be short-circuited.
+
+    Pins ``issuer_kind="codex_backend"`` explicitly: with no issuer at all,
+    the unrecognized-backend rule (#64434) trusts ``status="completed"`` and
+    returns ``stop`` — that path is covered by the #64434 regression tests.
+    """
+    response = _xai_reasoning_only_response(
+        "Thinking.\n<response>The answer.</response>"
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+
+
+def test_normalize_codex_response_xai_reasoning_without_marker_stays_incomplete():
+    response = _xai_reasoning_only_response("Still thinking, no answer yet.")
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""

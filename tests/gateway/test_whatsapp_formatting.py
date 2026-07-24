@@ -14,6 +14,17 @@ import pytest
 from gateway.config import Platform
 
 
+@pytest.fixture(autouse=True)
+def _whatsapp_open_optin(monkeypatch):
+    """Opt into WhatsApp allow-all so ``dm_policy: open`` dispatch tests run.
+
+    The adapter fails closed on ``open`` without an allow-all opt-in
+    (SECURITY.md 2.6); these formatting/dispatch-mechanics tests set
+    ``_dm_policy = "open"`` as a stand-in for "process this DM".
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -130,10 +141,11 @@ class TestFormatMessage:
         assert adapter.format_message("hello world") == "hello world"
 
     def test_already_whatsapp_italic(self):
-        """Single *italic* should pass through unchanged."""
+        """Markdown *italic* converts to WhatsApp _italic_ (PR #58704)."""
         adapter = _make_adapter()
-        # After bold conversion, *text* is WhatsApp italic
-        assert adapter.format_message("*italic*") == "*italic*"
+        assert adapter.format_message("*italic*") == "_italic_"
+        # Already-WhatsApp _italic_ passes through unchanged
+        assert adapter.format_message("_italic_") == "_italic_"
 
     def test_multiline_mixed(self):
         adapter = _make_adapter()

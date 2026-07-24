@@ -36,7 +36,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
-from hermes_cli.config import cfg_get, load_config
+from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -46,10 +46,46 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT = 30  # seconds per HTTP request
+_DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
+
+# Cached command timeout from config (resolved lazily, like browser_tool)
+_cached_cmd_timeout: Optional[int] = None
+_cmd_timeout_resolved = False
+
+
+def _get_command_timeout() -> int:
+    """Return ``browser.command_timeout`` from config, falling back to 30s.
+
+    Mirrors :func:`tools.browser_tool._get_command_timeout` so both the
+    local browser path and the Camofox path honour the same config knob.
+    Result is cached after the first call.
+    """
+    global _cached_cmd_timeout, _cmd_timeout_resolved
+    if _cmd_timeout_resolved:
+        return _cached_cmd_timeout  # type: ignore[return-value]
+
+    _cmd_timeout_resolved = True
+    result = _DEFAULT_TIMEOUT
+    try:
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "command_timeout")
+        if val is not None:
+            result = max(int(val), 5)  # floor at 5s
+    except Exception as exc:
+        logger.debug("Could not read browser.command_timeout: %s", exc)
+    _cached_cmd_timeout = result
+    return result
+
+
+def _auth_headers() -> Dict[str, str]:
+    """Return Authorization header when CAMOFOX_API_KEY is set."""
+    key = os.getenv("CAMOFOX_API_KEY", "").strip()
+    if key:
+        return {"Authorization": f"Bearer {key}"}
+    return {}
 
 
 def get_camofox_url() -> str:
@@ -57,15 +93,39 @@ def get_camofox_url() -> str:
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
+def _config_cdp_url() -> str:
+    """Persistent ``browser.cdp_url`` from config.yaml, or empty string.
+
+    Read here (instead of importing ``browser_tool._get_cdp_override`` to avoid
+    a circular import) so Camofox can yield to a config-based CDP override the
+    same way it already yields to the ``BROWSER_CDP_URL`` env override.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        browser_cfg = read_raw_config().get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
-    When the user has explicitly connected to a live Chromium-family browser via
-    ``/browser connect`` (which sets ``BROWSER_CDP_URL``), the CDP connection
-    takes priority over Camofox so the browser tools operate on the real
-    browser instead of being silently routed to the Camofox backend.
+    A CDP override takes priority over Camofox so the browser tools operate on
+    the real CDP browser (and a CDP backend is treated as non-local for SSRF
+    checks) instead of being silently routed to Camofox. The override may come
+    from the ``BROWSER_CDP_URL`` env var (set by ``/browser connect``) OR a
+    persistent ``browser.cdp_url`` in config.yaml — both are honored, matching
+    ``browser_tool._get_cdp_override()``'s precedence. (Previously only the env
+    var suppressed Camofox, so ``CAMOFOX_URL`` + a config CDP override still
+    routed navigation through Camofox.)
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
+        return False
+    if _config_cdp_url():
         return False
     return bool(get_camofox_url())
 
@@ -345,10 +405,11 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
         f"{base}/tabs",
         json={
             "userId": session["user_id"],
-            "sessionKey": session["session_key"],
+            "listItemId": session["session_key"],
             "url": url,
         },
-        timeout=_DEFAULT_TIMEOUT,
+        timeout=_get_command_timeout(),
+        headers=_auth_headers(),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -384,34 +445,42 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     """POST JSON to camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
+    resp = requests.post(url, json=body, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
     """GET from camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
 
-def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
+def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp
 
 
-def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict:
     """DELETE to camofox and return parsed response."""
+    if timeout is None:
+        timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
+    resp = requests.delete(url, json=body, timeout=timeout, headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
@@ -430,12 +499,25 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             session = _ensure_tab(task_id, browser_url)
             data = {"ok": True, "url": browser_url}
         else:
-            # Navigate existing tab
-            data = _post(
-                f"/tabs/{session['tab_id']}/navigate",
-                {"userId": session["user_id"], "url": browser_url},
-                timeout=60,
-            )
+            # Navigate existing tab — recover from stale tab 404
+            try:
+                data = _post(
+                    f"/tabs/{session['tab_id']}/navigate",
+                    {"userId": session["user_id"], "url": browser_url},
+                    timeout=60,
+                )
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    logger.warning(
+                        "Camofox tab %s returned 404 — tab was garbage collected. "
+                        "Creating a fresh tab.",
+                        session["tab_id"],
+                    )
+                    session["tab_id"] = None
+                    session = _ensure_tab(task_id, browser_url)
+                    data = {"ok": True, "url": browser_url}
+                else:
+                    raise
         result = {
             "success": True,
             "url": data.get("url", browser_url),
@@ -488,6 +570,40 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         return tool_error(str(e), success=False)
 
 
+def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:
+    """Return a blocked payload when the current Camofox page is private/internal.
+
+    Mirrors the eval-path guard added for ``_camofox_eval`` (browser_tool.py):
+    Camofox snapshot / vision / image-extraction all read current page state, so
+    on a non-local backend they can leak the content of an intranet/metadata
+    page the terminal itself can't reach.  The gate matches ``browser_snapshot``
+    / ``browser_vision`` — only active when the SSRF guard applies (non-local
+    backend, not a local sidecar, ``allow_private_urls`` unset).  Fail-open on
+    probe failure, matching the sibling guards.
+
+    Imports are deferred to call time because ``browser_tool`` imports this
+    module; importing it at module load would create a circular import.
+    """
+    from tools.browser_tool import (
+        _camofox_current_page_private_url,
+        _eval_ssrf_guard_active,
+    )
+
+    if not _eval_ssrf_guard_active(task_id or "default"):
+        return None
+    blocked_url = _camofox_current_page_private_url(session["tab_id"], session["user_id"])
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). Refusing to {action} on this page in this "
+            "browser mode."
+        ),
+    }, ensure_ascii=False)
+
+
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
                      user_task: Optional[str] = None) -> str:
     """Get accessibility tree snapshot from Camofox."""
@@ -495,6 +611,10 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "read a page snapshot")
+        if blocked:
+            return blocked
 
         data = _get(
             f"/tabs/{session['tab_id']}/snapshot",
@@ -533,6 +653,10 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
+        blocked = _camofox_private_page_block(session, task_id, "click")
+        if blocked:
+            return blocked
+
         # Strip @ prefix if present (our tool convention)
         clean_ref = ref.lstrip("@")
 
@@ -556,19 +680,38 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
+        blocked = _camofox_private_page_block(session, task_id, "type")
+        if blocked:
+            return blocked
+
         clean_ref = ref.lstrip("@")
 
         _post(
             f"/tabs/{session['tab_id']}/type",
             {"userId": session["user_id"], "ref": clean_ref, "text": text},
         )
-        return json.dumps({
+        from agent.display import (
+            redact_browser_typed_text_for_display,
+            redact_tool_args_for_display,
+        )
+
+        display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
+        response = {
             "success": True,
-            "typed": text,
+            # Match browser_tool.browser_type: run typed text through the
+            # secret-pattern redactor so API keys / tokens don't leak into
+            # tool progress or chat history.  The raw text is still typed into
+            # the page; only the returned display value is redacted.
+            "typed": display_text,
             "element": clean_ref,
-        })
+        }
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response)
     except Exception as e:
-        return tool_error(str(e), success=False)
+        from agent.display import redact_browser_typed_text_for_display
+
+        return tool_error(redact_browser_typed_text_for_display(str(e), text), success=False)
 
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
@@ -610,6 +753,10 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
+        blocked = _camofox_private_page_block(session, task_id, "press")
+        if blocked:
+            return blocked
+
         _post(
             f"/tabs/{session['tab_id']}/press",
             {"userId": session["user_id"], "key": key},
@@ -644,6 +791,10 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "extract page images")
+        if blocked:
+            return blocked
 
         import re
 
@@ -688,6 +839,10 @@ def camofox_vision(question: str, annotate: bool = False,
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "capture a screenshot")
+        if blocked:
+            return blocked
 
         # Get screenshot as binary PNG
         resp = _get_raw(

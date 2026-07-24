@@ -34,6 +34,36 @@ class TestBlankSlateMinimalToolsets:
         # The recovered non-configurable toolset that used to leak is suppressed.
         assert "kanban" in disabled
 
+    def test_disabled_toolsets_excludes_posture_toolsets(self):
+        """Posture toolsets (e.g. coding) are session-level selections made by
+        agent/coding_context.py — not permanent user-facing disables.  Including
+        them in disabled_toolsets causes model_tools to subtract their tools
+        (terminal, read_file, …) from the minimal Blank Slate surface (#57315).
+        """
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+        disabled = set(cfg["agent"]["disabled_toolsets"])
+        assert "coding" not in disabled
+
+    def test_no_disabled_bundle_overlaps_kept_tools(self):
+        """Invariant: ``disabled_toolsets`` is applied at *tool* granularity and
+        a single tool can belong to several toolsets, so no disabled entry may
+        share a tool with a kept toolset — it would silently strip that tool
+        from the blank-slate agent (#57315, #58281).
+        """
+        from toolsets import resolve_toolset
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+        kept_tools = set()
+        for ts in cfg["platform_toolsets"]["cli"]:
+            kept_tools.update(resolve_toolset(ts))
+        for ts in cfg["agent"]["disabled_toolsets"]:
+            overlap = set(resolve_toolset(ts)) & kept_tools
+            assert not overlap, (
+                f"disabled toolset '{ts}' overlaps kept tools {sorted(overlap)}; "
+                "it would silently strip them from the blank-slate agent"
+            )
+
     def test_resolver_yields_exactly_file_and_terminal(self):
         from hermes_cli.tools_config import _get_platform_tools
         cfg = {}
@@ -52,6 +82,30 @@ class TestBlankSlateMinimalToolsets:
         enabled = sorted(_get_platform_tools(cfg, "cli"))
         defs = model_tools.get_tool_definitions(
             enabled_toolsets=enabled, disabled_toolsets=None, quiet_mode=True
+        )
+        names = sorted(
+            {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
+        )
+        assert names == ["patch", "process", "read_file", "search_files",
+                         "terminal", "write_file"]
+
+    def test_tool_schema_survives_disabled_toolsets_from_config(self):
+        """Regression: disabled_toolsets must not erase the minimal Blank Slate
+        surface when passed to model_tools.  Before the fix, posture toolsets
+        like ``coding`` in disabled_toolsets caused model_tools to subtract
+        terminal, read_file, write_file, etc. (#57315).
+        """
+        import model_tools
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = {}
+        _blank_slate_minimal_toolsets(cfg)
+        _blank_slate_minimize_config(cfg)
+        enabled = sorted(_get_platform_tools(cfg, "cli"))
+        disabled = cfg.get("agent", {}).get("disabled_toolsets") or []
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=disabled,
+            quiet_mode=True,
         )
         names = sorted(
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}

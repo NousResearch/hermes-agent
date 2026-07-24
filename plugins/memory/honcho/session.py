@@ -602,6 +602,7 @@ class HonchoSessionManager:
         self, session_key: str, query: str,
         reasoning_level: str | None = None,
         peer: str = "user",
+        apply_injection_cap: bool = True,
     ) -> str:
         """
         Query Honcho's dialectic endpoint about a peer.
@@ -617,6 +618,9 @@ class HonchoSessionManager:
                              Only honored when dialecticDynamic is true.
                              If None or dialecticDynamic is false, uses the configured default.
             peer: Which peer to query — "user" (default) or "ai".
+            apply_injection_cap: Clip automatic injections to
+                ``dialecticMaxChars``. Explicit ``honcho_reasoning`` calls pass
+                False because Honcho already bounds their output.
 
         Returns:
             Honcho's synthesized answer, or empty string on failure.
@@ -655,8 +659,13 @@ class HonchoSessionManager:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 result = target_peer.chat(query, reasoning_level=level) or ""
 
-            # Apply Hermes-side char cap before caching
-            if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
+            # Only automatic injection uses the Hermes-side character cap.
+            if (
+                apply_injection_cap
+                and result
+                and self._dialectic_max_chars
+                and len(result) > self._dialectic_max_chars
+            ):
                 result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
             return result
         except Exception as e:
@@ -733,7 +742,8 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
         try:
-            user_ctx = self._fetch_peer_context(session.user_peer_id, search_query=user_message or None, target=session.user_peer_id)
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, "user")
+            user_ctx = self._fetch_peer_context(observer_peer_id, search_query=user_message or None, target=target_peer_id or session.user_peer_id)
             result["representation"] = user_ctx["representation"]
             result["card"] = "\n".join(user_ctx["card"])
         except Exception as e:
@@ -1110,43 +1120,104 @@ class HonchoSessionManager:
         peer: str = "user",
     ) -> str:
         """
-        Semantic search over Honcho session context.
-
-        Returns raw excerpts ranked by relevance to the query. No LLM
-        reasoning — cheaper and faster than dialectic_query. Good for
-        factual lookups where the model will do its own synthesis.
+        Search raw messages across every session visible from the target
+        peer's perspective. Results include all authors and require no LLM
+        synthesis.
 
         Args:
-            session_key: Session to search against.
-            query: Search query for semantic matching.
-            max_tokens: Token budget for returned content.
-            peer: Peer alias or explicit peer ID to search about.
+            session_key: Session whose workspace/peer scope to search within.
+            query: Search query (hybrid semantic + full-text).
+            max_tokens: Approximate budget for returned content. Snippets are
+                accumulated until this budget (≈4 chars/token) is exhausted.
+            peer: Peer alias or explicit peer ID whose sessions to search.
 
         Returns:
-            Relevant context excerpts as a string, or empty string if none.
+            Ranked message excerpts as a formatted string, or empty string
+            if none found.
         """
         session = self._cache.get(session_key)
         if not session:
             return ""
 
-        try:
-            observer_peer_id, target = self._resolve_observer_target(session, peer)
+        # peer_perspective spans the target peer's sessions across all authors.
+        peer_id = self._resolve_peer_id(session, peer)
 
-            ctx = self._fetch_peer_context(
-                observer_peer_id,
-                search_query=query,
-                target=target,
-            )
-            parts = []
-            if ctx["representation"]:
-                parts.append(ctx["representation"])
-            card = ctx["card"] or []
-            if card:
-                parts.append("\n".join(f"- {f}" for f in card))
-            return "\n\n".join(parts)
-        except Exception as e:
-            logger.debug("Honcho search_context failed: %s", e)
+        # Honcho caps query length for the embedding model; keep well under it.
+        q = (query or "").strip()
+        if not q:
             return ""
+        if len(q) > 4000:
+            q = q[:4000]
+
+        # Approximate four characters per token and a few hundred per result.
+        char_budget = max(200, int(max_tokens) * 4)
+        limit = max(3, min(20, char_budget // 300))
+
+        try:
+            messages = self.honcho.search(
+                q,
+                filters={"peer_perspective": peer_id},
+                limit=limit,
+            )
+        except Exception as e:
+            logger.debug("Honcho message search failed (peer_perspective=%s): %s", peer_id, e)
+            # Fall back to peer-authored search if the perspective filter is
+            # unsupported by the running Honcho version.
+            try:
+                peer_obj = self._get_or_create_peer(peer_id)
+                messages = peer_obj.search(q, limit=limit)
+            except Exception as e2:
+                logger.debug("Honcho peer search fallback also failed: %s", e2)
+                return ""
+
+        if not messages:
+            return ""
+
+        # Author labels distinguish user-stated facts from assistant-derived ones.
+        assistant_id = session.assistant_peer_id
+        lines: list[str] = []
+        used = 0
+        for m in messages:
+            content = (getattr(m, "content", "") or "").strip()
+            if not content:
+                continue
+            author = getattr(m, "peer_id", "") or "unknown"
+            who = "assistant" if author == assistant_id else author
+            sess = getattr(m, "session_id", "") or ""
+            snippet = content[:1200]
+            entry = f"[{who}{f' · {sess}' if sess else ''}] {snippet}"
+            separator = "\n\n" if lines else ""
+            remaining = char_budget - used - len(separator)
+            if remaining <= 0:
+                break
+            if len(entry) > remaining:
+                entry = entry[:remaining].rstrip()
+                if not entry:
+                    break
+                lines.append(entry)
+                used += len(separator) + len(entry)
+                break
+            lines.append(entry)
+            used += len(separator) + len(entry)
+
+        return "\n\n".join(lines)
+
+    def _conclusions_scope(self, session: Any, target_peer_id: str) -> Any:
+        """Resolve the ConclusionScope for observing target_peer_id.
+
+        Shared by create/delete/list_conclusions so the observer/observed
+        routing (self-conclusions vs. AI-observes-others vs. peer-owned)
+        stays consistent across all three.
+        """
+        if target_peer_id == session.assistant_peer_id:
+            observer = self._get_or_create_peer(session.assistant_peer_id)
+            return observer.conclusions_of(session.assistant_peer_id)
+        elif self._ai_observe_others:
+            observer = self._get_or_create_peer(session.assistant_peer_id)
+            return observer.conclusions_of(target_peer_id)
+        else:
+            target_peer = self._get_or_create_peer(target_peer_id)
+            return target_peer.conclusions_of(target_peer_id)
 
     def create_conclusion(self, session_key: str, content: str, peer: str = "user") -> bool:
         """Write a conclusion about a target peer back to Honcho.
@@ -1177,16 +1248,7 @@ class HonchoSessionManager:
                 logger.warning("Could not resolve conclusion peer '%s' for session '%s'", peer, session_key)
                 return False
 
-            if target_peer_id == session.assistant_peer_id:
-                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-                conclusions_scope = assistant_peer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
-                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-                conclusions_scope = assistant_peer.conclusions_of(target_peer_id)
-            else:
-                target_peer = self._get_or_create_peer(target_peer_id)
-                conclusions_scope = target_peer.conclusions_of(target_peer_id)
-
+            conclusions_scope = self._conclusions_scope(session, target_peer_id)
             conclusions_scope.create([{
                 "content": content.strip(),
                 "session_id": session.honcho_session_id,
@@ -1213,21 +1275,48 @@ class HonchoSessionManager:
             return False
         try:
             target_peer_id = self._resolve_peer_id(session, peer)
-            if target_peer_id == session.assistant_peer_id:
-                observer = self._get_or_create_peer(session.assistant_peer_id)
-                scope = observer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
-                observer = self._get_or_create_peer(session.assistant_peer_id)
-                scope = observer.conclusions_of(target_peer_id)
-            else:
-                target_peer = self._get_or_create_peer(target_peer_id)
-                scope = target_peer.conclusions_of(target_peer_id)
+            scope = self._conclusions_scope(session, target_peer_id)
             scope.delete(conclusion_id)
             logger.info("Deleted conclusion %s for %s", conclusion_id, session_key)
             return True
         except Exception as e:
             logger.error("Failed to delete conclusion %s: %s", conclusion_id, e)
             return False
+
+    def list_conclusions(
+        self,
+        session_key: str,
+        query: str | None = None,
+        peer: str = "user",
+        limit: int = 20,
+    ) -> list[dict]:
+        """List or semantically search conclusions with their server IDs.
+
+        Args:
+            session_key: Session key for peer resolution.
+            query: Optional semantic search query. Omit to list recent conclusions.
+            peer: Peer alias or explicit peer ID.
+            limit: Max conclusions to return.
+
+        Returns:
+            List of {"id": ..., "content": ...} dicts, or [] on failure/no session.
+        """
+        session = self._cache.get(session_key)
+        if not session:
+            return []
+        try:
+            target_peer_id = self._resolve_peer_id(session, peer)
+            if target_peer_id is None:
+                return []
+            scope = self._conclusions_scope(session, target_peer_id)
+            if query:
+                conclusions = scope.query(query, top_k=limit)
+            else:
+                conclusions = scope.list(size=limit).items
+            return [{"id": c.id, "content": c.content} for c in conclusions]
+        except Exception as e:
+            logger.debug("Honcho list_conclusions failed: %s", e)
+            return []
 
     def set_peer_card(self, session_key: str, card: list[str], peer: str = "user") -> list[str] | None:
         """Update a peer's card.

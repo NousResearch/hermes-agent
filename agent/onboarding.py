@@ -52,6 +52,13 @@ def busy_input_hint_gateway(mode: str) -> str:
             "Send `/busy interrupt` or `/busy queue` to change this, or "
             "`/busy status` to check. This notice won't appear again."
         )
+    if mode == "redirect":
+        return (
+            "💡 First-time tip — I redirected the current run using your message. "
+            "Completed work stays in context, and `/stop` still cancels the task. "
+            "Send `/busy queue` to wait for a separate turn, or `/busy status` "
+            "to check. This notice won't appear again."
+        )
     return (
         "💡 First-time tip — I just interrupted my current task to answer you. "
         "Send `/busy queue` to queue follow-ups for after the current task instead, "
@@ -73,6 +80,12 @@ def busy_input_hint_cli(mode: str) -> str:
             "(tip) Your message was steered into the current run; it arrives "
             "after the next tool call. Use /busy interrupt or /busy queue to "
             "change this. This tip only shows once."
+        )
+    if mode == "redirect":
+        return (
+            "(tip) Your correction redirected the current run without discarding "
+            "completed work. Use /stop to cancel or /busy queue to wait for a "
+            "separate turn. This tip only shows once."
         )
     return (
         "(tip) Your message interrupted the current run. "
@@ -209,7 +222,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
     """
     try:
         import yaml
-        from utils import atomic_yaml_write
+        from hermes_cli.config import atomic_config_write
     except Exception as e:  # pragma: no cover — dependency issue
         logger.debug("onboarding: failed to import yaml/utils: %s", e)
         return False
@@ -228,7 +241,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
         if seen.get(flag) is True:
             return True  # already marked — nothing to do
         seen[flag] = True
-        atomic_yaml_write(config_path, cfg)
+        atomic_config_write(config_path, cfg)
         return True
     except Exception as e:
         logger.debug("onboarding: failed to mark flag %s: %s", flag, e)

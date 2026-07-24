@@ -1011,3 +1011,316 @@ class TestSystemPromptInjection:
         assert info["repo_root"] in wt_note
         assert "isolated git worktree" in wt_note
         assert "commit and push" in wt_note
+
+
+class TestWorktreeLockReaping:
+    """Exercise the REAL cli._prune_stale_worktrees lock/dirty/unpushed logic.
+
+    Unlike the reimplementation-based tests above, these import the actual
+    production functions so the behavior contract is enforced against the
+    shipped code:
+
+    - live-locked (owning pid running)  -> never reaped, any age
+    - dead-locked clean (owning pid gone) -> unlocked + reaped (fixes the
+      accumulation bug: `git worktree remove --force` refuses a locked tree)
+    - dirty (uncommitted) at >72h        -> preserved
+    - unpushed commits at any age        -> preserved
+    - clean/unlocked stale               -> reaped (aggressive cleanup intact)
+    """
+
+    @staticmethod
+    def _age(path, hours):
+        import time
+        t = time.time() - (hours * 3600)
+        os.utime(path, (t, t))
+
+    @staticmethod
+    def _mk(cli, repo, name, pid=None, dirty=False, unpushed=False, age_h=100):
+        p = repo / ".worktrees" / name
+        (repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+        if pid is not None:
+            subprocess.run(
+                ["git", "worktree", "lock", "--reason", f"hermes pid={pid}", str(p)],
+                cwd=repo, capture_output=True,
+            )
+        if unpushed:
+            (p / "work.txt").write_text("x")
+            subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True)
+        if dirty:
+            (p / "dirty.txt").write_text("uncommitted")
+        TestWorktreeLockReaping._age(p, age_h)
+        return p
+
+    def test_live_locked_survives_at_any_age(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-live", pid=os.getpid())
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "live-locked worktree (this pid) must never be reaped"
+
+    def test_dead_locked_clean_is_reaped(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-dead", pid=999999)
+        # sanity: this is the accumulation bug — remove --force alone can't do it
+        assert cli._worktree_lock_is_live(str(git_repo), str(wt)) == "dead"
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "dead-locked clean worktree should be unlocked + reaped"
+
+    def test_dead_locked_dirty_survives(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-deaddirty", pid=999999, dirty=True)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dead-locked worktree with uncommitted work must survive"
+
+    def test_dead_locked_unpushed_survives(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-deadunp", pid=999999, unpushed=True)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dead-locked worktree with unpushed commits must survive"
+
+    def test_unlocked_clean_stale_is_reaped(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-nolock", pid=None)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "clean unlocked stale worktree should be reaped"
+
+    def test_dirty_survives_over_72h(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-dirty72", pid=None, dirty=True, age_h=100)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dirty worktree must survive even past the 72h tier"
+
+    def test_recent_worktree_untouched(self, git_repo):
+        import cli
+        wt = self._mk(cli, git_repo, "hermes-fresh", pid=None, age_h=1)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "worktree under 24h must never be pruned"
+
+
+class TestWorktreeLockPredicate:
+    """_worktree_lock_is_live classification (real cli helper)."""
+
+    def _mk_locked(self, repo, name, reason):
+        p = repo / ".worktrees" / name
+        (repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", reason, str(p)],
+            cwd=repo, capture_output=True,
+        )
+        return p
+
+    def test_unlocked_returns_none(self, git_repo):
+        import cli
+        p = git_repo / ".worktrees" / "hermes-x"
+        (git_repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", "hermes/hermes-x", "HEAD"],
+            cwd=git_repo, capture_output=True,
+        )
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) is None
+
+    def test_live_pid_returns_live(self, git_repo):
+        import cli
+        p = self._mk_locked(git_repo, "hermes-live", f"hermes pid={os.getpid()}")
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "live"
+
+    def test_dead_pid_returns_dead(self, git_repo):
+        import cli
+        p = self._mk_locked(git_repo, "hermes-dead", "hermes pid=999999")
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
+
+    def test_foreign_lock_reason_returns_dead(self, git_repo):
+        import cli
+        p = self._mk_locked(git_repo, "hermes-foreign", "some other tool")
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
+
+    def test_bad_repo_root_fails_safe_to_live(self, tmp_path):
+        import cli
+        # Not a git repo -> git query fails -> must report "live" (never delete)
+        assert cli._worktree_lock_is_live(str(tmp_path), str(tmp_path / "x")) == "live"
+
+
+class TestWidenedPruner:
+    """Behavior contracts for the widened pruner (#all-.worktrees coverage,
+    squash-merge escape hatch, kanban exclusion, preserved-work warning).
+
+    Previously only ``hermes-*`` directories were considered, so salvage/
+    review/port lanes created with raw ``git worktree add`` accumulated
+    forever (real incident: 117 dirs / 26 GB). And squash-merged branches'
+    local commits are unreachable from refs/remotes/* forever, so the
+    unpushed guard preserved fully-merged scratch trees indefinitely.
+    """
+
+    @staticmethod
+    def _age(path, hours):
+        import time
+        t = time.time() - (hours * 3600)
+        os.utime(path, (t, t))
+
+    @staticmethod
+    def _mk(repo, name, commit=False, dirty=False, age_h=100):
+        p = repo / ".worktrees" / name
+        (repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", f"wt/{name}", "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+        sha = None
+        if commit:
+            (p / "work.txt").write_text(f"work for {name}\n")
+            subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True)
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=p,
+                capture_output=True, text=True,
+            ).stdout.strip()
+        if dirty:
+            (p / "dirty.txt").write_text("uncommitted")
+        TestWidenedPruner._age(p, age_h)
+        return p, sha
+
+    @staticmethod
+    def _merge_upstream(repo, sha):
+        """Simulate a squash-merge: land a patch-equivalent commit (different
+        SHA) on the branch refs/remotes/origin/main points at."""
+        # Distinct committer identity forces a distinct SHA even when the
+        # cherry-pick lands in the same second as the original commit.
+        subprocess.run(
+            ["git", "-c", "user.email=merger@test.com", "-c", "user.name=Merger",
+             "cherry-pick", sha],
+            cwd=repo, capture_output=True,
+        )
+        new_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        assert new_head != sha
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", new_head],
+            cwd=repo, capture_output=True,
+        )
+
+    # -- named (non hermes-*) directories are now covered ------------------
+
+    def test_named_clean_stale_tree_is_reaped(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "salvage-12345", age_h=80)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "clean named tree past 72h soft tier should be reaped"
+
+    def test_named_tree_gets_3x_grace(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "salvage-fresh", age_h=48)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "named tree under 72h must be kept (3x scratch timeline)"
+
+    def test_named_dirty_tree_survives_any_age(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "salvage-dirty", dirty=True, age_h=24 * 30)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "dirty named tree must never be reaped"
+
+    def test_named_unpushed_tree_survives_any_age(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "salvage-unpushed", commit=True, age_h=24 * 30)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "unique unpushed work must never be reaped"
+
+    def test_kanban_task_tree_never_touched(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "t_0a1b2c3d", age_h=24 * 90)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "kanban t_<hex> trees belong to kanban gc, not the pruner"
+
+    # -- squash-merge escape hatch ------------------------------------------
+
+    def test_squash_merged_tree_is_reaped(self, git_repo):
+        import cli
+        wt, sha = self._mk(git_repo, "hermes-merged", commit=True, age_h=100)
+        self._merge_upstream(git_repo, sha)
+        assert cli._worktree_has_unpushed_commits(str(wt)), (
+            "precondition: commit unreachable from remotes (the leak this fixes)"
+        )
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), (
+            "worktree whose commits are all patch-equivalent upstream is merged "
+            "work and should be reaped"
+        )
+
+    def test_partially_merged_tree_survives(self, git_repo):
+        import cli
+        wt, sha = self._mk(git_repo, "hermes-partial", commit=True, age_h=100)
+        self._merge_upstream(git_repo, sha)
+        # add a second, unmerged commit on top
+        (wt / "extra.txt").write_text("unique work\n")
+        subprocess.run(["git", "add", "extra.txt"], cwd=wt, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "extra"], cwd=wt, capture_output=True)
+        self._age(wt, 100)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "any non-equivalent local commit must preserve the tree"
+
+    # -- _worktree_commits_all_merged_upstream unit contracts ----------------
+
+    def test_merged_predicate_true_on_patch_equivalence(self, git_repo):
+        import cli
+        wt, sha = self._mk(git_repo, "hermes-eq", commit=True)
+        self._merge_upstream(git_repo, sha)
+        assert cli._worktree_commits_all_merged_upstream(str(wt)) is True
+
+    def test_merged_predicate_false_on_unique_work(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "hermes-uniq", commit=True)
+        assert cli._worktree_commits_all_merged_upstream(str(wt)) is False
+
+    def test_merged_predicate_true_at_zero_ahead(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "hermes-zero")
+        assert cli._worktree_commits_all_merged_upstream(str(wt)) is True
+
+    def test_merged_predicate_fails_safe_without_upstream(self, git_repo_no_remote):
+        import cli
+        repo = git_repo_no_remote
+        p = repo / ".worktrees" / "hermes-noremote"
+        (repo / ".worktrees").mkdir(exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(p), "-b", "wt/noremote", "HEAD"],
+            cwd=repo, capture_output=True,
+        )
+        assert cli._worktree_commits_all_merged_upstream(str(p)) is False
+
+    def test_merged_predicate_fails_safe_on_stale_base(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "hermes-manyahead", commit=True)
+        assert cli._worktree_commits_all_merged_upstream(str(wt), max_ahead=0) is False
+
+    # -- preserved-work warning ----------------------------------------------
+
+    def test_preserved_stale_work_emits_warning(self, git_repo, caplog):
+        import logging
+        import cli
+        wt, _ = self._mk(git_repo, "salvage-old-work", commit=True, age_h=24 * 10)
+        with caplog.at_level(logging.WARNING, logger="cli"):
+            cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists()
+        assert any(
+            "salvage-old-work" in rec.getMessage() for rec in caplog.records
+        ), "worktree with >7d-old unmerged work should be named in a WARNING"
+
+    def test_no_warning_for_recent_work(self, git_repo, caplog):
+        import logging
+        import cli
+        wt, _ = self._mk(git_repo, "salvage-new-work", commit=True, age_h=100)
+        with caplog.at_level(logging.WARNING, logger="cli"):
+            cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists()
+        assert not any(
+            "salvage-new-work" in rec.getMessage() for rec in caplog.records
+        ), "under-7d preserved work should not warn"

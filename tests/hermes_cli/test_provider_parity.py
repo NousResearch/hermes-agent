@@ -24,7 +24,14 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 # the model picker's local-endpoint flow, not a fixed credential card. It is in
 # the CLI picker's universe but intentionally has no dedicated Providers-tab
 # card. Exempt it from the union check.
-_EXEMPT = {"custom"}
+#
+# Virtual providers (auth_type "virtual", e.g. `moa`) are likewise in the CLI
+# picker universe but have no real credential and no Providers-tab card — they
+# are configured through their own feature UI (MoA presets). Exempt them too,
+# derived from the catalog so any future virtual provider is covered without a
+# hardcoded slug.
+_VIRTUAL = {d.slug for d in provider_catalog() if d.auth_type == "virtual"}
+_EXEMPT = {"custom"} | _VIRTUAL
 
 # Providers that legitimately offer BOTH auth methods and so intentionally
 # appear on both desktop tabs (an API-key card AND an account sign-in card).

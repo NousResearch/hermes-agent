@@ -138,6 +138,23 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
+    hidden_flags = 0x08000000
+    monkeypatch.setattr(
+        "hermes_cli._subprocess_compat.windows_hide_flags",
+        lambda: hidden_flags,
+    )
+
+    class _PatchResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd: List[str], **kwargs: Any) -> _PatchResult:
+        spawned["patch_cmd"] = cmd
+        spawned["patch_kwargs"] = kwargs
+        return _PatchResult()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
 
     class _FakeProc:
         pid = 999
@@ -169,3 +186,5 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
+    assert kwargs["creationflags"] == hidden_flags

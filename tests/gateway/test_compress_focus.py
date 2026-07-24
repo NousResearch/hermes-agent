@@ -54,6 +54,7 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    runner._session_db = None
     return runner
 
 
@@ -67,6 +68,7 @@ async def test_compress_focus_topic_passed_to_agent():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages):
         return 100
@@ -97,6 +99,7 @@ async def test_compress_no_focus_passes_none():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),

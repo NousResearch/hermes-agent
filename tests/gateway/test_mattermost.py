@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
 from gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
@@ -296,6 +297,25 @@ class TestMattermostSend:
         payload = call_args[1]["json"]
         assert payload["channel_id"] == "channel_1"
         assert payload["message"] == "Hello!"
+
+    @pytest.mark.asyncio
+    async def test_send_disables_mentions(self):
+        """Bot-authored posts should not trigger @all/@channel notifications."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post123"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send("channel_1", "LLM says: @all restart")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["message"] == "LLM says: @all restart"
+        assert payload["props"]["disable_mentions"] is True
 
     @pytest.mark.asyncio
     async def test_send_empty_content_succeeds(self):
@@ -589,6 +609,55 @@ class TestMattermostWebSocketParsing:
         assert msg_event.source.chat_type == "dm"
 
     @pytest.mark.asyncio
+    async def test_leading_space_slash_command_is_command(self):
+        """Mattermost mobile suggests leading-space slash commands."""
+        post_data = {
+            "id": "post_cmd",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": " /new",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/new"
+        assert msg_event.message_type is MessageType.COMMAND
+        assert msg_event.get_command() == "new"
+
+    @pytest.mark.asyncio
+    async def test_leading_space_normal_text_is_preserved(self):
+        """Only command-shaped mobile messages should be normalized."""
+        post_data = {
+            "id": "post_text",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": " hello",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == " hello"
+        assert msg_event.message_type is MessageType.TEXT
+
+    @pytest.mark.asyncio
     async def test_thread_id_from_root_id(self):
         """Post with root_id should have thread_id set."""
         post_data = {
@@ -866,13 +935,32 @@ class TestMattermostRequirements:
         monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
         from plugins.platforms.mattermost.adapter import check_mattermost_requirements
-        assert check_mattermost_requirements() is False
+        assert check_mattermost_requirements() is True
 
     def test_check_requirements_without_url(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
         from plugins.platforms.mattermost.adapter import check_mattermost_requirements
-        assert check_mattermost_requirements() is False
+        assert check_mattermost_requirements() is True
+
+    def test_validate_config_accepts_platform_values(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
+        monkeypatch.delenv("MATTERMOST_URL", raising=False)
+        from plugins.platforms.mattermost.adapter import validate_mattermost_config
+
+        config = PlatformConfig(
+            enabled=True,
+            token="cfg-token",
+            extra={"url": "https://mm.example.com"},
+        )
+        assert validate_mattermost_config(config) is True
+
+    def test_validate_config_rejects_missing_url(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_URL", raising=False)
+        from plugins.platforms.mattermost.adapter import validate_mattermost_config
+
+        config = PlatformConfig(enabled=True, token="cfg-token", extra={})
+        assert validate_mattermost_config(config) is False
 
 
 # ---------------------------------------------------------------------------

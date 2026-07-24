@@ -802,7 +802,7 @@ class TestWellKnownSkillSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_search_reads_index_from_well_known_url(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -824,7 +824,7 @@ class TestWellKnownSkillSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_search_accepts_domain_root_and_resolves_index(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -839,7 +839,7 @@ class TestWellKnownSkillSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_fetches_skill_md_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
         def fake_get(url, *args, **kwargs):
             if url.endswith("/index.json"):
@@ -861,7 +861,7 @@ class TestWellKnownSkillSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_downloads_skill_files_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
         def fake_get(url, *args, **kwargs):
             if url.endswith("/index.json"):
@@ -954,7 +954,7 @@ class TestUrlSource:
         assert self._source().search("anything") == []
 
     # ── inspect ─────────────────────────────────────────────────────────
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_reads_frontmatter_from_url(self, mock_get):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -978,31 +978,31 @@ class TestUrlSource:
         assert meta.tags == ["sharing", "chat"]
         assert meta.extra["awaiting_name"] is False
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_returns_none_when_url_not_md(self, mock_get):
         # _matches filters first — no HTTP call.
         meta = self._source().inspect("https://example.com/not-a-skill")
         assert meta is None
         mock_get.assert_not_called()
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_returns_none_on_404(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         assert self._source().inspect("https://example.com/SKILL.md") is None
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_returns_none_on_http_error(self, mock_get):
         mock_get.side_effect = httpx.HTTPError("boom")
         assert self._source().inspect("https://example.com/SKILL.md") is None
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url", return_value=False)
     def test_inspect_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
         assert self._source().inspect("http://127.0.0.1/SKILL.md") is None
         mock_get.assert_not_called()
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_flags_awaiting_name_when_unresolvable(self, mock_get):
         # No frontmatter name + a URL path that can't produce a valid slug
         # (``SKILL`` isn't a valid skill name).
@@ -1016,7 +1016,7 @@ class TestUrlSource:
         assert meta.extra["awaiting_name"] is True
 
     # ── fetch ───────────────────────────────────────────────────────────
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_builds_single_file_bundle(self, mock_get):
         skill_md = (
             "---\n"
@@ -1037,7 +1037,7 @@ class TestUrlSource:
         assert bundle.metadata["url"] == "https://sharethis.chat/SKILL.md"
         assert bundle.metadata["awaiting_name"] is False
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_falls_back_to_url_directory_name(self, mock_get):
         # Frontmatter has no ``name:`` — we slug from the URL directory.
         mock_get.return_value = MagicMock(
@@ -1049,7 +1049,7 @@ class TestUrlSource:
         assert bundle.name == "my-skill"
         assert bundle.metadata["awaiting_name"] is False
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_falls_back_to_filename_when_no_parent_dir(self, mock_get):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -1060,7 +1060,7 @@ class TestUrlSource:
         assert bundle.name == "my-skill"
         assert bundle.metadata["awaiting_name"] is False
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_awaiting_name_when_unresolvable(self, mock_get):
         # Bare ``SKILL.md`` at the domain root with no frontmatter name.
         mock_get.return_value = MagicMock(
@@ -1074,7 +1074,7 @@ class TestUrlSource:
         # File content still present — CLI will reuse it after picking a name.
         assert bundle.files["SKILL.md"].startswith("---\n")
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_awaiting_name_rejects_sentinel_slug(self, mock_get):
         # Frontmatter has no name AND the URL filename slug is ``README`` —
         # our valid-name check rejects it, so we flag awaiting_name.
@@ -1087,7 +1087,7 @@ class TestUrlSource:
         assert bundle.name == ""
         assert bundle.metadata["awaiting_name"] is True
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_ignores_unsafe_frontmatter_name_and_falls_through_to_slug(self, mock_get):
         # Traversal / unsafe names are rejected by ``_is_valid_skill_name``;
         # resolver falls through to URL slug (``my-skill`` here) and succeeds.
@@ -1099,12 +1099,12 @@ class TestUrlSource:
         assert bundle is not None
         assert bundle.name == "my-skill"
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_returns_none_on_404(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         assert self._source().fetch("https://example.com/SKILL.md") is None
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url", side_effect=[True, False])
     def test_fetch_blocks_redirect_to_private_url(self, _mock_safe, _mock_policy, mock_get):
@@ -1115,14 +1115,27 @@ class TestUrlSource:
         assert self._source().fetch("https://example.com/SKILL.md") is None
         assert mock_get.call_count == 1
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url", return_value=False)
     def test_fetch_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
         assert self._source().fetch("http://127.0.0.1/SKILL.md") is None
         mock_get.assert_not_called()
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", return_value=True)
+    def test_fetch_blocks_connect_time_dns_rebind(self, _mock_safe, _mock_policy, mock_get):
+        from tools.url_safety import SSRFConnectionBlocked
+
+        mock_get.side_effect = SSRFConnectionBlocked(
+            "Blocked request to private/internal address during connect"
+        )
+
+        assert self._source().fetch("https://example.com/SKILL.md") is None
+        mock_get.assert_called_once_with("https://example.com/SKILL.md", timeout=20)
+
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_skips_non_matching_identifier(self, mock_get):
         assert self._source().fetch("owner/repo/skill") is None
         mock_get.assert_not_called()
@@ -1607,6 +1620,158 @@ class TestUnifiedSearchDedup:
 
 
 # ---------------------------------------------------------------------------
+# GitHub tap provider labeling + index search/filter
+# ---------------------------------------------------------------------------
+
+
+class TestGithubProviderLabeling:
+    def test_provider_for_known_taps_case_insensitive(self):
+        from tools.skills_hub import github_provider_for
+        assert github_provider_for("NVIDIA/skills") == "NVIDIA"
+        assert github_provider_for("nvidia/skills") == "NVIDIA"
+        assert github_provider_for("openai/skills") == "OpenAI"
+        assert github_provider_for("garrytan/gstack") == "gstack"
+
+    def test_provider_for_unknown_repo_is_none(self):
+        from tools.skills_hub import github_provider_for
+        assert github_provider_for("someuser/somerepo") is None
+        assert github_provider_for("") is None
+
+    def test_inspect_stamps_provider_in_extra(self):
+        gs = GitHubSource(auth=GitHubAuth())
+        skill_md = (
+            "---\nname: accelerated-computing-cudf\n"
+            "description: NVIDIA cuDF GPU DataFrames.\n---\n# body\n"
+        )
+        gs._fetch_file_content = lambda repo, path: skill_md
+        meta = gs.inspect("NVIDIA/skills/skills/accelerated-computing-cudf")
+        assert meta is not None
+        # source stays "github" (no churn to dedup/floor/skip logic) ...
+        assert meta.source == "github"
+        # ... but the per-tap provider label rides along in extra
+        assert meta.extra.get("provider") == "NVIDIA"
+
+    def test_inspect_no_provider_for_untapped_repo(self):
+        gs = GitHubSource(auth=GitHubAuth())
+        gs._fetch_file_content = lambda repo, path: (
+            "---\nname: foo\ndescription: bar.\n---\n# b\n"
+        )
+        meta = gs.inspect("someuser/somerepo/skills/foo")
+        assert meta is not None
+        assert "provider" not in meta.extra
+
+
+def _make_index_source(skills):
+    """Build a HermesIndexSource pre-loaded with a fixed skill list."""
+    from tools.skills_hub import HermesIndexSource
+    src = HermesIndexSource(auth=GitHubAuth())
+    src._index = {"skills": skills}
+    src._loaded = True
+    return src
+
+
+class TestHermesIndexSearch:
+    def test_search_matches_identifier_and_provider(self):
+        # NVIDIA skill whose name/description does NOT contain "nvidia" — only
+        # the identifier and the provider label do. The old substring-only
+        # search over name/description/tags would miss it entirely.
+        skills = [
+            {
+                "name": "accelerated-computing-cudf",
+                "description": "GPU DataFrames.",
+                "source": "github",
+                "identifier": "NVIDIA/skills/skills/accelerated-computing-cudf",
+                "tags": [],
+                "extra": {"provider": "NVIDIA"},
+            },
+            {
+                "name": "unrelated",
+                "description": "nothing here",
+                "source": "clawhub",
+                "identifier": "clawhub/unrelated",
+                "tags": [],
+            },
+        ]
+        src = _make_index_source(skills)
+        hits = src.search("nvidia", limit=25)
+        ids = [h.identifier for h in hits]
+        assert "NVIDIA/skills/skills/accelerated-computing-cudf" in ids
+        assert "clawhub/unrelated" not in ids
+
+    def test_search_ranks_exact_name_first(self):
+        skills = [
+            {"name": "z-cuda-helper", "description": "uses cuda", "source": "clawhub",
+             "identifier": "clawhub/z-cuda-helper", "tags": []},
+            {"name": "cuda", "description": "the cuda skill", "source": "github",
+             "identifier": "NVIDIA/skills/skills/cuda", "tags": [],
+             "extra": {"provider": "NVIDIA"}},
+        ]
+        src = _make_index_source(skills)
+        hits = src.search("cuda", limit=25)
+        # exact name match must rank ahead of the substring-in-description match
+        assert hits[0].name == "cuda"
+
+    def test_search_does_not_break_at_limit_arbitrarily(self):
+        # 30 substring matches; with limit=25 we must get the 25 best, and a
+        # higher-relevance name match placed late in index order must survive.
+        skills = [
+            {"name": f"thing-{i}", "description": "mentions cuda", "source": "clawhub",
+             "identifier": f"clawhub/thing-{i}", "tags": []}
+            for i in range(30)
+        ]
+        skills.append(
+            {"name": "cuda", "description": "exact", "source": "github",
+             "identifier": "NVIDIA/skills/skills/cuda", "tags": [],
+             "extra": {"provider": "NVIDIA"}}
+        )
+        src = _make_index_source(skills)
+        hits = src.search("cuda", limit=25)
+        assert len(hits) == 25
+        # The exact-name skill (last in index order) must NOT be dropped.
+        assert any(h.name == "cuda" for h in hits)
+        assert hits[0].name == "cuda"
+
+
+class TestProviderFilter:
+    def test_filter_results_by_provider_narrows_exactly(self):
+        from tools.skills_hub import _filter_results_by_provider
+        results = [
+            SkillMeta(name="a", description="", source="github", identifier="NVIDIA/skills/a",
+                      trust_level="trusted", extra={"provider": "NVIDIA"}),
+            SkillMeta(name="b", description="", source="github", identifier="openai/skills/b",
+                      trust_level="trusted", extra={"provider": "OpenAI"}),
+            SkillMeta(name="c", description="", source="official", identifier="official/c",
+                      trust_level="builtin"),
+        ]
+        nv = _filter_results_by_provider(results, "nvidia")
+        assert [r.identifier for r in nv] == ["NVIDIA/skills/a"]
+        oai = _filter_results_by_provider(results, "openai")
+        assert [r.identifier for r in oai] == ["openai/skills/b"]
+
+    def test_provider_filter_values_match_tap_labels(self):
+        from tools.skills_hub import _PROVIDER_FILTER_VALUES, GITHUB_TAP_PROVIDERS
+        assert _PROVIDER_FILTER_VALUES == frozenset(
+            v.lower() for v in GITHUB_TAP_PROVIDERS.values()
+        )
+
+    def test_unified_search_provider_filter_keeps_index_source(self):
+        # A provider filter must NOT be treated as a real source id (which would
+        # exclude every source and return nothing). It selects sources like
+        # "all", then narrows the merged results by provider.
+        nv = SkillMeta(name="cuda", description="gpu", source="github",
+                       identifier="NVIDIA/skills/cuda", trust_level="trusted",
+                       extra={"provider": "NVIDIA"})
+        other = SkillMeta(name="cuda-clone", description="gpu", source="clawhub",
+                          identifier="clawhub/cuda-clone", trust_level="community")
+        src = MagicMock()
+        src.source_id.return_value = "hermes-index"
+        src.is_available = True
+        src.search.return_value = [nv, other]
+        results = unified_search("cuda", [src], source_filter="nvidia", limit=25)
+        assert [r.identifier for r in results] == ["NVIDIA/skills/cuda"]
+
+
+# ---------------------------------------------------------------------------
 # append_audit_log
 # ---------------------------------------------------------------------------
 
@@ -1664,6 +1829,26 @@ class TestSkillMetaToDict:
 # ---------------------------------------------------------------------------
 
 
+class TestOptionalSkillSourceMetadata:
+    def test_scan_all_emits_repo_root_relative_metadata(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "finance" / "3-statement-model"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: 3-statement-model\ndescription: test\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        meta = src.inspect("official/finance/3-statement-model")
+
+        assert meta is not None
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/finance/3-statement-model"
+
+
 class TestOptionalSkillSourceBinaryAssets:
     def test_fetch_preserves_binary_assets(self, tmp_path):
         optional_root = tmp_path / "optional-skills"
@@ -1693,6 +1878,23 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle.files["assets/neutts-cli/samples/jo.wav"] == wav_bytes
         assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
         assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
+
+    def test_fetch_rejects_sibling_directory_traversal(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        sibling_skill_dir = tmp_path / "optional-skills-escape" / "pwned"
+        optional_root.mkdir()
+        sibling_skill_dir.mkdir(parents=True)
+        (sibling_skill_dir / "SKILL.md").write_text(
+            "---\nname: pwned\ndescription: traversal\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        bundle = src.fetch("official/../optional-skills-escape/pwned")
+
+        assert bundle is None
 
 
 class TestQuarantineBundleBinaryAssets:
@@ -2282,3 +2484,103 @@ class TestParallelSearchSourcesTimeout:
         assert source_counts.get("a") == 1
         assert source_counts.get("b") == 1
         assert len(all_results) == 2
+
+
+# ---------------------------------------------------------------------------
+# _load_hermes_index — centralized index fetch (Browse-hub landing / search)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadHermesIndex:
+    """Regression coverage for the Skills-Hub index fetch.
+
+    The centralized index is a large body served with Content-Encoding: br.
+    httpx's streaming Brotli decoder (brotlicffi 1.2.0.1, pinned for Discord
+    attachment decoding) raises DecodingError on payloads this size, which
+    used to cascade into a silently-empty Skills Hub. The fetch must therefore
+    (a) not ask for Brotli, and (b) survive a DecodingError by retrying
+    uncompressed instead of blanking the hub.
+    """
+
+    @staticmethod
+    def _isolate_cache(monkeypatch, tmp_path):
+        """Point the on-disk cache at an empty tmp dir so no real cache leaks in."""
+        import tools.skills_hub as hub
+
+        cache_file = tmp_path / "hermes-index.json"
+        monkeypatch.setattr(hub, "_hermes_index_cache_file", lambda: cache_file)
+        return cache_file
+
+    def test_fetch_does_not_request_brotli(self, monkeypatch, tmp_path):
+        """The index fetch must not negotiate Brotli (the broken decoder path)."""
+        import tools.skills_hub as hub
+
+        self._isolate_cache(monkeypatch, tmp_path)
+
+        captured = {}
+
+        def fake_get(url, *args, **kwargs):
+            captured["headers"] = kwargs.get("headers", {})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"skills": [{"name": "x"}]}
+            return resp
+
+        monkeypatch.setattr(hub.httpx, "get", fake_get)
+
+        data = hub._load_hermes_index()
+        assert data == {"skills": [{"name": "x"}]}
+
+        accept = captured["headers"].get("Accept-Encoding", "")
+        assert "br" not in [tok.strip() for tok in accept.split(",")], (
+            f"index fetch must not request Brotli, got Accept-Encoding={accept!r}"
+        )
+
+    def test_decoding_error_retries_uncompressed(self, monkeypatch, tmp_path):
+        """A DecodingError on the first attempt retries with identity, not a blank hub."""
+        import tools.skills_hub as hub
+
+        self._isolate_cache(monkeypatch, tmp_path)
+
+        attempts = []
+
+        def fake_get(url, *args, **kwargs):
+            enc = kwargs.get("headers", {}).get("Accept-Encoding", "")
+            attempts.append(enc)
+            if len(attempts) == 1:
+                raise httpx.DecodingError("brotli: decoder process called with data")
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"skills": [{"name": "recovered"}]}
+            return resp
+
+        monkeypatch.setattr(hub.httpx, "get", fake_get)
+
+        data = hub._load_hermes_index()
+        assert data == {"skills": [{"name": "recovered"}]}
+        assert len(attempts) == 2, "should retry once after a DecodingError"
+        # The retry must be uncompressed (identity) so a Brotli-ignoring proxy
+        # can't fail the same way twice.
+        assert attempts[1].strip() == "identity"
+
+    def test_persistent_decoding_error_falls_back_to_stale_cache(
+        self, monkeypatch, tmp_path
+    ):
+        """If every attempt fails to decode, serve the stale cache rather than None."""
+        import tools.skills_hub as hub
+
+        cache_file = self._isolate_cache(monkeypatch, tmp_path)
+        cache_file.write_text(json.dumps({"skills": [{"name": "stale"}]}))
+        # Force the cache to look expired so the network path runs.
+        old = time.time() - (hub.HERMES_INDEX_TTL + 100)
+        import os
+
+        os.utime(cache_file, (old, old))
+
+        def fake_get(url, *args, **kwargs):
+            raise httpx.DecodingError("brotli boom")
+
+        monkeypatch.setattr(hub.httpx, "get", fake_get)
+
+        data = hub._load_hermes_index()
+        assert data == {"skills": [{"name": "stale"}]}

@@ -45,7 +45,9 @@ describe('recordParentLifecycle', () => {
 
     recordParentLifecycle('uncaughtException: boom\n  at foo()\r\n  at bar()')
 
-    const lines = readFileSync(join(home, 'logs', 'tui_gateway_crash.log'), 'utf8').trimEnd().split('\n')
+    const lines = readFileSync(join(home, 'logs', 'tui_gateway_crash.log'), 'utf8')
+      .trimEnd()
+      .split('\n')
 
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain('boom ↵   at foo() ↵   at bar()')

@@ -27,12 +27,31 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     # config edit
     config_subparsers.add_parser("edit", help="Open config file in editor")
 
+    # config get
+    config_get = config_subparsers.add_parser(
+        "get", help="Print a resolved configuration value"
+    )
+    config_get.add_argument("key", nargs="?", help="Configuration key (e.g., model)")
+    config_get.add_argument("--json", action="store_true", help="Print value as JSON")
+
     # config set
     config_set = config_subparsers.add_parser("set", help="Set a configuration value")
     config_set.add_argument(
         "key", nargs="?", help="Configuration key (e.g., model, terminal.backend)"
     )
     config_set.add_argument("value", nargs="?", help="Value to set")
+    config_set.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the unknown-key notice printed after writing a key the "
+        "running version doesn't recognize (the value is saved either way).",
+    )
+
+    # config unset
+    config_unset = config_subparsers.add_parser(
+        "unset", help="Remove a configuration value"
+    )
+    config_unset.add_argument("key", nargs="?", help="Configuration key to remove")
 
     # config path
     config_subparsers.add_parser("path", help="Print config file path")

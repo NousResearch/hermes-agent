@@ -193,13 +193,21 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     if not token_path.exists():
         return None
 
+    # Same class as slack_tokens.json: hand-provisioned or legacy-written
+    # token files commonly end up 0o644. Warn so the owner tightens them.
+    from utils import warn_if_credential_file_broadly_readable
+
+    warn_if_credential_file_broadly_readable(
+        token_path, label="[google_chat_user_oauth]", log=logger
+    )
+
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
     except ImportError:
         logger.warning(
             "[google_chat_user_oauth] google-auth not installed; user-OAuth "
-            "attachment delivery is disabled. Install hermes-agent[google_chat]."
+            "attachment delivery is disabled. Run `hermes setup` to install Google Chat support."
         )
         return None
 
@@ -379,16 +387,16 @@ def install_deps() -> bool:
 
     print("Installing Google Chat OAuth dependencies...")
     try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + _REQUIRED_PACKAGES,
-            stdout=subprocess.DEVNULL,
-        )
+        from hermes_cli.tools_config import _pip_install
+
+        result = _pip_install(["--quiet"] + _REQUIRED_PACKAGES)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or "install failed").strip()[:300])
         print("Dependencies installed.")
         return True
-    except subprocess.CalledProcessError as exc:
+    except Exception as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
-        print("Or install via the optional extra:")
-        print("  pip install 'hermes-agent[google_chat]'")
+        print("Run `hermes setup` to repair the managed installation, then retry.")
         return False
 
 

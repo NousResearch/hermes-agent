@@ -1,11 +1,9 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { KbdCombo } from '@/components/ui/kbd'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, Layers3, Loader2, Square, SteeringWheel } from '@/lib/icons'
-import { formatCombo } from '@/lib/keybinds/combo'
+import { AudioLines, iconSize, Layers3, Loader2, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
@@ -39,9 +37,9 @@ interface ConversationProps {
 }
 
 export function ComposerControls({
+  autoSpeak,
   busy,
   busyAction,
-  canSteer,
   canSubmit,
   compactModelPill = false,
   conversation,
@@ -50,11 +48,12 @@ export function ComposerControls({
   state,
   voiceStatus,
   onDictate,
-  onSteer
+  onQueue,
+  onToggleAutoSpeak
 }: {
+  autoSpeak: boolean
   busy: boolean
-  busyAction: 'queue' | 'stop'
-  canSteer: boolean
+  busyAction: 'steer' | 'queue' | 'stop'
   canSubmit: boolean
   compactModelPill?: boolean
   conversation: ConversationProps
@@ -63,48 +62,39 @@ export function ComposerControls({
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
-  onSteer: () => void
+  onQueue: () => void
+  onToggleAutoSpeak: () => void
 }) {
   const { t } = useI18n()
   const c = t.composer
-  const steerCombo = formatCombo('mod+enter')
-  const steerLabel = `${c.steer} (${steerCombo})`
-
-  const steerTip = (
-    <span className="inline-flex items-center gap-1.5">
-      {c.steer}
-      <KbdCombo combo="mod+enter" size="sm" variant="inverted" />
-    </span>
-  )
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
+  const busyLabel = busyAction === 'queue' ? c.queueMessage : busyAction === 'steer' ? c.steer : c.stop
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-      {/* While the agent runs and the user is typing, steer takes over the mic's
-          slot rather than crowding the row with an extra button. */}
-      {canSteer ? (
-        <Tip label={steerTip}>
+      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
+      {busyAction === 'steer' ? (
+        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button
-            aria-label={steerLabel}
+            aria-label={c.queueMessage}
             className={GHOST_ICON_BTN}
             disabled={disabled}
-            onClick={onSteer}
+            onClick={onQueue}
             size="icon"
             type="button"
             variant="ghost"
           >
-            <SteeringWheel size={14} />
+            <Layers3 className={iconSize.sm} />
           </Button>
         </Tip>
-      ) : (
-        <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
-      )}
+      ) : null}
       {showVoicePrimary ? (
         <Tip label={c.startVoice}>
           <Button
@@ -118,20 +108,39 @@ export function ComposerControls({
             size="icon"
             type="button"
           >
-            <AudioLines size={15} />
+            <AudioLines className={iconSize.sm} />
           </Button>
         </Tip>
       ) : (
-        <Tip label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}>
+        <Tip
+          label={
+            busy ? (
+              <TipKeybindLabel
+                actionId={
+                  busyAction === 'steer'
+                    ? 'composer.steer'
+                    : busyAction === 'queue'
+                      ? 'composer.queue'
+                      : 'composer.send'
+                }
+                text={busyLabel}
+              />
+            ) : (
+              <TipKeybindLabel actionId="composer.send" text={c.send} />
+            )
+          }
+        >
           <Button
-            aria-label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}
+            aria-label={busy ? busyLabel : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
           >
             {busy ? (
               busyAction === 'queue' ? (
-                <Layers3 size={14} />
+                <Layers3 className={iconSize.sm} />
+              ) : busyAction === 'steer' ? (
+                <SteeringWheel className={iconSize.sm} />
               ) : (
                 <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
               )
@@ -198,11 +207,10 @@ function ConversationPill({
             triggerHaptic('submit')
             onStopTurn()
           }}
-          title={c.stopListening}
           type="button"
           variant="ghost"
         >
-          <Square className="fill-current" size={11} />
+          <Square className={cn('fill-current', iconSize.xs)} />
           <span>{c.stopShort}</span>
         </Button>
       )}
@@ -214,7 +222,6 @@ function ConversationPill({
           triggerHaptic('close')
           onEnd()
         }}
-        title={c.endConversation}
         type="button"
       >
         <ConversationIndicator level={level} listening={listening} speaking={speaking} />
@@ -237,7 +244,7 @@ function ConversationIndicator({
   speaking: boolean
 }) {
   if (speaking) {
-    return <Loader2 className="animate-spin" size={12} />
+    return <Loader2 className={cn('animate-spin', iconSize.xs)} />
   }
 
   const bars = [0.55, 0.85, 1, 0.85, 0.55]
@@ -251,6 +258,39 @@ function ConversationIndicator({
         return <span className="w-0.5 rounded-full bg-current" key={index} style={{ height: `${height * 100}%` }} />
       })}
     </span>
+  )
+}
+
+// Pure-TTS toggle: type normally, but have every assistant reply read aloud —
+// no dictation, no full conversation loop. Filled/accent when on, mirroring the
+// muted-mic pressed state above. Driven by (and persisted to) `voice.auto_tts`.
+function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disabled: boolean; onToggle: () => void }) {
+  const { t } = useI18n()
+  const c = t.composer
+  const label = active ? c.stopSpeakingReplies : c.speakReplies
+
+  return (
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        aria-pressed={active}
+        className={cn(
+          GHOST_ICON_BTN,
+          'p-0',
+          active && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
+        )}
+        disabled={disabled}
+        onClick={() => {
+          triggerHaptic(active ? 'close' : 'open')
+          onToggle()
+        }}
+        size="icon"
+        type="button"
+        variant="ghost"
+      >
+        {active ? <Volume2 className={iconSize.sm} /> : <VolumeX className={iconSize.sm} />}
+      </Button>
+    </Tip>
   )
 }
 
@@ -295,9 +335,9 @@ function DictationButton({
         variant="ghost"
       >
         {status === 'recording' ? (
-          <Square className="fill-current" size={11} />
+          <Square className={cn('fill-current', iconSize.xs)} />
         ) : status === 'transcribing' ? (
-          <Loader2 className="animate-spin" size={14} />
+          <Loader2 className={cn('animate-spin', iconSize.sm)} />
         ) : (
           <Codicon name="mic" size="0.875rem" />
         )}

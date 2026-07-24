@@ -2,7 +2,7 @@
 
 > **Bundled with Hermes Agent.** Originally authored by [@PCinkusz](https://github.com/PCinkusz) at https://github.com/PCinkusz/hermes-achievements — vendored into `plugins/hermes-achievements/` so it ships with the dashboard out-of-the-box and stays in lockstep with Hermes feature changes. Upstream repo remains the staging ground for new badges and UI iteration.
 >
-> When Hermes is installed via `pip install hermes-agent` or cloned from source, this plugin auto-registers as a dashboard tab on first `hermes dashboard` launch. No separate install step. See [Built-in Plugins → hermes-achievements](../../website/docs/user-guide/features/built-in-plugins.md) in the main docs.
+> When Hermes is installed via the install script or cloned from source, this plugin auto-registers as a dashboard tab on first `hermes dashboard` launch. No separate install step. See [Built-in Plugins → hermes-achievements](../../website/docs/user-guide/features/built-in-plugins.md) in the main docs.
 
 Achievement system for the Hermes Dashboard: collectible, tiered badges generated from real local Hermes session history.
 
@@ -77,9 +77,7 @@ Then rescan dashboard plugins:
 curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```
 
-When installed as a user plugin, the dashboard UI loads but Python backend API
-routes are not auto-imported. Backend routes are available when this plugin is
-bundled with Hermes.
+If backend API routes 404, restart `hermes dashboard`; plugin APIs are mounted at dashboard startup.
 
 ## Updating
 
@@ -91,11 +89,7 @@ git pull --ff-only
 curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```
 
-For a user-installed plugin at `~/.hermes/plugins/hermes-achievements`, a plugin
-rescan is enough because Python backend routes are not auto-imported. If you
-update the bundled plugin by pulling changes in the hermes-agent repository, and
-that bundled plugin update changes backend routes or `plugin_api.py`, restart
-`hermes dashboard` after pulling.
+If the update changes backend routes or `plugin_api.py`, restart `hermes dashboard` after pulling.
 
 As of 2026-04-29, updating is strongly recommended because scan performance changed significantly:
 - removed duplicate `/overview` scan path
@@ -123,9 +117,6 @@ dashboard/
 ```
 
 ## API
-
-These backend routes are mounted for the bundled plugin. User-installed copies
-load their dashboard UI but do not auto-import Python backend routes.
 
 Routes are mounted under:
 

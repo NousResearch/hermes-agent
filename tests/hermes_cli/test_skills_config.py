@@ -46,6 +46,34 @@ class TestGetDisabledSkills:
         from hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"other": "value"}) == set()
 
+    def test_null_skills_section(self):
+        """``skills:`` with no value (YAML null) must not crash (#13026)."""
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": None}) == set()
+        assert get_disabled_skills({"skills": None}, platform="telegram") == set()
+
+    def test_null_disabled_key(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": {"disabled": None}}) == set()
+
+    def test_scalar_disabled_is_single_skill_not_characters(self):
+        """``disabled: my-skill`` (bare scalar) is one skill name, not a
+        set of its characters (#13026)."""
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": {"disabled": "my-skill"}}) == {"my-skill"}
+
+    def test_scalar_platform_disabled(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {
+            "disabled": ["global-skill"],
+            "platform_disabled": {"telegram": "tg-skill"},
+        }}
+        assert get_disabled_skills(config, platform="telegram") == {"global-skill", "tg-skill"}
+
+    def test_non_dict_skills_section(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": "oops"}) == set()
+
     def test_empty_disabled_list(self):
         from hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"skills": {"disabled": []}}) == set()

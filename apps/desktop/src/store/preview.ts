@@ -1,5 +1,8 @@
 import { atom, computed } from 'nanostores'
 
+import { persistentAtom } from '@/lib/persisted'
+import { normalize } from '@/lib/text'
+
 import {
   $rightRailActiveTabId,
   PREVIEW_PANE_ID,
@@ -58,11 +61,39 @@ export interface FilePreviewTab {
 }
 
 const REGISTRY_STORAGE_KEY = 'hermes.desktop.sessionPreviews.v1'
+const TABS_STORAGE_KEY = 'hermes.desktop.filePreviewTabs.v1'
 const MAX_RECORDS_PER_SESSION = 1
 const MAX_SESSIONS = 120
 
 export const $previewTarget = atom<PreviewTarget | null>(null)
-export const $filePreviewTabs = atom<FilePreviewTab[]>([])
+// Persisted so open file-preview tabs survive a relaunch; content is re-read
+// from each target's path/url on demand. Invalid rows are dropped on load and
+// inline image bytes (megabytes) are stripped on save, mirroring the registry.
+export const $filePreviewTabs = persistentAtom<FilePreviewTab[]>(TABS_STORAGE_KEY, [], {
+  decode: raw => {
+    const parsed = JSON.parse(raw) as unknown
+
+    return Array.isArray(parsed) ? parsed.filter(isFilePreviewTab) : []
+  },
+  encode: tabs => JSON.stringify(tabs, (key, value) => (key === 'dataUrl' ? undefined : value))
+})
+
+// Drop a restored active file-tab that didn't survive validation so the rail
+// never points at a tab that isn't there.
+if (
+  $rightRailActiveTabId.get().startsWith('file:') &&
+  !$filePreviewTabs.get().some(tab => tab.id === $rightRailActiveTabId.get())
+) {
+  selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+}
+
+// Inverse: persisted/default active id is still the live-preview tab, but that
+// target isn't open and file tabs are. Point at the first file tab so ⌘W and
+// the strip agree before React's fallback sync runs.
+if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID && $filePreviewTabs.get().length > 0) {
+  selectRightRailTab($filePreviewTabs.get()[0]!.id)
+}
+
 export const $filePreviewTarget = computed([$filePreviewTabs, $rightRailActiveTabId], (tabs, activeTabId) => {
   if (!activeTabId.startsWith('file:')) {
     return null
@@ -168,6 +199,16 @@ function isPreviewTarget(value: unknown): value is PreviewTarget {
     typeof r.source === 'string' &&
     typeof r.url === 'string'
   )
+}
+
+function isFilePreviewTab(value: unknown): value is FilePreviewTab {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const r = value as Record<string, unknown>
+
+  return typeof r.id === 'string' && r.id.startsWith('file:') && isPreviewTarget(r.target)
 }
 
 function isPreviewRecord(value: unknown): value is SessionPreviewRecord {
@@ -426,7 +467,82 @@ export function closeRightRailTab(tabId: RightRailTabId) {
   closeFilePreviewTab(tabId)
 }
 
-export const closeActiveRightRailTab = () => closeRightRailTab($rightRailActiveTabId.get())
+/** Close the tab the right rail is actually showing. Returns false when nothing
+ *  closed (so ⌘W can fall through). Resolves a stale `preview` selection to the
+ *  first file tab when the live preview target is already gone. */
+export function closeActiveRightRailTab(): boolean {
+  let tabId = $rightRailActiveTabId.get()
+
+  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID && !$previewTarget.get()) {
+    const fallback = $filePreviewTabs.get()[0]?.id
+
+    if (!fallback) {
+      return false
+    }
+
+    tabId = fallback
+  }
+
+  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
+    if (!$previewTarget.get()) {
+      return false
+    }
+
+    closeRightRailTab(tabId)
+
+    return true
+  }
+
+  if (!$filePreviewTabs.get().some(tab => tab.id === tabId)) {
+    return false
+  }
+
+  closeRightRailTab(tabId)
+
+  return true
+}
+
+// The rail's visible tab order: the live preview tab (when present) first, then
+// the file tabs in their stored order. Mirrors `ChatPreviewRail`'s `tabs` memo
+// so "close others / to the right" act on what the user actually sees.
+function rightRailTabOrder(): RightRailTabId[] {
+  const ids: RightRailTabId[] = []
+
+  if ($previewTarget.get()) {
+    ids.push(RIGHT_RAIL_PREVIEW_TAB_ID)
+  }
+
+  for (const tab of $filePreviewTabs.get()) {
+    ids.push(tab.id)
+  }
+
+  return ids
+}
+
+/** Close every rail tab except `keepId`, then make `keepId` active. */
+export function closeOtherRightRailTabs(keepId: RightRailTabId) {
+  for (const id of rightRailTabOrder()) {
+    if (id !== keepId) {
+      closeRightRailTab(id)
+    }
+  }
+
+  selectRightRailTab(keepId)
+}
+
+/** Close every rail tab positioned after `tabId` (VS Code's "Close to the Right"). */
+export function closeRightRailTabsToRight(tabId: RightRailTabId) {
+  const order = rightRailTabOrder()
+  const index = order.indexOf(tabId)
+
+  if (index === -1) {
+    return
+  }
+
+  for (const id of order.slice(index + 1)) {
+    closeRightRailTab(id)
+  }
+}
 
 /** Dismisses the active preview + every file tab so the rail pane unmounts. */
 export function closeRightRail() {
@@ -464,7 +580,7 @@ export function completePreviewServerRestart(taskId: string, text: string) {
   $previewServerRestart.set({
     ...current,
     message: text,
-    status: text.trim().toLowerCase().startsWith('error:') ? 'error' : 'complete'
+    status: normalize(text).startsWith('error:') ? 'error' : 'complete'
   })
 }
 

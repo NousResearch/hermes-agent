@@ -1,9 +1,10 @@
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { ArrowUp, Pencil, Trash2 } from '@/lib/icons'
+import { ArrowUp, iconSize, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -13,13 +14,26 @@ interface QueuePanelProps {
   entries: QueuedPromptEntry[]
   onDelete: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
+  /** Lift a park (explicit Stop/Esc halt) and let the queue flow again. */
+  onResume: () => void
   onSendNow: (id: string) => void
+  /** True after an explicit halt: entries wait until resumed / sent / edited. */
+  parked: boolean
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
   entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
-export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
+export function QueuePanel({
+  busy,
+  editingId,
+  entries,
+  onDelete,
+  onEdit,
+  onResume,
+  onSendNow,
+  parked
+}: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
 
@@ -28,7 +42,31 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
   }
 
   return (
-    <StatusSection label={c.queued(entries.length)}>
+    // Keyed on the park flag: StatusSection owns its collapse state from
+    // defaultCollapsed, so remount on park/unpark. A Stop must EXPAND the
+    // panel — the halted prompts' only presence is here, and leaving them
+    // behind a collapsed "N queued" pill is how they read as vanished.
+    <StatusSection
+      accessory={
+        parked ? (
+          <Tip label={c.queueResumeTip}>
+            <Button
+              className="text-muted-foreground/75 hover:text-foreground/90"
+              onClick={onResume}
+              size="micro"
+              type="button"
+              variant="text"
+            >
+              {c.queueResume}
+            </Button>
+          </Tip>
+        ) : undefined
+      }
+      defaultCollapsed={!parked}
+      icon={<Codicon className="text-muted-foreground/70" name={parked ? 'debug-pause' : 'layers'} size="0.8rem" />}
+      key={parked ? 'parked' : 'flowing'}
+      label={parked ? c.queuedPaused(entries.length) : c.queued(entries.length)}
+    >
       {entries.map(entry => {
         const isEditing = editingId === entry.id
         const attachmentsCount = entry.attachments.length
@@ -52,7 +90,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                     type="button"
                     variant="ghost"
                   >
-                    <Pencil size={11} />
+                    <Pencil className={iconSize.xs} />
                   </Button>
                 </Tip>
                 <Tip label={busy ? c.queueSendNext : c.queueSend}>
@@ -65,7 +103,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                     type="button"
                     variant="ghost"
                   >
-                    <ArrowUp size={11} />
+                    <ArrowUp className={iconSize.xs} />
                   </Button>
                 </Tip>
                 <Tip label={c.queueDelete}>
@@ -77,7 +115,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                     type="button"
                     variant="ghost"
                   >
-                    <Trash2 size={11} />
+                    <Trash2 className={iconSize.xs} />
                   </Button>
                 </Tip>
               </>

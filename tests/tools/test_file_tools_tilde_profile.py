@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.file_tools as ft
+import tools.terminal_tool as terminal_tool
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +83,7 @@ class TestResolvePathUsesProfileHome:
         process_home.mkdir()
 
         monkeypatch.setenv("HOME", str(process_home))
-        monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
 
         with patch("hermes_constants.get_subprocess_home", return_value=str(profile_home)):
             resolved = ft._resolve_path_for_task("~/test_file.txt", task_id="test")
@@ -98,7 +99,7 @@ class TestResolvePathUsesProfileHome:
         process_home.mkdir()
 
         monkeypatch.setenv("HOME", str(process_home))
-        monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
 
         with patch("hermes_constants.get_subprocess_home", return_value=str(profile_home)):
             # _resolve_base_dir uses the workspace root from config; if it contains ~,

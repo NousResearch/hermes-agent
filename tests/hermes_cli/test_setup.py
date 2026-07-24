@@ -494,3 +494,49 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
 # _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
 
+
+def test_prompt_yes_no_returns_default_when_noninteractive_env_set(monkeypatch):
+    """HERMES_NONINTERACTIVE=1 (set by dashboard/desktop spawns) must make
+    prompt_yes_no fall back to its default instead of reading stdin."""
+    monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("input() must not be called in non-interactive mode")
+
+    monkeypatch.setattr("builtins.input", _boom)
+
+    assert setup_mod.prompt_yes_no("Install it now?", True) is True
+    assert setup_mod.prompt_yes_no("Install it now?", False) is False
+
+
+def test_prompt_yes_no_eof_returns_default_instead_of_exiting(monkeypatch):
+    """A closed/redirected stdin (EOFError) must yield the default, not abort.
+
+    Regression: the Windows gateway start path asks "Install it now?" when the
+    service is not installed; spawned from the desktop app (stdin=DEVNULL) the
+    EOFError used to sys.exit(1), killing every desktop-triggered restart."""
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    def _eof(*_a, **_k):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+
+    assert setup_mod.prompt_yes_no("Install it now?", True) is True
+    assert setup_mod.prompt_yes_no("Install it now?", False) is False
+
+
+def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
+    """Ctrl+C is an explicit user abort and must keep exiting."""
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    def _interrupt(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", _interrupt)
+
+    import pytest
+
+    with pytest.raises(SystemExit):
+        setup_mod.prompt_yes_no("Install it now?", True)
+

@@ -7235,3 +7235,50 @@ class TestDisplayMetadataPersistence:
         assert len(switched) == 1
         assert switched[0]["display_metadata"] == meta
 
+    def test_replace_messages_does_not_double_encode_string_metadata(self, db):
+        """Import/replace can hand display_metadata as an already-JSON string."""
+        db.create_session("s1", source="cli")
+        meta = {
+            "delegation_id": "deleg_0d84d484",
+            "task_count": 1,
+            "completed_count": 1,
+            "failed_count": 0,
+            "duration_seconds": 193.55,
+        }
+        db.replace_messages(
+            "s1",
+            [
+                {
+                    "role": "user",
+                    "content": "event",
+                    "display_kind": "async_delegation_complete",
+                    "display_metadata": json.dumps(meta),
+                }
+            ],
+        )
+        reloaded = db.get_messages_as_conversation("s1")
+        assert reloaded[0]["display_metadata"] == meta
+
+    def test_decode_tolerates_historically_double_encoded_metadata(self, db):
+        """Rows written before the encode guard must still resume as dicts."""
+        db.create_session("s1", source="cli")
+        meta = {"delegation_id": "deleg_old", "task_count": 2}
+        double_encoded = json.dumps(json.dumps(meta))
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp, "
+                "display_kind, display_metadata, observed, active) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, 1)",
+                (
+                    "s1",
+                    "user",
+                    "event",
+                    time.time(),
+                    "async_delegation_complete",
+                    double_encoded,
+                ),
+            )
+            conn.commit()
+        reloaded = db.get_messages_as_conversation("s1")
+        assert reloaded[0]["display_metadata"] == meta
+

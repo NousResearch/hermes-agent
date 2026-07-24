@@ -5709,6 +5709,60 @@ class SessionDB:
                 return content
         return content
 
+    @staticmethod
+    def _encode_display_metadata(display_metadata: Any) -> Optional[str]:
+        """Serialize display_metadata for the TEXT column without double-encoding.
+
+        Import / replace paths sometimes hand us an already-serialized JSON
+        string (same hazard as tool_calls). ``json.dumps`` on that string would
+        store a quoted JSON string; one ``json.loads`` on read then yields a
+        Python ``str``, which crashes desktop resume (``'task_count' in meta``).
+        """
+        if display_metadata is None:
+            return None
+        if isinstance(display_metadata, str):
+            raw = display_metadata.strip()
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Ignoring non-JSON display_metadata string on write")
+                return None
+            if not isinstance(parsed, dict):
+                logger.warning("Ignoring non-object display_metadata on write")
+                return None
+            return json.dumps(parsed)
+        if isinstance(display_metadata, dict):
+            return json.dumps(display_metadata)
+        logger.warning(
+            "Ignoring unexpected display_metadata type on write: %s",
+            type(display_metadata).__name__,
+        )
+        return None
+
+    @staticmethod
+    def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
+        """Parse display_metadata TEXT, tolerating historical double-encoding."""
+        if raw is None:
+            return None
+        try:
+            meta = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
+            logger.warning("Ignoring invalid display metadata on message row")
+            return None
+        # One json.loads on a double-encoded row yields a JSON string — unwrap.
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (TypeError, json.JSONDecodeError):
+                logger.warning("Ignoring invalid display metadata on message row")
+                return None
+        if isinstance(meta, dict):
+            return meta
+        logger.warning("Ignoring non-object display metadata on message row")
+        return None
+
     def append_message(
         self,
         session_id: str,
@@ -5754,7 +5808,7 @@ class SessionDB:
         """
         # Display metadata is presentation-only and never changes the model
         # context role/content replayed to providers.
-        display_metadata_json = json.dumps(display_metadata) if display_metadata else None
+        display_metadata_json = self._encode_display_metadata(display_metadata)
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
             json.dumps(reasoning_details)
@@ -5871,7 +5925,7 @@ class SessionDB:
                 "UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
                 (
                     _scrub_surrogates(display_kind),
-                    json.dumps(display_metadata) if display_metadata else None,
+                    self._encode_display_metadata(display_metadata),
                     row[0],
                 ),
             )
@@ -5965,7 +6019,7 @@ class SessionDB:
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                     _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
-                    json.dumps(msg["display_metadata"]) if msg.get("display_metadata") else None,
+                    self._encode_display_metadata(msg.get("display_metadata")),
                 ),
             )
             inserted += 1
@@ -6558,10 +6612,9 @@ class SessionDB:
             if row["display_kind"]:
                 msg["display_kind"] = row["display_kind"]
             if row["display_metadata"]:
-                try:
-                    msg["display_metadata"] = json.loads(row["display_metadata"])
-                except (TypeError, json.JSONDecodeError):
-                    logger.warning("Ignoring invalid display metadata on message row")
+                decoded_meta = self._decode_display_metadata(row["display_metadata"])
+                if decoded_meta is not None:
+                    msg["display_metadata"] = decoded_meta
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

@@ -32,6 +32,10 @@ import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import {
+  MessageNavSidebar,
+  MessageNavToggle,
+} from "@/components/MessageNavSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -270,6 +274,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
+  // Message navigation sidebar — collapsible panel listing user messages.
+  const [messageNavOpen, setMessageNavOpen] = useState(true);
+  // Track the terminal buffer total line count for approximate message
+  // navigation scrolling. Updated from the metrics sync effect.
+  const [terminalBufferLines, setTerminalBufferLines] = useState(0);
   const { setEnd, setTitle } = usePageHeader();
   const [sessionTitleState, setSessionTitleState] = useState<{
     scope: string;
@@ -405,6 +414,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  // Track the terminal buffer line count for message navigation scrolling.
+  // Polls the xterm buffer size so the MessageNavSidebar can compute
+  // approximate scroll positions.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const term = termRef.current;
+      if (term) {
+        setTerminalBufferLines(term.buffer.active.length);
+      }
+    }, 2000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  // Scroll the terminal to an approximate line position.
+  const handleScrollToLine = useCallback((line: number) => {
+    const term = termRef.current;
+    if (!term) return;
+    const clamped = Math.max(0, Math.min(line, term.buffer.active.length - 1));
+    term.scrollToLine(clamped);
   }, []);
 
   useEffect(() => {
@@ -1498,31 +1528,53 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         </div>
 
         {!narrow && (
-          <div
-            id="chat-side-panel"
-            role="complementary"
-            aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
-          >
-            {/* Model picker — keeps the rail thin. */}
-            <div className="shrink-0">
-              <ChatSidebar
-                channel={channel}
+          <>
+            {/* Message navigation sidebar — collapsible, between terminal and main sidebar. */}
+            <div className="flex min-h-0 shrink-0 flex-col gap-1 overflow-hidden border-l border-current/10">
+              <div className="flex shrink-0 items-center justify-end gap-1 px-1 pt-1">
+                <MessageNavToggle
+                  isOpen={messageNavOpen}
+                  onToggle={() => setMessageNavOpen((v) => !v)}
+                  hasMessages={!!resumeParam}
+                />
+              </div>
+              <MessageNavSidebar
+                sessionId={resumeParam ?? null}
+                isOpen={messageNavOpen}
+                onToggle={() => setMessageNavOpen((v) => !v)}
                 profile={scopedProfile}
-                onDashboardNewSessionRequest={startFreshDashboardChat}
-                onSessionTitleChange={handleSessionTitleChange}
+                onScrollToLine={handleScrollToLine}
+                totalTerminalUserMessages={terminalBufferLines}
               />
             </div>
 
-            {/* Session switcher fills the remaining height below the model box. */}
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSessionList
-                activeSessionId={resumeParam}
-                profile={scopedProfile}
-                onNewChat={startFreshDashboardChat}
-              />
+            {/* Existing model/tools sidebar */}
+            <div
+              id="chat-side-panel"
+              role="complementary"
+              aria-label={modelToolsLabel}
+              className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
+            >
+              {/* Model picker — keeps the rail thin. */}
+              <div className="shrink-0">
+                <ChatSidebar
+                  channel={channel}
+                  profile={scopedProfile}
+                  onDashboardNewSessionRequest={startFreshDashboardChat}
+                  onSessionTitleChange={handleSessionTitleChange}
+                />
+              </div>
+
+              {/* Session switcher fills the remaining height below the model box. */}
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <ChatSessionList
+                  activeSessionId={resumeParam}
+                  profile={scopedProfile}
+                  onNewChat={startFreshDashboardChat}
+                />
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
       <PluginSlot name="chat:bottom" />

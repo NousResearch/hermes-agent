@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{REPORT_TITLE}}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4efe6;
+      --paper: rgba(255, 251, 245, 0.92);
+      --paper-strong: #fffdf9;
+      --ink: #1f1a16;
+      --muted: #71695f;
+      --line: rgba(50, 37, 22, 0.1);
+      --good: #1e6d56;
+      --good-soft: rgba(30, 109, 86, 0.09);
+      --warn: #9b641d;
+      --warn-soft: rgba(155, 100, 29, 0.11);
+      --bad: #9a3e2f;
+      --bad-soft: rgba(154, 62, 47, 0.1);
+      --accent: #0d5c70;
+      --accent-soft: rgba(13, 92, 112, 0.1);
+      --shadow: 0 24px 60px rgba(67, 46, 19, 0.08);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      --radius-sm: 12px;
+      --content: min(1200px, calc(100vw - 32px));
+      --sans: "Avenir Next", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+      --serif: "Iowan Old Style", "Source Han Serif SC", "Songti SC", Georgia, serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.55;
+      background:
+        radial-gradient(circle at 0% 0%, rgba(255,255,255,0.9), transparent 28%),
+        linear-gradient(145deg, #f6f1e7 0%, #efe6d6 55%, #f7f2ea 100%);
+    }
+
+    .shell {
+      width: var(--content);
+      margin: 0 auto;
+      padding: 22px 0 56px;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 14px;
+    }
+
+    .print-btn {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.78);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 11px 16px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: var(--shadow);
+    }
+
+    .hero,
+    .panel,
+    .metric,
+    .summary-card,
+    .idea-card,
+    .action-row {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border-radius: var(--radius-xl);
+      padding: 28px;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: auto -90px -120px auto;
+      width: 280px;
+      height: 280px;
+      background: radial-gradient(circle, rgba(13, 92, 112, 0.17), transparent 65%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      font-family: var(--serif);
+      letter-spacing: -0.02em;
+      line-height: 1.04;
+    }
+
+    h1 {
+      margin-top: 12px;
+      max-width: 860px;
+      font-size: clamp(2.4rem, 6vw, 4.8rem);
+    }
+
+    h2 {
+      font-size: clamp(1.4rem, 3vw, 2rem);
+    }
+
+    h3 {
+      font-size: 1.08rem;
+    }
+
+    p { margin: 0; }
+
+    .lead {
+      max-width: 760px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 1.04rem;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.72);
+      color: var(--muted);
+      font-size: 0.92rem;
+      font-weight: 700;
+    }
+
+    .hero-grid,
+    .overview-grid,
+    .summary-grid,
+    .ideas-grid,
+    .actions {
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero-grid {
+      grid-template-columns: 1.2fr repeat(3, minmax(0, 0.6fr));
+      margin-top: 22px;
+    }
+
+    .overview-grid {
+      grid-template-columns: 1.15fr 0.85fr;
+      margin-top: 24px;
+    }
+
+    .summary-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 16px;
+    }
+
+    .ideas-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 16px;
+    }
+
+    .section {
+      margin-top: 28px;
+    }
+
+    .panel,
+    .metric,
+    .summary-card,
+    .idea-card,
+    .action-row {
+      border-radius: var(--radius-lg);
+      padding: 22px;
+    }
+
+    .metric.score {
+      background: linear-gradient(145deg, rgba(13, 92, 112, 0.14), rgba(255,255,255,0.8));
+    }
+
+    .kicker {
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .score-value,
+    .metric-value,
+    .card-value {
+      display: block;
+      margin-top: 8px;
+      line-height: 0.98;
+    }
+
+    .score-value {
+      font-family: var(--serif);
+      font-size: clamp(3rem, 7vw, 5.7rem);
+    }
+
+    .metric-value {
+      font-size: 2rem;
+      font-weight: 800;
+    }
+
+    .sub {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.98rem;
+    }
+
+    .summary-card {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      min-height: 230px;
+    }
+
+    .summary-card.good { background: linear-gradient(145deg, var(--good-soft), rgba(255,255,255,0.82)); }
+    .summary-card.warn { background: linear-gradient(145deg, var(--warn-soft), rgba(255,255,255,0.82)); }
+    .summary-card.bad { background: linear-gradient(145deg, var(--bad-soft), rgba(255,255,255,0.82)); }
+    .summary-card.manual { background: linear-gradient(145deg, var(--accent-soft), rgba(255,255,255,0.82)); }
+
+    .summary-grid.compact {
+      grid-template-columns: minmax(0, 420px);
+    }
+
+    .summary-grid.compact .summary-card {
+      min-height: unset;
+    }
+
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .tag.good { background: rgba(30, 109, 86, 0.12); color: var(--good); }
+    .tag.warn { background: rgba(155, 100, 29, 0.14); color: var(--warn); }
+    .tag.bad { background: rgba(154, 62, 47, 0.14); color: var(--bad); }
+    .tag.manual { background: rgba(13, 92, 112, 0.14); color: var(--accent); }
+
+    .card-value {
+      font-size: 2.2rem;
+      font-weight: 800;
+    }
+
+    .card-note,
+    .muted {
+      color: var(--muted);
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .tiny-chip {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.7);
+      border: 1px solid rgba(50, 37, 22, 0.08);
+      font-size: 0.84rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+
+    .section-desc {
+      max-width: 760px;
+      color: var(--muted);
+    }
+
+    .overview-bars {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 48px;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(50, 37, 22, 0.08);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #0d5c70, #27846b);
+    }
+
+    .snapshot {
+      display: grid;
+      gap: 12px;
+    }
+
+    .snapshot-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(50, 37, 22, 0.08);
+    }
+
+    .snapshot-row:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid rgba(50, 37, 22, 0.08);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    td strong {
+      display: inline-block;
+      margin-bottom: 2px;
+    }
+
+    .idea-card {
+      display: grid;
+      gap: 10px;
+      min-height: 220px;
+      background: linear-gradient(145deg, rgba(13, 92, 112, 0.07), rgba(255,255,255,0.85));
+    }
+
+    .action-row {
+      display: grid;
+      gap: 8px;
+      background: linear-gradient(145deg, rgba(243, 226, 183, 0.4), rgba(255,255,255,0.84));
+    }
+
+    .footer-note {
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 1100px) {
+      .hero-grid,
+      .summary-grid,
+      .ideas-grid,
+      .overview-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .shell { width: min(100vw - 20px, var(--content)); }
+      .hero, .panel, .metric, .summary-card, .idea-card, .action-row { padding: 18px; }
+      .bar-row { grid-template-columns: 88px 1fr 42px; }
+      th, td { padding: 10px 8px; }
+    }
+
+    @media print {
+      .toolbar { display: none; }
+      .shell { width: auto; padding: 0; }
+      body { background: white; }
+      .hero, .panel, .metric, .summary-card, .idea-card, .action-row { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="toolbar">
+      <button class="print-btn" type="button" id="printBtn">Save as PDF</button>
+    </div>
+    <div id="app"></div>
+  </main>
+  <script>
+    const report = {{REPORT_DATA_JSON}};
+    const isZh = String(report.lang || "").toLowerCase().startsWith("zh");
+    document.documentElement.lang = isZh ? "zh-CN" : "en";
+    document.getElementById("printBtn").textContent = isZh ? "\u5bfc\u51fa PDF" : "Save as PDF";
+    document.getElementById("printBtn").addEventListener("click", () => window.print());
+
+    function esc(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function badge(kind, label) {
+      return `<span class="tag ${kind}">${esc(label)}</span>`;
+    }
+
+    function chips(values) {
+      if (!values || !values.length) return "";
+      return `<div class="chips">${values.map((value) => `<span class="tiny-chip">${esc(value)}</span>`).join("")}</div>`;
+    }
+
+    function summaryCards(items, emptyText) {
+      if (!items || !items.length) return `<p class="muted">${esc(emptyText)}</p>`;
+      return `<div class="summary-grid">${items.map((item) => `
+        <article class="summary-card ${esc(item.tone || "manual")}">
+          <div class="card-top">
+            <h3>${esc(item.title)}</h3>
+            ${badge(item.tone || "manual", isZh
+              ? (item.tone === "good" ? "\u7a33\u5b9a" : item.tone === "bad" ? "\u4f18\u5148" : item.tone === "warn" ? "\u4f18\u5316" : "\u63d0\u9192")
+              : (item.tone === "good" ? "Solid" : item.tone === "bad" ? "Priority" : item.tone === "warn" ? "Improve" : "Check"))}
+          </div>
+          <span class="card-value">${esc(item.value)}</span>
+          <div>${esc(item.detail || "")}</div>
+          <div class="card-note">${esc(item.note || "")}</div>
+          ${chips(item.chips || [])}
+        </article>
+      `).join("")}</div>`;
+    }
+
+    function compactSummaryCards(items, emptyText) {
+      if (!items || !items.length) return `<p class="muted">${esc(emptyText)}</p>`;
+      return `<div class="summary-grid compact">${items.map((item) => `
+        <article class="summary-card ${esc(item.tone || "manual")}">
+          <div class="card-top">
+            <h3>${esc(item.title)}</h3>
+            ${badge(item.tone || "manual", isZh
+              ? (item.tone === "good" ? "\u7a33\u5b9a" : item.tone === "bad" ? "\u4f18\u5148" : item.tone === "warn" ? "\u4f18\u5316" : "\u63d0\u9192")
+              : (item.tone === "good" ? "Solid" : item.tone === "bad" ? "Priority" : item.tone === "warn" ? "Improve" : "Check"))}
+          </div>
+          <span class="card-value">${esc(item.value)}</span>
+          <div>${esc(item.detail || "")}</div>
+          <div class="card-note">${esc(item.note || "")}</div>
+          ${chips(item.chips || [])}
+        </article>
+      `).join("")}</div>`;
+    }
+
+    function renderLocaleRows(rows) {
+      return rows.map((row) => `
+        <tr>
+          <td><strong>${esc(row.locale)}</strong></td>
+          <td>${esc(row.statusLabel)}</td>
+          <td>${esc(row.assignedMarketsLabel)}</td>
+          <td>${esc(row.readinessLabel)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderMarketRows(rows) {
+      return rows.map((row) => `
+        <tr>
+          <td><strong>${esc(row.name)}</strong></td>
+          <td>${esc(row.countriesLabel)}</td>
+          <td>${esc(row.languageLabel)}</td>
+          <td>${esc(row.currencyLabel)}</td>
+          <td>${esc(row.webLabel)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderIdeas(rows) {
+      if (!rows || !rows.length) return `<p class="muted">${isZh ? "\u8fd9\u6b21\u8fd8\u6ca1\u6709\u751f\u6210\u989d\u5916\u7684\u7ecf\u8425\u5efa\u8bae\u3002" : "No additional growth ideas were generated in this run."}</p>`;
+      return `<div class="ideas-grid">${rows.map((row) => `
+        <article class="idea-card">
+          <h3>${esc(row.title)}</h3>
+          <div>${esc(row.summary)}</div>
+          <div class="muted">${esc(row.nextStep)}</div>
+        </article>
+      `).join("")}</div>`;
+    }
+
+    function renderActions(rows, emptyNote) {
+      if (!rows || !rows.length) {
+        const fallback = isZh
+          ? "\u8fd9\u6b21\u6ca1\u6709\u51c6\u5907\u597d\u53ef\u76f4\u63a5\u6267\u884c\u7684\u5b89\u5168\u4fee\u590d\u3002\u8bf4\u660e\u5f53\u524d\u95ee\u9898\u66f4\u591a\u662f\u7ed3\u6784\u4f18\u5316\uff0c\u800c\u4e0d\u662f\u4e00\u952e\u4fee\u6539\u3002"
+          : "No safe direct fixes were prepared in this run. The remaining work is mostly structural, not one-click changes.";
+        return `<p class="muted">${esc(emptyNote || fallback)}</p>`;
+      }
+      return `<div class="actions">${rows.map((row) => `
+        <div class="action-row">
+          <div class="card-top">
+            <div>
+              <h3>${esc(row.title)}</h3>
+              <div>${esc(row.summary)}</div>
+            </div>
+            ${badge(row.risk === "low" ? "good" : row.risk === "medium" ? "warn" : "manual", row.risk)}
+          </div>
+          <div class="muted">${esc(row.reason || "")}</div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    const overviewBars = [
+      { label: isZh ? "\u8bed\u8a00" : "Languages", value: report.languageCount, max: Math.max(report.languageCount, 20) },
+      { label: isZh ? "\u5e02\u573a" : "Markets", value: report.marketCount, max: Math.max(report.marketCount, 30) },
+      { label: isZh ? "\u4f18\u5148\u9879" : "Priority", value: report.fixNowCount, max: Math.max(report.fixNowCount, 6) },
+      { label: isZh ? "\u4f18\u5316\u9879" : "Improve", value: report.tidyCount, max: Math.max(report.tidyCount, 8) },
+    ];
+
+    document.getElementById("app").innerHTML = `
+      <section class="hero">
+        <div class="eyebrow">Selofy Skill Hub \u00b7 Shopify Markets Auditor</div>
+        <h1>${esc(report.title)}</h1>
+        <p class="lead">${esc(report.summaryText)}</p>
+        <div class="meta">
+          <span class="chip">${esc(report.shop.name)}</span>
+          <span class="chip">${esc(report.shop.domain)}</span>
+          <span class="chip">${isZh ? "\u751f\u6210\u65f6\u95f4" : "Generated"} ${esc(report.generatedAtLabel)}</span>
+        </div>
+        <div class="hero-grid">
+          <div class="metric score">
+            <div class="kicker">${isZh ? "\u6574\u4f53\u8868\u73b0" : "Overall health"}</div>
+            <span class="score-value">${esc(report.score)}</span>
+            <p class="sub">${esc(report.scoreText)}</p>
+          </div>
+          <div class="metric">
+            <div class="kicker">${isZh ? "\u5df2\u68c0\u67e5\u8bed\u8a00" : "Languages checked"}</div>
+            <span class="metric-value">${esc(report.languageCount)}</span>
+            <p class="sub">${esc(report.languageCountText)}</p>
+          </div>
+          <div class="metric">
+            <div class="kicker">${isZh ? "\u5df2\u68c0\u67e5\u5e02\u573a" : "Markets checked"}</div>
+            <span class="metric-value">${esc(report.marketCount)}</span>
+            <p class="sub">${esc(report.marketCountText)}</p>
+          </div>
+          <div class="metric">
+            <div class="kicker">${isZh ? "\u53ef\u9884\u89c8\u4fee\u590d" : "Fixes ready"}</div>
+            <span class="metric-value">${esc(report.fixCount)}</span>
+            <p class="sub">${esc(report.fixCountText)}</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="overview-grid">
+          <div class="panel">
+            <div class="section-head">
+              <div>
+                <h2>${isZh ? "\u6574\u4f53\u8868\u73b0" : "Overall view"}</h2>
+                <p class="section-desc">${esc(report.bigPicture)}</p>
+              </div>
+            </div>
+            <div class="overview-bars">
+              ${overviewBars.map((bar) => `
+                <div class="bar-row">
+                  <strong>${esc(bar.label)}</strong>
+                  <div class="bar-track"><div class="bar-fill" style="width:${Math.max(8, Math.round((bar.value / bar.max) * 100))}%"></div></div>
+                  <span class="muted">${esc(bar.value)}</span>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+          <div class="panel">
+            <h2>${isZh ? "\u8fd9\u6b21\u5148\u770b\u4ec0\u4e48" : "What matters first"}</h2>
+            <div class="snapshot" style="margin-top:14px;">
+              <div class="snapshot-row">
+                <strong>${isZh ? "\u505a\u5f97\u597d\u7684\u5730\u65b9" : "Strengths"}</strong>
+                <span class="muted">${esc(report.goodCount)}</span>
+              </div>
+              <div class="snapshot-row">
+                <strong>${isZh ? "\u4f18\u5148\u8865\u8db3" : "Priority fixes"}</strong>
+                <span class="muted">${esc(report.fixNowCount)}</span>
+              </div>
+              <div class="snapshot-row">
+                <strong>${isZh ? "\u7ee7\u7eed\u4f18\u5316" : "Improve next"}</strong>
+                <span class="muted">${esc(report.tidyCount)}</span>
+              </div>
+              <div class="snapshot-row">
+                <strong>${isZh ? "\u4eba\u5de5\u63d0\u9192" : "Manual reminders"}</strong>
+                <span class="muted">${esc((report.manualCards || []).length)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>${isZh ? "\u505a\u5f97\u597d\u7684\u5730\u65b9" : "What is working"}</h2>
+            <p class="section-desc">${isZh ? "\u8fd9\u91cc\u53ea\u4fdd\u7559\u9ad8\u5c42\u6a21\u5757\uff0c\u4e0d\u518d\u9010\u6761\u7f57\u5217\u91cd\u590d\u9879\u3002" : "Repeated line items are condensed into a few readable modules."}</p>
+          </div>
+        </div>
+        ${summaryCards(report.strengthCards, isZh ? "\u8fd9\u6b21\u8fd8\u6ca1\u6709\u53ef\u5c55\u793a\u7684\u7a33\u5b9a\u9879\u3002" : "No stable strengths were summarized in this run.")}
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>${isZh ? "\u4f18\u5148\u8865\u8db3" : "Priority fixes"}</h2>
+            <p class="section-desc">${isZh ? "\u8fd9\u4e9b\u662f\u6700\u503c\u5f97\u5148\u5904\u7406\u7684\u5757\uff0c\u4e0d\u662f\u628a\u51e0\u5341\u4e2a\u5c0f\u95ee\u9898\u644a\u5e73\u7ed9\u4f60\u770b\u3002" : "These are the highest-priority blocks, not a dump of repeated small findings."}</p>
+          </div>
+        </div>
+        ${summaryCards(report.priorityCards, isZh ? "\u8fd9\u6b21\u6ca1\u6709\u660e\u663e\u7684\u4f18\u5148\u9879\u3002" : "No urgent priority items were summarized.")}
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>${isZh ? "\u7ee7\u7eed\u4f18\u5316" : "Improve next"}</h2>
+            <p class="section-desc">${isZh ? "\u8fd9\u90e8\u5206\u4e0d\u662f\u62a5\u9519\uff0c\u800c\u662f\u66f4\u7cbe\u7ec6\u5316\u8fd0\u8425\u65f6\u6700\u503c\u5f97\u8865\u7684\u70b9\u3002" : "These are not hard errors. They are the next best improvements for a stronger local experience."}</p>
+          </div>
+        </div>
+        ${summaryCards(report.improveCards, isZh ? "\u8fd9\u6b21\u6ca1\u6709\u989d\u5916\u7684\u4f18\u5316\u9879\u3002" : "No additional improvement themes were summarized.")}
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div>
+            <h2>${isZh ? "\u4eba\u5de5\u63d0\u9192" : "Manual reminders"}</h2>
+            <p class="section-desc">${isZh ? "\u8fd9\u4e24\u9879\u4e0d\u518d\u505a\u81ea\u52a8\u5224\u5b9a\uff0c\u53ea\u63d0\u9192\u4f60\u987a\u624b\u786e\u8ba4\u3002" : "These are reminders only. They are no longer treated as automated pass/fail checks."}</p>
+          </div>
+        </div>
+        ${summaryCards((report.manualCards || []).map((item) => ({
+          tone: "manual",
+          title: item.title,
+          value: isZh ? "\u63d0\u9192" : "Reminder",
+          detail: item.summary,
+          note: item.nextStep,
+          chips: []
+        })), isZh ? "\u8fd9\u6b21\u6ca1\u6709\u4eba\u5de5\u63d0\u9192\u3002" : "No manual reminders in this run.")}
+      </section>
+
+      <section class="section">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Languages</h2>
+              <p class="section-desc">${esc(report.languagesIntro)}</p>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>${isZh ? "\u8bed\u8a00" : "Language"}</th>
+                <th>${isZh ? "\u72b6\u6001" : "Status"}</th>
+                <th>${isZh ? "\u5df2\u5206\u914d\u5e02\u573a" : "Assigned markets"}</th>
+                <th>${isZh ? "\u7ffb\u8bd1\u51c6\u5907\u5ea6" : "Readiness"}</th>
+              </tr>
+            </thead>
+            <tbody>${renderLocaleRows(report.localeRows)}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Markets</h2>
+              <p class="section-desc">${esc(report.marketsIntro)}</p>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>${isZh ? "\u5e02\u573a" : "Market"}</th>
+                <th>${isZh ? "\u56fd\u5bb6" : "Countries"}</th>
+                <th>${isZh ? "\u8bed\u8a00" : "Languages"}</th>
+                <th>${isZh ? "\u8d27\u5e01\u7b56\u7565" : "Currency strategy"}</th>
+                <th>${isZh ? "\u7f51\u5740\u7b56\u7565" : "URL strategy"}</th>
+              </tr>
+            </thead>
+            <tbody>${renderMarketRows(report.marketRows)}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Shipping</h2>
+              <p class="section-desc">${esc(report.shippingIntro)}</p>
+            </div>
+          </div>
+          ${compactSummaryCards(report.shippingCards, isZh ? "\u8fd9\u6b21\u6ca1\u6709 shipping \u603b\u7ed3\u3002" : "No shipping summary was generated.")}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Storefront</h2>
+              <p class="section-desc">${esc(report.storefrontIntro)}</p>
+            </div>
+          </div>
+          ${summaryCards(report.storefrontCards, isZh ? "\u8fd9\u6b21\u6ca1\u6709 storefront \u603b\u7ed3\u3002" : "No storefront summary was generated.")}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>${isZh ? "\u56fd\u9645\u5316\u751f\u610f\u5efa\u8bae" : "International growth ideas"}</h2>
+              <p class="section-desc">${esc(report.expansionIntro)}</p>
+            </div>
+          </div>
+          ${renderIdeas(report.expansionIdeas)}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h2>${isZh ? "\u53ef\u9884\u89c8\u4fee\u590d" : "Approval-only fixes"}</h2>
+              <p class="section-desc">${esc(report.actionsIntro)}</p>
+            </div>
+          </div>
+          ${renderActions(report.actions, report.actionsEmptyNote)}
+        </div>
+      </section>
+
+      <p class="footer-note">${esc(report.footerNote)}</p>
+    `;
+  </script>
+</body>
+</html>

@@ -125,7 +125,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form))
+      const payload = {
+        ...toPayload(form),
+        models: discoveredModels.length > 0 ? discoveredModels : undefined
+      }
+      const response = await saveCustomEndpoint(payload)
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 

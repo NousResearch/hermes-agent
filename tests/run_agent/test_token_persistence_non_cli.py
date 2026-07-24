@@ -65,7 +65,7 @@ def test_run_conversation_persists_tokens_for_cron_sessions():
     assert session_db.update_token_counts.call_args.args[0] == "cron-session"
 
 
-def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):
+def _install_session_search_fakes(monkeypatch):
     sentinel_db = object()
     captured = {}
 
@@ -85,11 +85,55 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
 
     session_search_mod.session_search = fake_session_search
     monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+    return sentinel_db, captured
+
+
+def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):
+    sentinel_db, captured = _install_session_search_fakes(monkeypatch)
 
     agent = _make_agent(None, platform="acp")
-    result = json.loads(agent._invoke_tool("session_search", {"query": "Hermes"}, "task-id"))
+    result = json.loads(
+        agent._invoke_tool(
+            "session_search",
+            {"query": "Hermes", "profile": "research"},
+            "task-id",
+        )
+    )
 
     assert result["success"] is True
     assert captured["db"] is sentinel_db
     assert captured["query"] == "Hermes"
+    assert captured["profile"] == "research"
     assert agent._session_db is sentinel_db
+
+
+def test_sequential_session_search_dispatch_forwards_profile(monkeypatch):
+    from agent.tool_executor import execute_tool_calls_sequential
+
+    sentinel_db, captured = _install_session_search_fakes(monkeypatch)
+    agent = _make_agent(sentinel_db, platform="acp")
+    assistant_message = SimpleNamespace(
+        tool_calls=[
+            SimpleNamespace(
+                id="call-1",
+                function=SimpleNamespace(
+                    name="session_search",
+                    arguments=json.dumps(
+                        {"query": "Hermes", "profile": "research"}
+                    ),
+                ),
+            )
+        ]
+    )
+    messages = []
+
+    execute_tool_calls_sequential(
+        agent,
+        assistant_message,
+        messages,
+        effective_task_id="task-id",
+    )
+
+    assert captured["db"] is sentinel_db
+    assert captured["query"] == "Hermes"
+    assert captured["profile"] == "research"

@@ -2455,6 +2455,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    setSessions(() => [])
   })
 
   it('aborts submit when the user switches sessions during session.resume (no misroute)', async () => {
@@ -2510,6 +2511,100 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
       session_id: STORED_SESSION_A,
       source: 'desktop'
     })
+  })
+
+  it('does not false-positive-abort when the session has rotated via compression (lineage root vs tip)', async () => {
+    // The composer keys drafts/attachments on the DURABLE lineage root
+    // (resolveComposerSessionKey / sessionPinId — survives auto-compression
+    // tip rotation), but selectedStoredSessionIdRef tracks the CURRENT TIP.
+    // For any session that has compressed at least once, root !== tip — if
+    // composerScope is compared against the raw tip, every legitimate submit
+    // into that session would look like drift.
+    const ROOT_ID = 'stored-root-original'
+    const TIP_ID = 'stored-tip-after-compression'
+
+    setSessions(() => [sessionInfo({ id: TIP_ID, _lineage_root_id: ROOT_ID })])
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={TIP_ID}
+      />
+    )
+
+    // The composer's scope is the lineage root (what resolveComposerSessionKey
+    // actually returns for this session) — a legitimate, non-drifted submit.
+    const ok = await handle!.submitText('message into the rotated session', { composerScope: ROOT_ID })
+
+    expect(ok).toBe(true)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
+  })
+
+  it('aborts submit when the composer scope disagrees with the resolved target (#59305)', async () => {
+    // The composer (ChatBar) and the session-side refs live in separate React
+    // subtrees; each can be internally consistent yet still disagree with each
+    // other at the instant of send if the two updated on different commits.
+    // composerScope carries the composer's own snapshot of "what session was
+    // loaded" into submit.ts, which must refuse to send when it disagrees with
+    // the session the submit is actually about to target.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_A}
+      />
+    )
+
+    const ok = await handle!.submitText('typed while B was on screen', { composerScope: STORED_SESSION_B })
+
+    expect(ok).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+
+  it('submits normally when the composer scope agrees with the resolved target', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_A}
+      />
+    )
+
+    const ok = await handle!.submitText('typed while A was on screen', { composerScope: STORED_SESSION_A })
+
+    expect(ok).toBe(true)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
   })
 
   it('aborts recovery submit when the user switches sessions during timeout resume', async () => {

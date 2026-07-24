@@ -48,6 +48,8 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_GATEWAY_BUSY_TEXT_MODE",
             "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
             "HERMES_TIMEZONE",
+            "TERMINAL_CONTAINER_NETWORK",
+            "TERMINAL_CONTAINER_NETWORK_ALLOWLIST",
         ):
             v = os.environ.get(k)
             if v is not None:
@@ -82,7 +84,8 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
 
 
 def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict | None = None,
-                  timezone: str | None = None, gateway_cfg: dict | None = None) -> None:
+                  timezone: str | None = None, gateway_cfg: dict | None = None,
+                  terminal_cfg: dict | None = None) -> None:
     import yaml
     cfg: dict = {}
     if agent_cfg:
@@ -91,6 +94,8 @@ def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict |
         cfg["display"] = display_cfg
     if gateway_cfg:
         cfg["gateway"] = gateway_cfg
+    if terminal_cfg:
+        cfg["terminal"] = terminal_cfg
     if timezone:
         cfg["timezone"] = timezone
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
@@ -188,6 +193,39 @@ def test_config_platform_connect_timeout_supplies_env_when_unset(hermes_home: Pa
     env = _run_gateway_import(hermes_home, initial_env={})
 
     assert env.get("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT") == "90"
+
+
+def test_gateway_bridge_exports_egress_env_vars(hermes_home: Path) -> None:
+    """terminal.container_network* must cross the import-time bridge into the
+    env vars terminal_tool._get_env_config() reads, JSON-encoding the list.
+
+    The egress sandbox layer once shipped fully unit-tested but inert because
+    the startup bridges never mapped these keys — this drives the real bridge
+    instead of asserting on source text."""
+    _write_config(hermes_home, terminal_cfg={
+        "backend": "docker",
+        "container_network": "allowlist",
+        "container_network_allowlist": ["github.com", "pypi.org"],
+    })
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("TERMINAL_CONTAINER_NETWORK") == "allowlist"
+    assert env.get("TERMINAL_CONTAINER_NETWORK_ALLOWLIST") == '["github.com", "pypi.org"]'
+
+
+def test_gateway_bridge_egress_config_wins_over_stale_env(hermes_home: Path) -> None:
+    """A stale .env TERMINAL_CONTAINER_NETWORK must not weaken config.yaml's
+    egress lockdown — terminal keys are config-authoritative."""
+    _write_config(hermes_home, terminal_cfg={
+        "backend": "docker",
+        "container_network": "off",
+    })
+    _write_env(hermes_home, {"TERMINAL_CONTAINER_NETWORK": "on"})
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("TERMINAL_CONTAINER_NETWORK") == "off"
 
 
 def test_env_platform_connect_timeout_wins_over_config(hermes_home: Path) -> None:

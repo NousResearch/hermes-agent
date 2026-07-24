@@ -169,11 +169,25 @@ def test_reuse_keeps_airgapped_container_when_lockdown_requested(monkeypatch):
     assert not any(cmd[1] == "run" for cmd in commands), "matching container must be reused"
 
 
-def test_reuse_skips_inspect_when_network_enabled(monkeypatch):
+def test_reuse_keeps_airgapped_container_when_network_enabled(monkeypatch):
     commands = _reuse_guard_harness(monkeypatch, existing_mode="none", network=True)
 
-    # Default-network config never churns containers, even air-gapped ones
-    # (operators may have created them via docker_extra_args).
-    assert not any(cmd[1] == "inspect" for cmd in commands)
+    # Default-network config never churns deliberately air-gapped containers
+    # (operators may have created them via docker_extra_args). The guard now
+    # inspects NetworkMode in every mode — so it can replace containers
+    # stranded on a hermes-egress-* network — but under "on" the inspect
+    # result must only ever lead to removal for those egress networks.
     assert not any(cmd[1] == "rm" for cmd in commands)
     assert not any(cmd[1] == "run" for cmd in commands)
+
+
+def test_reuse_replaces_stranded_egress_container_when_network_enabled(monkeypatch):
+    commands = _reuse_guard_harness(
+        monkeypatch, existing_mode="hermes-egress-0123456789", network=True,
+    )
+
+    # A container left on an internal egress network has no route out at all
+    # under an open-network config — replace it instead of reusing a sandbox
+    # that silently cannot reach the network.
+    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands)
+    assert any(cmd[1] == "run" for cmd in commands)

@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -32,6 +33,52 @@ from hermes_cli.profiles import get_active_profile_name
 # ---------------------------------------------------------------------------
 # Small formatting helpers
 # ---------------------------------------------------------------------------
+
+
+# Task ids are ``t_`` + hex (see kanban_db._new_task_id). Length is left
+# unconstrained on purpose: ids have been 4, 8 and 12 hex chars across
+# versions (#68613 / competing #68668). Shape alone separates an id from a
+# reason phrase. Unblock accepts multiple positional ids for bulk mode;
+# free-text notes must use --reason.
+_TASK_ID_RE = re.compile(r"^t_[0-9a-fA-F]+$")
+
+
+def _looks_like_task_id(value: str) -> bool:
+    return bool(value and _TASK_ID_RE.fullmatch(value.strip()))
+
+
+def _reject_non_task_ids(ids: list[str], *, command: str = "unblock") -> list[str]:
+    """Return invalid ids; empty list means all look like task ids.
+
+    Also prints guidance. Callers should treat a non-empty return as
+    fail-fast (no mutations).
+    """
+    bad = [tid for tid in ids if not _looks_like_task_id(tid)]
+    if not bad:
+        return []
+    for tid in bad:
+        print(f"not a task id: {tid!r}", file=sys.stderr)
+    good = [tid for tid in ids if _looks_like_task_id(tid)]
+    if len(bad) == 1 and good:
+        # Classic mix-up: one reason phrase followed by real ids.
+        print(
+            f"Did you mean: hermes kanban {command} --reason {bad[0]!r} "
+            + " ".join(good),
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "Pass only task ids (t_<hex>) positionally; put free-text notes "
+            f"in --reason (e.g. hermes kanban {command} --reason \"...\" t_...).",
+            file=sys.stderr,
+        )
+    print(
+        "No tasks were modified. Pass only task ids positionally; "
+        "put free-text notes in --reason.",
+        file=sys.stderr,
+    )
+    return bad
+
 
 _STATUS_ICONS = {
     "todo":     "◻",
@@ -632,7 +679,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
-    p_unblock.add_argument("task_ids", nargs="+")
+    p_unblock.add_argument(
+        "task_ids",
+        nargs="+",
+        help="One or more task ids (t_<hex>). Free-text notes must use --reason, not positionals.",
+    )
 
     p_promote = sub.add_parser(
         "promote",
@@ -2296,6 +2347,12 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
+        return 1
+    # Fail fast before any mutation when a positional looks like a reason/note
+    # rather than a task id (common agent/user mix-up with block's shape).
+    # Also prevents add_comment() ValueError traceback when --reason is set
+    # alongside a bad positional.
+    if _reject_non_task_ids(ids, command="unblock"):
         return 1
     reason = getattr(args, "reason", None)
     if reason is not None:

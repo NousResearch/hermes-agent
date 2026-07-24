@@ -93,6 +93,7 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
+  resolveCurrentSession,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -523,6 +524,15 @@ export function ChatSidebar({
   const agentSessions = useMemo(
     () => (agentOrderManual ? orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds) : unpinnedAgentSessions),
     [unpinnedAgentSessions, agentOrderIds, agentOrderManual]
+  )
+
+  // Surface the focused chat in its own "Current" section above the long,
+  // virtualized history scroller — whether it is a recent, pinned, or project
+  // session — without mutating any persisted order. Selection is
+  // compression-aware and position-independent (see resolveCurrentSession).
+  const current = useMemo(
+    () => resolveCurrentSession(visibleSessions, activeSidebarSessionId, pinnedSessionIds),
+    [visibleSessions, activeSidebarSessionId, pinnedSessionIds]
   )
 
   // Recents are local-only: messaging-platform sessions are fetched as their
@@ -1202,6 +1212,28 @@ export function ChatSidebar({
               value={searchQuery}
             />
           </div>
+        )}
+
+        {!trimmedQuery && current && (
+          <SidebarSessionsSection
+            activeSessionId={activeSidebarSessionId}
+            collapsible={false}
+            contentClassName="flex flex-col gap-px rounded-lg pb-1"
+            emptyState={null}
+            label={s.current}
+            onArchiveSession={onArchiveSession}
+            onBranchSession={onBranchSession}
+            onDeleteSession={onDeleteSession}
+            onResumeSession={onResumeSession}
+            onToggle={() => undefined}
+            onTogglePin={current.pinned ? unpinSession : pinSession}
+            open
+            pinned={current.pinned}
+            rootClassName="shrink-0 px-2 pb-1"
+            sessions={[current.session]}
+            showProfileTags={showAllProfiles}
+            workingSessionIdSet={workingSessionIdSet}
+          />
         )}
 
         {showSessionSections && (

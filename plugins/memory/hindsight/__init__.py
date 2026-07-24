@@ -51,7 +51,7 @@ from .recall_postprocess import (
     DEFAULT_MAX_RESULTS,
     format_recall_results,
     normalize_max_results,
-    rank_and_deduplicate,
+    prepare_recall_results,
 )
 
 logger = logging.getLogger(__name__)
@@ -703,6 +703,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_recall = True
         self._recall_max_tokens = 4096
         self._recall_max_results = DEFAULT_MAX_RESULTS
+        self._recall_authority_tags: tuple[str, ...] = ()
         # Default to observation-only recall. Observations are Hindsight's
         # consolidated knowledge layer — deduplicated, evidence-grounded
         # beliefs built from many raw facts, with proof counts and
@@ -1010,6 +1011,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_results", "description": "Maximum deduplicated results returned or injected (1-20)", "default": DEFAULT_MAX_RESULTS},
+            {"key": "recall_authority_tags", "description": "Operator-managed tags whose results may outrank server relevance; Hermes retain calls cannot set these", "default": []},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
@@ -1346,9 +1348,33 @@ class HindsightMemoryProvider(MemoryProvider):
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
         self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
-        self._recall_max_results = normalize_max_results(
-            self._config.get("recall_max_results", DEFAULT_MAX_RESULTS)
+        try:
+            self._recall_max_results = normalize_max_results(
+                self._config.get("recall_max_results", DEFAULT_MAX_RESULTS)
+            )
+        except ValueError:
+            logger.warning(
+                "Invalid recall_max_results; using safe default %d",
+                DEFAULT_MAX_RESULTS,
+            )
+            self._recall_max_results = DEFAULT_MAX_RESULTS
+        self._recall_authority_tags = tuple(
+            _normalize_retain_tags(self._config.get("recall_authority_tags"))
         )
+        authority_tags_folded = {
+            tag.casefold() for tag in self._recall_authority_tags
+        }
+        filtered_retain_tags = [
+            tag
+            for tag in self._retain_tags
+            if tag.casefold() not in authority_tags_folded
+        ]
+        if len(filtered_retain_tags) != len(self._retain_tags):
+            logger.warning(
+                "Removed operator-managed recall authority tags from automatic retain tags"
+            )
+            self._retain_tags = filtered_retain_tags
+            self._tags = self._retain_tags or None
         # Default narrows recall to observation-only; pass an explicit
         # `recall_types` list in config.json to broaden (e.g. include
         # "world" / "experience") or to disable the filter entirely.
@@ -1377,9 +1403,9 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_results=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_results=%d, recall_authority_tags=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_results, self._recall_max_input_chars,
+                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_results, len(self._recall_authority_tags), self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1527,10 +1553,14 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    items = rank_and_deduplicate(
-                        resp.results or (), max_results=self._recall_max_results
+                    items, omitted_count = prepare_recall_results(
+                        resp.results or (),
+                        max_results=self._recall_max_results,
+                        authority_tags=self._recall_authority_tags,
                     )
-                    text = format_recall_results(items, numbered=False)
+                    text = format_recall_results(
+                        items, numbered=False, omitted_count=omitted_count
+                    )
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1604,8 +1634,18 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["document_id"] = document_id
         if retain_async is not None:
             kwargs["retain_async"] = retain_async
-        merged_tags = _normalize_retain_tags(self._retain_tags)
+        blocked_tags = {tag.casefold() for tag in self._recall_authority_tags}
+        merged_tags = [
+            tag
+            for tag in _normalize_retain_tags(self._retain_tags)
+            if tag.casefold() not in blocked_tags
+        ]
         for tag in _normalize_retain_tags(tags):
+            if tag.casefold() in blocked_tags:
+                logger.warning(
+                    "Ignored operator-managed recall authority tag from Hermes retain call"
+                )
+                continue
             if tag not in merged_tags:
                 merged_tags.append(tag)
         if merged_tags:
@@ -1761,10 +1801,14 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
                     return json.dumps({"result": "No relevant memories found."})
-                items = rank_and_deduplicate(
-                    resp.results, max_results=self._recall_max_results
+                items, omitted_count = prepare_recall_results(
+                    resp.results,
+                    max_results=self._recall_max_results,
+                    authority_tags=self._recall_authority_tags,
                 )
-                text = format_recall_results(items, numbered=True)
+                text = format_recall_results(
+                    items, numbered=True, omitted_count=omitted_count
+                )
                 if not text:
                     return json.dumps({"result": "No relevant memories found."})
                 return json.dumps({"result": text})

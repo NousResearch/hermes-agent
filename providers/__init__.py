@@ -66,10 +66,25 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     """Look up a provider profile by name or alias.
 
     Returns None if the provider has no profile (falls back to generic).
+
+    Named custom endpoints are stored as ``custom:<label>`` (e.g.
+    ``custom:my-proxy``). Those must resolve to the shared ``custom``
+    profile so quirks like top-level ``reasoning_effort`` still apply —
+    otherwise effort is silently dropped and upstream proxies default
+    to medium.
     """
     if not _discovered:
         _discover_providers()
-    canonical = _ALIASES.get(name, name)
+    raw = (name or "").strip()
+    if not raw:
+        return None
+    # custom:<name> / CUSTOM:Foo → custom profile
+    if raw.lower().startswith("custom:"):
+        raw = "custom"
+    canonical = _ALIASES.get(raw, raw)
+    # also try lower-case alias/name for mixed-case provider ids
+    if canonical not in _REGISTRY and raw.lower() != raw:
+        canonical = _ALIASES.get(raw.lower(), raw.lower())
     return _REGISTRY.get(canonical)
 
 

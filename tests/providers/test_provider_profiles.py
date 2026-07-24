@@ -21,6 +21,34 @@ class TestRegistry:
 
     def test_unknown_provider_returns_none(self):
         assert get_provider_profile("nonexistent-provider") is None
+        assert get_provider_profile("") is None
+
+    def test_named_custom_provider_resolves_to_custom_profile(self):
+        """Named custom endpoints use provider ids like ``custom:<label>``.
+
+        Runtime stores ``custom:my-proxy`` rather than the bare ``custom``
+        registry key. These must still hit CustomProfile so top-level
+        ``reasoning_effort`` is emitted instead of being silently dropped
+        (upstream then defaults to medium).
+        """
+        bare = get_provider_profile("custom")
+        assert bare is not None
+        assert bare.name == "custom"
+
+        for name in (
+            "custom:my-proxy",
+            "custom:local-vllm",
+            "CUSTOM:Foo",
+            "custom:relay-1",
+        ):
+            p = get_provider_profile(name)
+            assert p is not None, name
+            assert p is bare or p.name == "custom"
+            # CustomProfile must still wire reasoning effort top-level.
+            _eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"}
+            )
+            assert tl.get("reasoning_effort") == "high", name
 
     def test_all_providers_have_name(self):
         get_provider_profile("nvidia")  # trigger discovery

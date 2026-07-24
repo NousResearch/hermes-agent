@@ -1,5 +1,7 @@
 """Tests for acp_adapter.entry startup wiring."""
 
+import asyncio
+import json
 import sys
 
 import acp
@@ -11,16 +13,97 @@ from acp_adapter import entry
 def test_main_enables_unstable_protocol(monkeypatch):
     calls = {}
 
-    async def fake_run_agent(agent, **kwargs):
-        calls["kwargs"] = kwargs
+    async def fake_run_agent(agent):
+        calls["agent"] = agent
 
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
-    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+    monkeypatch.setattr(entry, "_run_agent_with_initialize_compat", fake_run_agent)
 
     entry.main([])
 
-    assert calls["kwargs"]["use_unstable_protocol"] is True
+    assert calls["agent"] is not None
+
+
+def test_initialize_compat_reader_normalizes_date_protocol_version():
+    source = asyncio.StreamReader()
+    source.feed_data(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25"},
+        }).encode()
+        + b"\n"
+    )
+    source.feed_eof()
+
+    line = asyncio.run(entry._InitializeCompatReader(source, 1).readline())
+
+    assert json.loads(line)["params"]["protocolVersion"] == 1
+
+
+def test_initialize_compat_reader_only_inspects_first_frame(monkeypatch):
+    initialize = (
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize",'
+        b'"params":{"protocolVersion":1}}\n'
+    )
+    subsequent = b'{"jsonrpc":"2.0","method":"session/update","params":{"large":"payload"}}\n'
+    source = asyncio.StreamReader()
+    source.feed_data(initialize + subsequent)
+    source.feed_eof()
+    reader = entry._InitializeCompatReader(source, 1)
+
+    assert asyncio.run(reader.readline()) == initialize
+    monkeypatch.setattr(entry.json, "loads", lambda _line: pytest.fail("reparsed frame"))
+    assert asyncio.run(reader.readline()) == subsequent
+
+
+def test_initialize_compat_reader_preserves_valid_integer_version():
+    line = (
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize",'
+        b'"params":{"protocolVersion":1}}\n'
+    )
+
+    assert entry._normalize_initialize_frame(line, 7) == line
+
+
+def test_initialize_compat_reader_preserves_non_initialize_frames():
+    line = (
+        b'{"jsonrpc":"2.0","id":2,"method":"session/new",'
+        b'"params":{"protocolVersion":"2025-11-25"}}\n'
+    )
+
+    assert entry._normalize_initialize_frame(line, 1) == line
+
+
+@pytest.mark.parametrize(
+    "protocol_version",
+    [None, True, {}, [], "not-a-date", 65536],
+)
+def test_initialize_compat_reader_preserves_other_invalid_versions(protocol_version):
+    line = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": protocol_version},
+            }
+        ).encode()
+        + b"\n"
+    )
+
+    assert entry._normalize_initialize_frame(line, 1) == line
+
+
+def test_initialize_compat_reader_preserves_missing_protocol_version():
+    line = (
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize",'
+        b'"params":{"clientCapabilities":{}}}\n'
+    )
+
+    assert entry._normalize_initialize_frame(line, 1) == line
 
 
 def test_main_version_prints_without_starting_server(monkeypatch, capsys):

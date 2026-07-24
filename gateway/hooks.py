@@ -137,10 +137,16 @@ class HookRegistry:
                     "path": str(hook_dir),
                 })
 
-                print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
+                try:
+                    print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
+                except BrokenPipeError:
+                    pass
 
             except Exception as e:
-                print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
+                try:
+                    print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
+                except BrokenPipeError:
+                    pass
 
     def _resolve_handlers(self, event_type: str) -> List[Callable]:
         """Return all handlers that should fire for ``event_type``.

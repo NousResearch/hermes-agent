@@ -124,7 +124,12 @@ export function patchSpectrumTs(root = scriptDir()) {
     "dist"
   );
   if (!fs.existsSync(dist)) {
-    throw new Error(`@spectrum-ts/imessage dist not found: ${dist}`);
+    // Pinned SDK layout drift: newer spectrum-ts ships as top-level
+    // `spectrum-ts/dist` (+ `@photon-ai/*`) and no longer exposes the old
+    // `@spectrum-ts/imessage/dist` path this mixed-attachment shim targets.
+    // The shim only affects text+multi-attachment ordering; when the legacy
+    // path is absent, skip gracefully instead of killing the sidecar at boot.
+    return { patched: false, reason: "legacy @spectrum-ts/imessage dist absent" };
   }
   const files = fs.readdirSync(dist)
     .filter((name) => name.endsWith(".js"))

@@ -39,6 +39,7 @@ import {
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
+  sshReconnectScope,
   tokenPreview
 } from './connection-config'
 
@@ -49,6 +50,17 @@ test('connectionScopeKey trims to a name or null for the global scope', () => {
   assert.equal(connectionScopeKey(''), null)
   assert.equal(connectionScopeKey(null), null)
   assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('sshReconnectScope preserves the exact global or per-profile SSH owner scope', () => {
+  assert.equal(sshReconnectScope({ remoteKind: 'ssh', sshScope: '' }), '')
+  assert.equal(sshReconnectScope({ remoteKind: 'ssh', sshScope: 'goliath-main' }), 'goliath-main')
+})
+
+test('sshReconnectScope rejects non-SSH and malformed connection descriptors', () => {
+  assert.equal(sshReconnectScope({ remoteKind: 'url', sshScope: 'goliath-main' }), null)
+  assert.equal(sshReconnectScope({ remoteKind: 'ssh' }), null)
+  assert.equal(sshReconnectScope(null), null)
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {

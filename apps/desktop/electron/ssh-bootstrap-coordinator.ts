@@ -84,7 +84,7 @@ function createBootstrapCoordinator() {
     pending.get(scope)?.controller.abort()
   }
 
-  async function cancelAndWait(scope) {
+  async function cancelAndWait(scope, whileDrained?) {
     let release
 
     const barrier = new Promise<void>(resolve => {
@@ -100,6 +100,7 @@ function createBootstrapCoordinator() {
 
     try {
       await Promise.allSettled(entries.map(entry => entry.promise))
+      await whileDrained?.()
     } finally {
       if (drains.get(scope) === barrier) {
         drains.delete(scope)

@@ -1922,6 +1922,25 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_upload",
+        "description": "Attach one or more local files to a file-input element (a website's 'Choose file' / 'Upload Existing' control). Use this for ALL file uploads — clicking 'Choose file' yourself only opens an OS dialog you cannot operate; this sets the input's files directly. Target the file input by its snapshot ref (e.g. '@e5') OR, when the input is hidden behind a styled button (common), by a CSS selector like 'input[type=file]'. Requires browser_navigate first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The file input's snapshot ref (e.g. '@e5') or a CSS selector (e.g. 'input[type=file]')."
+                },
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Absolute path(s) of the local file(s) to attach."
+                }
+            },
+            "required": ["ref", "files"]
+        }
+    },
+    {
         "name": "browser_scroll",
         "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
         "parameters": {
@@ -3224,6 +3243,93 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         response = _copy_fallback_warning(response, result)
         response = redact_browser_typed_text_for_display(response, text)
         return json.dumps(response, ensure_ascii=False)
+
+
+def browser_upload(ref: str, files, task_id: Optional[str] = None) -> str:
+    """Attach one or more local files to a file-input element.
+
+    This is the supported way to drive a website's "Choose file" / upload
+    control. Clicking "Choose file" opens an OS file picker the agent
+    cannot operate; this command sets the input's files programmatically
+    via agent-browser's ``upload`` verb (no dialog), against the same
+    already-authenticated browser session as the other ``browser_*`` tools.
+
+    Args:
+        ref: Either an element ref from the snapshot (e.g. ``"@e5"``) or a
+            CSS selector for the file input (e.g. ``"input[type=file]"``).
+            File inputs are frequently hidden behind a styled button and may
+            not appear in the accessibility snapshot — in that case target
+            them by CSS selector such as ``input[type=file]``.
+        files: A single file path, or a list of file paths, to attach. Paths
+            are validated to exist and resolved to absolute paths.
+        task_id: Task identifier for session isolation.
+
+    Returns:
+        JSON string with the upload result.
+    """
+    if _is_camofox_mode():
+        return json.dumps(
+            {
+                "success": False,
+                "error": "browser_upload is not supported in camofox mode; "
+                         "use the default agent-browser engine for file uploads.",
+            },
+            ensure_ascii=False,
+        )
+
+    effective_task_id = _last_session_key(task_id or "default")
+
+    # Normalize the files argument to a list.
+    if isinstance(files, str):
+        file_list = [files]
+    elif files is None:
+        file_list = []
+    else:
+        file_list = [str(f) for f in files]
+    if not file_list:
+        return json.dumps(
+            {"success": False, "error": "No files provided to upload"},
+            ensure_ascii=False,
+        )
+
+    # Validate + resolve to absolute paths so agent-browser receives an
+    # unambiguous location regardless of its working directory.
+    abs_files: list[str] = []
+    missing: list[str] = []
+    for f in file_list:
+        expanded = os.path.abspath(os.path.expanduser(f))
+        if os.path.isfile(expanded):
+            abs_files.append(expanded)
+        else:
+            missing.append(f)
+    if missing:
+        return json.dumps(
+            {"success": False, "error": f"File(s) not found: {missing}"},
+            ensure_ascii=False,
+        )
+
+    # agent-browser accepts a @ref or a CSS selector as the target. Only
+    # add the leading "@" for bare ref-style ids (e.g. "e5"); leave CSS
+    # selectors like "input[type=file]" untouched.
+    selector = (ref or "").strip()
+    if re.fullmatch(r"e\d+", selector):
+        selector = f"@{selector}"
+
+    result = _run_browser_command(effective_task_id, "upload", [selector, *abs_files])
+
+    if result.get("success"):
+        response = {
+            "success": True,
+            "uploaded": abs_files,
+            "element": selector,
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+    else:
+        response = {
+            "success": False,
+            "error": result.get("error", f"Failed to upload file(s) to {selector}"),
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
 def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
@@ -4893,6 +4999,14 @@ registry.register(
     handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+)
+registry.register(
+    name="browser_upload",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_upload"],
+    handler=lambda args, **kw: browser_upload(ref=args.get("ref", ""), files=args.get("files", []), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📎",
 )
 registry.register(
     name="browser_scroll",

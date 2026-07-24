@@ -153,6 +153,12 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
     if any(pattern in addr for pattern in _NOREPLY_PATTERNS):
         return True
     for header, check in _AUTOMATED_HEADERS.items():
+        # SimpleLogin adds List-Unsubscribe to every forwarded message, including
+        # ordinary person-to-person mail. Its reverse aliases are authenticated
+        # separately before dispatch, so this header alone is not an automation
+        # signal for the provider's dedicated reverse-alias domain.
+        if header == "List-Unsubscribe" and addr.endswith("@simplelogin.co"):
+            continue
         value = headers.get(header, "")
         if value and check(value):
             return True
@@ -289,12 +295,18 @@ def _verify_sender_authentication(
 
     The ``From:`` header is attacker-controlled and is never authenticated by
     IMAP delivery, so an allowlist keyed on ``From:`` alone is trivially
-    spoofable (GHSA-rxqh-5572-8m77). The only trustworthy signal is the
-    ``Authentication-Results`` header that the *receiving* mail server (the one
-    we IMAP into) stamps after running SPF/DKIM/DMARC. That header is prepended
-    by our own server, so the topmost instance is the one we trust; any
-    ``Authentication-Results`` an attacker injected into the body of their
-    message sorts below it.
+    spoofable (GHSA-rxqh-5572-8m77). The trust anchor is the topmost
+    ``Authentication-Results`` header prepended by the receiving mail server.
+    A configured ``authserv_id`` must match that header; lower headers cannot
+    establish the trusted server because an attacker can inject them.
+
+    Normally only that topmost header is evaluated. Fastmail is the narrow
+    exception: it emits one contiguous, provider-stamped block of separate
+    ``Authentication-Results`` headers (PTR/BIMI/ARC and then SPF/DKIM/DMARC).
+    For authserv-ids in Fastmail's provider-owned ``messagingengine.com``
+    namespace, the contiguous same-id block is evaluated. This relies on the
+    receiver sanitizing incoming headers that claim its own authserv-id; the
+    exception must not be generalized to arbitrary servers.
 
     Returns ``(authenticated, reason)``. ``authenticated`` is True when:
       * a DMARC pass is recorded for the From domain, OR
@@ -310,53 +322,71 @@ def _verify_sender_authentication(
     if not from_domain:
         return False, "missing From domain"
 
-    # get_all preserves header order; the receiving server prepends its result,
-    # so the FIRST Authentication-Results is the trusted one. We pin to the
-    # configured authserv-id when provided to defend against an injected header
-    # that happens to sort first.
+    # get_all preserves wire order. The topmost result is the trust anchor; a
+    # configured authserv-id must match it rather than a potentially forged
+    # lower header. Only Fastmail's provider-owned namespace may extend that
+    # anchor across its contiguous split-results block.
     headers = msg.get_all("Authentication-Results") or []
     if not headers:
         return False, "no Authentication-Results header"
 
-    trusted = None
-    for raw in headers:
+    trusted_serv = None
+    first_trusted = None
+    allow_split_results = False
+    for index, raw in enumerate(headers):
         value = " ".join(str(raw).split())
-        if authserv_id:
-            # authserv-id is the first token before the first ';'
-            serv = value.split(";", 1)[0].strip().lower()
-            if not _domains_aligned(serv, authserv_id) and serv != authserv_id.lower():
+        # authserv-id is the first token before the first ';'.
+        serv = value.split(";", 1)[0].strip().lower()
+        if index == 0:
+            if authserv_id and serv.rstrip(".") != authserv_id.lower().rstrip("."):
+                return False, "top Authentication-Results has untrusted authserv-id"
+            trusted_serv = serv
+            first_trusted = value
+            allow_split_results = serv == "messagingengine.com" or serv.endswith(
+                ".messagingengine.com"
+            )
+        elif not allow_split_results or serv != trusted_serv:
+            break
+
+        methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(value)}
+        if not methods:
+            if allow_split_results:
                 continue
-        trusted = value
-        break
-    if trusted is None:
+            break
+        props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(value)}
+
+        # 1) DMARC pass is the strongest signal — DMARC already enforces From
+        #    alignment, so a pass means the From domain is authenticated.
+        if methods.get("dmarc") == "pass":
+            return True, "dmarc=pass"
+
+        # 2) SPF pass aligned with the From domain (the envelope/MAIL FROM domain
+        #    must match the From domain).
+        if methods.get("spf") == "pass":
+            spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get(
+                "smtp.from", ""
+            ) or props.get("envelope-from", "")
+            spf_domain = _domain_of(spf_domain) if "@" in spf_domain else spf_domain
+            if _domains_aligned(spf_domain, from_domain):
+                return True, "spf=pass aligned"
+
+        # 3) DKIM pass aligned (``header.d``) with the From domain.
+        if methods.get("dkim") == "pass":
+            dkim_domain = props.get("header.d", "") or _domain_of(
+                props.get("header.from", "")
+            )
+            if _domains_aligned(dkim_domain, from_domain):
+                return True, "dkim=pass aligned"
+
+        # A trusted header containing an actual authentication verdict failed.
+        # Stop here so a forged same-authserv header lower in the message cannot
+        # override it. Method-free headers are skipped only inside Fastmail's
+        # explicitly trusted split-results block.
+        return False, f"authentication failed ({value[:120]})"
+
+    if first_trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
-
-    methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
-    props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
-
-    # 1) DMARC pass is the strongest signal — DMARC already enforces From
-    #    alignment, so a pass means the From domain is authenticated.
-    if methods.get("dmarc") == "pass":
-        return True, "dmarc=pass"
-
-    # 2) SPF pass aligned with the From domain (the envelope/MAIL FROM domain
-    #    must match the From domain).
-    if methods.get("spf") == "pass":
-        spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get(
-            "smtp.from", ""
-        ) or props.get("envelope-from", "")
-        spf_domain = _domain_of(spf_domain) if "@" in spf_domain else spf_domain
-        if _domains_aligned(spf_domain, from_domain):
-            return True, "spf=pass aligned"
-
-    # 3) DKIM pass aligned with the From domain (the signing domain header.d
-    #    must align with the From domain).
-    if methods.get("dkim") == "pass":
-        dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
-        if _domains_aligned(dkim_domain, from_domain):
-            return True, "dkim=pass aligned"
-
-    return False, f"authentication failed ({trusted[:120]})"
+    return False, f"authentication failed ({first_trusted[:120]})"
 
 
 def _extract_attachments(

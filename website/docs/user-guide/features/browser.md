@@ -447,18 +447,20 @@ Snapshots over 15,000 characters are automatically truncated or summarized by an
 
 ### `browser_click`
 
-Click an element identified by its ref ID from the snapshot.
+Click an element identified by its ref ID from the snapshot or by a CSS selector.
 
 ```
 Click @e5 to press the "Sign In" button
+Click button.submit using a CSS selector
 ```
 
 ### `browser_type`
 
-Type text into an input field. Clears the field first, then types the new text.
+Type text into an input field by ref ID or CSS selector. Clears the field first, then types the new text.
 
 ```
 Type "hermes agent" into the search field @e3
+Type "hermes agent" into input.search using a CSS selector
 ```
 
 ### `browser_scroll`

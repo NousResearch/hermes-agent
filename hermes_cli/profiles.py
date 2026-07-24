@@ -2080,6 +2080,10 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
         shutil.move(str(final_source), str(profile_dir))
 
+    # Match create_profile: imported profiles must get an s6 gateway slot so
+    # `hermes -p <name> gateway start` works after import (#69163).
+    _maybe_register_gateway_service(canon)
+
     return profile_dir
 
 

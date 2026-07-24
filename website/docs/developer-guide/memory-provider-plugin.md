@@ -14,14 +14,19 @@ Memory providers are one of two **provider plugin** types. The other is [Context
 
 ## Directory Structure
 
-Each memory provider lives in `plugins/memory/<name>/`:
+Standalone memory providers should ship as their own plugin repository. When installed with `hermes plugins install owner/repo`, Hermes places the repo under `$HERMES_HOME/plugins/<name>/`, and the memory discovery system treats it the same as an in-tree provider:
 
 ```
-plugins/memory/my-provider/
+my-provider/
 ├── __init__.py      # MemoryProvider implementation + register() entry point
 ├── plugin.yaml      # Metadata (name, description, hooks)
-└── README.md        # Setup instructions, config reference, tools
+├── README.md        # Setup instructions, config reference, tools
+└── tests/           # Provider tests with light Hermes stubs when needed
 ```
+
+For a fully implemented standalone provider, see [`longman391/hermes-openbrain-memory-provider`](https://github.com/longman391/hermes-openbrain-memory-provider), an OpenBrain (OB1) memory provider over MCP Streamable HTTP.
+
+Bundled providers in this repo still live under `plugins/memory/<name>/`, but new third-party backends should not be added there.
 
 ## The MemoryProvider ABC
 

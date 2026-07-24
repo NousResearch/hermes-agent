@@ -1,0 +1,67 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: perseus-vault
+description: Persistent, encrypted agent memory — hybrid recall, corrections, and decision journaling (remote MCP).
+source: https://github.com/Perseus-Computing-LLC/perseus-vault
+
+# Perseus Vault (Mneme) is a single-binary memory server: FTS5 + dense
+# semantic recall, Ebbinghaus decay, bi-temporal fact history, and a
+# corrections/journal layer, exposed over Streamable HTTP. One Vault can be
+# shared by many agents and machines, so durable context follows the user.
+#
+# Nothing to install locally — the catalog entry points at a running Vault
+# endpoint. Self-host (one Rust binary, MIT) or use a hosted instance;
+# see the source repo for both.
+transport:
+  type: http
+  url: https://vault.perseus.observer/message
+
+# Bearer token, prompted at install time and written to ~/.hermes/.env.
+# `env_var` names the variable the persisted Authorization header
+# interpolates (Bearer ${PERSEUS_VAULT_MCP_TOKEN}) — the token value never
+# touches config.yaml.
+auth:
+  type: api_key
+  env_var: PERSEUS_VAULT_MCP_TOKEN
+  env:
+    - name: PERSEUS_VAULT_MCP_TOKEN
+      prompt: "Perseus Vault MCP bearer token"
+      required: true
+      secret: true
+
+# Tool selection at install time:
+# The Vault exposes a large surface (~55 tools: grooming, dreaming, graph
+# traversal, bi-temporal queries...). The default keeps the everyday
+# read/write/recall path and leaves maintenance/power tools opt-in via the
+# install-time checklist (everything starts checked when this list is
+# absent; here we deliberately curate).
+tools:
+  default_enabled:
+    - perseus_vault_health
+    - perseus_vault_remember
+    - perseus_vault_recall
+    - perseus_vault_recall_when
+    - perseus_vault_semantic_search
+    - perseus_vault_context
+    - perseus_vault_capture
+    - perseus_vault_correct
+    - perseus_vault_forget
+    - perseus_vault_journal
+    - perseus_vault_state_get
+    - perseus_vault_state_set
+    - perseus_vault_memories
+
+post_install: |
+  Perseus Vault needs a reachable MCP endpoint and a bearer token.
+  Point the URL at your own Vault (self-hosted or hosted) — the default
+  endpoint is the public hosted instance.
+
+  Start a new Hermes session to load the perseus_vault_* tools.
+  Re-run the tool checklist any time with:
+    hermes mcp configure perseus-vault
+
+  For full memory-provider integration (prefetch injection, session
+  distillation), install the companion plugin:
+    hermes plugins install Perseus-Computing-LLC/hermes-plugin-perseus-vault

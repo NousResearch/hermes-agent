@@ -216,6 +216,42 @@ class TestManifestParsing:
         cfg = _build_server_config(_entry("demo"), None)
         assert "env" not in cfg
 
+    def test_http_api_key_env_var_writes_bearer_header(self, catalog_dir):
+        """Remote HTTP + api_key + env_var persists an interpolated Bearer
+        header (mirrors `hermes mcp add`), never the token itself."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://vault.example.com/message"},
+            auth={
+                "type": "api_key",
+                "env_var": "DEMO_VAULT_TOKEN",
+                "env": [{"name": "DEMO_VAULT_TOKEN", "prompt": "Token", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert cfg["url"] == "https://vault.example.com/message"
+        assert cfg["headers"] == {"Authorization": "Bearer ${DEMO_VAULT_TOKEN}"}
+        assert "auth" not in cfg  # oauth marker only applies to oauth
+
+    def test_http_api_key_without_env_var_writes_no_headers(self, catalog_dir):
+        """Backward compat: api_key manifests that don't declare env_var
+        keep the old headerless behavior."""
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://example.com/mcp"},
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "Key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert cfg["url"] == "https://example.com/mcp"
+        assert "headers" not in cfg
+
     def test_transport_env_bad_shape_rejected(self, catalog_dir):
         body = _basic_manifest()
         body["transport"]["env"] = ["DISABLE_TELEMETRY=true"]  # list, not mapping

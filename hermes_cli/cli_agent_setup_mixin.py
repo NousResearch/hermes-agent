@@ -248,7 +248,7 @@ class CLIAgentSetupMixin:
 
         from hermes_cli.mcp_startup import wait_for_mcp_discovery
 
-        wait_for_mcp_discovery()
+        wait_for_mcp_discovery(timeout=15.0)
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:

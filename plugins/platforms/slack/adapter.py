@@ -368,8 +368,14 @@ def _slack_mention_detection_text(event: dict) -> str:
     return (flat.strip() + "\n" + " ".join(extra)).strip()
 
 
-def _rewrite_known_bang_command(text: str) -> str:
-    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
+def _rewrite_known_bang_command(text: str, prefix: str = "") -> str:
+    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form.
+
+    Mirrors the native-slash surface: with a namespace prefix configured
+    (e.g. ``myorg-``), bang commands carry the same prefix (``!myorg-stop``)
+    and it is stripped before dispatch. Unprefixed bangs stay plain text so
+    two namespaced apps sharing a channel do not both execute ``!stop``.
+    """
     if not text.startswith("!"):
         return text
 
@@ -378,8 +384,14 @@ def _rewrite_known_bang_command(text: str) -> str:
 
         first_token = text[1:].split(maxsplit=1)[0]
         cmd_name = first_token.split("@", 1)[0].lower()
+        rest = text[1:]
+        if prefix:
+            if not cmd_name.startswith(prefix):
+                return text
+            cmd_name = cmd_name[len(prefix) :]
+            rest = rest[len(prefix) :]
         if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
-            return "/" + text[1:]
+            return "/" + rest
     except Exception:  # pragma: no cover - defensive
         pass
     return text
@@ -1034,6 +1046,15 @@ class SlackAdapter(BasePlatformAdapter):
         # Allow at least this long after (re)connect before treating a missing
         # first ping/pong as evidence of a wedged transport.
         self._socket_first_ping_grace_s = 60.0
+        # Optional slash-command namespace prefix (e.g. "myorg-") so multiple
+        # gateway apps can share one Slack workspace without their global,
+        # non-namespaced slash commands colliding. Resolved once here from
+        # platforms.slack.extra.command_prefix; "" (the default) leaves every
+        # command name unchanged. It is baked into the routing regex and
+        # stripped again in _handle_slash_command.
+        from hermes_cli.commands import slack_command_prefix
+
+        self._command_prefix = slack_command_prefix(self.config.extra)
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -2054,13 +2075,24 @@ class SlackAdapter(BasePlatformAdapter):
             from hermes_cli.commands import slack_native_slashes
             import re as _re
 
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            # The optional namespace prefix (e.g. "myorg-") is baked into the
+            # matcher so /myorg-model reaches this handler; _handle_slash_command
+            # strips it again before dispatch. An empty prefix matches the bare
+            # command names unchanged.
+            _prefix = _re.escape(self._command_prefix)
+            _slash_names = [
+                name for name, _d, _h in slack_native_slashes(self._command_prefix)
+            ]
             if _slash_names:
                 _slash_pattern = _re.compile(
-                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
+                    r"^/"
+                    + _prefix
+                    + r"(?:"
+                    + "|".join(_re.escape(n) for n in _slash_names)
+                    + r")$"
                 )
             else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
+                _slash_pattern = _re.compile(r"^/" + _prefix + r"hermes$")
 
             @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
@@ -5354,7 +5386,9 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
-        command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
+        command_probe_text = _rewrite_known_bang_command(
+            original_text.lstrip(), self._command_prefix
+        )
         if command_probe_text != original_text.lstrip():
             original_text = command_probe_text
 
@@ -5728,7 +5762,9 @@ class SlackAdapter(BasePlatformAdapter):
             if mention_stripped.startswith("/"):
                 command_text = mention_stripped
             else:
-                command_text = _rewrite_known_bang_command(mention_stripped)
+                command_text = _rewrite_known_bang_command(
+                    mention_stripped, self._command_prefix
+                )
             if command_text.startswith("/"):
                 original_text = command_text
                 text = command_text
@@ -7640,6 +7676,10 @@ class SlackAdapter(BasePlatformAdapter):
         message).
         """
         slash_name = (command.get("command") or "").lstrip("/").strip()
+        # Strip the optional namespace prefix so /myorg-model -> model and
+        # /myorg-hermes -> hermes before the {"hermes", ""} check and dispatch.
+        if self._command_prefix and slash_name.startswith(self._command_prefix):
+            slash_name = slash_name[len(self._command_prefix) :]
         raw_text = str(command.get("text") or "")
         text = raw_text
         user_id = command.get("user_id", "")

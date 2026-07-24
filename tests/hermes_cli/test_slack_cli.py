@@ -403,3 +403,38 @@ class TestSlackFullManifest:
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "reactions:read" in bot_scopes
         assert "reaction_added" in bot_events
+
+
+class TestSlackManifestWarnings:
+    """`hermes slack manifest` surfaces generation warnings on stderr."""
+
+    def test_over_limit_skip_warning_reaches_stderr(self, monkeypatch, capsys):
+        from hermes_cli import commands as cmds
+        from hermes_cli.slack_cli import slack_manifest_command
+
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"platforms": {"slack": {"extra": {"command_prefix": "myorg-"}}}},
+        )
+        long_name = "x" * 30  # 30 + len("myorg-") = 36 > 32-char Slack limit
+        monkeypatch.setattr(
+            cmds,
+            "slack_native_slashes",
+            lambda prefix="": [("hermes", "d", ""), (long_name, "d", "")],
+        )
+
+        rc = slack_manifest_command(argparse.Namespace(slashes_only=True))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # hermes' CLI logging has no console handler, so the CLI must mirror
+        # the skip warning to stderr itself; stdout stays valid JSON.
+        assert f"myorg-{long_name}" in captured.err
+        assert json.loads(captured.out) == [
+            {
+                "command": "/myorg-hermes",
+                "description": "d",
+                "should_escape": False,
+                "url": "https://hermes-agent.local/slack/commands",
+            }
+        ]

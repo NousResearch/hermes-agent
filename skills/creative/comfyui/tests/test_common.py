@@ -21,6 +21,7 @@ from _common import (
     parse_model_list,
     resolve_url,
     safe_path_join,
+    strip_comment_keys,
     unwrap_workflow,
 )
 
@@ -441,3 +442,59 @@ class TestVideoWorkflow:
 
     def test_wan_workflow(self, video_workflow):
         assert looks_like_video_workflow(video_workflow) is True
+
+
+# =============================================================================
+# Comment-key stripping (regression: ComfyUI 500 on top-level _comment)
+# =============================================================================
+
+class TestStripCommentKeys:
+    def test_removes_underscore_top_level_keys(self):
+        wf = {
+            "_comment": "documentation string",
+            "_meta": {"author": "someone"},
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }
+        cleaned = strip_comment_keys(wf)
+        assert cleaned == {"3": {"class_type": "KSampler", "inputs": {}}}
+
+    def test_preserves_real_nodes_and_nested_meta(self):
+        wf = {
+            "_comment": "doc",
+            "3": {
+                "class_type": "KSampler",
+                "_meta": {"title": "KSampler"},
+                "inputs": {"seed": 1},
+            },
+        }
+        cleaned = strip_comment_keys(wf)
+        # Numeric node ids survive, and node-level _meta (valid ComfyUI) is untouched.
+        assert "3" in cleaned
+        assert cleaned["3"]["_meta"] == {"title": "KSampler"}
+        assert cleaned["3"]["inputs"] == {"seed": 1}
+
+    def test_does_not_mutate_input(self):
+        wf = {"_comment": "doc", "3": {"class_type": "KSampler"}}
+        strip_comment_keys(wf)
+        assert "_comment" in wf  # original untouched
+
+    def test_noop_on_clean_workflow(self, sd15_workflow):
+        cleaned = strip_comment_keys(sd15_workflow)
+        assert cleaned == sd15_workflow
+
+    def test_bundled_workflows_have_no_comment_top_level_key(self, workflows_dir):
+        """Every bundled workflow must submit cleanly to ComfyUI /prompt.
+
+        Invariant over the whole catalog, not just the originally-affected
+        files: no top-level key may start with '_', since ComfyUI calls
+        `.get()` on every top-level value and a string-valued comment key
+        triggers a 500.
+        """
+        import json
+        offenders = {}
+        for wf_path in sorted(workflows_dir.glob("*.json")):
+            data = json.loads(wf_path.read_text())
+            bad = [k for k in data if k.startswith("_")]
+            if bad:
+                offenders[wf_path.name] = bad
+        assert offenders == {}, f"underscore-prefixed top-level keys found: {offenders}"

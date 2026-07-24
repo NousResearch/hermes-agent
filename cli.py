@@ -951,6 +951,9 @@ def get_job(*args, **kwargs):
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from hermes_cli.callbacks import prompt_for_secret
+# Secure secret reference system — intercepts ?/.../? triggers on input,
+# expands [VLT:id] references on output, so the LLM never sees credentials.
+from hermes_cli.valut import sanitize_input as _valut_sanitize, restore_output as _valut_restore
 
 
 def _cleanup_all_terminals(*args, **kwargs):
@@ -2806,6 +2809,7 @@ def _cprint(text: str):
     ``loop.call_soon_threadsafe``, which pauses the input area, prints
     the line above it, and redraws the prompt cleanly.
     """
+    text = _valut_restore(text)
     _record_output_history(text)
 
     try:
@@ -6408,6 +6412,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if app is not None:
                     app.invalidate()
             return
+
+        # Sanitize valut triggers (?/.../?) before the agent sees the text.
+        if isinstance(text, str) and "?/" in text:
+            text = _valut_sanitize(text)
 
         # Regular prompt: route through the same queues the Enter handler uses.
         if self._agent_running:
@@ -13787,17 +13795,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     event.app.invalidate()
                     return
 
-                # Snapshot and clear attached images
                 images = list(self._attached_images)
                 self._attached_images.clear()
                 event.app.invalidate()
+                # Sanitize valut triggers (?/.../?) before the agent sees them.
+                if isinstance(text, str) and "?/" in text:
+                    text = _valut_sanitize(text)
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
+                        # Route Enter through /steer — inject mid-run after the
                     _effective_mode = self.busy_input_mode
                     redirected = False
                     if _effective_mode == "steer":
-                        # Route Enter through /steer — inject mid-run after the
                         # next tool call.  Images can't ride along (steer only
                         # appends text), so fall back to queue when images are
                         # attached.  If the agent lacks steer() or rejects the

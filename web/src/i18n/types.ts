@@ -847,4 +847,27 @@ export interface Translations {
     commentHint?: string;
     commentHintTitle?: string;
   };
+  // ── Agents page ──
+  agents: {
+    title: string;
+    subtitle: string;
+    close: string;
+    running: string;
+    done: string;
+    failed: string;
+    streaming: string;
+    emptyTitle: string;
+    emptyDesc: string;
+    files: string;
+    delegation: (n: number) => string;
+    workers: (n: number) => string;
+    workersActive: (n: number) => string;
+    agentsCount: (n: number) => string;
+    activeCount: (n: number) => string;
+    failedCount: (n: number) => string;
+    toolsCount: (n: number) => string;
+    filesCount: (n: number) => string;
+    updatedAgo: (ago: string) => string;
+    moreFiles: (n: number) => string;
+  };
 }

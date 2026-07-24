@@ -849,4 +849,27 @@ export const en: Translations = {
     commentHintTitle:
       "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input.",
   },
+  agents: {
+    title: "Agents",
+    subtitle: "Active subagents and their status.",
+    close: "Close agents",
+    running: "Running",
+    done: "Done",
+    failed: "Failed",
+    streaming: "Streaming",
+    emptyTitle: "No active subagents",
+    emptyDesc:
+      "Subagents appear here when they are spawned via delegate_task. Dispatch a subagent from a chat session to see it live.",
+    files: "Files",
+    delegation: (n: number) => `Delegation ${n}`,
+    workers: (n: number) => `${n} workers`,
+    workersActive: (n: number) => `${n} active`,
+    agentsCount: (n: number) => `${n} agents`,
+    activeCount: (n: number) => `${n} active`,
+    failedCount: (n: number) => `${n} failed`,
+    toolsCount: (n: number) => `${n} tools`,
+    filesCount: (n: number) => `${n} files`,
+    updatedAgo: (ago: string) => `updated ${ago}`,
+    moreFiles: (n: number) => `+ ${n} more`,
+  },
 };

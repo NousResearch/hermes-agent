@@ -33,7 +33,11 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases,
     normalize_whatsapp_identifier,
 )
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_dir,
+    get_hermes_home,
+)
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -197,11 +201,15 @@ def _merge_pairing_dir(active_dir: Path, alternate_dir: Path) -> None:
             _secure_write(dest, json.dumps(merged, indent=2, ensure_ascii=False))
 
 
-def _migrate_split_pairing_dirs() -> None:
-    home = get_hermes_home()
+def _migrate_split_pairing_dirs(
+    *,
+    home: Optional[Path] = None,
+    active: Optional[Path] = None,
+) -> None:
+    home = home or get_hermes_home()
     old_dir = home / "pairing"
     new_dir = home / "platforms" / "pairing"
-    active = PAIRING_DIR
+    active = active or PAIRING_DIR
     alternate = new_dir if active.resolve() == old_dir.resolve() else old_dir
     _merge_pairing_dir(active, alternate)
 
@@ -241,26 +249,39 @@ class PairingStore:
       - {platform}-approved.json  : approved (paired) users
       - _rate_limits.json         : rate limit tracking
 
-    When constructed with ``profile="<name>"``, storage lives under
-    ``<HERMES_HOME>/profiles/<name>/pairing/`` (per-profile, used by
-    multiplexing gateways so each profile has its own whitelist).
-    Without a profile, storage is the global ``<HERMES_HOME>/pairing/``
-    directory (backward-compat for the ``hermes pairing`` CLI).
+    When constructed with ``profile="<name>"``, storage resolves from that
+    profile's own HERMES_HOME using the same legacy/consolidated layout rules
+    as ``hermes -p <name> pairing ...``. This keeps multiplex gateways and
+    profile-scoped CLI approvals on one whitelist. Without a profile, storage
+    is the global pairing directory for the current HERMES_HOME.
     """
 
     def __init__(self, profile: Optional[str] = None):
         # Resolve storage directory lazily — tests use a temp HERMES_HOME
         # and PairingStore may be constructed before the env is set.
         if profile:
-            from hermes_constants import get_hermes_home
-            self._dir = get_hermes_home() / "profiles" / profile / "pairing"
+            root = get_default_hermes_root()
+            profile_home = (
+                root
+                if profile == "default"
+                else root / "profiles" / profile
+            )
+            self._dir = get_hermes_dir(
+                "platforms/pairing",
+                "pairing",
+                home=profile_home,
+            )
         else:
             self._dir = PAIRING_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
-        if not profile:
+        if profile:
+            # Explicit stores must resolve exactly as a standalone
+            # ``hermes -p <profile> pairing ...`` process does. Merge the
+            # alternate old/new layout so upgrades cannot split approvals.
+            _migrate_split_pairing_dirs(home=profile_home, active=self._dir)
+        else:
             # Heal installs whose global pairing data ended up split across
-            # the legacy and new directories (per-profile stores never had
-            # the legacy/new split).
+            # the legacy and new directories.
             _migrate_split_pairing_dirs()
         # Protects all read-modify-write cycles. The gateway runs multiple
         # platform adapters concurrently in threads sharing one PairingStore.

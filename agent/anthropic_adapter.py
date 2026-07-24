@@ -892,6 +892,32 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
+def build_anthropic_vertex_client(project_id: str, region: str):
+    """Create an AnthropicVertex client for Vertex AI-hosted Claude models.
+
+    Uses ADC (Application Default Credentials) for auth.
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Vertex provider. "
+            "Install it with: pip install 'anthropic[vertex]'"
+        )
+    if not hasattr(_anthropic_sdk, "AnthropicVertex"):
+        raise ImportError(
+            "anthropic.AnthropicVertex not available. "
+            "Install with: pip install 'anthropic[vertex]'"
+        )
+    from httpx import Timeout
+
+    return _anthropic_sdk.AnthropicVertex(
+        project_id=project_id,
+        region=region,
+        timeout=Timeout(timeout=900.0, connect=10.0),
+        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
+    )
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 

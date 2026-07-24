@@ -1488,6 +1488,23 @@ def _resolve_explicit_runtime(
 
             api_key = resolve_anthropic_token()
             if not api_key:
+                vertex_project = (os.environ.get("VERTEX_PROJECT_ID")
+                                  or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+                                  or os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip()
+                if vertex_project:
+                    vertex_region = (os.environ.get("VERTEX_REGION")
+                                     or os.environ.get("CLOUD_ML_REGION") or "global").strip()
+                    return {
+                        "provider": "vertex",
+                        "api_mode": "anthropic_messages",
+                        "base_url": f"https://{vertex_region}-aiplatform.googleapis.com",
+                        "api_key": "vertex-adc-auth",
+                        "source": "env",
+                        "region": vertex_region,
+                        "project_id": vertex_project,
+                        "vertex_anthropic": True,
+                        "requested_provider": requested_provider,
+                    }
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."
@@ -2050,6 +2067,23 @@ def resolve_runtime_provider(
             from agent.anthropic_adapter import resolve_anthropic_token
             token = resolve_anthropic_token()
             if not token:
+                vertex_project = (os.environ.get("VERTEX_PROJECT_ID")
+                                  or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+                                  or os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip()
+                if vertex_project:
+                    vertex_region = (os.environ.get("VERTEX_REGION")
+                                     or os.environ.get("CLOUD_ML_REGION") or "global").strip()
+                    return {
+                        "provider": "vertex",
+                        "api_mode": "anthropic_messages",
+                        "base_url": f"https://{vertex_region}-aiplatform.googleapis.com",
+                        "api_key": "vertex-adc-auth",
+                        "source": "env",
+                        "region": vertex_region,
+                        "project_id": vertex_project,
+                        "vertex_anthropic": True,
+                        "requested_provider": requested_provider,
+                    }
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."
@@ -2139,6 +2173,33 @@ def resolve_runtime_provider(
         if guardrail_config:
             runtime["guardrail_config"] = guardrail_config
         return runtime
+
+    # Google Cloud Vertex AI (AnthropicVertex SDK via ADC)
+    if provider in {"vertex", "vertex-ai", "google-vertex"}:
+        project_id = (os.environ.get("VERTEX_PROJECT_ID")
+                      or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+                      or os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip()
+        region = (os.environ.get("VERTEX_REGION")
+                  or os.environ.get("CLOUD_ML_REGION") or "global").strip()
+        if not project_id:
+            raise AuthError(
+                "No GCP project found for Vertex AI. Set one of:\n"
+                "  - VERTEX_PROJECT_ID\n"
+                "  - ANTHROPIC_VERTEX_PROJECT_ID\n"
+                "  - GOOGLE_CLOUD_PROJECT\n",
+                code="no_vertex_credentials",
+            )
+        return {
+            "provider": "vertex",
+            "api_mode": "anthropic_messages",
+            "base_url": f"https://{region}-aiplatform.googleapis.com",
+            "api_key": "vertex-adc-auth",
+            "source": "env",
+            "region": region,
+            "project_id": project_id,
+            "vertex_anthropic": True,
+            "requested_provider": requested_provider,
+        }
 
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)

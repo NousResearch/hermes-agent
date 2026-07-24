@@ -1177,10 +1177,11 @@ def test_references_parallel_interrupt_aborts_wait(monkeypatch):
         release_wedged.set()  # don't leak a blocked thread past the test
 
 
-def _ref_config(home):
+def _ref_config(home, fanout: str | None = None):
     home.mkdir()
+    fanout_line = f"\n      fanout: {fanout}" if fanout else ""
     (home / "config.yaml").write_text(
-        """
+        f"""
 moa:
   default_preset: review
   presets:
@@ -1192,7 +1193,7 @@ moa:
           model: anthropic/claude-opus-4.8
       aggregator:
         provider: openrouter
-        model: anthropic/claude-opus-4.8
+        model: anthropic/claude-opus-4.8{fanout_line}
 """.strip(),
         encoding="utf-8",
     )
@@ -1234,13 +1235,15 @@ def test_moa_facade_emits_reference_then_aggregating(monkeypatch, tmp_path):
 def test_moa_facade_reruns_references_on_new_tool_result(monkeypatch, tmp_path):
     """References re-run when a new tool result advances the task state.
 
-    The agent loop calls create() once per tool-loop iteration. References must
-    judge the LATEST state, so a new tool result is a cache MISS and re-runs the
-    references — but a redundant create() call with the SAME state is a cache
-    HIT (no re-run, no re-emit), so we don't fire on a pure no-op re-call.
+    Pins fanout: per_iteration explicitly (the default became user_turn,
+    #67199). In this mode the agent loop calls create() once per tool-loop
+    iteration and references must judge the LATEST state, so a new tool
+    result is a cache MISS and re-runs the references — but a redundant
+    create() call with the SAME state is a cache HIT (no re-run, no
+    re-emit), so we don't fire on a pure no-op re-call.
     """
     home = tmp_path / ".hermes"
-    _ref_config(home)
+    _ref_config(home, fanout="per_iteration")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     ref_runs = []

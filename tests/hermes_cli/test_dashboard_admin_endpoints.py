@@ -7,6 +7,8 @@ contract and the CLI-config parity (servers/keys written via the API are
 visible to the CLI data layer), not specific catalog values.
 """
 
+import os
+
 import pytest
 
 
@@ -1413,3 +1415,25 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     assert "_HERMES_GATEWAY" not in captured["env"]
     assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"
+
+
+def test_spawn_update_identifies_dashboard_supervisor(monkeypatch, tmp_path):
+    """The detached updater may ignore the dashboard that intentionally
+    launched it, without suppressing detection of other venv processes."""
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    ws._spawn_hermes_action(["update"], "hermes-update")
+
+    assert captured["env"]["_HERMES_UPDATE_SUPERVISOR_PID"] == str(os.getpid())

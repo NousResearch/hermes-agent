@@ -3828,6 +3828,11 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     # drops it (gateway/run.py); mirror that here (#52470).
     action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
     action_env.pop("_HERMES_GATEWAY", None)
+    if subcommand[:1] == ["update"]:
+        # The dashboard intentionally remains alive while its detached updater
+        # starts. Identify that one supervisor so the venv-holder guard does
+        # not reject the dashboard's own update request.
+        action_env["_HERMES_UPDATE_SUPERVISOR_PID"] = str(os.getpid())
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),

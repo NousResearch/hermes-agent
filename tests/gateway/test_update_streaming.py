@@ -210,10 +210,11 @@ class TestUpdateCommandGatewayFlag:
     """Verify the gateway spawns hermes update --gateway."""
 
     @pytest.mark.asyncio
-    async def test_spawns_with_gateway_flag(self, tmp_path):
+    async def test_spawns_with_gateway_flag(self, tmp_path, monkeypatch):
         """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
         runner = _make_runner()
         event = _make_event()
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -238,6 +239,14 @@ class TestUpdateCommandGatewayFlag:
         assert "PYTHONUNBUFFERED" in cmd_string
         assert "rc=$?" in cmd_string
         assert "status=$?" not in cmd_string
+        assert mock_popen.call_args.kwargs["env"][
+            "_HERMES_UPDATE_SUPERVISOR_PID"
+        ] == str(os.getpid())
+        assert "_HERMES_GATEWAY" not in mock_popen.call_args.kwargs["env"]
+        # The external setsid executable performs the detach. Passing
+        # start_new_session here as well can make setsid fork and reparent the
+        # updater, breaking supervisor ancestry validation.
+        assert "start_new_session" not in mock_popen.call_args.kwargs
         assert "stream progress" in result
 
 

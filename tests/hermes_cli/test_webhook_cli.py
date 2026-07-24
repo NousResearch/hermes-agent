@@ -65,6 +65,8 @@ class TestSubscribe:
         out = capsys.readouterr().out
         assert "Created" in out
         assert "/webhooks/test-hook" in out
+        assert "HMAC-SHA256 signature validation when supported" in out
+        assert "Authorization: Bearer " in out
         subs = _load_subscriptions()
         assert "test-hook" in subs
 
@@ -91,11 +93,13 @@ class TestSubscribe:
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
 
-    def test_script_option_is_persisted(self):
+    def test_script_option_is_persisted_and_displayed(self, capsys):
         webhook_command(_make_args(
             webhook_action="subscribe", name="s", script="todoist_filter.py"
         ))
+        out = capsys.readouterr().out
         assert _load_subscriptions()["s"]["script"] == "todoist_filter.py"
+        assert "Script: todoist_filter.py" in out
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))

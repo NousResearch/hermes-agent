@@ -8,7 +8,7 @@ source or to another configured platform.
 Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
-  - secret: HMAC secret for signature validation (REQUIRED)
+  - secret: webhook secret for signature or token validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
@@ -19,7 +19,7 @@ Each route defines:
     and sub-second delivery matter more than agent reasoning.
 
 Security:
-  - HMAC secret is required per route (validated at startup)
+  - A webhook secret is required per route (validated at startup)
   - Rate limiting per route (fixed-window, configurable)
   - Idempotency cache prevents duplicate agent runs on webhook retries
   - Body size limits checked before reading payload
@@ -134,9 +134,14 @@ def _hmac_str_equal(provided: str, expected: str) -> bool:
     webhook endpoint, so a single non-ASCII byte would otherwise raise out of
     the request handler and return a 500 instead of rejecting the request.
     Comparing as UTF-8 bytes keeps the constant-time guarantee while making a
-    hostile header fail closed with a clean rejection.
+    hostile header fail closed with a clean rejection. ``aiohttp`` decodes raw
+    non-UTF-8 header bytes with ``surrogateescape``; ``surrogatepass`` keeps the
+    conversion total for those attacker-controlled values instead of raising.
     """
-    return hmac.compare_digest(provided.encode(), expected.encode())
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
 
 
 def check_webhook_requirements() -> bool:
@@ -224,7 +229,7 @@ class WebhookAdapter(BasePlatformAdapter):
             secret = route.get("secret", self._global_secret)
             if not secret:
                 raise ValueError(
-                    f"[webhook] Route '{name}' has no HMAC secret. "
+                    f"[webhook] Route '{name}' has no webhook secret. "
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
@@ -465,7 +470,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 if not effective_secret:
                     logger.warning(
                         "[webhook] Dynamic route '%s' skipped: 'secret' is "
-                        "missing or empty. Set a valid HMAC secret, or use "
+                        "missing or empty. Set a valid webhook secret, or use "
                         "'%s' to explicitly disable auth (testing only).",
                         k,
                         _INSECURE_NO_AUTH,
@@ -586,11 +591,11 @@ class WebhookAdapter(BasePlatformAdapter):
         secret = route_config.get("secret", self._global_secret)
         if not secret:
             logger.error(
-                "[webhook] Route %s has no HMAC secret; refusing request",
+                "[webhook] Route %s has no webhook secret; refusing request",
                 route_name,
             )
             return web.json_response(
-                {"error": "Webhook route is missing an HMAC secret"},
+                {"error": "Webhook route is missing a webhook secret"},
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:
@@ -957,7 +962,16 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook auth/signature headers.
+
+        Supported formats:
+        - Svix/AgentMail: svix-id + svix-timestamp + svix-signature
+        - GitHub: X-Hub-Signature-256 = sha256=<hex HMAC-SHA256>
+        - GitLab: X-Gitlab-Token = <plain secret>
+        - Generic V2: X-Webhook-Signature-V2 + X-Webhook-Timestamp
+        - Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256>
+        - Bearer: Authorization = Bearer <plain secret>
+        """
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -1063,9 +1077,15 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
             return _hmac_str_equal(generic_sig, expected)
 
-        # No recognised signature header but secret is configured → reject
+        # Bearer token: Authorization = Bearer <plain secret>
+        auth_header = request.headers.get("Authorization", "")
+        auth_scheme, _, auth_token = auth_header.partition(" ")
+        if auth_scheme.lower() == "bearer" and auth_token:
+            return _hmac_str_equal(auth_token.strip(), secret)
+
+        # No recognised signature/auth header but secret is configured → reject
         logger.debug(
-            "[webhook] Secret configured but no signature header found"
+            "[webhook] Secret configured but no signature/auth header found"
         )
         return False
 

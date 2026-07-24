@@ -323,7 +323,7 @@ Manage dynamic [webhook subscriptions](/user-guide/messaging/webhooks). The
 webhook platform must be enabled in messaging settings first; the page shows a
 hint when it isn't.
 
-- **Create** — name, description, event filter, delivery target, optional direct-delivery mode, and an agent prompt. On creation the page surfaces the route URL and the one-time HMAC secret to copy.
+- **Create** — name, description, event filter, delivery target, optional direct-delivery mode, and an agent prompt. On creation the page surfaces the route URL, the one-time route secret, and a ready-to-copy bearer authorization header for providers that cannot sign payloads with HMAC.
 - **Enable / disable** — toggle a subscription on or off. Disabled routes stay in the subscriptions file but the gateway rejects their incoming events (403). The gateway hot-reloads the file, so the change takes effect on the next event — no restart needed.
 - **List** — each subscription shows its URL, events, and delivery target
 - **Delete** — remove a subscription

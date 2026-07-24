@@ -27,6 +27,7 @@ function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerC
           level: 0,
           muted: false,
           onEnd: vi.fn(),
+          onInterruptResponse: vi.fn(),
           onStart: vi.fn(),
           onStopTurn: vi.fn(),
           onToggleMute: vi.fn(),

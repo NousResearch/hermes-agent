@@ -9420,6 +9420,36 @@ def _(rid, params: dict) -> dict:
             removed += 1
         if removed:
             session["history_version"] = int(session.get("history_version", 0)) + 1
+            # Persist the truncation so it survives a resume.  The session DB
+            # is append-only — run_agent flushes turns via append_message and
+            # never deletes rows — so mutating only the in-memory history would
+            # let memory and DB diverge.  On session.resume the gateway rebuilds
+            # the transcript straight from the DB (get_messages_as_conversation),
+            # which would resurrect the discarded exchange and silently revert
+            # the /undo.  /retry is worse: it re-sends the last user message on
+            # top of an in-memory history the DB still records as holding the
+            # old failed turn.  Mirror prompt.submit's truncate path and commit
+            # the delete+reinsert atomically via replace_messages.
+            session_key = session.get("session_key") or ""
+            if session_key and (db := _get_db()) is not None:
+                try:
+                    db.replace_messages(session_key, history)
+                except Exception as exc:
+                    print(
+                        f"[tui_gateway] session.undo: replace_messages failed: {exc}",
+                        file=sys.stderr,
+                    )
+            # Realign the agent's persistence watermark to the now-shorter
+            # history.  Otherwise the next turn flushes from the stale, larger
+            # index (run_agent: flush_from = max(len(history), _last_flushed_db_idx))
+            # and skips re-persisting rows.  This is the same reset the slash
+            # /undo handler performs after rewinding.
+            agent = session.get("agent")
+            if agent is not None and hasattr(agent, "_last_flushed_db_idx"):
+                try:
+                    agent._last_flushed_db_idx = len(history)
+                except Exception:
+                    pass
     return _ok(rid, {"removed": removed})
 
 

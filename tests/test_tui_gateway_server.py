@@ -7482,6 +7482,78 @@ def test_session_undo_allowed_when_idle():
         server._sessions.pop("sid", None)
 
 
+def test_session_undo_persists_truncation_to_db(monkeypatch):
+    """session.undo must persist the truncated transcript to the DB and
+    realign the agent watermark.  The session DB is append-only, so an
+    in-memory-only undo would resurrect the discarded exchange on resume
+    (and misalign the next turn's persistence index)."""
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+    agent = types.SimpleNamespace(_last_flushed_db_idx=4)
+    server._sessions["sid"] = _session(
+        agent=agent,
+        running=False,
+        history=[
+            {"role": "user", "content": "keep me"},
+            {"role": "assistant", "content": "kept reply"},
+            {"role": "user", "content": "undo me"},
+            {"role": "assistant", "content": "bad reply"},
+        ],
+    )
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert resp["result"]["removed"] == 2
+        remaining = [
+            {"role": "user", "content": "keep me"},
+            {"role": "assistant", "content": "kept reply"},
+        ]
+        assert server._sessions["sid"]["history"] == remaining
+        # The DB was rewritten to match the truncated in-memory history.
+        assert stub_db.replaced == [("session-key", remaining)]
+        # The persistence watermark was realigned to the shorter history so
+        # the next turn appends from the correct index.
+        assert agent._last_flushed_db_idx == len(remaining)
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_undo_skips_db_when_nothing_removed(monkeypatch):
+    """A no-op /undo (empty history) must not touch the DB or watermark."""
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+    agent = types.SimpleNamespace(_last_flushed_db_idx=7)
+    server._sessions["sid"] = _session(agent=agent, running=False, history=[])
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert resp["result"]["removed"] == 0
+        assert stub_db.replaced == []
+        assert agent._last_flushed_db_idx == 7
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_session_compress_rejects_while_running(monkeypatch):
     server._sessions["sid"] = _session(running=True)
     try:

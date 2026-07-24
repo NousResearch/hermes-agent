@@ -178,7 +178,7 @@ class TestRunOneJobHonoursInterruptedFlag:
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
-                 return_value=(True, "full output", "final response", None),
+                 return_value=(True, "full output", "final response", None, None),
              ), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._is_cron_silence_response", return_value=False), \
@@ -213,7 +213,7 @@ class TestRunOneJobHonoursInterruptedFlag:
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
-                 return_value=(True, "full output", "a plausible final response", None),
+                 return_value=(True, "full output", "a plausible final response", None, None),
              ), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch(
@@ -247,7 +247,7 @@ class TestRunOneJobHonoursInterruptedFlag:
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
-                 return_value=(True, "full output", "final response", None),
+                 return_value=(True, "full output", "final response", None, None),
              ), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._is_cron_silence_response", return_value=False), \

@@ -21,7 +21,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
     def fake_run_job(job, *, defer_agent_teardown=None):
         calls.append(("run_job", job["id"]))
         fr = final if silent_marker_in is None else silent_marker_in
-        return (success, output, fr, error)
+        return (success, output, fr, error, None)
 
     def fake_save(jid, out):
         calls.append(("save", jid))
@@ -31,7 +31,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
+    def fake_mark(jid, ok, err=None, delivery_error=None, run_metadata=None):
         calls.append(("mark", jid, ok))
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
@@ -141,7 +141,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         # scope is installed and the profile's secret resolves without raising.
         scope_during_run["scope"] = ss.current_secret_scope()
         scope_during_run["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
-        return (True, "out", "final", None)
+        return (True, "out", "final", None, None)
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
@@ -182,7 +182,7 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
         # caller tears it down after delivery instead of in run_job's finally.
         assert defer_agent_teardown is not None, "run_one_job must defer teardown"
         defer_agent_teardown.append(FakeAgent())
-        return (True, "out", "final response", None)
+        return (True, "out", "final response", None, None)
 
     def fake_deliver(job, content, adapters=None, loop=None):
         order.append("deliver")
@@ -217,7 +217,7 @@ def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch)
 
     def fake_run_job(job, *, defer_agent_teardown=None):
         defer_agent_teardown.append(FakeAgent())
-        return (True, "out", "final response", None)
+        return (True, "out", "final response", None, None)
 
     def boom_deliver(job, content, adapters=None, loop=None):
         order.append("deliver-raise")
@@ -252,7 +252,7 @@ def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
 
     def fake_run_job(job, *, defer_agent_teardown=None):
         defer_agent_teardown.append(FakeAgent())
-        return (True, "out", "final response", None)
+        return (True, "out", "final response", None, None)
 
     def boom_save(jid, out):
         order.append("save-raise")

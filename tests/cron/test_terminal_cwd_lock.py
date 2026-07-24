@@ -170,7 +170,7 @@ def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):
          patch("hermes_state.SessionDB", return_value=MagicMock()):
         # run_job catches its own body exceptions and returns (False, ...);
         # it must not propagate, and it must release the lock either way.
-        success, _out, _final, _err = sched.run_job(job)
+        success, _out, _final, _err, _ = sched.run_job(job)
 
     assert success is False
 

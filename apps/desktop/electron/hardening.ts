@@ -112,6 +112,7 @@ function sensitiveFileBlockReason(filePath) {
 
 function ipcPathError(code: any, message: string): Error & { code: any } {
   const error = new Error(message) as Error & { code: any }
+
   ;(error as any).code = code
 
   return error

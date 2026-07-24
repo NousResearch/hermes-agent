@@ -21,6 +21,11 @@ from tools.skill_manager_tool import (
     skill_manage,
     MAX_NAME_LENGTH,
 )
+from agent.skill_utils import (
+    extract_skill_description,
+    parse_frontmatter,
+    SKILL_PROMPT_DESC_LIMIT,
+)
 
 
 @contextmanager
@@ -52,6 +57,17 @@ description: Updated description.
 # Test Skill v2
 
 Step 1: Do the new thing.
+"""
+
+LONG_DESC_CONTENT = """\
+---
+name: long-desc
+description: Use when deploying multi-region Kubernetes clusters with custom CNI plugins and service mesh.
+---
+
+# Long Desc Skill
+
+Step 1.
 """
 
 
@@ -259,6 +275,37 @@ class TestCreateSkill:
         assert f"Invalid category '{outside}'" in result["error"]
         assert not (outside / "my-skill" / "SKILL.md").exists()
 
+    def test_create_long_desc_includes_prompt_preview(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _create_skill("long-desc", LONG_DESC_CONTENT)
+        assert result["success"] is True
+        assert "system_prompt_preview" in result
+        assert "System prompt will show" in result["system_prompt_preview"]
+        fm, _ = parse_frontmatter(LONG_DESC_CONTENT)
+        assert extract_skill_description(fm) in result["system_prompt_preview"]
+
+    def test_create_short_desc_no_prompt_preview(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+        assert "system_prompt_preview" not in result
+
+    def test_create_boundary_at_limit_no_preview(self, tmp_path):
+        desc = "U" * SKILL_PROMPT_DESC_LIMIT
+        content = f"---\nname: boundary-at\ndescription: {desc}\n---\n\n# Boundary\n\nStep 1.\n"
+        with _skill_dir(tmp_path):
+            result = _create_skill("boundary-at", content)
+        assert result["success"] is True
+        assert "system_prompt_preview" not in result
+
+    def test_create_boundary_over_limit_has_preview(self, tmp_path):
+        desc = "U" * (SKILL_PROMPT_DESC_LIMIT + 1)
+        content = f"---\nname: boundary-over\ndescription: {desc}\n---\n\n# Boundary\n\nStep 1.\n"
+        with _skill_dir(tmp_path):
+            result = _create_skill("boundary-over", content)
+        assert result["success"] is True
+        assert "system_prompt_preview" in result
+
 
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):
@@ -283,6 +330,14 @@ class TestEditSkill:
         # Original content should be preserved
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
+
+    def test_edit_long_desc_includes_prompt_preview(self, tmp_path):
+        edit_content = LONG_DESC_CONTENT.replace("name: long-desc", "name: test-skill")
+        with _skill_dir(tmp_path):
+            _create_skill("test-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("test-skill", edit_content)
+        assert result["success"] is True
+        assert "system_prompt_preview" in result
 
 
 class TestPatchSkill:
@@ -976,6 +1031,81 @@ class TestExternalSkillMutations:
         result = json.loads(raw)
         assert result["success"] is True
 
+    def test_background_review_refuses_manually_authored_skill(self, tmp_path):
+        """The curator must not archive/edit skills the user placed manually
+        (created_by=None). Only agent-created skills are eligible for
+        autonomous curation."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "manual-skill" / "SKILL.md")
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={"manual-skill": {"created_by": None, "use_count": 50}},
+                ), patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"created_by": None, "use_count": 50} if n == "manual-skill" else {},
+                ):
+                    raw = skill_manage(
+                        action="delete",
+                        name="manual-skill",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "manually authored" in result["error"].lower()
+
+    def test_background_review_allows_agent_created_skill(self, tmp_path):
+        """Agent-created skills (created_by='agent') are NOT blocked by the
+        manual-skill guard — they remain eligible for autonomous curation."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("agent-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "agent-skill" / "SKILL.md")
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={"agent-skill": {"created_by": "agent", "use_count": 5}},
+                ), patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"created_by": "agent", "use_count": 5} if n == "agent-skill" else {},
+                ), patch(
+                    "tools.skill_usage.is_curation_eligible", return_value=True,
+                ), patch(
+                    "tools.skill_usage.archive_skill", return_value=(True, "archived"),
+                ):
+                    raw = skill_manage(
+                        action="delete",
+                        name="agent-skill",
+                        absorbed_into="umbrella",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        # Should not be blocked by the manual-skill guard (may be blocked by
+        # the consolidation-delete guard if absorbed_into is empty, but the
+        # manual-skill guard must not fire).
+        assert "manually authored" not in result.get("error", "").lower()
 
 
 # ---------------------------------------------------------------------------

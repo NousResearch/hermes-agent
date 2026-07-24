@@ -11,7 +11,13 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_pool import (
+    CredentialPool,
+    PooledCredential,
+    credential_pool_matches_provider,
+    get_custom_provider_pool_key,
+    load_pool,
+)
 from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     AuthError,
@@ -311,13 +317,24 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return normalized_configured == normalized_provider
 
 
-def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
+def _copilot_runtime_api_mode(
+    model_cfg: Dict[str, Any],
+    api_key: str,
+    *,
+    target_model: Optional[str] = None,
+) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
     if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
         return configured_mode
 
-    model_name = str(model_cfg.get("default") or "").strip()
+    # Use the model being resolved for this runtime, not the persisted global
+    # default. MoA slots, fallback models, and mid-session model switches all
+    # resolve credentials for a target model that can differ from config.yaml's
+    # model.default. If we derive Copilot api_mode from the stale default, a
+    # Claude/Gemini MoA slot can inherit codex_responses from a GPT-5 default and
+    # fail with "model ... does not support Responses API".
+    model_name = str(target_model or model_cfg.get("default") or "").strip()
     if not model_name:
         return "chat_completions"
 
@@ -443,7 +460,11 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "chat_completions"
         base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        api_mode = _copilot_runtime_api_mode(
+            model_cfg,
+            getattr(entry, "runtime_api_key", ""),
+            target_model=effective_model,
+        )
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
@@ -653,8 +674,15 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
     if isinstance(providers, dict):
+        from hermes_cli.config import is_provider_enabled
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
+                continue
+            # Skip providers the user explicitly disabled via
+            # ``providers.<name>.enabled: false``. They remain in config
+            # so re-enabling is a one-line edit, but the resolver pretends
+            # they're not configured.
+            if not is_provider_enabled(entry):
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
@@ -1358,6 +1386,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1480,7 +1509,11 @@ def _resolve_explicit_runtime(
 
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+            api_mode = _copilot_runtime_api_mode(
+                model_cfg,
+                api_key,
+                target_model=target_model,
+            )
         elif provider == "xai":
             api_mode = "codex_responses"
         else:
@@ -1524,6 +1557,27 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+
+    # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
+    # custom providers and the built-in ones (openai / anthropic /
+    # openrouter / gemini / ...). The earlier ``_get_named_custom_provider``
+    # gate only covers custom blocks — built-in resolution paths
+    # (``resolve_provider`` + pool / explicit / generic runtime) walk
+    # their own short-circuits and would otherwise return stale config
+    # for a provider the user explicitly turned off.
+    #
+    # Fail fast with a typed error so the fallback chain can advance to
+    # the next provider instead of using a disabled one.
+    from hermes_cli.config import is_provider_enabled, load_config
+    _full_cfg = load_config()
+    _provs_cfg = _full_cfg.get("providers") if isinstance(_full_cfg, dict) else None
+    if isinstance(_provs_cfg, dict):
+        _block = _provs_cfg.get(requested_provider)
+        if isinstance(_block, dict) and not is_provider_enabled(_block):
+            raise ValueError(
+                f"provider {requested_provider!r} is disabled in config "
+                f"(providers.{requested_provider}.enabled: false)"
+            )
 
     if requested_provider == "moa":
         return {
@@ -1592,7 +1646,7 @@ def resolve_runtime_provider(
                 "in ~/.hermes/.env, or run 'gcloud auth application-default "
                 "login' for ADC. Set the GCP project/region under vertex: in "
                 "config.yaml if they aren't embedded in the credentials. "
-                "Install the extra with: pip install 'hermes-agent[vertex]'."
+                "Run `hermes setup` to install Vertex support."
             )
         return {
             "provider": "vertex",
@@ -1661,6 +1715,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -1731,7 +1786,19 @@ def resolve_runtime_provider(
                 if not pool_api_key or not _agent_key_is_usable(nous_state, min_ttl):
                     logger.debug("Nous pool entry agent_key still unavailable, falling through to runtime resolution")
                     pool_api_key = ""
-        if entry is not None and pool_api_key:
+        if (
+            entry is not None
+            and pool_api_key
+            and credential_pool_matches_provider(
+                pool,
+                provider,
+                base_url=(
+                    getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or ""
+                ),
+            )
+        ):
             return _resolve_runtime_from_pool_entry(
                 provider=provider,
                 entry=entry,
@@ -1957,8 +2024,15 @@ def resolve_runtime_provider(
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
         # feature parity (prompt caching, thinking budgets, adaptive thinking).
         # Non-Claude models use the Converse API for multi-model support.
+        #
+        # Exception: Bearer Token auth (AWS_BEARER_TOKEN_BEDROCK) is NOT
+        # supported by the AnthropicBedrock SDK (it only does SigV4 signing —
+        # a bearer-only setup fails at runtime with "could not resolve
+        # credentials from session"). Route these users through the Converse
+        # API regardless of model. Ref: #28156.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
-        if is_anthropic_bedrock_model(_current_model):
+        _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
+        if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",
@@ -1989,6 +2063,20 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        # An explicitly selected API-key provider is authoritative. Returning
+        # a runtime with an empty key defers failure until the first request and
+        # can make a later fallback look like a silent provider switch. Fail at
+        # resolution so callers surface the missing credential (or consult only
+        # an explicitly configured fallback chain). LM Studio's no-auth path
+        # supplies a non-empty placeholder in the credential resolver above.
+        if not has_usable_secret(creds.get("api_key")):
+            env_names = ", ".join(pconfig.api_key_env_vars)
+            hint = f" Set {env_names}." if env_names else ""
+            raise AuthError(
+                f"No usable credentials found for provider '{provider}'.{hint}",
+                provider=provider,
+                code="missing_api_key",
+            )
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
@@ -2000,7 +2088,11 @@ def resolve_runtime_provider(
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+            api_mode = _copilot_runtime_api_mode(
+                model_cfg,
+                creds.get("api_key", ""),
+                target_model=target_model,
+            )
         elif provider == "xai":
             api_mode = "codex_responses"
         else:

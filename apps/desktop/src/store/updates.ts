@@ -91,7 +91,9 @@ function isUpdateToastSnoozed(): boolean {
 // against. The backend reports its own value in session runtime info; a lower
 // value (or none — a pre-GUI checkout) means GUI<->backend skew.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
-const REQUIRED_BACKEND_CONTRACT = 2
+// v3: requires approvals.mode config RPCs and session.info reconciliation.
+// v4: requires explicit Fast-off session creation and session-scoped Fast edits.
+const REQUIRED_BACKEND_CONTRACT = 4
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even

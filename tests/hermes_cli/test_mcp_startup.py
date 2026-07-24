@@ -222,3 +222,76 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def _retry_logger():
+    return types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda *_a, **_k: None,
+    )
+
+
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
+            get_mcp_status=lambda: [{"connected": connected}],
+        ),
+    )
+
+
+def test_background_discovery_retries_after_dead_thread_with_zero_connected(monkeypatch):
+    """A finished discovery run that connected nothing must not pin the
+    process in a 'discovery already started' state: the next call should be
+    allowed to retry (e.g. after startup cancellation or an OOM restart)."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls)
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-retry-1"
+    )
+    thread = mcp_startup._mcp_discovery_thread
+    if thread is not None:
+        thread.join(timeout=1.0)
+    assert calls["mcp"] == 1
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-retry-2"
+    )
+    thread = mcp_startup._mcp_discovery_thread
+    if thread is not None:
+        thread.join(timeout=1.0)
+    assert calls["mcp"] == 2
+
+
+def test_background_discovery_does_not_retry_when_servers_connected(monkeypatch):
+    """Once at least one MCP server is connected, repeat calls stay no-ops."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=True, calls=calls)
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-noretry-1"
+    )
+    thread = mcp_startup._mcp_discovery_thread
+    if thread is not None:
+        thread.join(timeout=1.0)
+    assert calls["mcp"] == 1
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-noretry-2"
+    )
+    assert calls["mcp"] == 1

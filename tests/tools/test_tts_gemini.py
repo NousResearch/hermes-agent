@@ -115,6 +115,19 @@ class TestGenerateGeminiTts:
         # Audio payload should match the PCM we put in
         assert data[44:] == fake_pcm_bytes
 
+    def test_x_goog_api_client_header_is_set(self, tmp_path, monkeypatch, mock_gemini_response):
+        """Gemini TTS requests should include Hermes client context."""
+        from hermes_cli import __version__
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        headers = mock_post.call_args[1]["headers"]
+        assert headers["X-Goog-Api-Client"] == f"hermes-agent/{__version__}"
+
     def test_default_voice_and_model(self, tmp_path, monkeypatch, mock_gemini_response):
         from tools.tts_tool import (
             DEFAULT_GEMINI_TTS_MODEL,
@@ -255,6 +268,22 @@ class TestGenerateGeminiTts:
             _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
 
         assert mock_post.call_args[0][0].startswith("https://custom-gemini.example.com/v1beta/")
+        assert "X-Goog-Api-Client" not in mock_post.call_args[1]["headers"]
+
+    def test_lookalike_base_url_omits_client_context(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        lookalike = "https://generativelanguage.googleapis.com.evil.example/v1beta"
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("GEMINI_BASE_URL", lookalike)
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        assert mock_post.call_args[0][0].startswith(f"{lookalike}/")
+        assert "X-Goog-Api-Client" not in mock_post.call_args[1]["headers"]
 
     def test_persona_prompt_file_appends_labeled_transcript(
         self, tmp_path, monkeypatch, mock_gemini_response
@@ -447,5 +476,8 @@ class TestGeminiInCheckRequirements:
                 raise ImportError("simulated")
             return real_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=fake_import):
+        with patch(
+            "tools.tts_tool._load_tts_config",
+            return_value={"provider": "gemini"},
+        ), patch("builtins.__import__", side_effect=fake_import):
             assert check_tts_requirements() is True

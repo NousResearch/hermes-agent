@@ -69,15 +69,21 @@ def _ensure_telegram_mock() -> None:
     mod.constants.ChatType.SUPERGROUP = "supergroup"
     mod.constants.ChatType.CHANNEL = "channel"
 
-    # Real exception classes so ``except (NetworkError, ...)`` clauses
-    # in production code don't blow up with TypeError.
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-    mod.error.Forbidden = type("Forbidden", (Exception,), {})
-    mod.error.InvalidToken = type("InvalidToken", (Exception,), {})
-    mod.error.RetryAfter = type("RetryAfter", (Exception,), {"retry_after": 1})
-    mod.error.Conflict = type("Conflict", (Exception,), {})
+    # Mirror PTB's exception hierarchy: BadRequest is a semantic API error,
+    # but inherits from NetworkError in python-telegram-bot 22.x.
+    mod.error.TelegramError = type("TelegramError", (Exception,), {})
+    mod.error.NetworkError = type("NetworkError", (mod.error.TelegramError,), {})
+    mod.error.TimedOut = type("TimedOut", (mod.error.NetworkError,), {})
+    mod.error.BadRequest = type("BadRequest", (mod.error.NetworkError,), {})
+    mod.error.Forbidden = type("Forbidden", (mod.error.TelegramError,), {})
+    mod.error.InvalidToken = type("InvalidToken", (mod.error.TelegramError,), {})
+
+    class RetryAfter(mod.error.TelegramError):
+        def __init__(self, retry_after=1):
+            self.retry_after = retry_after
+
+    mod.error.RetryAfter = RetryAfter
+    mod.error.Conflict = type("Conflict", (mod.error.TelegramError,), {})
 
     # Update.ALL_TYPES used in start_polling()
     mod.Update.ALL_TYPES = []

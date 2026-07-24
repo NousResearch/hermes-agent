@@ -95,7 +95,7 @@ hermes skills install official/research/arxiv
 # Install from the hub in a chat session
 /skills install official/creative/songwriting-and-ai-music
 
-# Install a single-file SKILL.md directly from any HTTP(S) URL
+# Install SKILL.md and its referenced support files from an HTTP(S) URL
 hermes skills install https://sharethis.chat/SKILL.md
 /skills install https://example.com/SKILL.md --name my-skill
 ```
@@ -162,7 +162,7 @@ Manage skill config from the CLI:
 hermes skills config gif-search
 
 # View all skill config
-hermes config show | grep '^skills\.config'
+hermes config get skills.config --json
 ```
 
 ---

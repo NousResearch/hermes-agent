@@ -10,7 +10,7 @@ Design notes
 ------------
 * ``schtasks /Create /SC ONLOGON /RL LIMITED`` means the task runs at the
   CURRENT USER's next logon without any elevation prompt. Manual starts and
-  install ``--start-now`` use the direct detached ``pythonw`` launcher instead
+  install ``--start-now`` use the direct hidden-console launcher instead
   of ``schtasks /Run`` so start/restart behavior is consistent.
 * We write a shared ``gateway.cmd`` wrapper plus a console-less ``gateway.vbs``
   launcher. Scheduled Task and Startup-folder persistence both route through
@@ -208,9 +208,14 @@ def _current_profile_cli_args() -> list[str]:
 def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None = None) -> bool:
     """Launch an elevated gateway subcommand via UAC and return True on handoff.
 
-    Use pythonw.exe for the elevated child so approving UAC does not leave a
-    second elevated console window sitting open after the handoff. All operator
-    decisions are already collected in the parent shell before this point.
+    The elevated child is the console ``python.exe`` launched with
+    ``SW_HIDE``: ShellExecuteW applies the show-command to a console app's
+    console window, so the child owns a single *hidden* console that its own
+    subprocess spawns (schtasks, taskkill, …) inherit — no visible window
+    after the UAC approval, and no per-descendant conhost flashes (the
+    console-less pythonw.exe alternative re-created #54220/#56747 for every
+    console-subsystem child). All operator decisions are already collected in
+    the parent shell before this point.
     """
     _assert_windows()
     args = ["-m", "hermes_cli.main", *_current_profile_cli_args(), "gateway", command]
@@ -218,7 +223,7 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
         args.extend(extra_args)
     params = subprocess.list2cmdline(args)
     cwd = str(Path(__file__).resolve().parent.parent)
-    elevated_python = _derive_venv_pythonw(sys.executable)
+    elevated_python = sys.executable
     try:
         result = ctypes.windll.shell32.ShellExecuteW(
             None,
@@ -226,7 +231,7 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
             elevated_python,
             params,
             cwd,
-            0,  # SW_HIDE: pythonw child should not create a visible console.
+            0,  # SW_HIDE: the child's console exists but is never shown.
         )
     except Exception as exc:
         print(f"⚠ Could not launch elevated gateway {command} prompt: {exc}")
@@ -389,8 +394,13 @@ def _build_gateway_cmd_script(
     The script:
       - cd's into a stable working directory
       - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
-      - invokes ``pythonw -m hermes_cli.main [--profile X] gateway run``
-        directly so the wrapper cmd.exe exits without a visible gateway console
+      - invokes ``python -m hermes_cli.main [--profile X] gateway run``
+
+    The .cmd is a compatibility/manual-run artifact: service persistence
+    (Scheduled Task, Startup folder) routes through the ``.vbs`` launcher,
+    which runs this same command line hidden (window style 0).  Run by hand
+    in a real terminal, the console interpreter keeps the gateway attached
+    to that terminal like a normal foreground ``hermes gateway run``.
 
     We intentionally do NOT inline PATH overrides here — cmd.exe inherits
     the per-user PATH the Scheduled Task was created with, and forcibly
@@ -401,7 +411,7 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
-    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports hermes_constants-based logic during startup.
     lines.append(f'set "VIRTUAL_ENV={_preserve_hermes_home_path(venv_dir)}"')
@@ -411,14 +421,12 @@ def _build_gateway_cmd_script(
     ]
     lines.append(f'set "PYTHONPATH={";".join([*pythonpath_entries, "%PYTHONPATH%"])}"')
 
-    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    prog_args = [python_exe_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
-    # `pythonw.exe` is a GUI-subsystem executable: cmd.exe launches it and
-    # returns immediately, so the Scheduled Task action finishes without a
-    # visible console window. Do NOT use `start` here; that creates an extra
-    # wrapper process and made gateway lifecycle/status harder to reason about.
+    # Do NOT use `start` here; that creates an extra wrapper process and made
+    # gateway lifecycle/status harder to reason about.
     # Do NOT use `--replace` for service-managed starts; repeated /Run calls
     # should be idempotent, not churn parent/child takeover loops.
     lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
@@ -443,7 +451,7 @@ def _build_gateway_vbs_script(
     hermes_home: str,
     profile_arg: str,
 ) -> str:
-    """Build a console-less ``gateway.vbs`` launcher (CRLF-terminated).
+    """Build a hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
 
     The Scheduled Task runs this through ``wscript.exe`` instead of ``cmd.exe``.
 
@@ -454,15 +462,20 @@ def _build_gateway_vbs_script(
     code as a user cancel, so the ``RestartOnFailure`` policy never fires and the
     gateway silently disappears on every reboot.
 
-    ``wscript.exe`` and ``pythonw.exe`` are both GUI-subsystem executables with
-    no console, so this launcher receives no console control events. It mirrors
-    ``_build_gateway_cmd_script`` (same env + argv via ``_resolve_detached_python``)
-    but sets the environment on the WScript.Shell process and ``Run``s pythonw
-    directly — no cmd.exe anywhere in the chain.
+    ``wscript.exe`` is a GUI-subsystem executable with no console, so this
+    launcher receives no console control events. It ``Run``s the console
+    ``python.exe`` with window style 0 (hidden): the gateway owns a single
+    hidden console — never shown, never CTRL_CLOSE'd at logon, and inherited
+    by every console-subsystem descendant (git, gh, node, …) so none of them
+    allocate a visible flashing conhost (#54220/#56747; the previous
+    console-less pythonw.exe gateway forced exactly that per-descendant
+    flash). No cmd.exe anywhere in the chain. Mirrors
+    ``_build_gateway_cmd_script`` (same env + argv via
+    ``_resolve_detached_python``).
     """
-    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
 
-    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    prog_args = [python_exe_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
@@ -493,8 +506,9 @@ def _build_gateway_vbs_script(
         f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. pythonw is
-        # GUI-subsystem so no console is ever created for the gateway either.
+        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
+        # console python's one console is created hidden and inherited by all
+        # descendants, so nothing ever flashes.
         f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
     ]
     return "\r\n".join(lines) + "\r\n"
@@ -700,60 +714,40 @@ def _install_startup_entry(script_path: Path) -> Path:
     return entry
 
 
-def _derive_venv_pythonw(python_exe: str) -> str:
-    """Given a ``python.exe`` path, return the sibling ``pythonw.exe`` if present.
-
-    ``pythonw.exe`` is the console-less variant. Using it for detached
-    daemons means there's no console handle to inherit from the spawning
-    shell, which is what lets the gateway survive a parent-shell exit on
-    Windows. Falls back to the original ``python.exe`` if the ``w`` variant
-    isn't there — caller must still set CREATE_NO_WINDOW in that case.
-    """
-    p = Path(python_exe)
-    candidate = p.with_name(p.stem + "w" + p.suffix)
-    if candidate.exists():
-        return str(candidate)
-    return python_exe
-
-
-def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
-    cfg_path = venv_dir / "pyvenv.cfg"
-    try:
-        lines = cfg_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {}
-    parsed: dict[str, str] = {}
-    for raw in lines:
-        if "=" not in raw:
-            continue
-        key, value = raw.split("=", 1)
-        parsed[key.strip().lower()] = value.strip()
-    return parsed
-
-
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
-    """Return (windowed_python, venv_dir, extra_pythonpath) for detached runs.
+    """Return (hidden_console_python, venv_dir, extra_pythonpath) for detached runs.
 
-    uv-created Windows venv launchers are special: ``venv\\Scripts\\pythonw.exe``
-    starts hidden, but then respawns the base interpreter as console
-    ``python.exe``.  That child opens a visible Windows Terminal tab.  For uv
-    venvs, use the base ``pythonw.exe`` directly and put the repo + venv
-    site-packages on ``PYTHONPATH`` so imports still resolve without the venv
-    launcher.
+    Returns the venv's **console** ``python.exe`` — deliberately NOT
+    ``pythonw.exe``.  Every detached launch path pairs this interpreter with a
+    hidden-console mechanism (``CREATE_NO_WINDOW`` creationflags, or
+    ``WScript.Shell.Run`` window style 0), so the daemon owns a single hidden
+    console that all of its console-subsystem descendants (git, gh, cmd, node,
+    wmic, powershell, …) inherit instead of each allocating a visible flashing
+    one.  A GUI-subsystem ``pythonw.exe`` daemon has NO console, which is what
+    made every descendant spawn flash (#54220/#56747) and forced the endless
+    per-call-site CREATE_NO_WINDOW sweep.  Root cause isolated + A/B verified
+    on Windows 11 by the desktop backend fix (commit aa2ae36c3f).
+
+    Two historical premises behind the old pythonw selection were re-tested on
+    current Windows in that fix and did not hold up:
+
+    - uv venv launcher: ``venv\\Scripts\\python.exe`` under ``CREATE_NO_WINDOW``
+      re-execs the base interpreter *windowless* — the child inherits the
+      shim's hidden console, so no conhost flashes (the #52239 concern).  The
+      historical "CREATE_NO_WINDOW cannot suppress the second window"
+      observations were made while ``DETACHED_PROCESS`` was in the flag
+      bundle, where MSDN specifies CREATE_NO_WINDOW is IGNORED — the hide bit
+      was dead, not ineffective.  The base-interpreter + PYTHONPATH-overlay
+      detour is therefore unnecessary; the venv shim resolves imports itself.
+    - Console python restores stdout/stderr, so daemon logs flow normally.
+
+    ``extra_pythonpath`` is always empty now; the tuple shape is kept so the
+    call sites (argv builders, cmd/vbs renderers, restart-spec rewriter,
+    gateway watcher) stay unchanged.
     """
     p = Path(python_exe)
     venv_dir = p.parent.parent
-    windowed = _derive_venv_pythonw(python_exe)
-
-    cfg = _read_pyvenv_cfg(venv_dir)
-    home = cfg.get("home", "")
-    if "uv" in cfg and home:
-        base_pythonw = Path(home) / "pythonw.exe"
-        site_packages = venv_dir / "Lib" / "site-packages"
-        if base_pythonw.exists() and site_packages.exists():
-            return (str(base_pythonw), venv_dir, [str(site_packages)])
-
-    return (windowed, venv_dir, [])
+    return (python_exe, venv_dir, [])
 
 
 def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None:
@@ -812,22 +806,19 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
 def windowless_gateway_restart_spec(
     run_argv: list[str],
 ) -> tuple[list[str], str, dict[str, str]]:
-    """Rewrite a console-``python.exe`` gateway argv into a windowless one.
+    """Return the (argv, cwd, env overlay) for a hidden-console gateway respawn.
 
     The post-update restart paths build their respawn command from
-    ``get_python_path()`` which returns the venv's console ``python.exe``.
-    On Windows — especially with uv-created venvs — launching that
-    interpreter (even with ``CREATE_NO_WINDOW``) leaves a persistent
-    console window: ``venv\\Scripts\\python.exe`` is a launcher shim that
-    re-execs the *base* console interpreter, which allocates its own
-    conhost.  ``CREATE_NO_WINDOW`` cannot suppress that second window.
-    See ``_resolve_detached_python`` for the gory details.
-
-    This mirrors what ``_build_gateway_argv`` / ``_spawn_detached`` do for
-    a clean start: swap the interpreter for the windowless ``pythonw.exe``
-    (base interpreter for uv venvs) and return the cwd + env overlay
-    (VIRTUAL_ENV, PYTHONPATH) the base interpreter needs to resolve the
-    ``hermes_cli`` package without the venv launcher's site config.
+    ``get_python_path()`` (the venv's console ``python.exe``).  That is the
+    right interpreter: the watcher launches it with ``CREATE_NO_WINDOW``
+    detach flags, so the respawned gateway owns a single hidden console that
+    all of its descendants inherit — nothing flashes (#54220/#56747; the old
+    pythonw.exe rewrite here produced a console-less gateway whose every
+    console-subsystem child allocated a visible conhost).  This helper now
+    only normalizes the interpreter via ``_resolve_detached_python`` and
+    supplies the stable cwd + env overlay (HERMES_HOME, VIRTUAL_ENV,
+    PYTHONPATH) so the respawn doesn't depend on the watcher's transient
+    working directory.
 
     Returns ``(new_argv, working_dir, env_overlay)``.  ``new_argv``
     preserves every argument after the interpreter (``-m hermes_cli.main
@@ -846,18 +837,17 @@ def windowless_gateway_restart_spec(
     python_exe = run_argv[0]
     rest = run_argv[1:]
 
-    # Only rewrite when the leading token actually looks like a python
-    # interpreter we can find a windowless sibling for.  If a caller passed
-    # something else (a captured argv whose argv[0] is already pythonw, or a
-    # non-python launcher), leave it alone.
+    # Normalize the leading interpreter token and derive the venv layout.
+    # If a caller passed something other than a python path (a non-python
+    # launcher), leave the argv alone.
     try:
-        windowless_python, venv_dir, extra_pythonpath = _resolve_detached_python(
+        hidden_console_python, venv_dir, extra_pythonpath = _resolve_detached_python(
             python_exe
         )
     except Exception:
         return run_argv, "", {}
 
-    new_argv = [windowless_python, *rest]
+    new_argv = [hidden_console_python, *rest]
 
     working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     project_root = str(PROJECT_ROOT)
@@ -883,13 +873,16 @@ def windowless_gateway_restart_spec(
 def _spawn_detached(script_path: Path | None = None) -> int:
     """Launch the gateway as a fully detached background process.
 
-    We spawn ``pythonw.exe -m hermes_cli.main gateway run``
-    directly — NOT through a cmd.exe shim — because on Windows a cmd.exe
-    child inherits the parent session's console handle and tends to get
-    reaped when the spawning shell exits. pythonw.exe has no console, and
-    combined with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
-    CREATE_NO_WINDOW + DEVNULL stdio + a fresh env, the resulting process
-    is independent of whichever shell started it.
+    We spawn ``python.exe -m hermes_cli.main gateway run`` directly — NOT
+    through a cmd.exe shim — because on Windows a cmd.exe child inherits the
+    parent session's console handle and tends to get reaped when the spawning
+    shell exits.  With ``CREATE_NO_WINDOW`` the gateway gets its OWN hidden
+    console instead of inheriting ours, so it survives our shell closing, and
+    every console-subsystem descendant it spawns inherits that hidden console
+    instead of flashing a visible one (#54220/#56747 — this is why we don't
+    use console-less pythonw.exe here). Combined with
+    CREATE_NEW_PROCESS_GROUP + DEVNULL stdin + a fresh env, the resulting
+    process is independent of whichever shell started it.
 
     Arg ``script_path`` is accepted for API symmetry with older callers
     but ignored — we don't need it now that we go direct.
@@ -903,10 +896,12 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     # Inherit PATH etc. from the current env, overlay our required vars.
     env = {**os.environ, **env_overlay}
 
-    # DETACHED_PROCESS        0x00000008  — no console attached to child
     # CREATE_NEW_PROCESS_GROUP 0x00000200 — child gets its own group, won't
     #                                       receive Ctrl+C from our group
-    # CREATE_NO_WINDOW         0x08000000 — belt-and-braces no-console flag
+    # CREATE_NO_WINDOW         0x08000000 — child owns a hidden console:
+    #                                       detached from our console's
+    #                                       lifetime AND inheritable by its
+    #                                       descendants (no conhost flashes)
     # CREATE_BREAKAWAY_FROM_JOB 0x01000000 — escape any job object the
     #                                       parent is in (prevents parent-
     #                                       job teardown from reaping us;
@@ -940,7 +935,8 @@ def _spawn_detached(script_path: Path | None = None) -> int:
         # CREATE_BREAKAWAY_FROM_JOB can fail with "access denied" when the
         # parent's job object doesn't permit breakaway (some Windows
         # Terminal configs). Retry without the breakaway flag — in most
-        # setups pythonw.exe + DETACHED_PROCESS is enough on its own.
+        # setups the hidden-console CREATE_NO_WINDOW spawn is enough on
+        # its own.
         flags_no_breakaway = windows_detach_flags_without_breakaway()
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(

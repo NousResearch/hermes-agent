@@ -129,13 +129,11 @@ def test_cronscheduler_default_is_available_true():
 
 
 def test_abc_growth_stays_additive():
-    """Forward-compat guard: the ABC's REQUIRED surface is exactly name+start.
+    """The provider interface stays source-compatible with existing plugins.
 
-    Any optional hook added later for the external provider
-    (on_jobs_changed/fire_due/reconcile) must be NON-abstract (carry a default),
-    so the built-in keeps satisfying the ABC without overriding them. This test
-    fails loudly if someone makes a future hook abstract (a breaking change that
-    would force every provider — including the built-in — to implement it).
+    ``start`` must be the only required implementation hook: future optional
+    behavior belongs in non-abstract default methods so custom plugins do not
+    break on import after an upgrade.
     """
     from cron.scheduler_provider import CronScheduler
 
@@ -172,6 +170,33 @@ def test_inprocess_provider_ticks_and_stops():
     assert not t.is_alive(), "provider did not exit after stop_event was set"
     assert len(calls) >= 1, "provider never called tick()"
     assert calls[0].get("sync") is False
+
+
+def test_inprocess_provider_skips_dispatch_while_draining():
+    """A drain pause keeps due work pending until dispatch is re-enabled."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    calls = []
+    stop = threading.Event()
+    allow_dispatch = threading.Event()
+    provider = InProcessCronScheduler()
+
+    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(k) or 0):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0.01, "can_dispatch": allow_dispatch.is_set},
+            daemon=True,
+        )
+        thread.start()
+        time.sleep(0.05)
+        assert calls == []
+        allow_dispatch.set()
+        assert _wait_until(lambda: len(calls) >= 1), "provider never resumed dispatch"
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
 
 
 def test_inprocess_provider_stop_is_noop():

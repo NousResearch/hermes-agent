@@ -705,3 +705,54 @@ class TestDiscoverFallbackIps:
 
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
+
+    @pytest.mark.asyncio
+    async def test_hung_system_dns_does_not_gate_doh_results(self, monkeypatch):
+        """#63309: socket.getaddrinfo has no timeout of its own — a wedged OS
+        resolver must not stall discovery. DoH answers must come back promptly
+        even while the system-DNS worker thread is still hanging."""
+        import time as _time
+
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, _doh_answer("149.154.167.220")),
+            "https://cloudflare-dns.com": (200, _doh_answer()),
+        }, system_dns_ips=["149.154.166.110"])
+        monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.2)
+
+        def _hung_getaddrinfo(*a, **kw):
+            _time.sleep(1.5)  # far beyond the discovery bound
+            raise OSError("resolver wedged")
+
+        monkeypatch.setattr(tnet.socket, "getaddrinfo", _hung_getaddrinfo)
+
+        start = _time.monotonic()
+        ips = await tnet.discover_fallback_ips()
+        elapsed = _time.monotonic() - start
+
+        assert ips == ["149.154.167.220"]
+        assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+
+    @pytest.mark.asyncio
+    async def test_hung_system_dns_with_no_doh_answers_bounded_seed_fallback(self, monkeypatch):
+        """Worst case — resolver wedged AND no DoH answers — must still return
+        the seed list within the bound instead of hanging connect()."""
+        import time as _time
+
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, {"Status": 0}),
+            "https://cloudflare-dns.com": (200, {"garbage": True}),
+        }, system_dns_ips=["149.154.166.110"])
+        monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.2)
+
+        def _hung_getaddrinfo(*a, **kw):
+            _time.sleep(1.5)
+            raise OSError("resolver wedged")
+
+        monkeypatch.setattr(tnet.socket, "getaddrinfo", _hung_getaddrinfo)
+
+        start = _time.monotonic()
+        ips = await tnet.discover_fallback_ips()
+        elapsed = _time.monotonic() - start
+
+        assert ips == tnet._SEED_FALLBACK_IPS
+        assert elapsed < 1.4, f"seed fallback gated on hung system DNS ({elapsed:.2f}s)"

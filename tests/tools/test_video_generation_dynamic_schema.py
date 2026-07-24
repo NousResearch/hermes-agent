@@ -88,7 +88,10 @@ class TestDynamicSchemaBuilder:
         from tools.video_generation_tool import _build_dynamic_video_schema
 
         desc = _build_dynamic_video_schema()["description"]
-        assert "No video backend is configured" in desc
+        # No provider configured AND none available → description says so. The
+        # wording reflects the *resolved* active provider (mirrors execution),
+        # so it reads "available" rather than "configured".
+        assert "No video backend is available" in desc
         assert "hermes tools" in desc
 
     def test_generic_description_keeps_edit_extend_out_of_surface(self, cfg_home):

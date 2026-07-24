@@ -225,6 +225,20 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
+### Execution history
+
+Hermes records each claimed cron attempt in the profile-local
+`~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
+move through `claimed`, `running`, and one immutable terminal state:
+`completed`, `failed`, or `unknown`. After restart, Hermes marks an abandoned
+attempt `unknown` only when the original PID and process-start fingerprint prove
+that its owner is gone. Unknown attempts are audit records and are never
+automatically rerun.
+
+Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
+`history`). Terminal history is bounded; active attempts are never pruned. The
+ledger is included in quick backups.
+
 ## Delivery options
 
 When scheduling jobs, you specify where the output goes:
@@ -731,6 +745,10 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 ## Job storage
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+
+:::tip
+Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.
+:::
 
 Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
 

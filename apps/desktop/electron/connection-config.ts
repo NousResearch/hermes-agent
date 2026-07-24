@@ -37,6 +37,15 @@
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
+// The Nous portal (NAS) does NOT use Hermes gateway session cookies — it is a
+// Privy-authed Next.js app. NAS `auth()` (src/server/auth/session.ts) reads the
+// `privy-token` access-token cookie (with `privy-id-token` alongside), which is
+// also exactly what the `/api/agents` cookie-auth path validates. So portal
+// sign-in / discovery liveness must look for the Privy cookie, NOT the gateway
+// cookies above. `privy-token` is the access token (the required signal);
+// variants cover the secured-prefix forms and the older `privy-session` name.
+const PRIVY_SESSION_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token', 'privy-session']
+
 function normalizeRemoteBaseUrl(rawUrl) {
   const value = String(rawUrl || '').trim()
 
@@ -79,6 +88,43 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+/** True only when a gateway explicitly rejected the current OAuth session. */
+function isGatewayAuthRejection(error) {
+  if (error && typeof error === 'object' && (error as any).needsOauthLogin === true) {
+    return true
+  }
+
+  const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  return statusCode === 401 || statusCode === 403
+}
+
+function gatewayTicketFailure(error, authMessage, transportMessage) {
+  const needsOauthLogin = isGatewayAuthRejection(error)
+  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  if (needsOauthLogin) {
+    ;(err as any).needsOauthLogin = true
+  }
+
+  err.cause = error
+
+  return err
+}
+
+/** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
+async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
+  try {
+    return { ok: true as const, wsUrl: await resolveWsUrl() }
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      ...(isGatewayAuthRejection(error) ? { needsOauthLogin: true as const } : {}),
+      ok: false as const
+    }
+  }
+}
+
 /**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
@@ -93,12 +139,10 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
  *   - oauth, mint ok       → ws(s)://…/api/ws?ticket=…
  *   - oauth, mint fails    → THROWS  (NOT a skip)
  *
- * The oauth-mint-failure throw is the important case: the real boot path
- * (resolveRemoteBackend in main.ts) treats a mint failure as a hard
- * "session expired" auth error and refuses to connect. Swallowing it here
- * would re-introduce the exact false-positive this test exists to catch —
- * HTTP /api/status passes, the test reports "reachable", then the renderer
- * can't authenticate /api/ws and boot dies with "Could not connect".
+ * The oauth-mint-failure throw is the important case: swallowing it here would
+ * re-introduce the exact false-positive this test exists to catch. An explicit
+ * 401/403 asks for sign-in; transport and server failures remain connectivity
+ * errors so a temporary outage is not mislabeled as an expired session.
  *
  * @param {string} baseUrl
  * @param {'token'|'oauth'} authMode
@@ -119,14 +163,12 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
-          '(it may have expired). Open Settings → Gateway and sign in again.'
+      throw gatewayTicketFailure(
+        error,
+        'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
+          'Open Settings → Gateway and sign in again.',
+        'Reached the gateway over HTTP, but could not mint a WebSocket ticket. Check the remote gateway connection and try again.'
       )
-
-      ;(err as any).needsOauthLogin = true
-      err.cause = error
-      throw err
     }
 
     return buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -150,20 +192,152 @@ function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
 }
 
+// True for connection modes that resolve to a REMOTE backend. 'cloud' is a
+// Hermes Cloud connection (cloud-auto-discovery Q3/Q6): it carries a
+// remote-shaped block and reuses the entire remote connect/probe/reconnect
+// path, so every resolution site treats it exactly like 'remote'. The only
+// places that distinguish cloud from remote are the settings UI (which card to
+// show) and config persistence (remembering the provenance). Centralized here
+// so no resolution site forgets the third arm.
+function modeIsRemoteLike(mode) {
+  return mode === 'remote' || mode === 'cloud'
+}
+
+function normalizeSshConfig(entry) {
+  if (!entry || typeof entry !== 'object' || entry.mode !== 'ssh') {
+    return null
+  }
+
+  let host = String(entry.host || '').trim()
+
+  if (!host) {
+    return null
+  }
+
+  let parsedUser
+  let parsedPort
+  const at = host.indexOf('@')
+
+  if (at > 0) {
+    parsedUser = host.slice(0, at)
+    host = host.slice(at + 1)
+  }
+
+  const bracketed = /^\[([^\]]+)](?::(\d+))?$/.exec(host)
+
+  if (bracketed) {
+    host = bracketed[1]
+
+    if (bracketed[2]) {
+      parsedPort = Number(bracketed[2])
+    }
+  } else if ((host.match(/:/g) || []).length === 1) {
+    const [name, rawPort] = host.split(':')
+
+    if (/^\d+$/.test(rawPort)) {
+      host = name
+      parsedPort = Number(rawPort)
+    }
+  }
+
+  if (!host) {
+    return null
+  }
+
+  const out: any = { mode: 'ssh', host }
+  const user = String(entry.user || '').trim() || parsedUser || ''
+
+  if (user) {
+    out.user = user
+  }
+
+  const rawExplicitPort = String(entry.port ?? '').trim()
+  const explicitPort = /^\d+$/.test(rawExplicitPort) ? Number(rawExplicitPort) : null
+  const port = explicitPort ?? parsedPort
+
+  if (Number.isInteger(port) && port > 0 && port <= 65535 && port !== 22) {
+    out.port = port
+  }
+
+  const keyPath = String(entry.keyPath || '').trim()
+
+  if (keyPath) {
+    out.keyPath = keyPath
+  }
+
+  const remoteHermesPath = String(entry.remoteHermesPath || '').trim()
+
+  if (remoteHermesPath) {
+    out.remoteHermesPath = remoteHermesPath
+  }
+
+  return out
+}
+
+function profileSshOverride(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+
+  return normalizeSshConfig(entry)
+}
+
+function savedProfileSsh(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+
+  if (!entry || entry.mode !== 'local') {
+    return null
+  }
+
+  return normalizeSshConfig(entry.savedSsh)
+}
+
+function profileHasRemoteConnection(config, profile) {
+  return Boolean(profileRemoteOverride(config, profile) || profileSshOverride(config, profile))
+}
+
+function localProfileEntry(existing) {
+  const ssh = normalizeSshConfig(existing) || normalizeSshConfig(existing?.savedSsh)
+
+  return ssh ? { mode: 'local', savedSsh: ssh } : null
+}
+
+function hostLabelFromBaseUrl(baseUrl) {
+  const raw = String(baseUrl || '').trim()
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(raw)
+
+    if (!parsed.hostname) {
+      return null
+    }
+
+    return parsed.port && parsed.port !== '80' && parsed.port !== '443'
+      ? `${parsed.hostname}:${parsed.port}`
+      : parsed.hostname
+  } catch {
+    return null
+  }
+}
+
 /**
  * Select a profile's explicit remote override from a connection config, or null
  * when it has none (so the caller falls back to env → global remote → local).
  *
  * The config may carry a `profiles` map keyed by name; an entry counts as an
- * override only with `mode === 'remote'` and a non-empty `url`. Pure: `token`
- * is the raw stored secret; main.ts decrypts it. Returns
+ * override only with a remote-like `mode` (remote or cloud) and a non-empty
+ * `url`. Pure: `token` is the raw stored secret; main.ts decrypts it. Returns
  * `{ url, authMode, token } | null`.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
 
-  if (!entry || typeof entry !== 'object' || entry.mode !== 'remote') {
+  if (!entry || typeof entry !== 'object' || !modeIsRemoteLike(entry.mode)) {
     return null
   }
 
@@ -292,6 +466,22 @@ function cookiesHaveLiveSession(cookies) {
   return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
 }
 
+/**
+ * True if the cookie jar holds a live Nous PORTAL (Privy) session — a non-empty
+ * `privy-token` (access-token) cookie, or a variant. This is the portal
+ * analogue of `cookiesHaveLiveSession`: the portal authenticates via Privy, not
+ * the Hermes gateway session cookies, so cloud sign-in / discovery liveness
+ * must check THIS, not the gateway helpers. (NAS `auth()` and the `/api/agents`
+ * cookie path both key off `privy-token`.)
+ */
+function cookiesHavePrivySession(cookies) {
+  if (!Array.isArray(cookies)) {
+    return false
+  }
+
+  return cookies.some(c => c && c.value && PRIVY_SESSION_COOKIE_VARIANTS.includes(c.name))
+}
+
 export {
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
@@ -299,13 +489,25 @@ export {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivySession,
   cookiesHaveSession,
+  gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
+  hostLabelFromBaseUrl,
+  isGatewayAuthRejection,
+  localProfileEntry,
+  modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  PRIVY_SESSION_COOKIE_VARIANTS,
+  profileHasRemoteConnection,
   profileRemoteOverride,
+  profileSshOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  savedProfileSsh,
   tokenPreview
 }

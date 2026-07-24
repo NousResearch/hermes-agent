@@ -278,8 +278,16 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """
+        Authenticate, obtain gateway URL, and open the WebSocket.
+
+        Args:
+            is_reconnect: False on a cold first boot; True when the
+                reconnect watcher is re-establishing this platform after
+                an outage. QQBot has no server-side update queue so this
+                flag is accepted for interface conformance only.
+        """
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)
@@ -304,7 +312,8 @@ class QQAdapter(BasePlatformAdapter):
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
             # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
+            from tools.url_safety import create_ssrf_safe_async_client
+            self._http_client = create_ssrf_safe_async_client(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
@@ -2640,7 +2649,10 @@ class QQAdapter(BasePlatformAdapter):
         return await self.send_with_keyboard(
             chat_id,
             build_approval_text(req),
-            build_approval_keyboard(req.session_key),
+            build_approval_keyboard(
+                req.session_key,
+                allow_permanent=getattr(req, "allow_permanent", True),
+            ),
             reply_to=reply_to,
         )
 
@@ -2660,6 +2672,9 @@ class QQAdapter(BasePlatformAdapter):
             session_key: str,
             description: str = "dangerous command",
             metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
 
@@ -2669,6 +2684,9 @@ class QQAdapter(BasePlatformAdapter):
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
         del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+        del allow_session  # QQ's 3-button keyboard has no session tier (once/always/deny).
+        if smart_denied:
+            description += " Owner override applies to this one operation only."
 
         # Use the reply-to message for passive-message context when we have one.
         # QQ requires a msg_id on outbound messages to a user we've never
@@ -2681,6 +2699,7 @@ class QQAdapter(BasePlatformAdapter):
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent=allow_permanent and not smart_denied,
         )
         return await self.send_approval_request(
             chat_id, req, reply_to=msg_id,

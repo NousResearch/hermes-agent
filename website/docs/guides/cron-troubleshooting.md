@@ -111,7 +111,7 @@ Skills must be installed before they can be attached to cron jobs. If a skill is
 
 ### Check 2: Check skill name vs. skill folder name
 
-Skill names are case-sensitive and must match the installed skill's folder name. If your job specifies `ai-funding-daily-report` but the skill folder is `ai-funding-daily-report`, confirm the exact name from `hermes skills list`.
+Skill names are case-sensitive and must match the installed skill's folder name. If your job specifies `ai-funding-report` but the skill folder is `ai-funding-daily-report`, confirm the exact name from `hermes skills list`.
 
 ### Check 3: Skills that require interactive tools
 

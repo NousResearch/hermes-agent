@@ -275,7 +275,7 @@ hermes uninstall            Uninstall Hermes
 /config              Show config (CLI)
 /model [name]        Show or change model
 /personality [name]  Set personality
-/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|show|hide)
+/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|max|ultra|show|hide)
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
 /yolo                Toggle approval bypass
@@ -481,10 +481,10 @@ hermes config set privacy.redact_pii false   # 禁用（默认）
 
 ### 命令审批提示
 
-默认情况下（`approvals.mode: manual`），Hermes 在运行被标记为破坏性的 shell 命令（`rm -rf`、`git reset --hard` 等）之前会提示用户。模式如下：
+默认情况下（`approvals.mode: smart`），Hermes 会让辅助 LLM 评估被标记为破坏性的 shell 命令（`rm -rf`、`git reset --hard` 等）。模式如下：
 
-- `manual` — 始终提示（默认）
-- `smart` — 使用辅助 LLM 自动批准低风险命令，对高风险命令提示
+- `smart` — 低风险命令仅批准一次，高风险命令拒绝，不确定时提示（默认）
+- `manual` — 始终提示
 - `off` — 跳过所有审批提示（等同于 `--yolo`）
 
 ```bash

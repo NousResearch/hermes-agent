@@ -35,6 +35,7 @@ import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -49,6 +50,11 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import {
+  imageFilesFromTransfer,
+  transferMayContainImage,
+  uploadChatImage,
+} from "@/lib/chatImagePaste";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -155,6 +161,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
+  // Sticky activation latch: the PTY-connect effect below must not open
+  // `/api/pty` until the chat tab has actually been active at least once.
+  // The dashboard mounts ChatPage persistently (hidden) on every route, so
+  // without this gate merely loading /sessions, /system, etc. would spawn the
+  // TUI/agent bootstrap (`Installing TUI dependencies…`). Latching keeps the
+  // PTY alive across later tab switches (the persistence UX) — once true it
+  // stays true.
+  const [hasActivated, setHasActivated] = useState(isActive);
+  useEffect(() => {
+    setHasActivated((prev) => latchChatActivation(prev, isActive));
+  }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
@@ -442,6 +459,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   };
 
   useEffect(() => {
+    // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
+    // until the chat tab has been activated. Prevents the persistently
+    // mounted, hidden ChatPage from opening `/api/pty` on every dashboard
+    // page. Sticky, so switching away from /chat keeps the PTY alive.
+    if (!hasActivated) return;
+
     const host = hostRef.current;
     if (!host) return;
 
@@ -486,7 +509,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     // --- Clipboard integration ---------------------------------------
     //
-    // Three independent paths all route to the system clipboard:
+    // Four independent paths all route to the system clipboard:
     //
     //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
     //      in useInputHandlers.ts turns Ctrl+C into a copy when the
@@ -500,9 +523,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //      ever stops listening (e.g. overlays / pickers) or if the user
     //      has selected with the mouse outside of Ink's selection model.
     //
-    //   3. **Ctrl/Cmd+Shift+V.**  Reads the system clipboard and feeds
-    //      it to the terminal as keyboard input.  xterm's paste() wraps
-    //      it with bracketed-paste if the host has that mode enabled.
+    //   3. **Ctrl/Cmd+Shift+V.**  Prefers clipboard.read() for images
+    //      (upload → `/image`), else readText() into term.paste().
+    //      preventDefault here suppresses the DOM paste event, so image
+    //      handling must live in this key path — not only the host
+    //      listener below.
+    //
+    //   4. **DOM paste / drop on the host.**  Bare Ctrl+V and context-menu
+    //      paste fire a ClipboardEvent; drag-drop lands files. Image
+    //      payloads upload to HERMES_HOME/images then drive `/image`.
     //
     // OSC 52 reads (terminal asking to read the clipboard) are not
     // supported — that would let any content the TUI renders exfiltrate
@@ -531,6 +560,73 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+
+    // ── Image paste / drop ───────────────────────────────────────────────
+    // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
+    // clipboard.paste / xclip never see the browser clipboard, so image paste
+    // must upload browser bytes to HERMES_HOME/images, then drive `/image`
+    // over the PTY (same burst-then-Return timing as handleCopyLast).
+    let imageUploadDisposed = false;
+    const pasteDelay = () =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, 40));
+    const reportImageUploadError = (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[dashboard chat] image upload failed:", message);
+      setBanner(`Image upload failed: ${message}`);
+    };
+    const driveImageAttach = async (paths: string[]) => {
+      for (const path of paths) {
+        if (imageUploadDisposed) return;
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          setBanner(
+            "Image uploaded, but chat is not connected — try again.",
+          );
+          return;
+        }
+        ws.send(`/image ${path}`);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+        const s = wsRef.current;
+        if (!s || s.readyState !== WebSocket.OPEN) return;
+        s.send("\r");
+        await pasteDelay();
+      }
+      term.focus();
+    };
+    const uploadAndAttachImages = (files: File[]) => {
+      if (!files.length) return;
+      void (async () => {
+        const paths: string[] = [];
+        for (const file of files) {
+          const uploaded = await uploadChatImage(file, scopedProfile);
+          if (imageUploadDisposed) return;
+          paths.push(uploaded.path);
+        }
+        await driveImageAttach(paths);
+      })().catch(reportImageUploadError);
+    };
+    const handleBrowserPaste = (ev: ClipboardEvent) => {
+      const files = imageFilesFromTransfer(ev.clipboardData);
+      if (!files.length) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      uploadAndAttachImages(files);
+    };
+    const handleBrowserDragOver = (ev: DragEvent) => {
+      if (!transferMayContainImage(ev.dataTransfer)) return;
+      ev.preventDefault();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
+    };
+    const handleBrowserDrop = (ev: DragEvent) => {
+      const files = imageFilesFromTransfer(ev.dataTransfer);
+      if (!files.length) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      uploadAndAttachImages(files);
+    };
+    host.addEventListener("paste", handleBrowserPaste, { capture: true });
+    host.addEventListener("dragover", handleBrowserDragOver, { capture: true });
+    host.addEventListener("drop", handleBrowserDrop, { capture: true });
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
@@ -563,15 +659,42 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err) => {
-            console.warn("[dashboard clipboard] paste failed:", err.message);
-          });
+        // preventDefault suppresses the DOM paste event, so image paste must
+        // be handled here via clipboard.read() — readText() alone misses
+        // image-only clipboards (the Discord / #24860 failure mode).
         ev.preventDefault();
+        void (async () => {
+          try {
+            const read = navigator.clipboard?.read;
+            if (typeof read === "function") {
+              const items = await read.call(navigator.clipboard);
+              const files: File[] = [];
+              for (const item of items) {
+                const type = item.types.find((t) => t.startsWith("image/"));
+                if (!type) continue;
+                const blob = await item.getType(type);
+                const ext = type.split("/")[1]?.split("+")[0] || "png";
+                files.push(
+                  new File([blob], `clipboard.${ext}`, { type }),
+                );
+              }
+              if (files.length) {
+                uploadAndAttachImages(files);
+                return;
+              }
+            }
+          } catch {
+            /* fall through to text paste */
+          }
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text) term.paste(text);
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : String(err);
+            console.warn("[dashboard clipboard] paste failed:", message);
+          }
+        })();
         return false;
       }
 
@@ -1020,10 +1143,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     return () => {
       unmounting = true;
+      imageUploadDisposed = true;
       syncMetricsRef.current = null;
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       mobileInputCleanup?.();
+      host.removeEventListener("paste", handleBrowserPaste, true);
+      host.removeEventListener("dragover", handleBrowserDragOver, true);
+      host.removeEventListener("drop", handleBrowserDrop, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
@@ -1056,7 +1183,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
-  }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
+  }, [
+    hasActivated,
+    channel,
+    clearReconnectTimer,
+    resumeParam,
+    scopedProfile,
+    reconnectNonce,
+  ]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

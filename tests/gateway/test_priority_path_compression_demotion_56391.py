@@ -112,7 +112,9 @@ def _make_runner(*, compression_in_flight: bool):
     # No subagents active — isolates the compression-demotion behavior from
     # the (already-correct) subagent-demotion branch.
     runner._agent_has_active_subagents = lambda _agent: False
-    runner._session_has_compression_in_flight = lambda _sk: compression_in_flight
+    runner._session_has_compression_in_flight = AsyncMock(
+        return_value=compression_in_flight
+    )
 
     import time
     agent_mock = MagicMock()

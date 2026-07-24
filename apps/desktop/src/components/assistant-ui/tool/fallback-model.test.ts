@@ -8,6 +8,7 @@ import {
   countDiffLineStats,
   inlineDiffFromResult,
   MAX_TOOL_RENDER_CHARS,
+  prettyJson,
   type ToolPart
 } from './fallback-model'
 
@@ -75,6 +76,38 @@ describe('buildToolView terminal exit-code status', () => {
       'error'
     )
   })
+
+  it('keeps the command and exit code for the terminal transcript', () => {
+    const view = buildToolView(
+      part({
+        args: { command: 'npm run check --workspace=apps/desktop' },
+        result: { exit_code: 0, output: 'done' },
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.terminalCommand).toBe('npm run check --workspace=apps/desktop')
+    expect(view.terminalExitCode).toBe(0)
+  })
+})
+
+describe('buildToolView web-search query', () => {
+  it('keeps the query separate from structured search results', () => {
+    const view = buildToolView(
+      part({
+        args: { query: 'Hermes Agent Desktop tool calls' },
+        result: { web: [{ snippet: 'Desktop docs', title: 'Hermes docs', url: 'https://example.com/docs' }] },
+        toolName: 'web_search'
+      }),
+      ''
+    )
+
+    expect(view.searchQuery).toBe('Hermes Agent Desktop tool calls')
+    expect(view.searchHits).toEqual([
+      { snippet: 'Desktop docs', title: 'Hermes docs', url: 'https://example.com/docs' }
+    ])
+  })
 })
 
 describe('buildToolView browser_navigate title', () => {
@@ -89,7 +122,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('error')
-    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com')
+    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com/docs')
   })
 
   it('shows opened title on success', () => {
@@ -103,7 +136,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Opened hermes-agent.nousresearch.com')
+    expect(view.title).toBe('Opened hermes-agent.nousresearch.com/docs')
   })
 })
 
@@ -342,15 +375,16 @@ describe('clampForDisplay', () => {
 })
 
 // A large tool result (e.g. a 100KB read_file during a `/learn` run) must not
-// be serialized into the rendered rawResult at full size — that JSON.stringify
-// payload is what floods the renderer when many rows stack up.
-describe('buildToolView caps serialized result size', () => {
-  it('clamps rawResult for an oversized result', () => {
+// be serialized at full size — that JSON.stringify payload is what floods the
+// renderer. buildToolView no longer prettyJson's every result eagerly; the
+// web_search drilldown serializes lazily via prettyJson, which clamps.
+describe('prettyJson caps serialized result size', () => {
+  it('clamps an oversized result', () => {
     const huge = 'y'.repeat(MAX_TOOL_RENDER_CHARS * 3)
-    const view = buildToolView(part({ result: { content: huge }, toolName: 'read_file' }), '')
+    const out = prettyJson({ content: huge })
 
-    expect(view.rawResult.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
-    expect(view.rawResult).toContain('truncated')
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
+    expect(out).toContain('truncated')
   })
 })
 

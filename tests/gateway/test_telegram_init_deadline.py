@@ -199,3 +199,79 @@ async def test_shutdown_abandoned_app_handles_none_and_missing_requests():
     app.shutdown = AsyncMock(side_effect=RuntimeError("still running"))
     app.bot = None
     await tg_adapter._shutdown_abandoned_app(app)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
+    """#63309: when the loop thread is stuck in a synchronous call, the expiry
+    callback never runs and every asyncio timeout goes silent. The off-loop
+    watchdog must detect that state and emit diagnostics from its own thread."""
+    import asyncio as _asyncio
+    import time as _time
+
+    dumps = []
+    monkeypatch.setattr(
+        tg_adapter,
+        "_dump_loop_blocked_diagnostics",
+        lambda timeout, grace: dumps.append((timeout, grace)),
+    )
+    monkeypatch.setattr(tg_adapter, "_LOOP_BLOCKED_DUMP_GRACE", 0.15)
+
+    hung = _asyncio.get_running_loop().create_future()  # never completes
+    task = _asyncio.ensure_future(
+        tg_adapter._await_with_thread_deadline(hung, timeout=0.05)
+    )
+    # Let the helper start its deadline + watchdog timers…
+    await _asyncio.sleep(0)
+    # …then block the event loop straight through deadline (0.05s) AND the
+    # watchdog grace (0.15s): call_soon_threadsafe stays queued, exactly like
+    # a sync call pinning the loop during Application.initialize().
+    _time.sleep(0.5)
+    with pytest.raises(_asyncio.TimeoutError):
+        await task
+
+    assert dumps == [(0.05, 0.15)]
+    hung.cancel()
+
+
+@pytest.mark.asyncio
+async def test_responsive_loop_expiry_does_not_dump(monkeypatch):
+    """A normal timeout on a responsive loop must not trigger the watchdog."""
+    import asyncio as _asyncio
+
+    dumps = []
+    monkeypatch.setattr(
+        tg_adapter,
+        "_dump_loop_blocked_diagnostics",
+        lambda timeout, grace: dumps.append((timeout, grace)),
+    )
+    monkeypatch.setattr(tg_adapter, "_LOOP_BLOCKED_DUMP_GRACE", 0.1)
+
+    hung = _asyncio.get_running_loop().create_future()
+    with pytest.raises(_asyncio.TimeoutError):
+        await tg_adapter._await_with_thread_deadline(hung, timeout=0.05)
+    # Give the (cancelled) watchdog window time to have fired if it were going to.
+    await _asyncio.sleep(0.3)
+    assert dumps == []
+    hung.cancel()
+
+
+@pytest.mark.asyncio
+async def test_completed_await_never_reports_blocked_loop(monkeypatch):
+    """Success before the deadline must cancel the watchdog (no false dump)."""
+    import asyncio as _asyncio
+
+    dumps = []
+    monkeypatch.setattr(
+        tg_adapter,
+        "_dump_loop_blocked_diagnostics",
+        lambda timeout, grace: dumps.append((timeout, grace)),
+    )
+    monkeypatch.setattr(tg_adapter, "_LOOP_BLOCKED_DUMP_GRACE", 0.05)
+
+    async def _quick():
+        return "ok"
+
+    assert await tg_adapter._await_with_thread_deadline(_quick(), timeout=0.2) == "ok"
+    await _asyncio.sleep(0.4)
+    assert dumps == []

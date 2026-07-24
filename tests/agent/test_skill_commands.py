@@ -377,6 +377,82 @@ class TestScanSkillCommands:
         assert "/sonarr-v3v4-api" in result
         assert any("/" in k[1:] for k in result) is False  # no unescaped /
 
+    # -- core-command collision guard (#31204 / #53450) ---------------------
+
+    def test_skill_collides_with_core_command_is_skipped(self, tmp_path):
+        """A skill whose auto-generated /command collides with a core Hermes
+        command (e.g. 'skills') should be excluded from the slash-command map.
+        The skill remains loadable via /skill <name>."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skills")
+            result = scan_skill_commands()
+        assert "/skills" not in result
+
+    def test_skill_collides_with_core_alias_is_skipped(self, tmp_path):
+        """A skill whose slug matches a core command *alias* is also skipped."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "bg")
+            result = scan_skill_commands()
+        # "bg" is an alias of the "background" command
+        assert "/bg" not in result
+
+    def test_core_command_collision_does_not_block_others(self, tmp_path):
+        """A colliding skill is skipped, but non-colliding skills in the same
+        scan pass are still registered."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "skills")
+            _make_skill(tmp_path, "my-other-skill")
+            result = scan_skill_commands()
+        assert "/skills" not in result
+        assert "/my-other-skill" in result
+
+    # -- inter-skill slug collision dedup (#50304 / #63305) ------------------
+
+    def test_slug_collision_keeps_first_skill(self, tmp_path):
+        """Two skills whose names normalize to the same slug do not clobber.
+
+        ``git_helper`` and ``git-helper`` are distinct frontmatter names but
+        both reduce to the ``/git-helper`` command. The first one scanned must
+        keep the command rather than being silently overwritten by the second.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            # ``a-first`` sorts before ``z-second`` so the index walk visits the
+            # underscore-named skill first; that one must win the slash command.
+            first = tmp_path / "a-first"
+            first.mkdir()
+            (first / "SKILL.md").write_text(
+                "---\nname: git_helper\ndescription: First skill.\n---\n\nBody.\n"
+            )
+            second = tmp_path / "z-second"
+            second.mkdir()
+            (second / "SKILL.md").write_text(
+                "---\nname: git-helper\ndescription: Second skill.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/git-helper" in result
+        # First-wins: the entry resolves to the first skill, not the shadowing one.
+        assert result["/git-helper"]["name"] == "git_helper"
+        assert result["/git-helper"]["skill_dir"] == str(first)
+
+    def test_slug_collision_warns(self, tmp_path, caplog):
+        """A slug collision emits a warning so the user can diagnose the
+        shadowed skill."""
+        import logging as _logging
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = tmp_path / "a-first"
+            first.mkdir()
+            (first / "SKILL.md").write_text(
+                "---\nname: my-skill\ndescription: First.\n---\n\nBody.\n"
+            )
+            second = tmp_path / "z-second"
+            second.mkdir()
+            (second / "SKILL.md").write_text(
+                "---\nname: my_skill\ndescription: Second.\n---\n\nBody.\n"
+            )
+            with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
+                scan_skill_commands()
+        assert any("already claimed" in r.message for r in caplog.records)
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

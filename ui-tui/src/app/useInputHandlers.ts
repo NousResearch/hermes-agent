@@ -14,9 +14,16 @@ import type {
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
+import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import {
+  type GatewayRpc,
+  type InputHandlerActions,
+  type InputHandlerContext,
+  type InputHandlerResult,
+  type OverlayState
+} from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -97,6 +104,32 @@ export function applyVoiceRecordResponse(
   }
 }
 
+export function dismissSensitivePrompt(
+  overlay: Pick<OverlayState, 'secret' | 'sudo'>,
+  rpc: GatewayRpc,
+  sys: (text: string) => void
+) {
+  if (overlay.sudo) {
+    const requestId = overlay.sudo.requestId
+
+    patchOverlayState({ sudo: null })
+    sys('sudo cancelled')
+
+    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+  }
+
+  if (overlay.secret) {
+    const requestId = overlay.secret.requestId
+
+    patchOverlayState({ secret: null })
+    sys('secret entry cancelled')
+
+    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+  }
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -149,16 +182,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
-    if (overlay.sudo) {
-      return gateway
-        .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })
-        .then(r => r && (patchOverlayState({ sudo: null }), actions.sys('sudo cancelled')))
-    }
-
-    if (overlay.secret) {
-      return gateway
-        .rpc<SecretRespondResponse>('secret.respond', { request_id: overlay.secret.requestId, value: '' })
-        .then(r => r && (patchOverlayState({ secret: null }), actions.sys('secret entry cancelled')))
+    if (overlay.sudo || overlay.secret) {
+      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
     if (overlay.modelPicker) {
@@ -171,6 +196,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.billing) {
       return patchOverlayState({ billing: null })
+    }
+
+    if (overlay.subscription) {
+      return patchOverlayState({ subscription: null })
     }
 
     if (overlay.skillsHub) {
@@ -191,6 +220,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.journey) {
       return patchOverlayState({ journey: false })
+    }
+
+    if (overlay.widget) {
+      return closeWidget()
     }
   }
 
@@ -302,7 +335,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay = overlay.approval || overlay.billing || overlay.clarify || overlay.confirm
+      const promptOverlay =
+        overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
+
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
       if (promptOverlay && !fallThroughForScroll) {
@@ -373,7 +408,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c')) {
+      // Widget apps (SDK): the active app owns every key while open. This
+      // supersedes the demo-only handleStackedModalInput routing from #68999
+      // — grid-test/dialog are now widget apps, so the topmost-modal-owns-
+      // input contract is enforced structurally by the single active widget.
+      if (overlay.widget && dispatchWidgetInput({ ch, key })) {
+        return
+      }
+
+      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })

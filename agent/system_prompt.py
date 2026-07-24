@@ -40,11 +40,13 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
+    TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
+from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 
 
@@ -394,7 +396,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if active_profile == "default":
         stable_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "
-            "under ~/.hermes/profiles/<name>/. Each profile has its own "
+            "under " + str(get_hermes_home()) + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
             "skills/plugins/cron/memories unless the user explicitly directs "
@@ -403,9 +405,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     else:
         stable_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
+            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
+            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "
@@ -429,6 +431,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # For Telegram: append the rich-messages extension only when the user has
+    # opted in to ``platforms.telegram.extra.rich_messages: true``.  The base
+    # hint covers MarkdownV2-compatible constructs; the extension adds Bot API
+    # 10.1 guidance (tables, task lists, math, collapsible details, etc.).
+    if platform_key == "telegram" and _default_hint:
+        try:
+            from hermes_cli.config import load_config_readonly
+            _cfg = load_config_readonly()
+            _tg_extra = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra") or {}
+            if _tg_extra.get("rich_messages"):
+                _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
+        except Exception:
+            pass  # Config read failure — fall back to base hint only
+
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
@@ -448,9 +464,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # CLI), None lets build_context_files_prompt fall back to the launch
         # dir — the user's real cwd there, but the install dir for the gateway
         # daemon, which is why the gateway sets TERMINAL_CWD.
+        #
+        # allow_install_tree_fallback: for cli/tui the launch dir IS the
+        # user's shell cwd, so an in-tree fallback is a deliberate choice
+        # (developing Hermes). Every other surface (desktop chat panel,
+        # gateway daemons) self-spawns into the install tree, where the
+        # fallback would inject this repo's contributor AGENTS.md (#64590).
         context_files_prompt = _r.build_context_files_prompt(
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len)
+            context_length=_ctx_len,
+            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

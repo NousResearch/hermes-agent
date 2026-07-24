@@ -13,6 +13,7 @@ import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   Activity,
+  AppWindow,
   Archive,
   BarChart3,
   ChevronLeft,
@@ -59,6 +60,7 @@ import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
 import { runGatewayRestart } from '@/store/system-actions'
 import { applyBackendUpdate } from '@/store/updates'
+import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -80,6 +82,7 @@ import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
+import { usePaletteContributions } from './contrib'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
@@ -117,6 +120,7 @@ interface PalettePage {
 }
 
 interface SessionEntry {
+  git_branch?: null | string
   id: string
   preview?: string
   title: string
@@ -211,6 +215,7 @@ const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
 type SessionRow = Awaited<ReturnType<typeof listAllProfileSessions>>['sessions'][number]
 
 const toSessionEntry = (session: SessionRow): SessionEntry => ({
+  git_branch: session.git_branch ?? null,
   id: session.id,
   preview: session.preview ?? undefined,
   title: sessionTitle(session)
@@ -368,6 +373,8 @@ export function CommandPalette() {
     [t.settings.fieldLabels]
   )
 
+  const contributedItems = usePaletteContributions()
+
   const baseGroups = useMemo<PaletteGroup[]>(() => {
     const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
     const cc = t.commandCenter
@@ -408,6 +415,18 @@ export function CommandPalette() {
             label: cc.nav.newChat.title,
             run: go(NEW_CHAT_ROUTE)
           },
+          ...(canOpenNewWindow()
+            ? [
+                {
+                  action: 'session.newWindow',
+                  icon: AppWindow,
+                  id: 'nav-new-window',
+                  keywords: ['window', 'instance', 'open', 'new'],
+                  label: t.keybinds.actions['session.newWindow'],
+                  run: () => void openNewWindow()
+                }
+              ]
+            : []),
           {
             action: 'view.showTerminal',
             icon: Terminal,
@@ -559,9 +578,26 @@ export function CommandPalette() {
             run: go(settingsTab(entry.tab))
           }))
         ]
-      }
+      },
+      // Registry-contributed rows (core features + plugins) — one group,
+      // omitted while nothing contributes.
+      ...(contributedItems.length > 0
+        ? [
+            {
+              heading: cc.commands,
+              items: contributedItems.map(item => ({
+                action: item.action,
+                icon: item.icon ?? Zap,
+                id: item.key,
+                keywords: item.keywords,
+                label: item.label,
+                run: item.run
+              }))
+            }
+          ]
+        : [])
     ]
-  }, [go, settingsSectionLabel, t, worktrees])
+  }, [contributedItems, go, settingsSectionLabel, t, worktrees])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
@@ -664,7 +700,12 @@ export function CommandPalette() {
         items: sessions.map(session => ({
           icon: MessageCircle,
           id: `session-${session.id}`,
-          keywords: ['chat', 'session', ...(session.preview ? [session.preview] : [])],
+          keywords: [
+            'chat',
+            'session',
+            ...(session.preview ? [session.preview] : []),
+            ...(session.git_branch ? [session.git_branch] : [])
+          ],
           label: session.title,
           run: go(sessionRoute(session.id))
         }))
@@ -702,7 +743,13 @@ export function CommandPalette() {
         items: archivedSessions.map(session => ({
           icon: Archive,
           id: `archived-${session.id}`,
-          keywords: ['archived', 'chat', 'session', ...(session.preview ? [session.preview] : [])],
+          keywords: [
+            'archived',
+            'chat',
+            'session',
+            ...(session.preview ? [session.preview] : []),
+            ...(session.git_branch ? [session.git_branch] : [])
+          ],
           label: session.title,
           run: go(`${SETTINGS_ROUTE}?tab=sessions&session=${encodeURIComponent(session.id)}`)
         }))

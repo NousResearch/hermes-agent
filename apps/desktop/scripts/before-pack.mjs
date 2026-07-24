@@ -1,4 +1,3 @@
-'use strict'
 /**
  * before-pack.mjs — electron-builder beforePack hook.
  *

@@ -289,7 +289,7 @@ def build_verify_on_stop_nudge(
             + "), read any failure, repair the code, and summarize what passed."
         )
     else:
-        temp_dir = tempfile.gettempdir()
+        temp_dir = os.path.realpath(tempfile.gettempdir())
         command_instruction = (
             "No canonical test/lint/build command was detected. Create a focused "
             f"temporary verification script under `{temp_dir}` using an OS-safe "

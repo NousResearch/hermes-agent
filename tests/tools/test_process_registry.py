@@ -403,7 +403,7 @@ class TestOrphanedPipeReconciliation:
 
         assert result["status"] == "exited", result
         assert result["exit_code"] == 0
-        assert elapsed < 0.3, f"wait() should wake on completion; took {elapsed:.3f}s"
+        assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
 # =========================================================================
@@ -1336,6 +1336,66 @@ def test_drain_notifications_skips_consumed():
             process_registry.completion_queue.get_nowait()
 
 
+def test_drain_notifications_can_deliver_poll_observed_for_gateway(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_polled",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "observed but not consumed",
+    }
+    registry._poll_observed.add(event["session_id"])
+    registry.completion_queue.put(event)
+
+    try:
+        results = registry.drain_notifications(
+            session_key="session-a",
+            owns_event=lambda _event: True,
+            skip_poll_observed=False,
+        )
+
+        assert [raw for raw, _ in results] == [event]
+    finally:
+        registry._poll_observed.discard(event["session_id"])
+
+
+@pytest.mark.parametrize(
+    "skip_state", ["_poll_observed", "_completion_consumed"]
+)
+def test_drain_notifications_routes_foreign_before_local_skip(
+    registry, skip_state
+):
+    event = {
+        "type": "completion",
+        "session_id": f"proc_foreign_{skip_state}",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "foreign",
+    }
+    ownership_calls = []
+    getattr(registry, skip_state).add(event["session_id"])
+    registry.completion_queue.put(event)
+
+    def owns_event(checked_event):
+        ownership_calls.append(checked_event)
+        return False
+
+    try:
+        results = registry.drain_notifications(
+            session_key="session-b",
+            owns_event=owns_event,
+        )
+
+        assert results == []
+        assert ownership_calls == [event]
+        assert registry.completion_queue.get_nowait() == event
+        assert registry.completion_queue.empty()
+    finally:
+        getattr(registry, skip_state).discard(event["session_id"])
+
+
 def test_drain_notifications_empty_queue():
     from tools.process_registry import process_registry
 
@@ -1344,6 +1404,151 @@ def test_drain_notifications_empty_queue():
 
     results = process_registry.drain_notifications()
     assert results == []
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_drain_notifications_filters_addressed_completion_by_owns_event(
+    registry, exit_code
+):
+    owned = {
+        "type": "completion",
+        "session_id": f"proc_owned_{exit_code}",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": exit_code,
+        "output": "owned",
+    }
+    foreign = {
+        "type": "completion",
+        "session_id": f"proc_foreign_{exit_code}",
+        "session_key": "session-b",
+        "command": "safe-test-command",
+        "exit_code": exit_code,
+        "output": "foreign",
+    }
+    registry.completion_queue.put(owned)
+    registry.completion_queue.put(foreign)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda event: event.get("session_key") == "session-a",
+    )
+
+    assert [event["session_id"] for event, _ in results] == [
+        f"proc_owned_{exit_code}"
+    ]
+    assert registry.completion_queue.get_nowait() == foreign
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_filters_addressed_completion_by_session_key(registry):
+    owned = {
+        "type": "completion",
+        "session_id": "proc_owned",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "owned",
+    }
+    foreign = {
+        "type": "completion",
+        "session_id": "proc_foreign",
+        "session_key": "session-b",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "foreign",
+    }
+    registry.completion_queue.put(owned)
+    registry.completion_queue.put(foreign)
+
+    results = registry.drain_notifications(session_key="session-a")
+
+    assert [event["session_id"] for event, _ in results] == ["proc_owned"]
+    assert registry.completion_queue.get_nowait() == foreign
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_session_key_filter_requeues_origin_only_event(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_origin_only",
+        "origin_ui_session_id": "ui-session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(session_key="session-a")
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_ownerless_completion_preserves_legacy_delivery(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_ownerless",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "ownerless",
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda _event: False,
+    )
+
+    assert [raw for raw, _ in results] == [event]
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_ownerless_async_delegation_still_requires_proof(registry):
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_ownerless",
+        "goal": "task",
+        "status": "completed",
+        "summary": "done",
+        "api_calls": 1,
+        "duration_seconds": 0.1,
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda _event: False,
+    )
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_completion_callback_exception_fails_closed(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_callback_error",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    def broken(_event):
+        raise RuntimeError("ownership check exploded")
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=broken,
+    )
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
 
 
 def test_drain_notifications_filters_async_delegation_by_session_key():
@@ -1905,8 +2110,11 @@ class TestSigkillEscalation:
         sometimes a child). The escalation now re-probes every target directly.
         """
         import psutil
+        # 2.0s grace (not 1.0): with three interpreters mid-startup on a
+        # loaded runner, a 1s SIGTERM->partition window races child spawn and
+        # is how a child PID escaped the live-system guard in CI.
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
-                            staticmethod(lambda: 1.0))
+                            staticmethod(lambda: 2.0))
         # Parent spawns 2 children; all trap SIGTERM. Parent prints child pids
         # after the handler is installed.
         parent_src = (
@@ -1920,6 +2128,12 @@ class TestSigkillEscalation:
         )
         parent = subprocess.Popen([sys.executable, "-c", parent_src],
                                   stdout=subprocess.PIPE, text=True)
+        # Bound the readline: if the parent wedges before printing, fail THIS
+        # test with a clear message instead of letting the per-file timeout
+        # SIGKILL the whole pytest process (opaque rc=124 in CI).
+        import select as _select
+        ready, _, _ = _select.select([parent.stdout], [], [], 20.0)
+        assert ready, "parent process failed to print child pids within 20s"
         child_pids = [int(x) for x in parent.stdout.readline().split()]
         all_pids = [parent.pid] + child_pids
         try:

@@ -171,6 +171,13 @@ class ProcessRegistry:
         # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+        # Rehydrate durable delegation completions only at registry startup.
+        # Consumers still inject them as fresh turns through this existing rail.
+        try:
+            from tools.async_delegation import restore_undelivered_completions
+            restore_undelivered_completions(self.completion_queue)
+        except Exception as exc:
+            logger.warning("Could not restore async delegation completions: %s", exc)
 
         # Track sessions whose completion was already consumed by the agent
         # via wait/log.  Drain loops AND gateway/tui watchers skip notifications
@@ -1091,6 +1098,10 @@ class ProcessRegistry:
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
                 "output": output_tail,
+                # Stable producer identity across checkpoint recovery; unlike
+                # a consumer-observed completion timestamp, this does not vary
+                # based on which watcher notices exit first.
+                "started_at": session.started_at,
             })
 
     # ----- Query Methods -----
@@ -1135,8 +1146,10 @@ class ProcessRegistry:
                 return False
         return True
 
-    def _drain_should_skip(self, session_id: str) -> bool:
-        """Whether the CLI drain should skip a completion event for this session.
+    def _drain_should_skip(
+        self, session_id: str, *, skip_poll_observed: bool = True
+    ) -> bool:
+        """Whether this drain should skip a completion event for this session.
 
         Skips when the agent has either truly consumed the output (wait/log →
         ``_completion_consumed``) or observed the exit inline via poll()
@@ -1146,32 +1159,45 @@ class ProcessRegistry:
         check only ``is_completion_consumed`` so a read-only poll never
         suppresses their autonomous delivery turn (#10156).
         """
-        return session_id in self._completion_consumed or session_id in self._poll_observed
+        return session_id in self._completion_consumed or (
+            skip_poll_observed and session_id in self._poll_observed
+        )
 
     def drain_notifications(
-        self, session_key: str = "", owns_event=None,
+        self,
+        session_key: str = "",
+        owns_event=None,
+        *,
+        skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
         Skips completion events the agent already consumed via wait/log or
-        observed inline via poll() (see ``_drain_should_skip``).
+        observed inline via poll() (see ``_drain_should_skip``). Gateway/TUI
+        callers pass ``skip_poll_observed=False`` because read-only polling must
+        not suppress autonomous delivery there.
 
-        Async-delegation events carry a conversation payload, so draining one
-        into the wrong session is a cross-chat leak (#58684, #55578). Two
-        filter modes, strongest wins:
+        When a routing filter is supplied, addressed notifications must not be
+        drained into the wrong session. Async-delegation events always require
+        conversation payload; ordinary notifications require routing when they
+        carry ``session_key`` or ``origin_ui_session_id`` metadata. Two filter
+        modes are supported, strongest first:
 
         - ``owns_event(evt) -> bool``: positive-proof ownership callback.
-          When provided, an async-delegation event is consumed ONLY if the
-          callback returns True; everything else is re-queued for its owner.
+          When provided, a routed event is consumed ONLY if the callback
+          returns True; everything else is re-queued for its owner.
           The TUI passes its compression-chain-aware ownership check here so
           a post-compression session still claims its own pre-compression
           dispatches.
         - ``session_key``: plain key equality (CLI and other single-session
-          callers). Non-matching async-delegation events are re-queued.
+          callers). Non-matching addressed events are re-queued.
 
         With neither set, all events are consumed (legacy single-session
-        behavior, backward compatible).
+        behavior, backward compatible). Ownerless ordinary notifications also
+        retain that legacy behavior even when a filter is provided. When a
+        filter is provided, ownerless async-delegation events remain
+        fail-closed and require positive proof.
         """
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
@@ -1180,26 +1206,43 @@ class ProcessRegistry:
                 evt = self.completion_queue.get_nowait()
             except Exception:
                 break
-            _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
+            # Positive-proof ownership beats bare key equality. Delegation
+            # payloads always require proof; ordinary events require it once
+            # they carry routing metadata. Ownerless ordinary events preserve
+            # legacy single-session delivery.
+            is_async_delegation = evt.get("type") == "async_delegation"
+            evt_session_key = str(evt.get("session_key") or "")
+            evt_origin_sid = str(evt.get("origin_ui_session_id") or "")
+            requires_positive_proof = is_async_delegation or bool(
+                evt_session_key or evt_origin_sid
+            )
+            if owns_event is not None and requires_positive_proof:
+                try:
+                    owned = bool(owns_event(evt))
+                except Exception:
+                    owned = False  # fail closed — never leak on a broken check
+                if not owned:
+                    requeue.append(evt)
+                    continue
+            elif session_key and requires_positive_proof:
+                if evt_session_key != session_key:
+                    requeue.append(evt)
+                    continue
+            elif is_async_delegation and evt.get("restored"):
+                # Durable restore can enqueue previous-process payloads into a
+                # fresh registry. An unfiltered legacy drain cannot prove
+                # ownership, so leave those events queued for the owner.
+                requeue.append(evt)
                 continue
-            # Filter async-delegation events so they are not delivered to the
-            # wrong session/thread (#58684). Positive-proof callback beats
-            # bare key equality when the caller can provide one.
-            if evt.get("type") == "async_delegation":
-                if owns_event is not None:
-                    try:
-                        owned = bool(owns_event(evt))
-                    except Exception:
-                        owned = False  # fail closed — never leak on a broken check
-                    if not owned:
-                        requeue.append(evt)
-                        continue
-                elif session_key:
-                    evt_session_key = evt.get("session_key", "") or ""
-                    if evt_session_key != session_key:
-                        requeue.append(evt)
-                        continue
+            # Local consumed/observed state may suppress only events this
+            # session owns (or legacy ownerless ordinary events). Routing must
+            # happen first so a foreign session cannot drop the owner's event.
+            _evt_sid = evt.get("session_id", "")
+            if evt.get("type") == "completion" and self._drain_should_skip(
+                _evt_sid, skip_poll_observed=skip_poll_observed
+            ):
+                continue
+
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
@@ -1347,8 +1390,13 @@ class ProcessRegistry:
         # Default: last N lines
         if offset == 0 and limit > 0:
             selected = lines[-limit:]
+            observed_completion_output = bool(selected) or total_lines == 0
         else:
             selected = lines[offset:offset + limit]
+            stop = slice(offset, offset + limit).indices(total_lines)[1]
+            observed_completion_output = (
+                total_lines == 0 or (bool(selected) and stop == total_lines)
+            )
 
         result = {
             "session_id": session.id,
@@ -1358,7 +1406,7 @@ class ProcessRegistry:
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
         }
-        if session.exited:
+        if session.exited and observed_completion_output:
             self._completion_consumed.add(session_id)
         return result
 
@@ -1449,17 +1497,41 @@ class ProcessRegistry:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str, *, source: str = "process.kill") -> dict:
-        """Kill a background process."""
+    def kill_process(
+        self,
+        session_id: str,
+        *,
+        source: str = "process.kill",
+        consume_output: bool = True,
+    ) -> dict:
+        """Kill a background process and return its output snapshot.
+
+        ``consume_output`` is true for explicit tool/RPC kills because their
+        caller observes the returned output. Bulk cleanup passes false: it
+        discards each result and therefore must not suppress an autonomous
+        output-bearing completion notification.
+        """
+        from tools.ansi_strip import strip_ansi
+
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         if session.exited:
-            return {
-                "status": "already_exited",
-                "exit_code": session.exit_code,
-            }
+            with session._lock:
+                result = {
+                    "status": "already_exited",
+                    "command": session.command,
+                    "exit_code": session.exit_code,
+                    "completion_reason": session.completion_reason,
+                    "termination_source": session.termination_source,
+                    "output": strip_ansi(session.output_buffer[-2000:]),
+                }
+            # Only suppress the autonomous turn after its output is present in
+            # the explicit kill result, matching wait/log consumption.
+            if consume_output:
+                self._completion_consumed.add(session_id)
+            return result
 
         # Kill via PTY, Popen (local), or env execute (non-local)
         try:
@@ -1486,10 +1558,14 @@ class ProcessRegistry:
                     with session._lock:
                         session.exited = True
                         session.exit_code = None
+                        output = strip_ansi(session.output_buffer[-2000:])
+                    if consume_output:
+                        self._completion_consumed.add(session_id)
                     self._move_to_finished(session)
                     return {
                         "status": "already_exited",
                         "exit_code": session.exit_code,
+                        "output": output,
                     }
                 self._terminate_host_pid(session.pid, session.host_start_time)
             else:
@@ -1500,10 +1576,17 @@ class ProcessRegistry:
                         "its original runtime handle is no longer available"
                     ),
                 }
-            session.exited = True
-            session.exit_code = -15  # SIGTERM
-            session.completion_reason = "killed"
-            session.termination_source = source
+            # Capture output before marking consumed, then mark consumed before
+            # exposing ``exited`` to watcher tasks. This closes the delayed
+            # notification race without discarding the terminal transcript.
+            with session._lock:
+                output = strip_ansi(session.output_buffer[-2000:])
+                if consume_output:
+                    self._completion_consumed.add(session_id)
+                session.exited = True
+                session.exit_code = -15  # SIGTERM
+                session.completion_reason = "killed"
+                session.termination_source = source
             self._move_to_finished(session)
             self._write_checkpoint()
             return {
@@ -1511,6 +1594,7 @@ class ProcessRegistry:
                 "session_id": session.id,
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
+                "output": output,
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -1747,7 +1831,11 @@ class ProcessRegistry:
 
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id, source="kill_all")
+            result = self.kill_process(
+                session.id,
+                source="kill_all",
+                consume_output=False,
+            )
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -2031,6 +2119,11 @@ def _format_async_delegation(evt: dict) -> str:
                     + (f": {r_error}" if r_error else "")
                     + ")"
                 )
+            r_live = r.get("live_transcript")
+            if r_live:
+                lines.append(
+                    f"Full live transcript (complete tool/assistant trace): {r_live}"
+                )
         return "\n".join(lines)
 
     age = ""
@@ -2238,7 +2331,10 @@ def _handle_process(args, **kw):
         elif action == "wait":
             return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":
-            return json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+            return json.dumps(
+                _redact_process_result(process_registry.kill_process(session_id)),
+                ensure_ascii=False,
+            )
         elif action == "write":
             return json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":

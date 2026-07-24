@@ -7,7 +7,8 @@
     "apps/*",
     "ui-tui",
     "ui-tui/packages/*",
-    "web"
+    "web",
+    "tests-js"
   ],
   "scripts": {
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
@@ -20,7 +21,9 @@
     "audit:tui": "npm audit --workspace ui-tui",
     "audit:fix:root": "npm audit fix --workspaces=false",
     "audit:fix:web": "npm audit fix --workspace web",
-    "audit:fix:tui": "npm audit fix --workspace ui-tui"
+    "audit:fix:tui": "npm audit fix --workspace ui-tui",
+    "check": "npm run --ws check",
+    "fix": "npm run --ws fix"
   },
   "repository": {
     "type": "git",
@@ -37,7 +40,6 @@
   },
   "overrides": {
     "lodash": "4.18.1",
-    "@assistant-ui/store": "0.2.13",
     "yauzl": "^3.3.1"
   },
   "engines": {

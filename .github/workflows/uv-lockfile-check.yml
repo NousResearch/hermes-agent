@@ -45,6 +45,10 @@ name: uv.lock check
 
 on:
   workflow_call:
+    outputs:
+      review_status:
+        description: "JSON review status for the review-status aggregator"
+        value: ${{ jobs.check.outputs.review_status }}
 
 permissions:
   contents: read
@@ -58,6 +62,8 @@ jobs:
     name: uv lock --check
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      review_status: ${{ steps.verify.outputs.review_status }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -73,8 +79,22 @@ jobs:
       # of this file) — failures often mean "your branch is behind main,
       # rebase and regenerate uv.lock."
       - name: Verify uv.lock is up-to-date
+        id: verify
         run: |
-          if ! uv lock --check; then
+          # uv lock --check re-resolves against PyPI (network). Retry so a
+          # registry blip doesn't read as "lockfile stale". A genuinely stale
+          # lockfile fails all attempts (deterministic), costing only seconds.
+          ok=false
+          for i in 1 2 3; do
+            if uv lock --check; then
+              ok=true
+              break
+            fi
+            [ "$i" = 3 ] && break
+            echo "::warning::uv lock --check failed (attempt $i); retrying in 10s"
+            sleep 10
+          done
+          if [ "$ok" != true ]; then
             cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           ## ❌ uv.lock is out of sync with pyproject.toml
 
@@ -104,5 +124,9 @@ jobs:
           on `main` post-merge.
           EOF
             echo "::error title=uv.lock out of sync::Run \`uv lock\` locally and commit the result. If on a PR, sync with main first."
+            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock out of sync","summary":"uv.lock is out of sync with pyproject.toml.","how_to_fix":"Run `uv lock` locally and commit the result. If on a PR, sync with main first:\n```\ngit fetch origin main\ngit rebase origin/main\nuv lock\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock\"\n```\n"}]}]'
+            echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          review_status='[]'
+          echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"

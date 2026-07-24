@@ -40,7 +40,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp"})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp", "bounded_capture": True})]
 
 
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
@@ -73,11 +73,11 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     )
 
     assert result["exit_code"] == 0
-    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir"}]
+    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True}]
 
 
-def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
-    """A prior `cd` updates env.cwd; terminal_tool must honor that live cwd."""
+def test_foreground_command_prefers_recorded_session_cwd_over_init_time_cwd(monkeypatch):
+    """A prior `cd` records the session cwd; terminal_tool must honor it."""
     calls = []
 
     class FakeEnv:
@@ -91,6 +91,7 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     task_id = "session-live-cwd"
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/init"}})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/init"))
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
@@ -100,15 +101,17 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
         "_check_all_guards",
         lambda command, env_type, **kwargs: {"approved": True},
     )
+    # The prior command's completed `cd` recorded the session cwd.
+    terminal_tool.record_session_cwd(task_id, "/workspace/live")
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/live"})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/live", "bounded_capture": True})]
 
 
-def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
-    """Background process launches must also use the live session cwd."""
+def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monkeypatch):
+    """Background process launches must also use the recorded session cwd."""
 
     class FakeEnv:
         env = {}
@@ -129,6 +132,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     task_id = "session-live-cwd-bg"
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/init"}})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/init"))
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
@@ -139,6 +143,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
         lambda command, env_type, **kwargs: {"approved": True},
     )
     monkeypatch.setattr(process_registry_mod, "process_registry", registry)
+    terminal_tool.record_session_cwd(task_id, "/workspace/live")
 
     result = json.loads(
         terminal_tool.terminal_tool(
@@ -162,15 +167,13 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     }]
 
 
-def test_registering_cwd_override_updates_live_env_cwd(monkeypatch):
+def test_registering_cwd_override_updates_session_record(monkeypatch):
     """An ACP ``update_cwd`` (re-)registered mid-session must win over a
-    previously ``cd``-ed live ``env.cwd``.
+    previously ``cd``-ed session cwd.
 
-    Preferring live ``env.cwd`` (so session-local ``cd`` survives) means a
-    freshly registered ``cwd`` override would otherwise sit *below* the
-    already-set ``env.cwd`` and be silently ignored. ``register_task_env_overrides``
-    syncs the new cwd onto the live cached env so an explicit ACP project-root
-    change takes effect, as the editor client expects.
+    Registration writes the session record directly, so an explicit ACP
+    project-root change takes effect on the next command, as the editor
+    client expects.
     """
 
     class FakeEnv:
@@ -181,15 +184,18 @@ def test_registering_cwd_override_updates_live_env_cwd(monkeypatch):
     fake_env = FakeEnv()
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: fake_env})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    # The session had cd'd somewhere before the editor switched project roots.
+    terminal_tool.record_session_cwd(task_id, "/workspace/old")
 
     terminal_tool.register_task_env_overrides(task_id, {"cwd": "/workspace/new"})
 
-    # The live env now reflects the editor's new project root.
+    # The live env mirror still updates (legacy env seeding) …
     assert fake_env.cwd == "/workspace/new"
-
-    # A subsequent command resolves to the new cwd (env.cwd precedence).
+    # … and the session record — what commands actually resolve against — too.
+    assert terminal_tool.get_session_cwd(task_id) == "/workspace/new"
     assert terminal_tool._resolve_command_cwd(
-        workdir=None, env=fake_env, default_cwd="/workspace/config"
+        workdir=None, default_cwd="/workspace/config", session_key=task_id
     ) == "/workspace/new"
 
 
@@ -221,6 +227,88 @@ def test_registering_non_cwd_override_leaves_live_env_cwd_untouched(monkeypatch)
     terminal_tool.register_task_env_overrides(task_id, {"modal_image": "custom:latest"})
 
     assert fake_env.cwd == "/workspace/keep"
+
+
+def test_stale_env_cwd_from_different_session_is_ignored(monkeypatch):
+    """A different session's `cd` left env.cwd pointing at its checkout.
+
+    The terminal env is shared (collapsed to "default"), so env.cwd tracks the
+    LAST session that ran a command.  When session B claims the env after
+    session A left it in A's worktree, the first command must NOT run in A's
+    leftover cwd — it must fall through to the config/override cwd (this
+    session's own workspace).
+    """
+    calls = []
+
+    class FakeEnv:
+        env = {}
+        cwd = "/home/user/src/hermes-desktop-tipc/apps/desktop"
+        cwd_owner = "session-A-key"
+
+        def execute(self, command, **kwargs):
+            calls.append((command, kwargs))
+            return {"output": "ok", "returncode": 0}
+
+    task_id = "session-B"
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"default": FakeEnv()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/home/user/src/hermes-agent"))
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: "default")
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+
+    result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
+
+    assert result["exit_code"] == 0
+    # The command must run in the config cwd (hermes-agent), NOT the stale
+    # env.cwd left by session A (hermes-desktop-tipc).
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/home/user/src/hermes-agent", "bounded_capture": True})]
+
+
+def test_same_session_recorded_cwd_survives_across_commands(monkeypatch):
+    """In-session `cd` state survives: the record written by one command is
+    used by the next command in the same session."""
+    calls = []
+
+    class FakeEnv:
+        env = {}
+        cwd = "/workspace/deep"
+
+        def execute(self, command, **kwargs):
+            calls.append((command, kwargs))
+            return {"output": "ok", "returncode": 0}
+
+    env = FakeEnv()
+    task_id = "session-X"
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"default": env})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/config"))
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: "default")
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+
+    # First command runs in the config cwd (no record yet) and afterwards
+    # mirrors the env's post-command cwd into the session record.
+    result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
+    assert result["exit_code"] == 0
+    assert calls[0] == ("pwd", {"timeout": 60, "cwd": "/workspace/config", "bounded_capture": True})
+    assert terminal_tool.get_session_cwd(task_id) == "/workspace/deep"
+
+    # Second command in the same session trusts the record.
+    result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
+    assert result["exit_code"] == 0
+    assert calls[1] == ("pwd", {"timeout": 60, "cwd": "/workspace/deep", "bounded_capture": True})
 
 
 def test_safe_getcwd_returns_real_cwd(monkeypatch):

@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Set
 try:
     import dingtalk_stream
     from dingtalk_stream import ChatbotMessage
-    from dingtalk_stream.frames import CallbackMessage, AckMessage
+    from dingtalk_stream.frames import CallbackMessage, AckMessage, Headers
 
     DINGTALK_STREAM_AVAILABLE = True
 except Exception:  # noqa: BLE001 — broad: optional SDK's transitive deps (cryptography) may raise non-ImportError; degrade gracefully (#41112)
@@ -47,6 +47,7 @@ except Exception:  # noqa: BLE001 — broad: optional SDK's transitive deps (cry
     dingtalk_stream = None  # type: ignore[assignment]
     ChatbotMessage = None  # type: ignore[assignment]
     CallbackMessage = None  # type: ignore[assignment]
+    Headers = None  # type: ignore[assignment]
     AckMessage = type(
         "AckMessage",
         (),
@@ -123,7 +124,7 @@ def check_dingtalk_requirements() -> bool:
     Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
     on first call if not present.
     """
-    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage, Headers
     global HTTPX_AVAILABLE, httpx
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
         try:
@@ -134,7 +135,7 @@ def check_dingtalk_requirements() -> bool:
         try:
             import dingtalk_stream as _ds
             from dingtalk_stream import ChatbotMessage as _CM
-            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM, Headers as _H
             import httpx as _httpx
         except Exception:
             return False
@@ -142,6 +143,7 @@ def check_dingtalk_requirements() -> bool:
         ChatbotMessage = _CM
         CallbackMessage = _CBM
         AckMessage = _AM
+        Headers = _H
         httpx = _httpx
         DINGTALK_STREAM_AVAILABLE = True
         HTTPX_AVAILABLE = True
@@ -1431,6 +1433,31 @@ class _IncomingHandler(
         attribute 'pre_start'`` and kills the stream connection.
         """
         return
+
+    async def raw_process(self, callback_message: "CallbackMessage"):
+        """Bridge for dingtalk-stream >= 0.24.
+
+        The SDK dispatches incoming messages via ``raw_process()`` on
+        registered handlers.  The base ``ChatbotHandler.raw_process()``
+        calls ``self.process()`` *synchronously*, which silently drops
+        the coroutine returned by our async override.  This explicit
+        override awaits ``process()`` and returns a proper ACK.
+        """
+        try:
+            result = await self.process(callback_message)
+            if isinstance(result, tuple):
+                status, msg = result
+            else:
+                status, msg = AckMessage.STATUS_OK, "OK"
+        except Exception:
+            status, msg = AckMessage.STATUS_SYSTEM_EXCEPTION, "error"
+
+        ack = AckMessage()
+        ack.code = status
+        ack.headers.message_id = callback_message.headers.message_id
+        ack.headers.content_type = Headers.CONTENT_TYPE_APPLICATION_JSON
+        ack.data = {"response": msg}
+        return ack
 
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.

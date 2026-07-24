@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -489,6 +490,97 @@ class TestHandlerProcessIsAsync:
     def test_process_is_coroutine_function(self):
         from plugins.platforms.dingtalk.adapter import _IncomingHandler
         assert asyncio.iscoroutinefunction(_IncomingHandler.process)
+
+
+class TestRawProcessAck:
+    """raw_process() must return a well-formed AckMessage for SDK >= 0.24."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_sdk_types(self, monkeypatch):
+        import plugins.platforms.dingtalk.adapter as dt
+
+        class _FakeAckMessage:
+            STATUS_OK = 200
+            STATUS_SYSTEM_EXCEPTION = 500
+
+            def __init__(self):
+                self.code = None
+                self.headers = SimpleNamespace(message_id=None, content_type=None)
+                self.data = None
+                self.message = None
+
+        monkeypatch.setattr(dt, "AckMessage", _FakeAckMessage)
+        monkeypatch.setattr(
+            dt, "Headers",
+            SimpleNamespace(CONTENT_TYPE_APPLICATION_JSON="application/json"),
+            raising=False,
+        )
+
+    @pytest.fixture()
+    def handler(self):
+        from plugins.platforms.dingtalk.adapter import _IncomingHandler
+        adapter = MagicMock()
+        return _IncomingHandler(adapter)
+
+    @staticmethod
+    def _make_callback(msg_id="test-msg-123"):
+        headers = SimpleNamespace(message_id=msg_id, content_type=None)
+        return SimpleNamespace(headers=headers, data={"text": "hello"})
+
+    def test_ack_shape_on_success(self, handler):
+        handler.process = AsyncMock(return_value=(200, "OK"))
+        callback = self._make_callback()
+
+        ack = asyncio.run(handler.raw_process(callback))
+
+        assert ack.code == 200
+        assert ack.headers.message_id == "test-msg-123"
+        assert ack.data == {"response": "OK"}
+
+    def test_ack_shape_on_exception(self, handler):
+        handler.process = AsyncMock(side_effect=RuntimeError("boom"))
+        callback = self._make_callback()
+
+        ack = asyncio.run(handler.raw_process(callback))
+
+        assert ack.code == 500
+        assert ack.data == {"response": "error"}
+
+
+class TestLazyInstallBindsHeaders:
+    """The lazy-install path must rebind ``Headers`` alongside the other SDK types.
+
+    When the module is first imported without the SDK, ``Headers`` is ``None``.
+    ``check_dingtalk_requirements()`` lazily installs the SDK and must rebind
+    ``Headers`` too, otherwise ``raw_process()`` raises ``AttributeError`` when
+    setting ``content_type``.
+    """
+
+    def test_headers_rebound_after_lazy_install(self, monkeypatch):
+        import plugins.platforms.dingtalk.adapter as dt
+
+        fake_frames = SimpleNamespace(
+            CallbackMessage=object,
+            AckMessage=SimpleNamespace(STATUS_OK=200, STATUS_SYSTEM_EXCEPTION=500),
+            Headers=SimpleNamespace(CONTENT_TYPE_APPLICATION_JSON="application/json"),
+        )
+        fake_ds = SimpleNamespace(ChatbotMessage=object, frames=fake_frames)
+
+        # Simulate the "SDK absent at import" state.
+        monkeypatch.setattr(dt, "DINGTALK_STREAM_AVAILABLE", False)
+        monkeypatch.setattr(dt, "HTTPX_AVAILABLE", False)
+        monkeypatch.setattr(dt, "Headers", None, raising=False)
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "id")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "secret")
+
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+        monkeypatch.setitem(sys.modules, "dingtalk_stream", fake_ds)
+        monkeypatch.setitem(sys.modules, "dingtalk_stream.frames", fake_frames)
+        monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace())
+
+        assert dt.check_dingtalk_requirements() is True
+        assert dt.Headers is fake_frames.Headers
+        assert dt.Headers.CONTENT_TYPE_APPLICATION_JSON == "application/json"
 
 
 class TestExtractText:

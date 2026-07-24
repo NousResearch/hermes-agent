@@ -90,6 +90,23 @@ def test_get_proxy_for_base_url_respects_no_proxy(monkeypatch):
     assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://127.0.0.1:7897"
 
 
+def test_get_proxy_for_base_url_cidr_skips_malformed_entry(monkeypatch):
+    """#59505: malformed CIDR before a valid one must not abort the scan.
+    The stdlib bypass in gateway.platforms.base handles this per-entry; we mirror it.
+    """
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    # malformed CIDR (missing prefixlen) followed by valid 10.0.0.0/8
+    monkeypatch.setenv("NO_PROXY", "10.0.0.0/,10.0.0.0/8")
+
+    # valid CIDR should still bypass the proxy for 10.0.5.12
+    assert _get_proxy_for_base_url("https://10.0.5.12/v1") is None
+    # non-matching host still goes through proxy
+    assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://127.0.0.1:7897"
+
+
 def test_openai_http_client_kwargs_async_mode():
     kwargs = _openai_http_client_kwargs(
         "https://litellm.internal.example.com/v1",

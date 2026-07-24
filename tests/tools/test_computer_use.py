@@ -1902,6 +1902,10 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_window_id == 2
         assert backend._last_app == "Chrome"
 
+    @pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="GNOME Shell helper windows only exist on Linux",
+    )
     def test_linux_default_capture_skips_gnome_shell_helper(self):
         windows = [
             {"app_name": "", "pid": 100, "window_id": 1,

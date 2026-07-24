@@ -5193,8 +5193,10 @@ class TestCodexAuxiliaryAdapterTimeout:
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class _SlowAliveCreateStream:
             def __iter__(self):
-                for _ in range(5):
-                    time.sleep(0.03)
+                # Keep the stream alive for ~1s so the assertion distinguishes
+                # total-timeout enforcement from waiting until natural EOF.
+                for _ in range(20):
+                    time.sleep(0.05)
                     yield SimpleNamespace(type="response.in_progress")
 
             def close(self): pass
@@ -5213,7 +5215,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.5
 
 
 class TestCodexAuxiliaryToolMessageConversion:

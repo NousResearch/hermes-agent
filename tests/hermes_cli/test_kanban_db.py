@@ -3255,6 +3255,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
+    monkeypatch.setattr("hermes_state.is_sqlite_wal_reset_vulnerable", lambda: False)
 
     real_connect = _sqlite3.connect
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -254,8 +255,33 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        timeout_bin = shutil.which("timeout")
+        if timeout_bin:
+            command = [timeout_bin, f"{timeout_seconds:.0f}", "bash", "-c", script]
+        else:
+            # macOS ships bash but not GNU coreutils' timeout. Keep the same
+            # bounded, detached behavior with a tiny stdlib wrapper rather
+            # than silently dropping shutdown evidence on that platform.
+            wrapper = (
+                "import subprocess, sys\n"
+                "child = subprocess.Popen(['bash', '-c', sys.argv[2]])\n"
+                "try:\n"
+                "    child.wait(timeout=float(sys.argv[1]))\n"
+                "except subprocess.TimeoutExpired:\n"
+                "    child.kill()\n"
+                "    child.wait()\n"
+                "    raise SystemExit(124)\n"
+                "raise SystemExit(child.returncode or 0)\n"
+            )
+            command = [
+                sys.executable,
+                "-c",
+                wrapper,
+                f"{timeout_seconds:.3f}",
+                script,
+            ]
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            command,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

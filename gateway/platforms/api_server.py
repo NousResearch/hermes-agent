@@ -3142,6 +3142,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 try:
                     delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
                 except _q.Empty:
+                    # Emit the keepalive before observing task completion. A
+                    # quiet gap can end at the same poll boundary as the agent;
+                    # checking done() first would silently drop the liveness
+                    # event that clients rely on during slow tool calls.
+                    if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
+                        await response.write(b": keepalive\n\n")
+                        last_activity = time.monotonic()
                     if agent_task.done():
                         # Drain any remaining items
                         while True:
@@ -3153,9 +3160,6 @@ class APIServerAdapter(BasePlatformAdapter):
                             except _q.Empty:
                                 break
                         break
-                    if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
-                        await response.write(b": keepalive\n\n")
-                        last_activity = time.monotonic()
                     continue
 
                 if delta is None:  # End of stream sentinel

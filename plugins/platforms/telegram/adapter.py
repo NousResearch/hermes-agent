@@ -113,8 +113,19 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
 
     def _watchdog_check() -> None:
         # The deadline fired _LOOP_BLOCKED_DUMP_GRACE ago but the loop never
-        # ran _mark_expired: the loop thread is stuck in a synchronous call.
-        # Diagnose from this thread — the loop can't.
+        # ran _mark_expired: the loop may be stuck in a synchronous call.
+        # First enqueue a probe and give a responsive-but-busy loop a short
+        # chance to process it; otherwise the watchdog can race the queued
+        # expiry callback and report a false blocked-loop diagnostic (#63309).
+        if loop_processed_expiry.is_set():
+            return
+        probe_processed = threading.Event()
+        try:
+            loop.call_soon_threadsafe(probe_processed.set)
+        except RuntimeError:
+            return
+        if probe_processed.wait(timeout=0.05):
+            return
         if not loop_processed_expiry.is_set():
             _dump_loop_blocked_diagnostics(timeout, _LOOP_BLOCKED_DUMP_GRACE)
 

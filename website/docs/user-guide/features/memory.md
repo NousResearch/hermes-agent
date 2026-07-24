@@ -282,6 +282,7 @@ auxiliary:
   background_review:
     provider: openrouter
     model: google/gemini-3-flash-preview   # auto (default) = main chat model
+    max_iterations: 8                      # review loop budget (default 16)
 ```
 
 When you point it at a model **different** from your main one, the review runs
@@ -291,6 +292,13 @@ replays a compact **digest** of the conversation (recent turns verbatim + a
 summary of older ones) rather than the full transcript — minimizing what it
 writes to the new cache. Capture holds: in testing, memory capture was
 identical and skill capture near-identical to the main-model review.
+
+`max_iterations` controls the review fork's **agent-loop iterations** — its
+number of model calls per review. The default is `16`. Numeric values are
+passed through as configured; background review adds no lower or upper cap
+beyond the normal agent configuration behavior. A non-numeric value falls
+back to the default. Set it to the budget appropriate for your endpoint and
+review workload.
 
 Leave it at `auto` (or set it to your main model) and nothing changes — the
 review keeps running on the main model with the full warm-cache replay.

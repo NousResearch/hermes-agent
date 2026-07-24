@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import run_agent as run_agent_module
 from run_agent import AIAgent
 
@@ -38,6 +40,48 @@ class ImmediateThread:
 
     def start(self):
         self._target()
+
+
+@pytest.mark.parametrize("budget", [0, 4, -8, 17, 500])
+def test_background_review_uses_resolved_iteration_budget(monkeypatch, budget):
+    import agent.background_review as bg_review
+
+    captured = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        bg_review,
+        "_resolve_review_runtime",
+        lambda _agent: {
+            "provider": "openai",
+            "model": "fake-model",
+            "routed": False,
+            "max_iterations": budget,
+        },
+    )
+
+    AIAgent._spawn_background_review(
+        _bare_agent(),
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert captured["max_iterations"] == budget
 
 
 def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):

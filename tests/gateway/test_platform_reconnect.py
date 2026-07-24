@@ -138,6 +138,25 @@ class TestStartupPlatformIsolation:
         assert Platform.TELEGRAM not in runner.adapters
         assert runner._create_adapter.call_count == 2
 
+    def test_default_connect_timeout_allows_telegram_polling_readiness(
+        self, monkeypatch
+    ):
+        """Telegram gets a larger default; other platforms stay isolated at 30s."""
+        runner = _make_runner()
+        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+
+        assert runner._platform_connect_timeout_secs(Platform.TELEGRAM) == 180
+        assert runner._platform_connect_timeout_secs(Platform.FEISHU) == 30
+
+    def test_explicit_connect_timeout_still_applies_to_every_platform(
+        self, monkeypatch
+    ):
+        runner = _make_runner()
+        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "90")
+
+        assert runner._platform_connect_timeout_secs(Platform.TELEGRAM) == 90
+        assert runner._platform_connect_timeout_secs(Platform.FEISHU) == 90
+
     @pytest.mark.asyncio
     async def test_connect_adapter_timeout_raises_retryable_exception(self, monkeypatch):
         """The timeout helper turns a hanging connect into a caught startup error."""

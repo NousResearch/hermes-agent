@@ -138,13 +138,20 @@ async def test_polling_disconnect_webhook_reconnect_heals_webhook_send_path(monk
     adapter = _make_adapter()
     polling_app = _lifecycle_app()
     webhook_app = _lifecycle_app()
+
+    async def start_polling_with_progress(**_kwargs):
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    polling_app.updater.start_polling = AsyncMock(
+        side_effect=start_polling_with_progress
+    )
     _configure_lifecycle_connect(monkeypatch, adapter, [polling_app, webhook_app])
     monkeypatch.delenv("TELEGRAM_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
 
     assert await adapter.connect() is True
     assert adapter._webhook_mode is False
-    assert adapter._send_path_degraded is True
+    assert adapter._send_path_degraded is False
     await adapter.disconnect()
 
     monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.test/telegram")

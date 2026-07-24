@@ -1239,7 +1239,7 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
+                contentClassName={cn('flex max-h-[40vh] flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
@@ -1252,10 +1252,10 @@ export function ChatSidebar({
                 onTogglePin={unpinSession}
                 open={pinsOpen}
                 pinned
+                reorderViaDrag={pinnedSessions.length > 1}
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
-                sortable={pinnedSessions.length > 1}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}

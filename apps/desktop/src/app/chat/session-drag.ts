@@ -50,6 +50,13 @@ import { openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './composer/inline-refs'
+import {
+  $sidebarReorderHint,
+  reorderIds,
+  type ReorderZoneSnapshot,
+  resolveReorderTarget,
+  snapshotReorderZones
+} from './sidebar/reorder-zones'
 
 /** A chat surface's drag-start geometry: the anchor pane id it advertises
  *  (`data-session-anchor`) and the composer a link drop routes to
@@ -101,11 +108,16 @@ export function startSessionDrag(
   let surfaces: SurfaceSnapshot[] = []
   let composers: ZoneRect[] = []
   let zoneHost = new Map<string, null | string>()
+  let reorderZones: ReorderZoneSnapshot[] = []
 
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
   let split: { anchor: string; before?: null | string; pos: TileDock } | null = null
   let link: null | string = null
+  // A sidebar reorder target — set when the pointer is over a registered
+  // reorder zone (e.g. Pinned) that owns this session. Mutually exclusive with
+  // split/link: dropping within the bar reorders, dropping on chat links.
+  let reorder: { before: null | string; ids: string[]; onReorder: (ids: string[]) => void } | null = null
 
   // The drag SOURCE (sidebar row or tile tab). Captured synchronously — React
   // clears `currentTarget` after the pointerdown handler returns, but this runs
@@ -125,6 +137,7 @@ export function startSessionDrag(
       surfaces = snapshotSurfaces()
       composers = [...document.querySelectorAll<HTMLElement>('[data-slot="composer-root"]')].map(snapRect)
       zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
+      reorderZones = snapshotReorderZones()
       source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
@@ -135,9 +148,30 @@ export function startSessionDrag(
       if (source) {
         source.style.opacity = restoreOpacity
       }
+
+      $sidebarReorderHint.set(null)
     },
 
     resolveMove(x, y): DropHint | null {
+      // Sidebar reorder wins inside its own bounds: dropping a row within the
+      // bar reorders, only a drop over a chat surface links/splits. Checked
+      // first so the two never fight over the same pixels.
+      const reorderTarget = resolveReorderTarget(reorderZones, payload.id, x, y)
+
+      if (reorderTarget) {
+        reorder = reorderTarget
+        split = null
+        link = null
+        $sidebarReorderHint.set({ before: reorderTarget.before, draggedId: payload.id })
+
+        // Not a pane/zone drop — the tree overlay stands down. The pinned list
+        // paints its own insertion line off $sidebarReorderHint.
+        return null
+      }
+
+      reorder = null
+      $sidebarReorderHint.set(null)
+
       const zone = zones.find(z => rectContains(z.rect, x, y))
       const host = zone ? zoneHost.get(zone.id) : null
 
@@ -178,7 +212,14 @@ export function startSessionDrag(
     },
 
     onCommit() {
-      if (split) {
+      if (reorder) {
+        // Drop within the sidebar: reorder the list in place. No tile, no link.
+        const next = reorderIds(reorder.ids, payload.id, reorder.before)
+
+        if (next !== reorder.ids) {
+          reorder.onReorder(next)
+        }
+      } else if (split) {
         openSessionTile(payload.id, split.pos, split.anchor, split.before)
         // A tile for this session may already exist (openSessionTile is
         // idempotent — e.g. persisted from an earlier run): a drop must never

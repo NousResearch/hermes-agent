@@ -170,9 +170,9 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
   const names = slots.map(slot => taskLabel(slot.task)).join(', ')
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-      <AlertTriangle className="size-3.5 shrink-0" />
-      <span className="grow">
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-400/60 bg-amber-500/15 px-3 py-2.5 text-sm text-amber-50">
+      <AlertTriangle className="size-4 shrink-0" />
+      <span className="grow font-medium">
         {slots.length} auxiliary task{slots.length === 1 ? '' : 's'} ({names}) still run on{' '}
         <span className="font-mono">{allSameProvider ? provider : 'other providers'}</span>, not your main model.
       </span>

@@ -2293,6 +2293,9 @@ class TestWebServerEndpoints:
         try:
             db.create_session(session_id="desktop-root", source="cli")
             db.append_message(session_id="desktop-root", role="user", content="before compression")
+            # Empty before closing: the closed-parent write guard refuses
+            # durable writes to compression-ended sessions.
+            db.replace_messages("desktop-root", [])
             db.end_session("desktop-root", "compression")
             now = _time.time()
             db._conn.execute(
@@ -2301,7 +2304,6 @@ class TestWebServerEndpoints:
             )
             db.create_session(session_id="desktop-tip", source="cli", parent_session_id="desktop-root")
             db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 4, "desktop-tip"))
-            db.replace_messages("desktop-root", [])
             db.append_message(session_id="desktop-tip", role="user", content="after compression")
             db._conn.commit()
         finally:

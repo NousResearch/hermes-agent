@@ -11,7 +11,7 @@ Supports:
 - Processing status reactions: Typing while working, removed on success,
   swapped for CrossMark on failure
 - Reaction events routed as synthetic text events (matches openclaw)
-- Interactive card button-click events routed as synthetic COMMAND events
+- Interactive card callbacks routed as structured synthetic text events
 - Webhook anomaly tracking (matches openclaw createWebhookAnomalyTracker)
 - Verification token validation as second auth layer (matches openclaw)
 
@@ -3007,55 +3007,85 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+        """Route custom Feishu card callbacks as structured agent text events.
+
+        Card callbacks do not carry a real Feishu message id that can be used
+        as a reply target.  They must also not masquerade as ``/card`` slash
+        commands: the gateway command router consumes unknown slash commands
+        before the agent can inspect their structured payload.
+        """
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
-        if token and self._is_card_action_duplicate(token):
-            logger.debug("[Feishu] Dropping duplicate card action token: %s", token)
+        if not token:
+            logger.debug("[Feishu] Card action missing callback token, dropping")
             return
 
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or "")
+        source_message_id = str(getattr(context, "open_message_id", "") or "")
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         if not chat_id or not open_id:
             logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
             return
 
-        action = getattr(event, "action", None)
-        action_tag = str(getattr(action, "tag", "") or "button")
-        action_value = getattr(action, "value", {}) or {}
+        callback_id = f"feishu-card-{hashlib.sha256(token.encode('utf-8')).hexdigest()[:24]}"
+        if self._is_card_action_duplicate(token):
+            logger.debug("[Feishu] Dropping duplicate card action: %s", callback_id)
+            return
 
-        synthetic_text = f"/card {action_tag}"
-        if action_value:
-            try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
-            except Exception:
-                pass
+        try:
+            action = getattr(event, "action", None)
+            action_tag = str(getattr(action, "tag", "") or "button")
+            action_value = getattr(action, "value", {}) or {}
+            form_value = getattr(action, "form_value", {}) or {}
+            payload = {
+                "event_type": "card.action.trigger",
+                "event_id": callback_id,
+                "source_message_id": source_message_id,
+                "operator_id": open_id,
+                "action_tag": action_tag,
+                "action_value": action_value,
+                "form_value": form_value,
+            }
+            synthetic_text = "[Feishu card action]\n" + json.dumps(payload, ensure_ascii=False, default=str)
 
-        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
-        sender_profile = await self._resolve_sender_profile(sender_id)
-        chat_info = await self.get_chat_info(chat_id)
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
-            thread_id=None,
-            user_id_alt=sender_profile["user_id_alt"],
-        )
-        synthetic_event = MessageEvent(
-            text=synthetic_text,
-            message_type=MessageType.COMMAND,
-            source=source,
-            raw_message=data,
-            message_id=token or str(uuid.uuid4()),
-            channel_prompt=self._resolve_channel_prompt(chat_id),
-            timestamp=datetime.now(),
-        )
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
-        await self._handle_message_with_guards(synthetic_event)
+            sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+            sender_profile = await self._resolve_sender_profile(sender_id)
+            chat_info = await self.get_chat_info(chat_id)
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
+                chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+                user_id=sender_profile["user_id"],
+                user_name=sender_profile["user_name"],
+                thread_id=None,
+                user_id_alt=sender_profile["user_id_alt"],
+            )
+            synthetic_event = MessageEvent(
+                text=synthetic_text,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=data,
+                # The callback token is not an open_message_id. Leaving this empty
+                # makes delivery send a new chat message instead of replying to an
+                # invalid synthetic id.
+                message_id=None,
+                channel_prompt=self._resolve_channel_prompt(chat_id),
+                timestamp=datetime.now(),
+            )
+            logger.info(
+                "[Feishu] Routing card action %r from %s in %s as structured text event",
+                action_tag,
+                open_id,
+                chat_id,
+            )
+            await self._handle_message_with_guards(synthetic_event)
+        except Exception:
+            # A claim only becomes durable after dispatch succeeds. Releasing it
+            # lets Feishu retry the same callback instead of losing the event.
+            self._card_action_tokens.pop(token, None)
+            raise
 
     # =========================================================================
     # Per-chat serialization and typing indicator

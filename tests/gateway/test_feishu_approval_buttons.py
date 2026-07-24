@@ -1,5 +1,6 @@
 """Tests for Feishu interactive card approval buttons."""
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -64,7 +65,7 @@ def _make_card_action_data(
     return SimpleNamespace(
         event=SimpleNamespace(
             token=token,
-            context=SimpleNamespace(open_chat_id=chat_id),
+            context=SimpleNamespace(open_chat_id=chat_id, open_message_id="om_card_123"),
             operator=SimpleNamespace(open_id=open_id),
             action=SimpleNamespace(
                 tag="button",
@@ -412,10 +413,10 @@ class TestResolveApproval:
 # ===========================================================================
 
 class TestNonApprovalCardAction:
-    """Non-approval card actions should still route as synthetic commands."""
+    """Non-approval card actions should reach the agent as structured text events."""
 
     @pytest.mark.asyncio
-    async def test_routes_as_synthetic_command(self):
+    async def test_routes_button_as_structured_text_without_reply_target(self):
         adapter = _make_adapter()
 
         data = _make_card_action_data(
@@ -435,7 +436,99 @@ class TestNonApprovalCardAction:
 
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
-        assert "/card button" in event.text
+        assert event.message_type.value == "text"
+        assert event.message_id is None
+        assert event.text.startswith("[Feishu card action]\n")
+        payload = json.loads(event.text.split("\n", 1)[1])
+        event_id = payload.pop("event_id")
+        assert event_id == f"feishu-card-{hashlib.sha256(b'tok_normal').hexdigest()[:24]}"
+        assert payload == {
+            "event_type": "card.action.trigger",
+            "source_message_id": "om_card_123",
+            "operator_id": "ou_user1",
+            "action_tag": "button",
+            "action_value": {"custom_action": "something_else"},
+            "form_value": {},
+        }
+        assert "tok_normal" not in event.text
+
+    @pytest.mark.asyncio
+    async def test_routes_form_values_for_free_text_decision(self):
+        adapter = _make_adapter()
+        data = _make_card_action_data(
+            action_value={"governance_id": "DEC-1"},
+            token="tok_form",
+        )
+        data.event.action.form_value = {
+            "decision": "approve_investigation",
+            "comment": "先核验 7 天，再决定是否实现",
+        }
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        event = mock_handle.call_args[0][0]
+        payload = json.loads(event.text.split("\n", 1)[1])
+        assert payload["action_value"] == {"governance_id": "DEC-1"}
+        assert payload["form_value"] == {
+            "decision": "approve_investigation",
+            "comment": "先核验 7 天，再决定是否实现",
+        }
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_same_token_without_logging_token(self, caplog):
+        adapter = _make_adapter()
+        data = _make_card_action_data({}, token="tok_private_duplicate")
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+            caplog.at_level("DEBUG"),
+        ):
+            await adapter._handle_card_action_event(data)
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_awaited_once()
+        assert "tok_private_duplicate" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_releases_dedup_claim_when_dispatch_fails(self):
+        adapter = _make_adapter()
+        data = _make_card_action_data({}, token="tok_retry")
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(
+                adapter, "_handle_message_with_guards", new_callable=AsyncMock,
+                side_effect=[RuntimeError("dispatch failed"), None],
+            ) as mock_handle,
+        ):
+            with pytest.raises(RuntimeError, match="dispatch failed"):
+                await adapter._handle_card_action_event(data)
+            await adapter._handle_card_action_event(data)
+
+        assert mock_handle.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_token_fails_closed(self):
+        adapter = _make_adapter()
+        data = _make_card_action_data({}, token="")
+        with patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle:
+            await adapter._handle_card_action_event(data)
+        mock_handle.assert_not_awaited()
 
 
 # ===========================================================================

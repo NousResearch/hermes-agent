@@ -3141,6 +3141,22 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if task_status == "blocked":
+                    # ``recompute_ready`` intentionally auto-recovers legacy
+                    # blocked rows that have no explicit block event. Record
+                    # the caller's initial human-ops hold atomically so a
+                    # dispatcher cannot promote and claim the task between
+                    # create and a later CLI ``block`` call.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "created with initial_status=blocked",
+                            "kind": "needs_input",
+                            "recurrences": 1,
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

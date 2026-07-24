@@ -319,6 +319,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
+        # Official short IDs (docs) + catalog long forms. Keep both so pickers
+        # and routing tables that still say k3 / kimi-for-coding-* resolve.
+        "k3",
         "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.6",
@@ -331,7 +334,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "k3",
         "kimi-k3",
+        "kimi-for-coding",
+        "kimi-for-coding-highspeed",
         "kimi-k2.7-code",
         "kimi-k2.7-code-highspeed",
         "kimi-k2.6",

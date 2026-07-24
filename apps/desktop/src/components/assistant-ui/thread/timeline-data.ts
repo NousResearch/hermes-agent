@@ -46,8 +46,27 @@ export function deriveTimelineEntries(messages: readonly TimelineSourceMessage[]
   return entries
 }
 
-/** Last user prompt at/above the viewport top (with slack); else first rendered. */
-export function activeTimelineIndex(offsets: readonly (number | null)[], slack: number = 8): number {
+/** Active timeline index: when scrolled to the bottom, the last prompt;
+ *  else the last prompt at/above the viewport top (mid-scroll);
+ *  else the first rendered entry. */
+export function activeTimelineIndex(
+  offsets: readonly (number | null)[],
+  slack: number = 8,
+  viewportHeight: number = 0,
+  isAtBottom: boolean = false
+): number {
+  // When scrolled to the bottom, highlight the last rendered entry —
+  // even when its top edge is far from the viewport top. Without this
+  // the bottom-most tick stays dark while an older tick near the top
+  // of the viewport claims the active highlight.
+  if (isAtBottom && viewportHeight > 0) {
+    const lastOffset = offsets[offsets.length - 1]
+
+    if (lastOffset != null && lastOffset > slack && lastOffset <= viewportHeight + slack) {
+      return offsets.length - 1
+    }
+  }
+
   let active = -1
   let firstRendered = -1
 

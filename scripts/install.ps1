@@ -2205,8 +2205,9 @@ print(','.join(scripts))
 
     # Verify the dashboard deps specifically -- they're the most common thing
     # users hit and lazy-import errors from `hermes dashboard` are confusing.
-    # If tier 1 failed (the common case), [web] was still picked up by tiers
-    # 2-3; only tier 4 leaves you without it.
+    # A stale/corrupt uv cache can leave uvicorn's dist metadata present while
+    # subpackages such as uvicorn.supervisors are missing, so probe a real
+    # dashboard import path and repair uvicorn via pip without using uv's cache.
     $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
     if (Test-Path $pythonExe) {
         $webOk = $false
@@ -2219,7 +2220,7 @@ print(','.join(scripts))
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
+            & $pythonExe -c "import fastapi, uvicorn; from uvicorn.supervisors import ChangeReload" 2>&1 | Out-Null
             if ($LASTEXITCODE -eq 0) { $webOk = $true }
         } catch { }
         try {
@@ -2228,13 +2229,26 @@ print(','.join(scripts))
         } catch { }
         $ErrorActionPreference = $prevEAP
         if (-not $webOk) {
-            Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
-            Write-Info "Attempting targeted install of [web] extra as last resort..."
-            & $UvCmd pip install -e ".[web]"
+            Write-Warn "fastapi/uvicorn not importable or uvicorn subpackage is corrupt -- `hermes dashboard` may not work."
+            Write-Info "Attempting pip repair of uvicorn to bypass stale uv cache..."
+            & $pythonExe -m pip install --force-reinstall --no-cache-dir "uvicorn[standard]==0.41.0"
             if ($LASTEXITCODE -eq 0) {
-                Write-Success "[web] extra installed; `hermes dashboard` should now work."
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try {
+                    & $pythonExe -c "import fastapi, uvicorn; from uvicorn.supervisors import ChangeReload" 2>&1 | Out-Null
+                    $webOk = ($LASTEXITCODE -eq 0)
+                } catch {
+                    $webOk = $false
+                }
+                $ErrorActionPreference = $prevEAP
+                if ($webOk) {
+                    Write-Success "uvicorn repaired; `hermes dashboard` should now work."
+                } else {
+                    Write-Warn "uvicorn repair completed, but dashboard imports still failed. Run manually: $pythonExe -m pip install --force-reinstall --no-cache-dir `"uvicorn[standard]==0.41.0`""
+                }
             } else {
-                Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
+                Write-Warn "Could not repair uvicorn. Run manually: $pythonExe -m pip install --force-reinstall --no-cache-dir `"uvicorn[standard]==0.41.0`""
             }
         }
         if (-not $webServerSyntaxOk) {

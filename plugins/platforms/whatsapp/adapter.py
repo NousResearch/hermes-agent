@@ -622,22 +622,38 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Build bridge subprocess environment.
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
-            # with_hermes_node_path() copies os.environ when called with no arg.
-            bridge_env = with_hermes_node_path()
-            if self._reply_prefix is not None:
-                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
-            # Pass the profile-aware cache directories so the bridge writes
-            # media where the Python side reads it.  Without these the bridge
-            # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
-            # under HERMES_HOME overrides, profiles, and the new cache/ layout.
+            from tools.environments.local import (
+                _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+                _sanitize_subprocess_env,
+            )
             from gateway.platforms.base import (
                 get_audio_cache_dir as _get_audio_dir,
                 get_document_cache_dir as _get_doc_dir,
                 get_image_cache_dir as _get_img_dir,
             )
-            bridge_env["HERMES_IMAGE_CACHE_DIR"] = str(_get_img_dir())
-            bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
-            bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
+
+            # Only explicitly restore values consumed by the bridge. The
+            # allowlist is blocklisted for ordinary subprocesses, so its force
+            # prefix is required here; the sanitizer removes the prefix before
+            # returning the child environment.
+            bridge_extra_env = {
+                "HERMES_IMAGE_CACHE_DIR": str(_get_img_dir()),
+                "HERMES_AUDIO_CACHE_DIR": str(_get_audio_dir()),
+                "HERMES_DOCUMENT_CACHE_DIR": str(_get_doc_dir()),
+            }
+            if self._reply_prefix is not None:
+                bridge_extra_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            allowed_users = os.getenv("WHATSAPP_ALLOWED_USERS")
+            if allowed_users is not None:
+                bridge_extra_env[
+                    f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}WHATSAPP_ALLOWED_USERS"
+                ] = allowed_users
+
+            # Preserve managed Node discovery, but apply it to the filtered
+            # environment instead of letting it copy the operator environment.
+            bridge_env = with_hermes_node_path(
+                _sanitize_subprocess_env(os.environ, bridge_extra_env)
+            )
 
             self._bridge_process = subprocess.Popen(
                 [

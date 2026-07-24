@@ -13,7 +13,9 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import os
 import signal
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -190,6 +192,62 @@ class TestDataInitialized:
 
 class TestFileHandleClosedOnError:
     """Verify the bridge log file handle is closed on every failure path."""
+
+    @pytest.mark.asyncio
+    async def test_bridge_env_scrubs_operator_credentials(self, monkeypatch):
+        """Bridge gets required runtime config, not operator credentials."""
+        adapter = _make_adapter()
+        adapter._reply_prefix = "Hermes:"
+
+        monkeypatch.setenv("OPENAI_API_KEY", "blocked-openai-value")
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "attacker")
+        monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "+15555550123")
+        monkeypatch.setenv("MODAL_TOKEN_SECRET", "blocked-modal-value")
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        mock_fh = MagicMock()
+        mock_client_cls = _mock_aiohttp(status=503, json_data={})
+        patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
+
+        def _with_node_path(env=None):
+            merged = dict(os.environ if env is None else env)
+            merged["PATH"] = f"/hermes/node/bin{os.pathsep}{merged.get('PATH', '')}"
+            return merged
+
+        node_path = MagicMock(side_effect=_with_node_path)
+
+        with ExitStack() as stack:
+            for item in (*patches[:4], *patches[5:]):
+                stack.enter_context(item)
+            popen = stack.enter_context(patch("subprocess.Popen", return_value=mock_proc))
+            stack.enter_context(
+                patch(
+                    "plugins.platforms.whatsapp.adapter.with_hermes_node_path",
+                    node_path,
+                )
+            )
+            result = await adapter.connect()
+
+        assert result is False
+        bridge_env = popen.call_args.kwargs["env"]
+        assert bridge_env["WHATSAPP_REPLY_PREFIX"] == "Hermes:"
+        assert bridge_env["PATH"] == f"/hermes/node/bin{os.pathsep}/usr/bin"
+        assert bridge_env["HERMES_IMAGE_CACHE_DIR"]
+        assert bridge_env["HERMES_AUDIO_CACHE_DIR"]
+        assert bridge_env["HERMES_DOCUMENT_CACHE_DIR"]
+        assert "OPENAI_API_KEY" not in bridge_env
+        assert bridge_env["WHATSAPP_ALLOWED_USERS"] == "+15555550123"
+        assert "GATEWAY_ALLOWED_USERS" not in bridge_env
+        assert "MODAL_TOKEN_SECRET" not in bridge_env
+
+        sanitized_before_node_path = node_path.call_args.args[0]
+        assert sanitized_before_node_path["PATH"] == "/usr/bin"
+        assert "OPENAI_API_KEY" not in sanitized_before_node_path
+        assert "GATEWAY_ALLOWED_USERS" not in sanitized_before_node_path
+        assert "MODAL_TOKEN_SECRET" not in sanitized_before_node_path
 
     @pytest.mark.asyncio
     async def test_closed_when_bridge_dies_phase1(self):

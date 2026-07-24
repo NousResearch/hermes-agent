@@ -6040,11 +6040,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._enqueue_fifo(session_key, event, adapter)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # Plugin hooks normally run on the idle path inside _handle_message.
+        # The busy path bypasses that, so handover / listen-only / ambient-buffer
+        # plugins never get a chance to silence an inbound that arrives while
+        # an agent is mid-run (the user types during a customer handover,
+        # owner sends an aside, etc.).  Consult pre_gateway_dispatch BEFORE
+        # the authorization gate — same contract as the idle path — so plugins
+        # can skip unauthorized senders without falling into pairing/drop.
+        # Other return shapes (rewrite/allow) are intentionally NOT honored on
+        # the busy path: rewriting an event we're about to interrupt with is
+        # racy, and the only consumer that emits skip today is gateway-policy
+        # (handover / listen-only).  allow / no-action fall through to auth.
+        is_internal = bool(getattr(event, "internal", False))
+        if not is_internal:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _hook_results = _invoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=self.session_store,
+                )
+            except Exception as _hook_exc:
+                logger.warning("pre_gateway_dispatch (busy path) invocation failed: %s", _hook_exc)
+                _hook_results = []
+
+            for _result in _hook_results or []:
+                if not isinstance(_result, dict):
+                    continue
+                if _result.get("action") == "skip":
+                    try:
+                        _platform_str = (
+                            event.source.platform.value
+                            if event.source.platform
+                            else "unknown"
+                        )
+                    except Exception:
+                        _platform_str = "unknown"
+                    logger.info(
+                        "pre_gateway_dispatch skip (busy path): reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        _platform_str,
+                        getattr(event.source, "chat_id", None) or "unknown",
+                    )
+                    return True
+
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
+        # Runs after pre_gateway_dispatch so a plugin `skip` can still handle
+        # unauthorized senders (e.g. customer handover ingest) without auth drop.
         if not self._is_user_authorized(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
@@ -6276,6 +6323,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
+        # Snapshot inbound text before queueing: pending merge may alias the
+        # same MessageEvent object.
+        interrupt_text = event.text
         if not steered and not redirected:
             self._queue_or_replace_pending_event(session_key, event)
 
@@ -6293,14 +6343,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and running_agent is not _AGENT_PENDING_SENTINEL
         ):
             try:
-                _interrupt_text = event.text
+                _interrupt_text = interrupt_text
                 _media_urls = getattr(event, "media_urls", None) or []
                 if self._pending_event_audio_paths(event):
                     _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
                         event,
                         adapter,
                         event.source,
-                        event.text or "",
+                        interrupt_text or "",
                         log_context="Voice-busy-interrupt",
                     )
                 elif not _interrupt_text and _media_urls:

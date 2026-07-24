@@ -336,15 +336,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-test-driven-development',
                   ],
                 },
-                {
-                  type: 'category',
-                  label: 'yuanbao',
-                  key: 'skills-bundled-yuanbao',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/yuanbao/yuanbao-yuanbao',
-                  ],
-                },
               ],
             },
             {
@@ -615,6 +606,15 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'yuanbao',
+                  key: 'skills-optional-yuanbao',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/yuanbao/yuanbao-yuanbao',
                   ],
                 },
               ],

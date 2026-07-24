@@ -43,6 +43,7 @@ import asyncio
 import errno
 import hashlib
 import hmac
+import inspect
 import json
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -55,7 +56,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -67,6 +68,12 @@ _PROFILE_REJECTED = object()
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None
 )
+
+# Enabled plugin code is trusted, but it must not monopolize the shared API
+# event loop or leave an HTTP request open forever.
+PLUGIN_API_HANDLER_TIMEOUT_SECONDS = 30.0
+PLUGIN_CAPABILITY_TIMEOUT_SECONDS = 5.0
+
 
 def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
     if smart_denied:
@@ -1078,6 +1085,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
         self._pending_agent_requests: int = 0
+        self._plugin_manager = self._load_plugin_manager()
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -1161,6 +1169,178 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return active_api_runs, process_depth, active_delegations
+
+    def _load_plugin_manager(self):
+        """Best-effort plugin manager discovery for API-server plugin hooks."""
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            return get_plugin_manager()
+        except Exception as exc:
+            logger.debug(
+                "[%s] Plugin manager unavailable for API server hooks (%s)",
+                self.name,
+                type(exc).__name__,
+            )
+            return None
+
+    def _mount_plugin_api_routes(self, router: Any) -> None:
+        """Mount default-profile plugin routes without breaking core startup.
+
+        The plugin manager is process-global and belongs to the profile that
+        launched the shared listener.  Do not mirror these routes into
+        ``/p/<profile>/``: doing so would expose a default-profile plugin in a
+        profile where it may not be installed or enabled.
+        """
+        manager = getattr(self, "_plugin_manager", None)
+        if manager is None or not hasattr(manager, "get_api_server_routes"):
+            return
+
+        existing_routes: set[tuple[str, str]] = set()
+        for resource in router.resources():
+            path = getattr(resource, "canonical", None)
+            if not path:
+                continue
+            for route_info in resource:
+                method = getattr(route_info, "method", None)
+                if method:
+                    existing_routes.add((str(method).upper(), path))
+
+        try:
+            plugin_routes = list(manager.get_api_server_routes() or [])
+        except Exception as exc:
+            logger.warning(
+                "[%s] Plugin route collection failed (%s); skipping extensions",
+                self.name,
+                type(exc).__name__,
+            )
+            return
+
+        for route in plugin_routes:
+            method = "<invalid>"
+            path = "<invalid>"
+            plugin = "unknown"
+            try:
+                if not isinstance(route, dict):
+                    raise TypeError("route definition must be a dictionary")
+                method = str(route.get("method", "")).upper()
+                path = route.get("path")
+                handler = route.get("handler")
+                plugin = str(route.get("plugin", "")).strip("/")
+                if not method or not path or not callable(handler):
+                    raise ValueError("missing method/path/handler")
+                if not isinstance(path, str) or not path.startswith("/"):
+                    raise ValueError("path must start with /")
+                if not path.startswith("/v1/plugins/"):
+                    raise ValueError("path must be under /v1/plugins/")
+                if not plugin or not path.startswith(f"/v1/plugins/{plugin}/"):
+                    raise ValueError("path must stay under the plugin's own namespace")
+                if (method, path) in existing_routes:
+                    raise ValueError(f"route already registered: {method} {path}")
+                add_fn = getattr(router, f"add_{method.lower()}", None)
+                if add_fn is None:
+                    raise ValueError(f"unsupported method: {method}")
+
+                async def _authed_plugin_handler(
+                    request: "web.Request",
+                    _handler: Callable = handler,
+                    _method: str = method,
+                    _path: str = path,
+                    _plugin: str = str(route.get("plugin", "unknown")),
+                ) -> "web.Response":
+                    # Defense in depth if a future route-table refactor ever
+                    # mirrors this resource under /p/<profile>/.
+                    if _api_request_profile.get() is not None:
+                        return web.json_response(
+                            {"error": "Plugin route not found"},
+                            status=404,
+                        )
+                    auth_err = self._check_auth(request)
+                    if auth_err:
+                        return auth_err
+                    try:
+                        async def _invoke_handler():
+                            if inspect.iscoroutinefunction(_handler):
+                                result = _handler(request)
+                            else:
+                                result = await asyncio.to_thread(_handler, request)
+                            if inspect.isawaitable(result):
+                                result = await result
+                            return result
+
+                        result = await asyncio.wait_for(
+                            _invoke_handler(),
+                            timeout=PLUGIN_API_HANDLER_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] Plugin route handler timed out for %s %s (plugin=%s)",
+                            self.name,
+                            _method,
+                            _path,
+                            _plugin,
+                        )
+                        return web.json_response(
+                            _openai_error(
+                                "Plugin route failed",
+                                err_type="server_error",
+                                code="plugin_route_failed",
+                            ),
+                            status=500,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] Plugin route handler failed for %s %s (plugin=%s): %s",
+                            self.name,
+                            _method,
+                            _path,
+                            _plugin,
+                            redact_sensitive_text(str(exc), force=True),
+                        )
+                        return web.json_response(
+                            _openai_error(
+                                "Plugin route failed",
+                                err_type="server_error",
+                                code="plugin_route_failed",
+                            ),
+                            status=500,
+                        )
+                    if not isinstance(result, web.StreamResponse):
+                        logger.warning(
+                            "[%s] Plugin route returned %s instead of aiohttp.web.StreamResponse "
+                            "for %s %s (plugin=%s)",
+                            self.name,
+                            type(result).__name__,
+                            _method,
+                            _path,
+                            _plugin,
+                        )
+                        return web.json_response(
+                            _openai_error(
+                                "Plugin route returned an invalid response",
+                                err_type="server_error",
+                                code="plugin_route_invalid_response",
+                            ),
+                            status=500,
+                        )
+                    return result
+
+                route_name = route.get("name")
+                if route_name:
+                    add_fn(path, _authed_plugin_handler, name=route_name)
+                else:
+                    add_fn(path, _authed_plugin_handler)
+                existing_routes.add((method, path))
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to register plugin route %s %s (plugin=%s): %s",
+                    self.name,
+                    method,
+                    path,
+                    plugin,
+                    redact_sensitive_text(str(exc), force=True),
+                )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -2081,7 +2261,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
+        payload = {
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
@@ -2148,7 +2328,47 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
-        })
+        }
+
+        manager = self._plugin_manager
+        # The process-global manager belongs to the listener's launch profile.
+        # Never advertise its extensions on a multiplexed profile response.
+        if (
+            _api_request_profile.get() is None
+            and manager is not None
+            and hasattr(manager, "get_api_server_capabilities")
+        ):
+            try:
+                plugin_caps = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        manager.get_api_server_capabilities,
+                        adapter=self,
+                        request=request,
+                    ),
+                    timeout=PLUGIN_CAPABILITY_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Plugin capability providers timed out; omitting extensions",
+                    self.name,
+                )
+                plugin_caps = []
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Plugin capability resolution failed (%s); omitting extensions",
+                    self.name,
+                    type(exc).__name__,
+                )
+                plugin_caps = []
+            if plugin_caps:
+                payload.setdefault("extensions", {})
+                payload["extensions"]["plugins"] = {
+                    str(entry.get("plugin")): entry.get("capabilities", {})
+                    for entry in plugin_caps
+                    if isinstance(entry, dict) and entry.get("plugin")
+                }
+
+        return web.json_response(payload)
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -5585,6 +5805,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
 
+            self._mount_plugin_api_routes(self._app.router)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

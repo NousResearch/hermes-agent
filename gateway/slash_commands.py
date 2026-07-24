@@ -1150,6 +1150,23 @@ class GatewaySlashCommandsMixin:
 
         return t("gateway.stop.no_active")
 
+    async def _handle_interrupt_command(self, event: MessageEvent) -> str:
+        """Handle /interrupt — interrupt the current agent run without clearing the session."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+
+        agent = self._running_agents.get(session_key)
+        if agent is _AGENT_PENDING_SENTINEL or not agent:
+            return "No active run to interrupt."
+
+        try:
+            agent.interrupt("user /interrupt command")
+            return "⚡ Interrupted the current run."
+        except Exception as e:
+            logger.debug("Failed to interrupt agent for session %s: %s", session_key, e)
+            return f"Failed to interrupt: {e}"
+
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and
         manually control failed/paused gateway adapters.

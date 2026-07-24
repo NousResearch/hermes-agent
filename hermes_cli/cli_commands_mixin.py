@@ -2664,6 +2664,16 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
+    def _handle_interrupt_command(self):
+        """Handle /interrupt — interrupt the current agent run."""
+        from cli import _ACCENT, _DIM, _RST, _cprint
+        agent = getattr(self, "agent", None)
+        if agent and hasattr(agent, "interrupt"):
+            agent.interrupt()
+            _cprint(f"  {_ACCENT}⚡ Interrupted the current run.{_RST}")
+        else:
+            _cprint(f"  {_DIM}No active run to interrupt.{_RST}")
+
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
 

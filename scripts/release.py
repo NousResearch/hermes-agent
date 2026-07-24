@@ -511,6 +511,8 @@ LEGACY_AUTHOR_MAP = {
     "solaiagent@gmail.com": "solaitken",
     "cryptoworlldz@gmail.com": "worlldz",
     "prostoandrei9@gmail.com": "vladkvlchk",
+    "jefferson@jeffersonnunn.com": "HeimdallStrategy",
+    "agent@hermes.local": "HeimdallStrategy",
     "116314616+ThyFriendlyFox@users.noreply.github.com": "ThyFriendlyFox",
     "liliangjya@gmail.com": "truenorth-lj",
     "16943149+nepenth@users.noreply.github.com": "nepenth",

@@ -197,7 +197,66 @@ async def _async_call_service(
             resp.raise_for_status()
             result = await resp.json()
 
-    return _parse_service_response(domain, service, result)
+    parsed = _parse_service_response(domain, service, result)
+
+    # Verify: fetch current state of the affected entities after the service
+    # call. The HA API returns success even for non-existent entities, so
+    # checking the actual state is the only reliable way to confirm the
+    # action worked. Targets come from the EFFECTIVE payload, so entity ids
+    # passed via data={"entity_id": ...} are verified too — not only the
+    # explicit entity_id parameter.
+    raw_target = payload.get("entity_id")
+    if isinstance(raw_target, str):
+        verify_targets = [raw_target]
+    elif isinstance(raw_target, (list, tuple)):
+        verify_targets = [t for t in raw_target if isinstance(t, str)]
+    else:
+        verify_targets = []
+
+    if verify_targets:
+        try:
+            missing = []
+            async with aiohttp.ClientSession() as verify_session:
+                for idx, target in enumerate(verify_targets):
+                    async with verify_session.get(
+                        f"{hass_url}/api/states/{target}",
+                        headers=_get_headers(hass_token),
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as verify_resp:
+                        if verify_resp.status == 200:
+                            # First entity fills the flat result fields; the
+                            # rest are existence-checked only.
+                            if idx == 0:
+                                state_data = await verify_resp.json()
+                                parsed["current_state"] = state_data.get("state", "unknown")
+                                attrs = state_data.get("attributes", {})
+                                if "friendly_name" in attrs:
+                                    parsed["friendly_name"] = attrs["friendly_name"]
+                                # Include domain-relevant attributes for richer feedback
+                                for key in (
+                                    "brightness", "color_temp_kelvin", "rgb_color",
+                                    "temperature", "hvac_action", "current_temperature",
+                                    "media_title", "media_artist", "volume_level",
+                                    "current_position", "is_locked", "battery_level",
+                                    "speed", "percentage",
+                                ):
+                                    if key in attrs:
+                                        parsed[key] = attrs[key]
+                        elif verify_resp.status == 404:
+                            missing.append(target)
+                        elif idx == 0:
+                            parsed["current_state"] = "unknown (could not verify)"
+            if missing:
+                parsed["success"] = False
+                parsed["error"] = (
+                    f"Entity '{', '.join(missing)}' does not exist in Home "
+                    f"Assistant. Use ha_list_entities to find valid "
+                    f"entity IDs."
+                )
+        except Exception:
+            parsed["current_state"] = "unknown (verification failed)"
+
+    return parsed
 
 
 # ---------------------------------------------------------------------------

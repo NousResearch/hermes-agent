@@ -75,6 +75,7 @@ class AnthropicTransport(ProviderTransport):
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
+            extra_body=params.get("extra_body"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

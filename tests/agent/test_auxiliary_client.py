@@ -3860,19 +3860,28 @@ class TestAuxiliaryTaskExtraBody:
         assert mock_bak.call_args.kwargs["reasoning_config"] == {
             "enabled": True, "effort": "low",
         }
+        assert mock_bak.call_args.kwargs["extra_body"] == {
+            "reasoning": {"enabled": True, "effort": "low"},
+        }
         mock_create.assert_called_once()
 
     def _run_anthropic_adapter(self, *, call_extra_body=None, bak_result=None):
         """Drive _AnthropicCompletionsAdapter.create() with mocked SDK layers;
         return the api_kwargs handed to create_anthropic_message."""
+        from contextlib import nullcontext
+
         from agent.auxiliary_client import _AnthropicCompletionsAdapter
 
         adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
-        bak_result = bak_result or {
-            "model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64,
-        }
-        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
-                   return_value=dict(bak_result)), \
+        builder_context = (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_kwargs",
+                return_value=dict(bak_result),
+            )
+            if bak_result is not None
+            else nullcontext()
+        )
+        with builder_context, \
              patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
              patch("agent.transports.get_transport") as mock_gt:
             mock_gt.return_value.normalize_response.return_value = MagicMock(
@@ -3894,9 +3903,8 @@ class TestAuxiliaryTaskExtraBody:
         api_kwargs = self._run_anthropic_adapter(
             call_extra_body={"thinking": {"type": "disabled"}, "metadata": {"user_id": "u1"}},
         )
-        assert api_kwargs["extra_body"] == {
-            "thinking": {"type": "disabled"}, "metadata": {"user_id": "u1"},
-        }
+        assert api_kwargs["thinking"] == {"type": "disabled"}
+        assert api_kwargs["extra_body"] == {"metadata": {"user_id": "u1"}}
 
     def test_anthropic_aux_extra_body_excludes_reasoning_and_private_keys(self):
         """The OpenAI-shaped reasoning dict is translated (not forwarded), and
@@ -3910,14 +3918,12 @@ class TestAuxiliaryTaskExtraBody:
         )
         assert api_kwargs["extra_body"] == {"metadata": {"user_id": "u1"}}
 
-    def test_anthropic_aux_extra_body_merges_over_existing(self):
-        """Caller extra_body merges on top of what build_anthropic_kwargs
-        already emitted (fast-mode speed) instead of clobbering it."""
+    def test_anthropic_aux_extra_body_preserves_multiple_vendor_fields(self):
+        """All non-private vendor fields survive the centralized merge."""
         api_kwargs = self._run_anthropic_adapter(
-            call_extra_body={"metadata": {"user_id": "u1"}},
-            bak_result={
-                "model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64,
-                "extra_body": {"speed": "fast"},
+            call_extra_body={
+                "speed": "fast",
+                "metadata": {"user_id": "u1"},
             },
         )
         assert api_kwargs["extra_body"] == {

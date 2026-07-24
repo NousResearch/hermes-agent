@@ -7995,14 +7995,14 @@ def _sanitize_env_lines(lines: list) -> list:
     # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
 
-    sanitized: list[str] = []
+    split_lines: list[str] = []
     for line in lines:
         raw = line.rstrip("\r\n")
         stripped = raw.strip()
 
         # Preserve blank lines and comments
         if not stripped or stripped.startswith("#"):
-            sanitized.append(raw + "\n")
+            split_lines.append(raw + "\n")
             continue
 
         # Detect concatenated KEY=VALUE pairs on one line.
@@ -8054,11 +8054,46 @@ def _sanitize_env_lines(lines: list) -> list:
             for seg in segments:
                 part = seg.strip()
                 if part:
-                    sanitized.append(part + "\n")
+                    split_lines.append(part + "\n")
         else:
-            sanitized.append(stripped + "\n")
+            split_lines.append(stripped + "\n")
 
-    return sanitized
+    placeholder_secret_suffixes = (
+        "_API_KEY",
+        "_TOKEN",
+        "_SECRET",
+        "_PASSWORD",
+        "_SSH_KEY",
+        "_ENCRYPT_KEY",
+        "_VERIFICATION_TOKEN",
+    )
+
+    def _is_placeholder_secret(key: str, value: str) -> bool:
+        normalized_value = value.strip().strip('"\'')
+        if normalized_value != "***":
+            return False
+        return OPTIONAL_ENV_VARS.get(key, {}).get("password") or key.endswith(placeholder_secret_suffixes)
+
+    sanitized: list[str | None] = []
+    seen_keys: dict[str, int] = {}
+
+    for line in split_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            sanitized.append(line)
+            continue
+
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        if _is_placeholder_secret(key, value):
+            continue
+
+        if key in seen_keys:
+            sanitized[seen_keys[key]] = None
+        seen_keys[key] = len(sanitized)
+        sanitized.append(f"{key}={value.strip()}\n")
+
+    return [line for line in sanitized if line is not None]
 
 
 def sanitize_env_file() -> int:

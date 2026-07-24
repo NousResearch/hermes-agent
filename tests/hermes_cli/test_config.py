@@ -1054,6 +1054,18 @@ class TestSanitizeEnvLines:
             assert "OPENAI_BASE_URL=https://api.openai.com/v1" in lines
             assert "MESSAGING_CWD=/tmp" in lines
 
+    def test_save_env_value_removes_stale_placeholder_duplicates(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENAI_API_KEY=real-key\n"
+            "OPENAI_API_KEY=***\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("OPENAI_API_KEY", "new-key")
+
+            assert env_file.read_text() == "OPENAI_API_KEY=new-key\n"
+            assert load_env()["OPENAI_API_KEY"] == "new-key"
+
     def test_sanitize_env_file_returns_fix_count(self, tmp_path):
         """sanitize_env_file reports how many entries were fixed."""
         env_file = tmp_path / ".env"

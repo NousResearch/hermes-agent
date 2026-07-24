@@ -708,11 +708,20 @@ def _credits_state_from_account(info) -> Optional[CreditsState]:
         _monthly = getattr(_sub, "monthly_credits", None)
         _has_cap = isinstance(_monthly, (int, float)) and _monthly > 0
         _paid = getattr(info, "paid_service_access", None)
+        # Subscription remaining is the gauge NUMERATOR and must come from the
+        # same object as the denominator (``subscription.monthly_credits``):
+        # ``subscription.credits_remaining``. The ``paid_service_access_info``
+        # object carries a separate ``subscription_credits_remaining`` figure
+        # that can differ, so pairing it with ``monthly_credits`` yields a
+        # used_fraction that disagrees with the /usage gauge
+        # (``build_nous_credits_snapshot``), making the cold-start usage-band
+        # notices (50/75/90%) fire at the wrong threshold.
+        _sub_remaining = getattr(_sub, "credits_remaining", None)
         return CreditsState(
             remaining_micros=_to_micros(getattr(_acc, "total_usable_credits", None)),
             remaining_usd=_to_usd(getattr(_acc, "total_usable_credits", None)),
-            subscription_micros=_to_micros(getattr(_acc, "subscription_credits_remaining", None)),
-            subscription_usd=_to_usd(getattr(_acc, "subscription_credits_remaining", None)),
+            subscription_micros=_to_micros(_sub_remaining),
+            subscription_usd=_to_usd(_sub_remaining),
             subscription_limit_micros=_to_micros(_monthly) if _has_cap else None,
             subscription_limit_usd=_to_usd(_monthly) if _has_cap else None,
             purchased_micros=_to_micros(getattr(_acc, "purchased_credits_remaining", None)),

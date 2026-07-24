@@ -211,3 +211,78 @@ def test_seed_skips_non_nous():
     a = _FakeAgent(provider="openrouter")
     assert seed_credits_at_session_start(a) is False
     assert a._credits_state is None
+
+
+# ── _credits_state_from_account: account → seed-state field mapping ────────────
+
+
+def _account(**kwargs):
+    from hermes_cli.nous_account import NousPortalAccountInfo
+
+    kwargs.setdefault("logged_in", True)
+    kwargs.setdefault("source", "account_api")
+    kwargs.setdefault("fresh", True)
+    return NousPortalAccountInfo(**kwargs)
+
+
+def test_account_seed_used_fraction_pairs_subscription_object_fields():
+    """The cold-start seed's subscription used_fraction must be computed from the
+    SAME object as its denominator — ``subscription.credits_remaining`` over
+    ``subscription.monthly_credits`` — so the cold-start usage-band notices match
+    the /usage gauge (``build_nous_credits_snapshot``).
+
+    ``paid_service_access_info.subscription_credits_remaining`` is a separate
+    figure that can differ; pairing it with ``monthly_credits`` would compute a
+    used_fraction that disagrees with what the user sees in /usage.
+    """
+    from agent.credits_tracker import _credits_state_from_account
+    from hermes_cli.nous_account import (
+        NousPaidServiceAccessInfo,
+        NousPortalSubscriptionInfo,
+    )
+
+    info = _account(
+        paid_service_access=True,
+        subscription=NousPortalSubscriptionInfo(
+            plan="Ultra",
+            monthly_credits=20.0,
+            credits_remaining=5.0,  # 75% used — the gauge numerator
+        ),
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            # Deliberately different from subscription.credits_remaining; this is
+            # NOT the gauge numerator and must not drive used_fraction.
+            subscription_credits_remaining=18.0,
+            total_usable_credits=17.0,
+        ),
+    )
+
+    state = _credits_state_from_account(info)
+    assert state is not None
+    # 5.0 of a 20.0 cap → 75% used (matches the /usage gauge), NOT the 10% the
+    # access-object field (18.0 of 20.0) would yield.
+    assert abs(state.used_fraction - 0.75) < 1e-9
+
+
+def test_account_seed_fires_usage_band_matching_gauge():
+    """A session opening at 75% subscription usage must fire the usage-band
+    notice. Reading the wrong remaining field would compute 10% and stay silent.
+    """
+    from agent.credits_tracker import _credits_state_from_account
+    from hermes_cli.nous_account import (
+        NousPaidServiceAccessInfo,
+        NousPortalSubscriptionInfo,
+    )
+
+    info = _account(
+        paid_service_access=True,
+        subscription=NousPortalSubscriptionInfo(
+            monthly_credits=20.0, credits_remaining=5.0
+        ),
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            subscription_credits_remaining=18.0, total_usable_credits=17.0
+        ),
+    )
+
+    state = _credits_state_from_account(info)
+    assert state is not None
+    assert "credits.usage" in _cold_start_notices(state)

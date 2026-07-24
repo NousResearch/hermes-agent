@@ -453,8 +453,8 @@ def reload_skills() -> Dict[str, Any]:
             }
 
         ``description`` is the skill's full SKILL.md frontmatter
-        ``description:`` field — the same string the system prompt renders
-        as ``    - name: description`` for pre-existing skills.
+        ``description:`` field. Note: the system prompt skill index
+        truncates this to the first 57 chars; see ``extract_skill_description``.
     """
     # Snapshot pre-reload state (name -> description) from the current
     # slash-command cache. Using dicts lets the post-rescan diff carry

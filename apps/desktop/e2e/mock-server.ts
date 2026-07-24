@@ -23,8 +23,10 @@ export const MOCK_REPLY = 'Hello from the mock inference server! The full boot c
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
-  /** Pause the first completion whose request JSON contains this text. */
-  holdFirstCompletionContaining?: string
+/** Pause the first completion whose request JSON contains this text. */
+holdFirstCompletionContaining?: string
+/** Absolute sandbox path written by the verify-on-stop scripted tool call. */
+verificationWritePath?: string
 }
 
 export interface MockServer {
@@ -104,6 +106,9 @@ let _queueStopIndex = 0
 /** Per-server counter for the correction/session-switch script. */
 let _correctionSwitchIndex = 0
 
+/** Per-server counter for the verify-on-stop script. */
+let _verificationStopIndex = 0
+
 /** User messages received by the mock, for E2E assertions on real submits. */
 const _receivedUserTexts: string[] = []
 
@@ -114,6 +119,7 @@ function resetScriptIndex(): void {
   _sidebarCrossIndex = 0
   _queueStopIndex = 0
   _correctionSwitchIndex = 0
+  _verificationStopIndex = 0
   _receivedUserTexts.length = 0
 }
 
@@ -213,6 +219,32 @@ const CORRECTION_SWITCH_SCRIPT: ScriptedTurn[] = [
 ]
 
 export const CORRECTION_SWITCH_TRIGGER = 'E2E_CORRECTION_SWITCH_TRIGGER'
+
+/**
+ * Drives a real code edit followed by two finish attempts. Hermes should add
+ * its synthetic verify-on-stop continuation after each finish attempt until
+ * the bounded verifier gives up. The mock's request capture proves the nudge
+ * reached the model; desktop must never render it as chat content.
+ */
+function verificationStopScript(writePath: string): ScriptedTurn[] {
+  return [
+  {
+    text: 'I will make the requested code change.',
+    toolCalls: [{
+      name: 'write_file',
+      args: {
+        path: writePath,
+        content: 'def changed_by_e2e():\n    return "changed"\n',
+      },
+    }],
+  },
+  { text: 'The code edit is complete.' },
+  { text: 'I cannot provide fresh verification evidence for that edit.' },
+  ]
+}
+
+export const VERIFICATION_STOP_TRIGGER = 'E2E_VERIFY_ON_STOP_TRIGGER'
+export const VERIFICATION_STOP_TEXT = 'I cannot provide fresh verification evidence for that edit.'
 
 /**
  * A marker that makes the mock emit a real blocking clarify tool call. Tests
@@ -340,6 +372,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
+          const isVerificationStopTrigger = messages.some(
+            message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
+          )
           const isCorrectionSwitchTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
           )
@@ -356,6 +391,18 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           if (isQueueStopTrigger) {
             const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
             _queueStopIndex++
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
+
+          if (isVerificationStopTrigger) {
+            const script = verificationStopScript(options.verificationWritePath ?? 'e2e-verification-target.py')
+            const turn = script[_verificationStopIndex] ?? script[script.length - 1]
+            _verificationStopIndex++
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {

@@ -1,14 +1,14 @@
 ---
-title: "Guidance"
+title: "Guidance — Constrain LLM output with grammars; guarantee valid JSON"
 sidebar_label: "Guidance"
-description: "Control LLM output with regex and grammars, guarantee valid JSON/XML/code generation, enforce structured formats, and build multi-step workflows with Guidanc..."
+description: "Constrain LLM output with grammars; guarantee valid JSON"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Guidance
 
-Control LLM output with regex and grammars, guarantee valid JSON/XML/code generation, enforce structured formats, and build multi-step workflows with Guidance - Microsoft Research's constrained generation framework
+Constrain LLM output with grammars; guarantee valid JSON.
 
 ## Skill metadata
 

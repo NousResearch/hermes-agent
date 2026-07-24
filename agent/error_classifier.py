@@ -67,6 +67,7 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
+    upstream_provider_error = "upstream_provider_error"  # Aggregator (OpenRouter, Groq, etc.) wrapped upstream provider 403/429 — fallback to different model, DON'T rotate credential
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -953,6 +954,26 @@ def _classify_by_status(
     if status_code == 403:
         # OpenRouter 403 "key limit exceeded" is actually billing. Other
         # providers also use 403 for account-plan or credit exhaustion.
+        # Check for overload first (same as 429 path) — some providers
+        # reuse 403 for server-wide overload.
+        if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+            return result_fn(
+                FailoverReason.overloaded,
+                retryable=True,
+            )
+        #
+        # NEW: Check for upstream provider errors first (Sakana, Poolside, etc.)
+        if _is_openrouter_upstream_error(body, provider):
+            upstream_provider = _extract_upstream_provider_name(body)
+            ctx = {"upstream_provider": upstream_provider} if upstream_provider else {}
+            return result_fn(
+                FailoverReason.upstream_provider_error,
+                retryable=False,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context=ctx,
+            )
+
         if (
             (
                 provider == "xai-oauth"
@@ -1654,13 +1675,15 @@ def _extract_message(error: Exception, body: dict) -> str:
 
 
 def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
-    """Detect OpenRouter's aggregator-wrapped upstream provider errors.
+    """Detect aggregator-wrapped upstream provider errors (OpenRouter, Groq, etc.).
 
     OpenRouter returns errors from upstream model providers (DeepSeek,
     Anthropic, etc.) wrapped with the outer message "Provider returned error"
     and the real error nested in ``metadata.raw``. This signal means the
-    user's OpenRouter key is healthy — the upstream provider is the one that
+    user's key is healthy — the upstream provider is the one that
     failed — so credential rotation is the wrong recovery.
+
+    Same pattern applies to other aggregators (Groq, Together, Fireworks).
     """
     if not isinstance(body, dict):
         return False
@@ -1671,9 +1694,9 @@ def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
     outer_msg = str(err.get("message") or "").strip().lower()
     if outer_msg != "provider returned error":
         return False
-    # Require either the explicit OpenRouter provider OR the metadata shape
-    # that only OpenRouter produces (metadata.raw / metadata.provider_name).
-    if provider_lower == "openrouter":
+    # Require either the explicit aggregator provider OR the metadata shape
+    # that only an aggregator produces.
+    if provider_lower in ("openrouter", "groq", "together", "fireworks"):
         return True
     metadata = err.get("metadata")
     if isinstance(metadata, dict) and (
@@ -1684,7 +1707,7 @@ def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
 
 
 def _extract_upstream_provider_name(body: Any) -> Optional[str]:
-    """Pull the upstream provider name out of OpenRouter's error metadata."""
+    """Pull the upstream provider name out of aggregator error metadata."""
     if not isinstance(body, dict):
         return None
     err = body.get("error")

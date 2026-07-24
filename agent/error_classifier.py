@@ -121,6 +121,13 @@ _BILLING_PATTERNS = [
     "balance_depleted",
     "model_not_supported_on_free_tier",
     "not available on the free tier",
+    "account balance is exhausted",
+    "billing exhausted",
+    "账户余额",
+    "余额不足",
+    "额度已用完",
+    "调用额度",
+    "额度耗尽",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)
@@ -1036,6 +1043,18 @@ def _classify_by_status(
             return result_fn(
                 FailoverReason.format_error,
                 retryable=False,
+                should_fallback=True,
+            )
+        # Some providers (notably Moonshot/Kimi) proxy billing/credit
+        # exhaustion through HTTP 500 when an intermediate gateway can't
+        # map the upstream payment error to a 402. Treat the explicit
+        # billing message as a non-retryable billing failure so fallback
+        # can activate instead of retrying a dead account.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
                 should_fallback=True,
             )
         # Some local inference servers (notably llama.cpp / llama-server)

@@ -13644,6 +13644,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         from prompt_toolkit.keys import Keys as _IgnoreKeys
 
+        # Backspace fix for Windows Terminal + PowerShell-hosted prompt_toolkit.
+        # prompt_toolkit's basic_bindings registers a no-op stub @handle("c-h")
+        # (line 12) BEFORE the real backward-delete-char handler (line 117).
+        # Since Keys.Backspace == Keys.ControlH, "backspace" and "c-h" are the
+        # same key — the stub swallows the keystroke before the delete handler
+        # can fire. Hermes' own KeyBindings take precedence over basic_bindings
+        # in the merge order, so this explicit binding (with eager=True to
+        # guarantee it fires first) restores backspace. Confirmed via
+        # keystroke_diagnostic.py: c-h data='\x7f'.
+        @kb.add('c-h', eager=True)
+        def handle_backspace_control_h(event):
+            buf = event.current_buffer
+            if buf is None:
+                return
+            buf.delete_before_cursor(count=event.arg)
+
         @kb.add(_IgnoreKeys.Ignore, eager=True)
         def handle_ignored_terminal_sequence(event):
             """Consume parser-level ignored terminal sequences before self-insert.

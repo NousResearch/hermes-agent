@@ -201,6 +201,21 @@ class TestBuildAnthropicClient:
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
 
+    def test_github_copilot_endpoint_uses_bearer_auth(self):
+        """GitHub Copilot's /v1/messages endpoint requires Authorization: Bearer.
+
+        Same pattern as MiniMax and Azure Foundry - Anthropic Messages protocol
+        with Bearer auth instead of x-api-key.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "copilot-token-123",
+                base_url="https://api.githubcopilot.com",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "copilot-token-123"
+            assert "api_key" not in kwargs
+    
     def test_palantir_foundry_anthropic_endpoint_uses_bearer_auth(self):
         """Palantir Foundry's LLM proxy requires Authorization: Bearer.
 

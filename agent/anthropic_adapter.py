@@ -562,6 +562,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return (
         normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
         or "azure.com" in normalized
+        or "githubcopilot.com" in normalized
         # Palantir Foundry LLM proxy (<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic)
         # rejects x-api-key with 401 and requires Authorization: Bearer.
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry

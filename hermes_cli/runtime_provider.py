@@ -324,8 +324,30 @@ def _copilot_runtime_api_mode(
     target_model: Optional[str] = None,
 ) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    configured_default = str(model_cfg.get("default") or "").strip()
+    requested_model = str(target_model or "").strip()
+
+    # Determine whether the explicit target differs from the persisted default.
+    # Normalise both sides so equivalent spellings (copilot/ prefix, aliases)
+    # don't force a spurious recompute that would degrade Claude offline
+    # (catalog-dependent resolution).
+    target_overrides_default = False
+    if requested_model:
+        try:
+            from hermes_cli.models import normalize_copilot_model_id
+            norm_target = normalize_copilot_model_id(requested_model) or requested_model
+            norm_default = normalize_copilot_model_id(configured_default) or configured_default
+        except Exception:
+            norm_target = requested_model
+            norm_default = configured_default
+        target_overrides_default = norm_target != norm_default
+
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
+    if (
+        configured_mode
+        and not target_overrides_default
+        and _provider_supports_explicit_api_mode("copilot", configured_provider)
+    ):
         return configured_mode
 
     # Use the model being resolved for this runtime, not the persisted global
@@ -340,7 +362,6 @@ def _copilot_runtime_api_mode(
 
     try:
         from hermes_cli.models import copilot_model_api_mode
-
         return copilot_model_api_mode(model_name, api_key=api_key)
     except Exception:
         return "chat_completions"

@@ -362,8 +362,19 @@ def _render_table_block(table_block: list[str]) -> str:
             data_cells = data_cells[: len(headers)]
 
         bullets: list[str] = []
+        # In the non-row-label case the first non-empty cell is promoted to the
+        # bold group heading, so its own bullet is redundant and skipped. Skip
+        # ONLY that one cell — matching on value alone dropped every later field
+        # that happened to repeat the heading's value (e.g. a row like
+        # ``| Open | Open | bob |`` silently lost "Priority: Open").
+        _heading_consumed = False
         for header, value in zip(headers, data_cells):
-            if not has_row_label_col and value == heading:
+            if (
+                not has_row_label_col
+                and not _heading_consumed
+                and value == heading
+            ):
+                _heading_consumed = True
                 continue
             bullets.append(f"• {header}: {value}")
 

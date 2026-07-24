@@ -1566,8 +1566,31 @@ class AIAgent:
         from agent.agent_runtime_helpers import strip_think_blocks
         return strip_think_blocks(self, content)
 
-    @staticmethod
-    def _has_natural_response_ending(content: str) -> bool:
+    # Common internet slang / laughter abbreviations across languages.
+    # A response ending with one of these (case-insensitive, optional trailing
+    # punctuation/emoji) is considered intentionally finished, not truncated.
+    _SLANG_ENDINGS = frozenset({
+        # French
+        "mdr", "ptdr", "xptdr", "lol",
+        # English
+        "lmao", "rofl", "lmaf", "lmfao", "kek", "kekw", "iykyk",
+        # Spanish / Portuguese
+        "jaja", "jeje", "jiji", "rsrs", "kkk", "huehue",
+        # German
+        "lel", "mfl",
+        # Japanese (romaji)
+        "w", "ww", "www", "kusa",
+        # Chinese (pinyin slang)
+        "233", "666", "888",
+        # Korean
+        "kkk", "keke",
+        # General
+        "haha", "hahaha", "heh", "brb", "tbh", "nvm", "smh", "thx", "ty",
+        "gg", "wp", "gl", "hf", "afk", "idk", "imo", "fyi", "tldr",
+    })
+
+    @classmethod
+    def _has_natural_response_ending(cls, content: str) -> bool:
         """Heuristic: does visible assistant text look intentionally finished?"""
         if not content:
             return False
@@ -1581,8 +1604,19 @@ class AIAgent:
         last = stripped[-1]
         if last in '.!?:)"\']}。！？：）】」』》^':
             return True
-        # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
-        if ord(last) >= 0x1F300:
+        # Emoji / symbol ranges: Misc Symbols (0x2600+), Dingbats (0x2700+),
+        # Emoticons (0x1F300+), Supplemental, Transport, etc.
+        # Covers common symbols like ⚡ (U+26A1), ❤️ (U+2764), etc.
+        cp = ord(last)
+        if (0x2600 <= cp <= 0x27BF) or cp >= 0x1F300:
+            return True
+        # Slang / laughter ending: check if last word (stripped of trailing
+        # punctuation) matches a known abbreviation.
+        # Handles: "mdr", "mdr ^^", "lmao!!!", "www", etc.
+        last_token = stripped.split()[-1].lower()
+        # Strip trailing punctuation/emoji from the token for matching
+        last_token = re.sub(r'[^a-zA-Z0-9]+$', '', last_token)
+        if last_token in cls._SLANG_ENDINGS:
             return True
         return False
 

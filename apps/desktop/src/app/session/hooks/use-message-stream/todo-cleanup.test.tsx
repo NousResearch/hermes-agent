@@ -51,7 +51,7 @@ async function mountStream() {
 
 const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, session_id: SID, type: 'message.complete' }))
 
-describe('useMessageStream turn-end todo cleanup', () => {
+describe('useMessageStream durable todo retention', () => {
   beforeEach(() => {
     handleEvent = null
     clearSessionTodos(SID)
@@ -63,31 +63,30 @@ describe('useMessageStream turn-end todo cleanup', () => {
     vi.restoreAllMocks()
   })
 
-  it('drops a still-active task list when the turn completes', async () => {
+  it('keeps a still-active task list when the turn completes', async () => {
     await mountStream()
     setSessionTodos(SID, [todo('a', 'completed'), todo('b', 'in_progress')])
 
     complete()
 
-    expect($todosBySession.get()[SID]).toBeUndefined()
+    expect($todosBySession.get()[SID]).toHaveLength(2)
   })
 
-  it('keeps a finished list on completion so its linger shows the final checkmarks', async () => {
+  it('keeps a finished list when the turn completes', async () => {
     await mountStream()
     setSessionTodos(SID, [todo('a', 'completed')])
 
     complete()
 
-    // Not cleared immediately — the finished-list linger still owns it.
     expect($todosBySession.get()[SID]).toHaveLength(1)
   })
 
-  it('drops a still-active task list when the turn errors out', async () => {
+  it('keeps a still-active task list when the turn errors out', async () => {
     await mountStream()
     setSessionTodos(SID, [todo('a', 'in_progress')])
 
     act(() => handleEvent!({ payload: { message: 'boom' }, session_id: SID, type: 'error' }))
 
-    expect($todosBySession.get()[SID]).toBeUndefined()
+    expect($todosBySession.get()[SID]).toHaveLength(1)
   })
 })

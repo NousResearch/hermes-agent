@@ -41,6 +41,9 @@ interface PaneChrome {
    *  ids, e.g. `chat-sidebar` for `sessions`). */
   revealAliases?: string[]
   placement?: string
+  /** Keeps the root column visible independently of a side rail's global
+   *  toggle without claiming `placement: 'main'` (reserved for workspace). */
+  persistent?: boolean
   /** No Close in the tab menu — the one surface the app can't lose (the
    *  main workspace). Session tiles share `placement: 'main'` but close. */
   uncloseable?: boolean
@@ -221,20 +224,20 @@ export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
  * Which chrome toggle owns a root-row child — SEMANTIC, not positional:
  * ⌘B is the sessions/nav column (any `placement: 'left'` pane) wherever a
  * flip or drag puts it; ⌘J is every other side column. `null` = contains
- * the main zone, never side-collapsed. This is what keeps the titlebar
+ * the main zone or explicit persistent chrome, never side-collapsed. This is what keeps the titlebar
  * toggles and reveals 100% main-compatible through ⌘\ flips.
  */
 export function rootChildSide(
   child: LayoutNode,
   paneFor: (id: string) => Contribution | undefined
 ): 'left' | 'right' | null {
-  const placements = allPaneIds(child).map(id => paneChrome(paneFor(id)).placement)
+  const chrome = allPaneIds(child).map(id => paneChrome(paneFor(id)))
 
-  if (placements.includes('main')) {
+  if (chrome.some(pane => pane.placement === 'main' || pane.persistent)) {
     return null
   }
 
-  return placements.includes('left') ? 'left' : 'right'
+  return chrome.some(pane => pane.placement === 'left') ? 'left' : 'right'
 }
 
 /**

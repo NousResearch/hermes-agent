@@ -5,6 +5,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+import { RunBoardPane, RunBoardStatusbarItem } from '@/app/run-board/run-board'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { IdleMount } from '@/components/idle-mount'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
@@ -35,6 +36,7 @@ import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { translateNow } from '@/i18n'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { LayoutDashboard } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
@@ -162,6 +164,24 @@ registry.registerMany([
       uncloseable: true
     },
     render: renderWorkspacePane
+  },
+  {
+    id: 'run-board',
+    area: 'panes',
+    title: translateNow('runBoard.title'),
+    data: {
+      // Operational session state must not inherit the Files rail's global
+      // collapse. `persistent` protects this column without violating the
+      // invariant that Workspace is the sole uncloseable `main` pane.
+      placement: 'right',
+      persistent: true,
+      dock: { pane: 'workspace', pos: 'right' },
+      width: 'clamp(16rem, 22vw, 24rem)',
+      minWidth: '15rem',
+      maxWidth: '30rem',
+      uncloseable: true
+    },
+    render: () => <RunBoardPane />
   },
   {
     id: 'terminal',
@@ -308,6 +328,14 @@ registry.registerMany([
       keywords: ['keybinds', 'shortcuts', 'hotkeys', 'keyboard'],
       run: () => window.dispatchEvent(new CustomEvent('hermes:open-keybinds'))
     } satisfies PaletteContribution
+  },
+  {
+    id: 'run-board.status',
+    area: 'statusBar.left',
+    data: {
+      id: 'run-board.status',
+      render: () => <RunBoardStatusbarItem />
+    } satisfies StatusbarItem
   }
 ])
 
@@ -315,8 +343,9 @@ registry.registerMany([
 // Layout presets — CHAT (main) always dominates.
 // ---------------------------------------------------------------------------
 
-// The REAL default: sessions left, chat main, and the right sidebars in
-// column order main | … | review | preview | file-browser (files outermost,
+// The REAL default: sessions left, chat main, Run Board in its own persistent
+// column, and the optional right sidebars in column order review | preview |
+// file-browser (files outermost,
 // preview DIRECTLY left of the file tree). Each is its OWN zone — main
 // parity: a file double-click slides the preview open as its own pane beside
 // the tree, never as a tab stacked into the files sidebar. Preview/review
@@ -328,6 +357,7 @@ const DEFAULT_TREE = split(
   [
     group(['sessions'], { id: 'grp-sessions' }),
     group(['workspace'], { id: 'grp-main' }),
+    group(['run-board'], { id: 'grp-run-board' }),
     split(
       'column',
       [
@@ -343,24 +373,33 @@ const DEFAULT_TREE = split(
         ),
         group(['terminal'], { id: 'grp-terminal' })
       ],
-      [1.6, 1],
+      [1.5, 1],
       'spl-right'
     )
   ],
-  [1, 3.4, 1.25],
+  [1, 3.4, 1.25, 1.25],
   'spl-root'
 )
 
 const FOCUS_TREE = split(
   'row',
-  [group(['sessions']), group(['workspace', 'files', 'preview', 'review', 'terminal'])],
-  [1, 4.6]
+  [group(['sessions']), group(['workspace', 'files', 'preview', 'review', 'terminal']), group(['run-board'])],
+  [1, 4.2, 1.3]
 )
 
 const TERMINAL_TREE = split(
   'column',
   [
-    split('row', [group(['sessions']), group(['workspace']), group(['files', 'preview', 'review'])], [1, 3.2, 1.2]),
+    split(
+      'row',
+      [
+        group(['sessions']),
+        group(['workspace']),
+        group(['run-board']),
+        group(['files', 'preview', 'review'])
+      ],
+      [1, 3.2, 1.15, 1.2]
+    ),
     group(['terminal'])
   ],
   [3, 1]
@@ -369,7 +408,7 @@ const TERMINAL_TREE = split(
 const QUAD_TREE = split(
   'column',
   [
-    split('row', [group(['sessions', 'files']), group(['workspace'])], [1, 3]),
+    split('row', [group(['sessions', 'files']), group(['workspace']), group(['run-board'])], [1, 3, 1.15]),
     split('row', [group(['terminal']), group(['preview', 'review', 'logs'])], [1.4, 1])
   ],
   [3, 1]

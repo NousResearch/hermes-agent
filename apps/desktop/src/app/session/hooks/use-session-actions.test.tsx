@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
+import { deleteSession, getSession, getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -34,6 +34,7 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
@@ -69,7 +70,7 @@ function deferred<T>() {
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'removeSession' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -92,19 +93,27 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function Harness({
+  activeSessionId = null,
   navigate = vi.fn(),
   onReady,
-  requestGateway
+  requestGateway,
+  runtimeIdByStoredSessionId = new Map(),
+  selectedStoredSessionId = null,
+  sessionStateByRuntimeId = new Map()
 }: {
+  activeSessionId?: string | null
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionId?: Map<string, string>
+  selectedStoredSessionId?: string | null
+  sessionStateByRuntimeId?: Map<string, ClientSessionState>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
   const actions = useSessionActions({
-    activeSessionId: null,
-    activeSessionIdRef: ref<string | null>(null),
+    activeSessionId,
+    activeSessionIdRef: ref(activeSessionId),
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -113,10 +122,10 @@ function Harness({
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
-    selectedStoredSessionId: null,
-    selectedStoredSessionIdRef: ref<string | null>(null),
-    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    runtimeIdByStoredSessionIdRef: ref(runtimeIdByStoredSessionId),
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef: ref(selectedStoredSessionId),
+    sessionStateByRuntimeIdRef: ref(sessionStateByRuntimeId),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
   })
@@ -127,6 +136,47 @@ function Harness({
 
   return null
 }
+
+describe('deleted-session todo cleanup', () => {
+  afterEach(() => {
+    cleanup()
+    clearSessionTodos('runtime-active')
+    clearSessionTodos('runtime-tile')
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setSessions([])
+    vi.restoreAllMocks()
+  })
+
+  it('evicts retained plans for both active and tiled runtimes after deletion', async () => {
+    let actions: HarnessHandle | null = null
+
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    setSessions([storedSession()])
+    setSessionTodos('runtime-active', [{ content: 'Active plan', id: 'active', status: 'completed' }])
+    setSessionTodos('runtime-tile', [{ content: 'Tiled plan', id: 'tile', status: 'completed' }])
+
+    render(
+      <Harness
+        activeSessionId="runtime-active"
+        onReady={handle => {
+          actions = handle
+        }}
+        requestGateway={async () => ({}) as never}
+        runtimeIdByStoredSessionId={new Map([['stored-1', 'runtime-tile']])}
+        selectedStoredSessionId="stored-1"
+      />
+    )
+
+    await waitFor(() => expect(actions).not.toBeNull())
+    await act(async () => {
+      await actions!.removeSession('stored-1')
+    })
+
+    expect($todosBySession.get()['runtime-active']).toBeUndefined()
+    expect($todosBySession.get()['runtime-tile']).toBeUndefined()
+  })
+})
 
 function StoredIdRotationHarness({
   activeSessionIdRef,

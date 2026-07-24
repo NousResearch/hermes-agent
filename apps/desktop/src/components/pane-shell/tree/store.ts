@@ -612,16 +612,9 @@ export function treeSideOfPane(paneId: string): TreeSide | null {
     return null
   }
 
-  const placementOf = (id: string) =>
-    (registry.getArea('panes').find(c => c.id === id)?.data as { placement?: string } | undefined)?.placement
+  const panes = registry.getArea('panes')
 
-  const placements = allPaneIds(child).map(placementOf)
-
-  if (placements.includes('main')) {
-    return null
-  }
-
-  return placements.includes('left') ? 'left' : 'right'
+  return rootChildSide(child, id => panes.find(pane => pane.id === id))
 }
 
 /**

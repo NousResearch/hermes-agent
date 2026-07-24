@@ -152,6 +152,31 @@ class TestSessionLifecycle:
         assert child["cwd"] == "/work/repo"
         assert child["git_repo_root"] == "/work/repo"
 
+    def test_child_session_inherits_profile_name_from_parent(self, db):
+        """Compression/branch children born without profile_name must inherit
+        the parent's stamp so the unified desktop list doesn't retag the tip
+        as 'default' after rotate/branch."""
+        db.create_session(
+            session_id="parent", source="desktop", profile_name="ai-engineer"
+        )
+        db.create_session(session_id="child", source="desktop", parent_session_id="parent")
+
+        child = db.get_session("child")
+        assert child["profile_name"] == "ai-engineer"
+
+    def test_child_session_explicit_profile_name_is_not_overwritten(self, db):
+        db.create_session(
+            session_id="parent", source="desktop", profile_name="ai-engineer"
+        )
+        db.create_session(
+            session_id="child",
+            source="desktop",
+            parent_session_id="parent",
+            profile_name="other",
+        )
+
+        assert db.get_session("child")["profile_name"] == "other"
+
     def test_child_session_explicit_cwd_is_not_overwritten_by_parent(self, db):
         """A child that explicitly sets its own cwd/git_repo_root keeps it —
         parent inheritance only fills in NULLs, never clobbers."""

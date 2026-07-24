@@ -1090,6 +1090,41 @@ describe('branchStoredSession desktop source tagging', () => {
     })
   })
 
+  it('carries the parent profile on session.create so the branch stays off default', async () => {
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1, profile: 'ai-engineer' })])
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) | null =
+      null
+
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('ai-engineer')
+    expect(createParams).toMatchObject({
+      parent_session_id: 'stored-parent',
+      profile: 'ai-engineer',
+      source: 'desktop'
+    })
+  })
+
   // #67603: right-clicking a session outside the paginated sidebar window is a
   // cache miss. Resolve its owning profile (cache → active → cross-profile) and
   // swap to it before reading the transcript / creating the branch, so the fork

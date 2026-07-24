@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1287,6 +1288,93 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["parent_session_id"] == parent_key
     # The marker — without it the branch is invisible in /resume and /sessions.
     assert kwargs["model_config"] == {"_branched_from": parent_key}
+
+
+def test_session_branch_uses_parent_profile_db(server, monkeypatch, tmp_path):
+    """/branch on a named-profile session must write the child into that
+    profile's state.db (with profile_name) and copy profile_home onto the
+    live branch — not the launch/default db."""
+    profile_home = tmp_path / "profiles" / "ai-engineer"
+    profile_home.mkdir(parents=True)
+    create_calls = []
+    opened_paths = []
+    init_kwargs = {}
+
+    class _DB:
+        def __init__(self, db_path=None):
+            if db_path is not None:
+                opened_paths.append(Path(db_path))
+
+        def get_session(self, _key):
+            return {"profile_name": "ai-engineer"}
+
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            create_calls.append((new_key, kwargs))
+            return new_key
+
+        def append_message(self, **_kwargs):
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("hermes_state.SessionDB", _DB)
+    # Launch db must not be used when the parent has a profile_home.
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: (_ for _ in ()).throw(AssertionError("launch db must not be used")),
+    )
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+
+    def _capture_init(*_a, **kwargs):
+        init_kwargs.update(kwargs)
+
+    monkeypatch.setattr(server, "_init_session", _capture_init)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+    monkeypatch.setattr(server, "set_hermes_home_override", lambda *_a, **_k: "token")
+    monkeypatch.setattr(server, "reset_hermes_home_override", lambda *_a, **_k: None)
+
+    parent_sid = "parent-prof"
+    parent_key = "20260101_000000_parent"
+    server._sessions[parent_sid] = {
+        "session_key": parent_key,
+        "history": [{"role": "user", "content": "hello"}],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+        "profile_home": str(profile_home),
+    }
+
+    resp = server.handle_request(
+        {"id": "bp", "method": "session.branch", "params": {"session_id": parent_sid}}
+    )
+
+    assert "error" not in resp, resp
+    assert create_calls, "create_session was not called"
+    _new_key, kwargs = create_calls[0]
+    assert kwargs["profile_name"] == "ai-engineer"
+    assert kwargs["parent_session_id"] == parent_key
+    assert any(p == profile_home / "state.db" for p in opened_paths)
+    assert init_kwargs.get("profile_home") == str(profile_home)
 
 
 def test_session_branch_forwards_original_timestamps(server, monkeypatch):

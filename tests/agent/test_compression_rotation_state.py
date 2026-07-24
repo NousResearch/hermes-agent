@@ -182,6 +182,27 @@ class TestWorkspaceMetadataFollowsRotation:
         assert row["chat_type"] == "private"
         assert row["user_id"] == "u1"
 
+    def test_child_row_inherits_profile_name_on_rotation(self, tmp_path: Path):
+        """Compression rotation must stamp the parent's profile_name on the
+        child so desktop aggregation doesn't retag the tip as default."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_PROFILE_ROT"
+        db.create_session(
+            parent,
+            source="desktop",
+            profile_name="ai-engineer",
+        )
+        agent = _build_agent_with_db(db, parent, platform="desktop")
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+        assert child != parent
+
+        row = db.get_session(child)
+        assert row is not None
+        assert row["parent_session_id"] == parent
+        assert row["profile_name"] == "ai-engineer"
+
 
 class TestPlatformForwardedAtBoundary:
     def test_on_session_start_receives_platform(self, tmp_path: Path):

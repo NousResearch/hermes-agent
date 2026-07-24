@@ -78,6 +78,20 @@ class TestPartialLineForceFlush:
         plain = _strip_ansi("\n".join(emitted))
         assert "cell19" not in plain
 
+    def test_borderless_table_row_not_force_flushed(self, cli_stub):
+        cli, emitted = cli_stub
+        # A wide table row WITHOUT a leading pipe must also stay buffered for
+        # block realignment — models frequently omit the leading pipe, and the
+        # rest of _emit_stream_text already treats a `>= 2`-pipe borderless row
+        # as a table. Before the fix, the force-flush guard only exempted
+        # leading-pipe rows, so this row was soft-wrapped mid-cell as prose
+        # (its leading cells leaked into the emitted output).
+        row = " | ".join(f"cell{i}" for i in range(20))  # no leading pipe
+        cli._stream_delta(row)  # no newline
+        plain = _strip_ansi("\n".join(emitted))
+        assert "cell0" not in plain, "borderless row was force-flushed mid-cell"
+        assert cli._stream_buf == row, "borderless row should stay fully buffered"
+
     def test_newline_lines_still_emit_normally(self, cli_stub):
         cli, emitted = cli_stub
         cli._stream_delta("line one\nline two\n")

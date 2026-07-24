@@ -98,6 +98,108 @@ def retriever_with_facts(tmp_path):
     store.close()
 
 
+# ---------------------------------------------------------------------------
+# hrr_dim mismatch across sessions — issue #68682
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mismatched_dim_retriever(tmp_path):
+    """Facts encoded at hrr_dim=256, then queried by a retriever configured
+    for hrr_dim=1024 — simulating a config change between sessions."""
+    db_path = tmp_path / "mismatch.db"
+    store = MemoryStore(str(db_path), hrr_dim=256)
+    store.add_fact("Peppi works on the backend team.", category="project")
+    store.add_fact("The backend uses Postgres.", category="project")
+    retriever = FactRetriever(store=store, hrr_dim=1024)
+    yield retriever, store
+    store.close()
+
+
+class TestDimMismatchDoesNotCrash:
+    def test_search_returns_without_raising(self, mismatched_dim_retriever):
+        retriever, _store = mismatched_dim_retriever
+        results = retriever.search("backend")
+        assert isinstance(results, list)
+
+    def test_probe_returns_without_raising(self, mismatched_dim_retriever):
+        retriever, _store = mismatched_dim_retriever
+        results = retriever.probe("peppi", category="project")
+        assert isinstance(results, list)
+
+    def test_related_returns_without_raising(self, mismatched_dim_retriever):
+        retriever, _store = mismatched_dim_retriever
+        results = retriever.related("peppi", category="project")
+        assert isinstance(results, list)
+
+    def test_reason_returns_without_raising(self, mismatched_dim_retriever):
+        retriever, _store = mismatched_dim_retriever
+        results = retriever.reason(["peppi", "backend"], category="project")
+        assert isinstance(results, list)
+
+    def test_contradict_returns_without_raising(self, mismatched_dim_retriever):
+        retriever, _store = mismatched_dim_retriever
+        results = retriever.contradict(category="project")
+        assert isinstance(results, list)
+
+    def test_probe_all_rows_skipped_returns_empty_and_warns_once(self, tmp_path, caplog):
+        """When every fact vector in a category mismatches the retriever's
+        dim (e.g. a whole category migrated at a different time), probe()
+        must return [] (not fall through to a keyword-search that finds
+        stale/irrelevant hits) and log exactly one warning naming
+        rebuild_all_vectors."""
+        import logging
+
+        db_path = tmp_path / "all_skip.db"
+        store = MemoryStore(str(db_path), hrr_dim=256)
+        store.add_fact("Peppi owns the deploy pipeline.", category="project")
+        retriever = FactRetriever(store=store, hrr_dim=1024)
+        try:
+            with caplog.at_level(logging.WARNING, logger="plugins.memory.holographic.retrieval"):
+                results = retriever.probe("peppi", category="project")
+            assert results == []
+            warnings = [r for r in caplog.records if "skipped" in r.message.lower()]
+            assert len(warnings) == 1
+            assert "rebuild_all_vectors" in warnings[0].message
+        finally:
+            store.close()
+
+    def test_probe_corrupt_bank_with_no_fact_vectors_still_warns(self, tmp_path, caplog):
+        """A mismatched bank vector counted as skipped must not vanish
+        silently through probe()'s no-fact-rows early return (keyword
+        fallback) — the operator still needs the rebuild_all_vectors hint."""
+        import logging
+
+        db_path = tmp_path / "bank_only.db"
+        store = MemoryStore(str(db_path), hrr_dim=256)
+        store.add_fact("Peppi owns the deploy pipeline.", category="project")
+        # Strip the per-fact vectors so only the (mismatched) bank remains.
+        store._conn.execute("UPDATE facts SET hrr_vector = NULL")
+        store._conn.commit()
+        retriever = FactRetriever(store=store, hrr_dim=1024)
+        try:
+            with caplog.at_level(logging.WARNING, logger="plugins.memory.holographic.retrieval"):
+                retriever.probe("peppi", category="project")
+            warnings = [r for r in caplog.records if "skipped" in r.message.lower()]
+            assert len(warnings) == 1
+            assert "rebuild_all_vectors" in warnings[0].message
+        finally:
+            store.close()
+
+    def test_skip_warning_logged_once_per_operation(self, mismatched_dim_retriever, caplog):
+        import logging
+        from plugins.memory.holographic import retrieval as retrieval_mod
+
+        retriever, _store = mismatched_dim_retriever
+        with caplog.at_level(logging.WARNING, logger=retrieval_mod.__name__):
+            retriever.related("peppi", category="project")
+
+        skip_warnings = [
+            r for r in caplog.records if "skipped" in r.message.lower()
+        ]
+        assert len(skip_warnings) == 1
+        assert "rebuild_all_vectors" in skip_warnings[0].message
+
+
 def test_prefetch_recovers_prose_query(retriever_with_facts):
     """A natural-language query should now match the relevant fact.
 

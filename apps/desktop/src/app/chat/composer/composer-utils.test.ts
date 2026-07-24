@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 import {
   isPendingDraftPersistCurrent,
   type PendingDraftPersist,
-  pickPlaceholder,
   slashArgStage,
   slashChipKindForItem,
   slashCommandToken
@@ -36,13 +35,6 @@ describe('slashChipKindForItem', () => {
     expect(slashChipKindForItem(item('Skills'))).toBe('skill')
     expect(slashChipKindForItem(item('Themes'))).toBe('theme')
     expect(slashChipKindForItem(item('Commands'))).toBe('command')
-  })
-})
-
-describe('pickPlaceholder', () => {
-  it('returns a member of the pool', () => {
-    const pool = ['a', 'b', 'c'] as const
-    expect(pool).toContain(pickPlaceholder(pool))
   })
 })
 

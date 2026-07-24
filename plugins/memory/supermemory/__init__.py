@@ -28,6 +28,8 @@ _DEFAULT_PROFILE_FREQUENCY = 50
 _DEFAULT_CAPTURE_MODE = "all"
 _DEFAULT_SEARCH_MODE = "hybrid"
 _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
+_DEFAULT_SEARCH_THRESHOLD = 0.6
+_DEFAULT_INCLUDE_DOCUMENTS = False
 _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
@@ -63,6 +65,14 @@ def _default_config() -> dict:
         "profile_frequency": _DEFAULT_PROFILE_FREQUENCY,
         "capture_mode": _DEFAULT_CAPTURE_MODE,
         "search_mode": _DEFAULT_SEARCH_MODE,
+        "search_threshold": _DEFAULT_SEARCH_THRESHOLD,
+        "search_rerank": False,
+        "search_aggregate": False,
+        "search_rewrite_query": False,
+        "include_documents": _DEFAULT_INCLUDE_DOCUMENTS,
+        "include_summaries": False,
+        "include_related_memories": False,
+        "allow_agent_search_overrides": True,
         "entity_context": _DEFAULT_ENTITY_CONTEXT,
         "api_timeout": _DEFAULT_API_TIMEOUT,
         "base_url": "",
@@ -137,6 +147,17 @@ def _load_supermemory_config(hermes_home: str) -> dict:
     config["capture_mode"] = "everything" if config.get("capture_mode") == "everything" else "all"
     raw_search_mode = str(config.get("search_mode", _DEFAULT_SEARCH_MODE)).strip().lower()
     config["search_mode"] = raw_search_mode if raw_search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
+    try:
+        config["search_threshold"] = max(0.0, min(1.0, float(config.get("search_threshold", _DEFAULT_SEARCH_THRESHOLD))))
+    except Exception:
+        config["search_threshold"] = _DEFAULT_SEARCH_THRESHOLD
+    config["search_rerank"] = _as_bool(config.get("search_rerank"), False)
+    config["search_aggregate"] = _as_bool(config.get("search_aggregate"), False)
+    config["search_rewrite_query"] = _as_bool(config.get("search_rewrite_query"), False)
+    config["include_documents"] = _as_bool(config.get("include_documents"), _DEFAULT_INCLUDE_DOCUMENTS)
+    config["include_summaries"] = _as_bool(config.get("include_summaries"), False)
+    config["include_related_memories"] = _as_bool(config.get("include_related_memories"), False)
+    config["allow_agent_search_overrides"] = _as_bool(config.get("allow_agent_search_overrides"), True)
     config["entity_context"] = _clamp_entity_context(str(config.get("entity_context", _DEFAULT_ENTITY_CONTEXT)))
     try:
         config["api_timeout"] = max(0.5, min(15.0, float(config.get("api_timeout", _DEFAULT_API_TIMEOUT))))
@@ -335,12 +356,37 @@ class _SupermemoryClient:
 
     def search_memories(self, query: str, *, limit: int = 5,
                         container_tag: Optional[str] = None,
-                        search_mode: Optional[str] = None) -> list[dict]:
+                        search_mode: Optional[str] = None,
+                        threshold: Optional[float] = None,
+                        rerank: bool = False,
+                        aggregate: bool = False,
+                        rewrite_query: bool = False,
+                        include_documents: bool = False,
+                        include_summaries: bool = False,
+                        include_related_memories: bool = False) -> list[dict]:
         tag = container_tag or self._container_tag
         mode = search_mode or self._search_mode
         kwargs: dict[str, Any] = {"q": query, "container_tag": tag, "limit": limit}
         if mode in _VALID_SEARCH_MODES:
             kwargs["search_mode"] = mode
+        if threshold is not None:
+            kwargs["threshold"] = threshold
+        # API 400s if both are sent; aggregate wins.
+        if aggregate:
+            kwargs["aggregate"] = True
+        elif rerank:
+            kwargs["rerank"] = True
+        if rewrite_query:
+            kwargs["rewrite_query"] = True
+        include = {}
+        if include_documents:
+            include["documents"] = True
+        if include_summaries:
+            include["summaries"] = True
+        if include_related_memories:
+            include["relatedMemories"] = True
+        if include:
+            kwargs["include"] = include
         response = self._client.search.memories(**kwargs)
         results = []
         for item in (getattr(response, "results", None) or []):
@@ -493,12 +539,16 @@ STORE_SCHEMA = {
 
 SEARCH_SCHEMA = {
     "name": "supermemory_search",
-    "description": "Search long-term memory by semantic similarity.",
+    "description": "Search long-term memory by semantic similarity. Defaults suit most queries; tune the options below when a plain search is the wrong shape for the question.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
             "limit": {"type": "integer", "description": "Maximum results to return, 1 to 20."},
+            "search_mode": {"type": "string", "enum": list(_VALID_SEARCH_MODES), "description": "Default hybrid (facts + document chunks). Use 'documents' when asking about the contents of an ingested file, transcript, podcast, or article. Use 'memories' for short personal facts and preferences only."},
+            "rerank": {"type": "boolean", "description": "Reorder results by relevance to the query. Use when the query is precise and result ordering matters. Cannot be combined with aggregate."},
+            "aggregate": {"type": "boolean", "description": "Synthesize an answer across multiple memories. Use for broad or summarizing questions ('what do we know about X'). Costs an extra LLM call, so skip it for simple lookups. Cannot be combined with rerank."},
+            "rewrite_query": {"type": "boolean", "description": "Rewrite a vague or conversational query into better search terms (+~400ms). Applied automatically on an empty result, so only set it upfront when the query is clearly loosely worded."},
         },
         "required": ["query"],
     },
@@ -547,6 +597,14 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._profile_frequency = _DEFAULT_PROFILE_FREQUENCY
         self._capture_mode = _DEFAULT_CAPTURE_MODE
         self._search_mode = _DEFAULT_SEARCH_MODE
+        self._search_threshold = _DEFAULT_SEARCH_THRESHOLD
+        self._search_rerank = False
+        self._search_aggregate = False
+        self._search_rewrite_query = False
+        self._include_documents = _DEFAULT_INCLUDE_DOCUMENTS
+        self._include_summaries = False
+        self._include_related_memories = False
+        self._allow_agent_search_overrides = True
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
         self._api_timeout = _DEFAULT_API_TIMEOUT
         self._base_url = _DEFAULT_BASE_URL
@@ -662,6 +720,14 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._profile_frequency = self._config["profile_frequency"]
         self._capture_mode = self._config["capture_mode"]
         self._search_mode = self._config["search_mode"]
+        self._search_threshold = self._config["search_threshold"]
+        self._search_rerank = self._config["search_rerank"]
+        self._search_aggregate = self._config["search_aggregate"]
+        self._search_rewrite_query = self._config["search_rewrite_query"]
+        self._include_documents = self._config["include_documents"]
+        self._include_summaries = self._config["include_summaries"]
+        self._include_related_memories = self._config["include_related_memories"]
+        self._allow_agent_search_overrides = self._config["allow_agent_search_overrides"]
         self._entity_context = self._config["entity_context"]
         self._api_timeout = self._config["api_timeout"]
         # Base URL: config > SUPERMEMORY_BASE_URL env var > api.supermemory.ai.
@@ -910,8 +976,15 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 expanded.append(copy)
             return expanded
 
+        search_schema = SEARCH_SCHEMA
+        if not self._allow_agent_search_overrides:
+            # Don't advertise knobs the agent isn't allowed to use.
+            search_schema = json.loads(json.dumps(SEARCH_SCHEMA))
+            for key in ("search_mode", "rerank", "aggregate", "rewrite_query"):
+                search_schema["parameters"]["properties"].pop(key, None)
+
         if not self._enable_custom_containers:
-            return with_kebab_aliases([STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA])
+            return with_kebab_aliases([STORE_SCHEMA, search_schema, FORGET_SCHEMA, PROFILE_SCHEMA])
 
         # When multi-container is enabled, add optional container_tag to relevant tools
         container_param = {
@@ -919,7 +992,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             "description": f"Optional container tag. Allowed: {', '.join(self._allowed_containers)}. Defaults to primary ({self._container_tag}).",
         }
         schemas = []
-        for base in [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]:
+        for base in [STORE_SCHEMA, search_schema, FORGET_SCHEMA, PROFILE_SCHEMA]:
             schema = json.loads(json.dumps(base))  # deep copy
             schema["parameters"]["properties"]["container_tag"] = container_param
             schemas.append(schema)
@@ -960,8 +1033,39 @@ class SupermemoryMemoryProvider(MemoryProvider):
             limit = max(1, min(20, int(args.get("limit", 5) or 5)))
         except Exception:
             limit = 5
+        if self._allow_agent_search_overrides:
+            mode = str(args.get("search_mode") or "").strip().lower()
+            mode = mode if mode in _VALID_SEARCH_MODES else self._search_mode
+            rerank = _as_bool(args.get("rerank"), self._search_rerank)
+            aggregate = _as_bool(args.get("aggregate"), self._search_aggregate)
+            rewrite_query = _as_bool(args.get("rewrite_query"), self._search_rewrite_query)
+        else:
+            mode = self._search_mode
+            rerank = self._search_rerank
+            aggregate = self._search_aggregate
+            rewrite_query = self._search_rewrite_query
+
+        def _run(mode_: str, rewrite_: bool) -> list:
+            return self._client.search_memories(
+                query, limit=limit, container_tag=tag,
+                search_mode=mode_,
+                threshold=self._search_threshold,
+                rerank=rerank,
+                aggregate=aggregate,
+                rewrite_query=rewrite_,
+                include_documents=self._include_documents,
+                include_summaries=self._include_summaries,
+                include_related_memories=self._include_related_memories,
+            )
+
         try:
-            results = self._client.search_memories(query, limit=limit, container_tag=tag)
+            results = _run(mode, rewrite_query)
+            retried = False
+            # Empty hit is usually phrasing or memories-only scope; widen once.
+            if not results and not rewrite_query:
+                retry_mode = "hybrid" if mode == "memories" else mode
+                results = _run(retry_mode, True)
+                retried = bool(results)
             formatted = []
             for item in results:
                 entry: dict[str, Any] = {"id": item.get("id", ""), "content": item.get("memory", "")}
@@ -972,6 +1076,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
                         pass
                 formatted.append(entry)
             resp: dict[str, Any] = {"results": formatted, "count": len(formatted)}
+            if retried:
+                resp["retried_with_rewrite"] = True
             if tag:
                 resp["container_tag"] = tag
             return json.dumps(resp)

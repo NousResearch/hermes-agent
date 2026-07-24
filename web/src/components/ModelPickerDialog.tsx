@@ -11,7 +11,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
-import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
+import {
+  filterModelPickerProviders,
+  modelQueryForSelectedProvider,
+} from "@/lib/model-picker-filter";
 
 /**
  * Two-stage model picker modal.
@@ -214,43 +217,30 @@ export function ModelPickerDialog(props: Props) {
 
   const trimmedQuery = query.trim();
 
-  // Fuzzy-ranked providers: match on name + slug + the provider's model ids so
-  // typing a model name surfaces its provider (preserves the prior behaviour
-  // where a model match also revealed its provider).
+  // Fuzzy-ranked providers: rank provider identity matches first, then include
+  // model-id-only matches in backend order. The model column filters model ids
+  // separately; ranking providers by concatenated model ids makes shared model
+  // names reorder providers unpredictably (e.g. `glm-5.2` under multiple
+  // providers), which can apply the right model through the wrong provider.
   const filteredProviders = useMemo(
-    () =>
-      fuzzyRank(
-        providers,
-        trimmedQuery,
-        (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
-      ).map((r) => r.item),
+    () => filterModelPickerProviders(providers, trimmedQuery),
     [providers, trimmedQuery],
   );
 
-  // A query that matched the SELECTED provider by name/slug (not its models)
-  // located that provider — it shouldn't also hide that provider's models
-  // just because their ids don't share a substring with the provider name
-  // (e.g. typing "aws" to find "AWS Build" then finding zero of its Claude
-  // model ids contain "aws"). Fall back to an unfiltered model list in that
-  // case; a query that also matches a model id keeps filtering normally.
-  const queryMatchesSelectedProviderOnly = useMemo(
-    () => queryMatchesProviderOnly(selectedProvider, models, trimmedQuery),
-    [trimmedQuery, selectedProvider, models],
+  const modelQuery = useMemo(
+    () => modelQueryForSelectedProvider(selectedProvider, models, trimmedQuery),
+    [selectedProvider, models, trimmedQuery],
   );
 
   // Fuzzy-ranked models carrying the matched character positions so the model
   // list can highlight why each entry matched.
   const filteredModels = useMemo(
     () =>
-      fuzzyRank(
-        models,
-        queryMatchesSelectedProviderOnly ? "" : trimmedQuery,
-        (m) => m,
-      ).map((r) => ({
+      fuzzyRank(models, modelQuery, (m) => m).map((r) => ({
         model: r.item,
         positions: r.positions,
       })),
-    [models, trimmedQuery, queryMatchesSelectedProviderOnly],
+    [models, modelQuery],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;

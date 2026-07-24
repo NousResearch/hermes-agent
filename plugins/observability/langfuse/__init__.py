@@ -617,7 +617,10 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     }
 
     # session_id must be passed in trace_context for Langfuse session grouping.
-    trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
+    trace_ctx: Dict[str, Any] = {
+        "trace_id": trace_id,
+        "tags": ["hermes"],
+    }
     if session_id:
         trace_ctx["session_id"] = session_id
 
@@ -891,7 +894,7 @@ def on_pre_llm_request(
         state.generations[req_key] = _start_child_observation(
             state,
             client=client,
-            name=f"LLM call {api_call_count}",
+            name="LLM call",
             as_type="generation",
             input_value=_serialize_messages(input_messages),
             metadata={
@@ -899,6 +902,7 @@ def on_pre_llm_request(
                 "platform": platform,
                 "api_mode": api_mode,
                 "base_url": base_url,
+                "api_call_index": api_call_count,
             },
             model=model,
             model_parameters={"api_mode": api_mode, "provider": provider},

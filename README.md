@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/nousresearch-hermes-agent-badge.png)](https://mseep.ai/app/nousresearch-hermes-agent)
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

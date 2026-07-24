@@ -1878,6 +1878,88 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
 
+    def test_patch_session_pins_and_exempts_from_auto_archive(self):
+        """PATCH pinned=true sets the keep flag; a pinned stale session is
+        spared by the auto-archive sweep while an unpinned one is hidden."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        old = _time.time() - 30 * 86400
+        db = SessionDB()
+        try:
+            for sid in ("keep-me", "drop-me"):
+                db.create_session(session_id=sid, source="cli")
+                db.append_message(session_id=sid, role="user", content="hi")
+                db._conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?", (old, sid)
+                )
+                db._conn.execute(
+                    "UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, sid)
+                )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/keep-me", json={"pinned": True})
+        assert resp.status_code == 200
+        assert resp.json()["pinned"] is True
+
+        db = SessionDB()
+        try:
+            archived = db.archive_stale_sessions(3)
+        finally:
+            db.close()
+
+        assert archived == 1
+        listed = self.client.get("/api/sessions").json()["sessions"]
+        ids = {s["id"] for s in listed}
+        assert "keep-me" in ids  # pinned -> spared
+        assert "drop-me" not in ids  # unpinned + stale -> archived
+
+    def test_list_triggers_config_gated_auto_archive(self):
+        """With sessions.auto_archive on, listing sessions opportunistically
+        sweeps stale ones (the Desktop `hermes serve` code path)."""
+        import time as _time
+
+        import hermes_cli.web_server as ws
+        from hermes_state import SessionDB
+
+        old = _time.time() - 30 * 86400
+        db = SessionDB()
+        try:
+            db.create_session(session_id="stale-serve", source="cli")
+            db.append_message(session_id="stale-serve", role="user", content="hi")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?", (old, "stale-serve")
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (old, "stale-serve"),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        # Reset the in-process throttle so the trigger actually evaluates config.
+        ws._last_auto_archive_check.clear()
+
+        # The helper imports load_config lazily from hermes_cli.config; patch there.
+        import hermes_cli.config as _config_mod
+
+        def _cfg():
+            return {"sessions": {"auto_archive": True, "auto_archive_days": 3, "min_interval_hours": 0}}
+
+        prev = _config_mod.load_config
+        _config_mod.load_config = _cfg  # type: ignore[assignment]
+        try:
+            listed = self.client.get("/api/sessions").json()["sessions"]
+        finally:
+            _config_mod.load_config = prev  # type: ignore[assignment]
+            ws._last_auto_archive_check.clear()
+
+        assert all(s["id"] != "stale-serve" for s in listed)
+
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""

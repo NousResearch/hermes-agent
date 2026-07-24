@@ -424,7 +424,10 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Paginate
     total = len(deduped)
     total_pages = max(1, (total + page_size - 1) // page_size)
+    requested_page = page
     page = max(1, min(page, total_pages))
+    if requested_page != page:
+        c.print(f'[dim]Page {requested_page} requested; only {total_pages} page(s) available.[/]')
     start = (page - 1) * page_size
     end = min(start + page_size, total)
     page_items = deduped[start:end]

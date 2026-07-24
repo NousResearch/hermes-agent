@@ -691,6 +691,34 @@ def test_do_browse_reports_live_per_source_progress():
     assert "demo" in sink.getvalue()
 
 
+def test_do_browse_page_clamp_message():
+    """When page > total_pages, do_browse should print a helpful message
+    instead of silently clamping (issue #45574)."""
+    from hermes_cli.skills_hub import do_browse
+    from tools.skills_hub import SkillMeta
+
+    meta = SkillMeta(
+        name="demo", description="d", source="official",
+        identifier="official/demo", trust_level="builtin",
+    )
+
+    def fake_parallel(sources, query="", per_source_limits=None,
+                      source_filter="all", overall_timeout=30,
+                      on_source_done=None):
+        return [meta], {"official": 1}, []
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=120)
+
+    with patch("tools.skills_hub.create_source_router", return_value=[]),          patch("tools.skills_hub.GitHubAuth"),          patch("tools.skills_hub.parallel_search_sources", side_effect=fake_parallel):
+        # Request page 2 when only 1 page exists (1 skill, page_size=20)
+        do_browse(page=2, page_size=20, console=console)
+
+    output = sink.getvalue()
+    assert "Page 2 requested" in output, f"Expected page-clamp message, got: {output}"
+    assert "only 1 page" in output
+
+
 # ---------------------------------------------------------------------------
 # Regression: full identifier must be recoverable from `hermes skills search`
 # even when the slug is too long to fit the terminal width (issue #33674).

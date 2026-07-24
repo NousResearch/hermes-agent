@@ -105,9 +105,13 @@ def _build_subprocess_env() -> dict[str, str]:
     # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
-    env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
+    # Copilot is a host CLI and must see the account HOME that was resolved
+    # above, even when Hermes itself runs in a container with a profile home.
+    # The shared helper still supplies HERMES_REAL_HOME and its other contract
+    # fields, but its container policy must not redirect this particular CLI.
+    env["HOME"] = home
     return env
 
 

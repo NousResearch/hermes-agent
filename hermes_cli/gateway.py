@@ -4431,7 +4431,10 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        # Use plain kickstart (no -k) — the SIGTERM + wait above already
+        # terminated the old process.  The -k flag would re-terminate and
+        # race with KeepAlive=true, causing a double-spawn.
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
     except subprocess.CalledProcessError as e:

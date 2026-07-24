@@ -882,16 +882,19 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id. In
-        # thread mode, top-level channel posts are valid roots for progress.
-        thread_id = post.get("root_id") or None
-        if (
-            not thread_id
-            and self._reply_mode == "thread"
-            and channel_type_raw != "D"
-            and post_id
-        ):
-            thread_id = post_id
+        # Thread support is scoped to reply_mode == "thread". DMs never
+        # thread (single flat session per DM). In "off" mode, a channel post
+        # keeps its flat chat+user session key regardless of root_id, so a
+        # threaded reply must NOT pick up thread_id either — otherwise its
+        # session key (chat+thread) would no longer match the flat key the
+        # original message used, forking the conversation into a fresh
+        # session instead of continuing it. In "thread" mode, a reply uses
+        # its root_id and a top-level post seeds itself as a new root, so
+        # both resolve to the same shared per-thread session key.
+        if channel_type_raw == "D" or self._reply_mode != "thread":
+            thread_id = None
+        else:
+            thread_id = post.get("root_id") or post_id or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []

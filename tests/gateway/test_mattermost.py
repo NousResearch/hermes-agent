@@ -659,7 +659,8 @@ class TestMattermostWebSocketParsing:
 
     @pytest.mark.asyncio
     async def test_thread_id_from_root_id(self):
-        """Post with root_id should have thread_id set."""
+        """In thread mode, a post with root_id should have thread_id set."""
+        self.adapter._reply_mode = "thread"
         post_data = {
             "id": "post_reply",
             "user_id": "user_123",
@@ -680,6 +681,37 @@ class TestMattermostWebSocketParsing:
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
         assert msg_event.source.thread_id == "root_post_123"
+
+    @pytest.mark.asyncio
+    async def test_thread_id_ignored_in_off_mode(self):
+        """In off mode, a reply's root_id must NOT become thread_id.
+
+        Off mode session keys are flat (chat+user). If a reply picked up
+        thread_id, its session key would become chat+thread and diverge
+        from the flat key the original message used, forking the
+        conversation into a fresh session instead of continuing it.
+        """
+        self.adapter._reply_mode = "off"
+        post_data = {
+            "id": "post_reply",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id Thread reply",
+            "root_id": "root_post_123",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id is None
 
     @pytest.mark.asyncio
     async def test_invalid_post_json_ignored(self):
@@ -1122,3 +1154,53 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+@pytest.mark.asyncio
+async def test_mattermost_off_mode_reply_keeps_root_session_key():
+    """A threaded reply in off mode must resolve to the same session key
+    as the original channel post, so the conversation continues instead
+    of forking into a new session (the bug fixed by this change)."""
+    from gateway.session import build_session_key
+
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    adapter._reply_mode = "off"
+
+    root_post = {
+        "id": "root_post_123",
+        "user_id": "user_123",
+        "channel_id": "chan_456",
+        "message": "@hermes-bot start work",
+        "root_id": "",
+    }
+    await adapter._handle_ws_event({
+        "event": "posted",
+        "data": {
+            "post": json.dumps(root_post),
+            "channel_type": "O",
+            "sender_name": "@alice",
+        },
+    })
+    root_source = adapter.handle_message.call_args[0][0].source
+
+    reply_post = {
+        "id": "reply_post_456",
+        "user_id": "user_123",
+        "channel_id": "chan_456",
+        "message": "@hermes-bot continue",
+        "root_id": "root_post_123",
+    }
+    await adapter._handle_ws_event({
+        "event": "posted",
+        "data": {
+            "post": json.dumps(reply_post),
+            "channel_type": "O",
+            "sender_name": "@alice",
+        },
+    })
+    reply_source = adapter.handle_message.call_args[0][0].source
+
+    assert build_session_key(root_source) == build_session_key(reply_source)

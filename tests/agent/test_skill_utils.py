@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from agent.skill_utils import (
     extract_skill_config_vars,
     extract_skill_conditions,
@@ -514,3 +516,28 @@ class TestBOMToleranceSiblingSites:
         ):
             fm = parser("\ufeff" + self.SKILL)
             assert fm.get("name") == "bom-skill", parser.__qualname__
+
+
+def test_iter_skill_index_files_follows_directory_symlinks(tmp_path):
+    """Symlinked skill dirs (e.g. managed by external skill managers) are
+    discovered, matching the runtime loader's followlinks behavior."""
+    vault = tmp_path / "vault" / "linked-skill"
+    vault.mkdir(parents=True)
+    (vault / "SKILL.md").write_text("---\nname: linked-skill\n---\n", encoding="utf-8")
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    real = skills_dir / "real-skill"
+    real.mkdir()
+    (real / "SKILL.md").write_text("---\nname: real-skill\n---\n", encoding="utf-8")
+    try:
+        (skills_dir / "linked-skill").symlink_to(vault)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    found = list(iter_skill_index_files(skills_dir, "SKILL.md"))
+
+    assert found == [
+        skills_dir / "linked-skill" / "SKILL.md",
+        real / "SKILL.md",
+    ]

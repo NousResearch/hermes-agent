@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli import profiles as profiles_mod
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import iter_skill_index_files
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +108,7 @@ def _collect_skills(profile_dir: Path) -> list[str]:
     if not skills_dir.is_dir():
         return []
     names: list[str] = []
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
+    for md in iter_skill_index_files(skills_dir, "SKILL.md"):
         try:
             rel = md.relative_to(skills_dir)
         except ValueError:
@@ -199,8 +197,7 @@ def describe_profile(
     skill_names = _collect_skills(profile_dir)
     skill_list = "\n".join(f"  - {n}" for n in skill_names) or "  (no skills installed)"
     skill_count = sum(
-        1 for _ in (profile_dir / "skills").rglob("SKILL.md")
-        if not is_excluded_skill_path(_)
+        1 for _ in iter_skill_index_files(profile_dir / "skills", "SKILL.md")
     ) if (profile_dir / "skills").is_dir() else 0
 
     # Read model + provider from the profile's config.

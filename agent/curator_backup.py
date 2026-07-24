@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import iter_skill_index_files
 
 logger = logging.getLogger(__name__)
 
@@ -181,9 +181,7 @@ def get_keep() -> int:
 
 def _count_skill_files(base: Path) -> int:
     try:
-        return sum(
-            1 for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p)
-        )
+        return sum(1 for _ in iter_skill_index_files(base, "SKILL.md"))
     except OSError:
         return 0
 

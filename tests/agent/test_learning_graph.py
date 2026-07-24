@@ -8,6 +8,8 @@ change-detector.
 
 from __future__ import annotations
 
+import pytest
+
 from agent import learning_graph
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -130,3 +132,27 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
     assert graph["stats"]["nodes"] == len(skill_nodes)
     assert graph["stats"]["memory_nodes"] == len(graph["memory"])
     assert all("timestamp" in n for n in graph["nodes"])
+
+
+def test_iter_skill_files_follows_directory_symlinks(tmp_path):
+    """Skill dirs symlinked in from an external vault must reach the graph.
+
+    ``_iter_skill_files`` is the graph's own discovery path; a plain rglob
+    walk stops at directory symlinks and silently drops those skills.
+    """
+    vault = tmp_path / "vault" / "linked-skill"
+    vault.mkdir(parents=True)
+    (vault / "SKILL.md").write_text("---\nname: linked-skill\n---\n", encoding="utf-8")
+
+    root = tmp_path / "skills"
+    real = root / "real-skill"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("---\nname: real-skill\n---\n", encoding="utf-8")
+    try:
+        (root / "linked-skill").symlink_to(vault)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    found = {p.parent.name for _source, p in learning_graph._iter_skill_files([("local", root)])}
+
+    assert found == {"real-skill", "linked-skill"}

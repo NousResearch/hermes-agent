@@ -1403,3 +1403,31 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestExternalSkillIndexSymlinks:
+    """External dirs are commonly a tree of symlinks into a user's vault.
+
+    A raw rglob walk does not descend directory symlinks, so those skills
+    stayed invisible to shadow detection and sync_skills happily wrote a
+    bundled copy over the top of the delegated one.
+    """
+
+    def test_symlinked_external_skill_is_indexed(self, tmp_path):
+        from tools.skills_sync import _build_external_skill_index
+
+        vault = tmp_path / "vault" / "clair-qa"
+        vault.mkdir(parents=True)
+        (vault / "SKILL.md").write_text("---\nname: clair-qa\n---\n", encoding="utf-8")
+
+        ext_dir = tmp_path / "external"
+        ext_dir.mkdir()
+        try:
+            (ext_dir / "clair-qa").symlink_to(vault)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+            names = _build_external_skill_index()
+
+        assert "clair-qa" in names

@@ -1211,7 +1211,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         }
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertEqual(creds["model"], "qwen2.5-coder")
-        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["provider"], "openrouter")
         self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
@@ -1466,6 +1466,48 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         mock_resolve.assert_called_once()
         self.assertEqual(mock_resolve.call_args.kwargs.get("requested"), "bedrock")
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_base_url_with_provider_resolves_key_from_env(self, mock_resolve):
+        """When base_url + provider are set but api_key is empty, resolve key
+        from the provider's env var via resolve_runtime_provider."""
+        mock_resolve.return_value = {
+            "provider": "opencode-go",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "resolved-from-env",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "mimo-v2.5",
+            "provider": "opencode-go",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            # api_key intentionally omitted
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_key"], "resolved-from-env")
+        self.assertEqual(creds["provider"], "opencode-go")
+        self.assertEqual(creds["model"], "mimo-v2.5")
+        mock_resolve.assert_called_once_with(
+            requested="opencode-go", target_model="mimo-v2.5",
+        )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_base_url_with_provider_failure_raises_not_parent_key(self, mock_resolve):
+        """When provider resolution fails for an explicitly configured
+        delegation provider, surface the failure (ValueError) rather than
+        silently inheriting the parent agent's key. Verifies a failed
+        resolution can never select the parent key (cross-provider 401s)."""
+        import unittest
+
+        mock_resolve.side_effect = RuntimeError("no key")
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "mimo-v2.5",
+            "provider": "opencode-go",
+            "base_url": "https://opencode.ai/zen/go/v1",
+        }
+        with self.assertRaises(ValueError):
+            _resolve_delegation_credentials(cfg, parent)
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):

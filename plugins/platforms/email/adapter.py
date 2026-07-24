@@ -422,6 +422,12 @@ def _extract_attachments(
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
+    # SMTP/MIME supports messages far beyond the gateway's 4,000-character
+    # chat-platform guard.  Declaring long-message support ensures cron output
+    # reaches the email body intact instead of being replaced by a local-file
+    # truncation notice intended for non-chunking chat adapters.
+    splits_long_messages = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 

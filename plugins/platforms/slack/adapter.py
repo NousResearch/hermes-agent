@@ -2525,6 +2525,7 @@ class SlackAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            delivered_thread_ts = None
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -2569,6 +2570,11 @@ class SlackAdapter(BasePlatformAdapter):
                         ).chat_postMessage(**retry_kwargs)
                     else:
                         raise
+                response_message = last_result.get("message") if last_result else None
+                if delivered_thread_ts is None and hasattr(response_message, "get"):
+                    response_thread_ts = response_message.get("thread_ts")
+                    if response_thread_ts:
+                        delivered_thread_ts = str(response_thread_ts)
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -2582,9 +2588,10 @@ class SlackAdapter(BasePlatformAdapter):
                     self._workspace_message_marker(team_id, sent_ts)
                 )
                 # Also register the thread root so replies-to-my-replies work
-                if thread_ts:
+                participation_thread_ts = delivered_thread_ts or thread_ts
+                if participation_thread_ts:
                     self._bot_message_ts.add(
-                        self._workspace_message_marker(team_id, thread_ts)
+                        self._workspace_message_marker(team_id, participation_thread_ts)
                     )
                 self._trim_bot_message_timestamps()
 

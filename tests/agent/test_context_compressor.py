@@ -2464,6 +2464,297 @@ class TestCompressWithClient:
         assert ContextCompressor._is_context_summary_content(standalone) is True
         assert ContextCompressor._strip_summary_prefix(standalone) == "STANDALONE_BODY"
 
+    def test_summary_parser_handles_repeated_delimiters_mapping_and_quoted_markers(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _merged_prior_context_text,
+        )
+
+        merged = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            f"quoted marker: {_MERGED_SUMMARY_DELIMITER}\n"
+            f"{SUMMARY_PREFIX}\nQUOTED_STALE_BODY\nstill prior context\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL_BODY"
+        )
+        assert ContextCompressor._is_context_summary_content(merged) is True
+        legacy_body = ContextCompressor._strip_summary_prefix(merged)
+        assert "QUOTED_STALE_BODY" in legacy_body
+        assert "REAL_BODY" in legacy_body
+        assert _merged_prior_context_text(merged) == ""
+
+        mapping = {"type": "text", "text": f"{SUMMARY_PREFIX}\nMAPPING_BODY"}
+        assert ContextCompressor._is_context_summary_content(mapping) is True
+
+        ordinary = f"Discussion quote: {_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}"
+        assert ContextCompressor._is_context_summary_content(ordinary) is False
+        assert ContextCompressor._strip_summary_prefix(ordinary) == ordinary
+
+    def test_ambiguous_legacy_merged_summary_preserves_wrapper_as_summary(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _merged_prior_context_text,
+        )
+
+        merged = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\nREAL PRIOR TURN\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL SUMMARY BODY\n"
+            "quoted wrapper inside old persisted summary:\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED TAIL"
+        )
+
+        assert ContextCompressor._is_context_summary_content(merged) is True
+        body = ContextCompressor._strip_summary_prefix(merged)
+        assert "REAL PRIOR TURN" in body
+        assert "REAL SUMMARY BODY" in body
+        assert "QUOTED TAIL" in body
+        assert _merged_prior_context_text(merged) == ""
+
+    def test_ambiguous_structured_merged_summary_is_not_unwrapped(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        structured = [
+            {
+                "type": "text",
+                "text": f"{_MERGED_PRIOR_CONTEXT_HEADER}\nREAL PRIOR TURN",
+            },
+            {
+                "type": "text",
+                "text": (
+                    f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n"
+                    "REAL SUMMARY BODY\n"
+                    f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED TAIL"
+                ),
+            },
+        ]
+
+        assert ContextCompressor._strip_context_summary_handoff_message(
+            {"role": "assistant", "content": structured}
+        ) is None
+
+    def test_structured_merged_summary_uses_canonical_boundary_after_quoted_delimiter(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        structured = [
+            {
+                "type": "text",
+                "text": (
+                    f"{_MERGED_PRIOR_CONTEXT_HEADER}\nREAL PRIOR START\n"
+                    f"quoted marker: {_MERGED_SUMMARY_DELIMITER}\n"
+                    "not a summary prefix\nREAL PRIOR END"
+                ),
+            },
+            {
+                "type": "text",
+                "text": (
+                    f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n"
+                    "REAL SUMMARY BODY"
+                ),
+            },
+        ]
+
+        unwrapped = ContextCompressor._strip_context_summary_handoff_message(
+            {"role": "assistant", "content": structured}
+        )
+
+        assert unwrapped is not None
+        text = str(unwrapped["content"])
+        assert "REAL PRIOR START" in text
+        assert "not a summary prefix" in text
+        assert "REAL PRIOR END" in text
+        assert "REAL SUMMARY BODY" not in text
+
+    def test_recompaction_does_not_reinject_ambiguous_legacy_summary_as_real_turn(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        ambiguous = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\nREAL PRIOR TURN\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL SUMMARY BODY\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED TAIL"
+        )
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "protected head"},
+            {"role": "assistant", "content": ambiguous},
+            {"role": "user", "content": "middle user 1"},
+            {"role": "assistant", "content": "middle assistant 1"},
+            {"role": "user", "content": "middle user 2"},
+            {"role": "assistant", "content": "tail assistant"},
+            {"role": "user", "content": "tail user"},
+            {"role": "assistant", "content": "tail final"},
+        ]
+        summarized_turns = []
+
+        def fake_generate(turns, focus_topic=None, memory_context=""):
+            summarized_turns.extend(turns)
+            assert c._previous_summary is not None
+            assert "REAL SUMMARY BODY" in c._previous_summary
+            return f"{SUMMARY_PREFIX}\nUPDATED SUMMARY"
+
+        with patch.object(c, "_generate_summary", side_effect=fake_generate):
+            c.compress(messages, force=True)
+
+        assert summarized_turns
+        assert all(
+            "REAL SUMMARY BODY" not in str(turn.get("content") or "")
+            and "QUOTED TAIL" not in str(turn.get("content") or "")
+            for turn in summarized_turns
+        )
+
+    def test_summary_parser_does_not_copy_every_delimiter_suffix(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            is_context_summary_content,
+        )
+
+        class NoSuffixSlices(str):
+            def lstrip(self, chars=None):
+                return self
+
+            def __getitem__(self, key):
+                if (
+                    isinstance(key, slice)
+                    and key.start not in (None, 0)
+                    and key.stop is None
+                ):
+                    raise AssertionError("parser copied an unbounded suffix")
+                return super().__getitem__(key)
+
+        merged = NoSuffixSlices(
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            + (f"quote {_MERGED_SUMMARY_DELIMITER}\nnot a prefix\n" * 20)
+            + f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL_BODY"
+        )
+
+        assert is_context_summary_content(merged) is True
+
+    def test_generated_merged_summary_escapes_quoted_boundary_in_summary_body(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        quoted_summary = (
+            f"{SUMMARY_PREFIX}\nREAL SUMMARY BODY\nquoted wrapper:\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED BODY"
+        )
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "protected head"},
+            {"role": "assistant", "content": "middle 1"},
+            {"role": "user", "content": "middle 2"},
+            {"role": "assistant", "content": "middle 3"},
+            {"role": "assistant", "content": "real tail"},
+            {"role": "user", "content": "tail user"},
+            {"role": "assistant", "content": "tail assistant"},
+        ]
+
+        with patch.object(c, "_generate_summary", return_value=quoted_summary):
+            compressed = c.compress(messages, force=True)
+
+        merged_content = next(
+            str(message.get("content") or "")
+            for message in compressed
+            if _MERGED_PRIOR_CONTEXT_HEADER in str(message.get("content") or "")
+        )
+        assert merged_content.count(_MERGED_SUMMARY_DELIMITER) == 1
+        assert ContextCompressor._strip_summary_prefix(merged_content).startswith(
+            "REAL SUMMARY BODY"
+        )
+
+    def test_recompaction_preserves_real_turn_from_merged_summary_wrapper(self):
+        from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        summarized_turns = []
+
+        def fake_generate(turns, focus_topic=None, memory_context=""):
+            summarized_turns.append(turns)
+            retained_tail = any(
+                "TAIL_SENTINEL" in str(turn.get("content") or "")
+                for turn in turns
+            )
+            summary = "second summary retains TAIL_SENTINEL" if retained_tail else "first summary"
+            c._previous_summary = summary
+            return summary
+
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "protected head"},
+            {"role": "assistant", "content": "middle 1"},
+            {"role": "user", "content": "middle 2"},
+            {"role": "assistant", "content": "middle 3"},
+            {"role": "assistant", "content": "TAIL_SENTINEL"},
+            {"role": "user", "content": "tail user"},
+            {"role": "assistant", "content": "tail assistant"},
+        ]
+
+        with patch.object(c, "_generate_summary", side_effect=fake_generate):
+            first = c.compress(messages, force=True)
+            assert any(
+                _MERGED_PRIOR_CONTEXT_HEADER in str(message.get("content") or "")
+                and "TAIL_SENTINEL" in str(message.get("content") or "")
+                for message in first
+            )
+
+            second_input = first + [
+                {"role": "user", "content": "new 1"},
+                {"role": "assistant", "content": "new 2"},
+                {"role": "user", "content": "new 3"},
+                {"role": "assistant", "content": "new 4"},
+            ]
+            second = c.compress(second_input, force=True)
+
+        assert any(
+            "TAIL_SENTINEL" in str(turn.get("content") or "")
+            for turn in summarized_turns[1]
+        )
+        assert any(
+            "second summary retains TAIL_SENTINEL" in str(message.get("content") or "")
+            for message in second
+        )
+
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
         summary='assistant' collides with tail, 'user' collides with head → merge."""

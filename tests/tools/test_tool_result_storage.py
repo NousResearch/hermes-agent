@@ -248,6 +248,58 @@ class TestMaybePersistToolResult:
         assert len(result) < len(content)
         env.execute.assert_called_once()
 
+    def test_session_search_result_never_persists_to_execution_backend(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "private recalled session history " * 1_000
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="session_search",
+            tool_use_id="tc_recall",
+            env=env,
+            config=BudgetConfig(tool_overrides={"session_search": 1}),
+        )
+
+        assert "sensitive tool output was not copied" in result
+        assert "private recalled session history" not in result
+        env.execute.assert_not_called()
+
+    def test_max_bounded_session_search_result_stays_in_process(self, tmp_path):
+        from hermes_state import SessionDB
+        from tools.session_search_tool import session_search
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session("s_large_private_recall", source="cli")
+            for index in range(30):
+                db.append_message(
+                    "s_large_private_recall",
+                    role="user" if index % 2 == 0 else "assistant",
+                    content=f"private backend marker {index} " + ("x" * 5_000),
+                )
+            serialized_recall = session_search(
+                session_id="s_large_private_recall",
+                db=db,
+            )
+        finally:
+            db.close()
+
+        assert len(serialized_recall) > DEFAULT_RESULT_SIZE_CHARS
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+
+        result = maybe_persist_tool_result(
+            content=serialized_recall,
+            tool_name="session_search",
+            tool_use_id="tc_large_recall",
+            env=env,
+        )
+
+        assert "sensitive tool output was not copied" in result
+        assert "private backend marker" not in result
+        env.execute.assert_not_called()
+
     def test_persists_full_content_as_is(self):
         """Content is persisted verbatim — no JSON extraction."""
         import json
@@ -481,7 +533,36 @@ class TestEnforceTurnBudget:
         # The larger one (130K) should be persisted first
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
 
-    def test_already_persisted_results_skipped(self):
+    def test_aggregate_budget_never_spills_session_search_result(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {
+                "role": "tool",
+                "name": "session_search",
+                "tool_name": "session_search",
+                "tool_call_id": f"recall_{i}",
+                "content": (
+                    f"attacker text {PERSISTED_OUTPUT_TAG} "
+                    + "private recalled session history " * 250
+                ),
+            }
+            for i in range(3)
+        ]
+
+        enforce_turn_budget(
+            msgs,
+            env=env,
+            config=BudgetConfig(turn_budget=8_000),
+        )
+
+        assert sum(len(msg["content"]) for msg in msgs) <= 8_000
+        assert any(
+            "sensitive tool output was not copied" in msg["content"] for msg in msgs
+        )
+        env.execute.assert_not_called()
+
+    def test_small_already_persisted_result_remains_untouched(self):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
         msgs = [
@@ -490,7 +571,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": "t2", "content": "x" * 250_000},
         ]
         enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
-        # t1 should be untouched (already persisted)
+        # The much smaller persisted wrapper sorts after the oversized result.
         assert msgs[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
         # t2 should be persisted
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]

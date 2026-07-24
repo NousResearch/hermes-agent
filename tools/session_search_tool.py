@@ -20,7 +20,10 @@ mode parameter):
 
 All three modes operate on the SQLite session DB via the FTS5 index and
 the get_anchored_view / get_messages_around primitives in hermes_state.
-No LLM calls anywhere — every shape returns actual messages from the DB.
+No LLM calls anywhere — every shape returns source DB messages, but recall
+payloads are bounded before injection into the active model context: old
+compaction-summary bodies are omitted, large message bodies are truncated,
+and oversized tool-call payloads are summarized with metadata.
 
 History: PR #20238 (JabberELF) seeded a fast/summary dual-mode split; the
 toolkit expansion in PR #26419 (yoniebans) added the anchored drill-down,
@@ -54,17 +57,24 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+_MAX_LINEAGE_DEPTH = 256
+_MAX_DISCOVERY_LINEAGE_LOOKUPS = 1_024
 
-# Prefixes that identify generated context-compaction handoff summaries.
-# These are inserted by agent/context_compressor.py as normal user/assistant
-# messages but contain machine-generated summary metadata — not user content.
-# They must be excluded from discovery bookends to avoid re-introducing huge
-# compaction payloads into fresh sessions via session_search.  (#43175)
-_COMPACTION_PREFIXES = (
-    "[CONTEXT COMPACTION",
-    "[CONTEXT SUMMARY]:",
-)
-
+# ``session_search`` output is injected straight back into the active model
+# context. A single historical compaction handoff can be tens of thousands of
+# chars and often contains stale "Active Task"/"Remaining Work" text. Returning
+# it verbatim from discovery/bookends re-inflates the new session with exactly
+# the compressed history the user was trying to escape. Keep recall useful while
+# making the tool output bounded and non-recursive.
+_MESSAGE_CONTENT_MAX_CHARS = 6_000
+_SNIPPET_MAX_CHARS = 1_200
+_TOOL_CALL_ARGUMENTS_MAX_CHARS = 1_200
+_TOOL_CALL_METADATA_MAX_CHARS = 256
+_TOOL_CALLS_MAX_ITEMS = 6
+_RESPONSE_FIELD_MAX_CHARS = 8_000
+_RESPONSE_MAX_CHARS = 120_000
+_TOOL_CALL_METADATA_FIELDS = ("id", "call_id", "type", "name", "status", "index")
+_TOOL_CALL_ARGUMENT_FIELDS = ("arguments", "input")
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -91,39 +101,40 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     return str(ts)
 
 
-def _is_compaction_summary(content: str) -> bool:
-    """Return True if *content* looks like a generated compaction handoff."""
-    if not content:
-        return False
-    stripped = content.lstrip()
-    return any(stripped.startswith(p) for p in _COMPACTION_PREFIXES)
-
-
-def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
-    """Walk parent_session_id chain to the lineage root.
-
-    Returns ``(root_id, has_compression_hop)`` where ``has_compression_hop`` is
-    True if any session along the chain ended with ``end_reason = 'compression'``
-    — i.e. at least one parent/ancestor was compression-rotated into this
-    lineage. That flag lets callers distinguish a compression-split lineage
-    (parent content summarised away, no longer in live context) from a
-    delegation lineage (child content still visible to the parent agent).
-
-    Falls back to ``(session_id, False)`` on errors.
-    """
+def _resolve_lineage(
+    db,
+    session_id: str,
+    *,
+    cache: Optional[Dict[str, str]] = None,
+    lookup_budget: Optional[List[int]] = None,
+) -> str:
+    """Resolve a lineage root with path compression and hard lookup bounds."""
     if not session_id:
-        return session_id, False
-    visited: set[str] = set()
+        return session_id
+    lineage_cache = cache if cache is not None else {}
+    cached = lineage_cache.get(session_id)
+    if cached:
+        return cached
+    path: List[str] = []
+    visited = set()
     cur = session_id
-    has_compression = False
-    while cur and cur not in visited:
+    for _ in range(_MAX_LINEAGE_DEPTH):
+        cached = lineage_cache.get(cur)
+        if cached:
+            cur = cached
+            break
+        if not cur or cur in visited:
+            break
         visited.add(cur)
+        path.append(cur)
+        if lookup_budget is not None:
+            if lookup_budget[0] <= 0:
+                break
+            lookup_budget[0] -= 1
         try:
             s = db.get_session(cur)
             if not s:
                 break
-            if s.get("end_reason") == "compression":
-                has_compression = True
             parent = s.get("parent_session_id")
             if not parent:
                 break
@@ -131,12 +142,45 @@ def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
         except Exception as e:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
+    else:
+        logging.debug("Lineage depth cap reached while resolving %s", session_id)
+    for child in path:
+        lineage_cache[child] = cur
+    return cur
+
+
+def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
+    """Return the lineage root and whether the chain crosses compression."""
+    if not session_id:
+        return session_id, False
+    visited: set[str] = set()
+    cur = session_id
+    has_compression = False
+    for _ in range(_MAX_LINEAGE_DEPTH):
+        if not cur or cur in visited:
+            break
+        visited.add(cur)
+        try:
+            session = db.get_session(cur)
+            if not session:
+                break
+            if session.get("end_reason") == "compression":
+                has_compression = True
+            parent = session.get("parent_session_id")
+            if not parent:
+                break
+            cur = parent
+        except Exception as exc:
+            logging.debug(
+                "Error resolving parent for %s: %s",
+                cur,
+                exc,
+                exc_info=True,
+            )
+            break
+    else:
+        logging.debug("Lineage depth cap reached while resolving %s", session_id)
     return cur, has_compression
-
-
-def _resolve_lineage(db, session_id: str) -> str:
-    """Convenience: return only the lineage root (ignores compression hop)."""
-    return _resolve_to_parent(db, session_id)[0]
 
 
 def _is_compression_ended(db, session_id: str) -> bool:
@@ -187,6 +231,22 @@ def _is_compacted_message(db, message_id) -> bool:
     return row is not None and row["active"] == 0 and row["compacted"] == 1
 
 
+def _message_session_id(db, message_id) -> Optional[str]:
+    """Return the owning session for a persisted message id, if available."""
+    if not message_id:
+        return None
+    try:
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT session_id FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+    except Exception:
+        logging.debug("message-session lookup failed for %s", message_id, exc_info=True)
+        return None
+    return row["session_id"] if row is not None else None
+
+
 def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
     """Add a rebuild-progress note when the deferred FTS backfill (schema
     v23) is still running, so the agent can tell the user why older results
@@ -226,43 +286,434 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
+def _text_char_len(content: Any) -> int:
+    """Best-effort character length for persisted message content."""
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return len(content)
+    try:
+        return len(json.dumps(content, ensure_ascii=False))
+    except Exception:
+        return len(str(content))
+
+
+def _is_compaction_summary_content(content: Any) -> bool:
+    # Import lazily so loading the core tool schema does not pull in the
+    # compressor and its provider dependencies. The invocation path still uses
+    # the compressor's one canonical detector, including multimodal content and
+    # every exact historical prefix.
+    from agent.context_compressor import is_context_summary_content
+
+    return is_context_summary_content(content)
+
+
+def _is_compaction_summary(content: Any) -> bool:
+    """Return whether content carries a generated compaction-handoff marker.
+
+    The canonical detector handles current, legacy, historical, and structured
+    summaries. The reserved header fallback covers shortened historical rows
+    without treating ordinary ``[CONTEXT COMPACTION ...]`` discussion as a
+    generated handoff.
+    """
+    if not content:
+        return False
+    if _is_compaction_summary_content(content):
+        return True
+    if isinstance(content, str):
+        text = content
+    else:
+        try:
+            text = json.dumps(content, ensure_ascii=False)
+        except Exception:
+            text = str(content)
+    stripped = text.lstrip()
+    return stripped.startswith(
+        "[CONTEXT COMPACTION — REFERENCE ONLY]"
+    ) or stripped.startswith(
+        "[CONTEXT SUMMARY]:"
+    )
+
+
+def _truncate_string(value: str, limit: int) -> tuple[str, bool, int]:
+    original_len = len(value)
+    if original_len <= limit:
+        return value, False, original_len
+    omitted = original_len - limit
+    return (
+        value[:limit].rstrip()
+        + f"\n[session_search truncated {omitted:,} chars from this field; scroll/read a narrower window if needed]",
+        True,
+        original_len,
+    )
+
+
+def _truncate_string_to_budget(value: str, limit: int) -> str:
+    """Truncate a string to an exact final size for response budgeting."""
+    if len(value) <= limit:
+        return value
+    suffix = "...[session_search response budget]"
+    if limit <= len(suffix):
+        return value[:limit]
+    return value[: limit - len(suffix)].rstrip() + suffix
+
+
+def _truncate_string_with_notice(value: str, limit: int) -> tuple[str, bool, int]:
+    """Truncate to an exact final limit while preserving explicit metadata."""
+    original_len = len(value)
+    if original_len <= limit:
+        return value, False, original_len
+    if limit <= 0:
+        return "", True, original_len
+    omitted = max(1, original_len - limit)
+    while True:
+        notice = f"\n[session_search truncated {omitted:,} chars]"
+        prefix_limit = max(0, limit - len(notice))
+        actual_omitted = original_len - prefix_limit
+        if actual_omitted == omitted:
+            break
+        omitted = actual_omitted
+    if len(notice) >= limit:
+        return value[:limit], True, original_len
+    return value[:prefix_limit].rstrip() + notice, True, original_len
+
+
+def _limit_response_strings(value: Any, limit: int) -> Any:
+    """Return a copy with every string key and value capped to ``limit`` chars."""
+    if isinstance(value, str):
+        return _truncate_string_to_budget(value, limit)
+    if isinstance(value, list):
+        return [_limit_response_strings(item, limit) for item in value]
+    if isinstance(value, dict):
+        bounded: Dict[Any, Any] = {}
+        content_truncated = False
+        original_content_chars: Optional[int] = None
+        for key, item in value.items():
+            bounded_key = (
+                _truncate_string_to_budget(key, limit)
+                if isinstance(key, str)
+                else key
+            )
+            if key == "content" and isinstance(item, str):
+                bounded_item, content_truncated, current_chars = (
+                    _truncate_string_with_notice(item, limit)
+                )
+                bounded[bounded_key] = bounded_item
+                if content_truncated:
+                    existing_original = value.get("original_content_chars")
+                    original_content_chars = (
+                        existing_original
+                        if isinstance(existing_original, int)
+                        else current_chars
+                    )
+                continue
+            bounded[bounded_key] = _limit_response_strings(item, limit)
+        if content_truncated:
+            bounded["content_truncated"] = True
+            bounded["original_content_chars"] = original_content_chars
+        return bounded
+    return value
+
+
+def _bound_serialized_response(serialized: str) -> str:
+    """Enforce per-field and total ceilings on the final JSON response."""
+    original_response_chars = len(serialized)
+    if original_response_chars <= _RESPONSE_FIELD_MAX_CHARS:
+        return serialized
+
+    try:
+        payload = json.loads(serialized)
+    except (TypeError, ValueError):
+        return json.dumps(
+            {
+                "success": False,
+                "response_truncated": True,
+                "original_response_chars": original_response_chars,
+                "error": "session_search produced an oversized non-JSON response",
+            },
+            ensure_ascii=False,
+        )
+
+    if not isinstance(payload, dict):
+        payload = {"success": True, "result": payload}
+
+    field_bounded = _limit_response_strings(payload, _RESPONSE_FIELD_MAX_CHARS)
+    if field_bounded != payload:
+        payload = field_bounded
+        payload["response_truncated"] = True
+        payload["response_fields_truncated"] = True
+        payload["original_response_chars"] = original_response_chars
+        serialized = json.dumps(payload, ensure_ascii=False)
+
+    if len(serialized) <= _RESPONSE_MAX_CHARS:
+        return serialized
+
+    payload["response_truncated"] = True
+    payload["response_fields_truncated"] = True
+    payload["original_response_chars"] = original_response_chars
+
+    # Preserve the response structure while finding the largest uniform value
+    # cap that fits the final serialization inside the hard ceiling.
+    low, high = 32, max(32, _RESPONSE_FIELD_MAX_CHARS)
+    best: Optional[str] = None
+    while low <= high:
+        candidate_limit = (low + high) // 2
+        candidate = _limit_response_strings(payload, candidate_limit)
+        candidate_json = json.dumps(candidate, ensure_ascii=False)
+        if len(candidate_json) <= _RESPONSE_MAX_CHARS:
+            best = candidate_json
+            low = candidate_limit + 1
+        else:
+            high = candidate_limit - 1
+    if best is not None:
+        return best
+
+    # Fixed structural overhead can only exceed the budget for pathological
+    # persisted shapes. Fail closed rather than reinjecting an unbounded payload.
+    return json.dumps(
+        {
+            "success": False,
+            "mode": payload.get("mode"),
+            "response_truncated": True,
+            "original_response_chars": original_response_chars,
+            "error": "session_recall_response_too_large",
+            "message": "Session recall exceeded the response budget; request a narrower window.",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _shape_content_for_recall(
+    content: Any,
+    *,
+    max_content_len: Optional[int] = None,
+) -> tuple[Any, Dict[str, Any]]:
+    """Return context-safe message content plus metadata about any elision."""
+    original_chars = _text_char_len(content)
+    if _is_compaction_summary_content(content):
+        return (
+            "[Context compaction summary omitted by session_search to prevent stale-task/context bloat. "
+            f"Original summary was {original_chars:,} chars. Search or scroll the original source messages instead.]",
+            {
+                "content_omitted": "context_compaction_summary",
+                "original_content_chars": original_chars,
+            },
+        )
+
+    effective_limit = _MESSAGE_CONTENT_MAX_CHARS
+    if max_content_len is not None:
+        effective_limit = min(effective_limit, max(1, max_content_len))
+
+    if isinstance(content, str):
+        if max_content_len is not None and len(content) > effective_limit:
+            shaped, truncated, original_len = _truncate_string_with_notice(
+                content,
+                effective_limit,
+            )
+        else:
+            shaped, truncated, original_len = _truncate_string(content, effective_limit)
+        meta: Dict[str, Any] = {}
+        if truncated:
+            meta["content_truncated"] = True
+            meta["original_content_chars"] = original_len
+        return shaped, meta
+
+    if original_chars > effective_limit:
+        try:
+            serialized = json.dumps(content, ensure_ascii=False)
+        except Exception:
+            serialized = str(content)
+        if max_content_len is not None:
+            shaped, _, original_len = _truncate_string_with_notice(
+                serialized,
+                effective_limit,
+            )
+        else:
+            shaped, _, original_len = _truncate_string(serialized, effective_limit)
+        return shaped, {
+            "content_truncated": True,
+            "original_content_chars": original_len,
+        }
+
+    return content, {}
+
+
+def _shape_snippet_for_recall(
+    snippet: Any,
+    *,
+    source_content: Any = None,
+) -> tuple[str, Dict[str, Any]]:
+    """Return a bounded discovery snippet plus metadata."""
+    if not isinstance(snippet, str):
+        snippet = "" if snippet is None else str(snippet)
+
+    original_chars = len(snippet)
+    if _is_compaction_summary_content(source_content):
+        return (
+            "[Context compaction summary snippet omitted by session_search.]",
+            {
+                "snippet_omitted": "context_compaction_summary",
+                "original_snippet_chars": original_chars,
+            },
+        )
+
+    shaped, truncated, original_len = _truncate_string(snippet, _SNIPPET_MAX_CHARS)
+    if truncated:
+        return shaped, {
+            "snippet_truncated": True,
+            "original_snippet_chars": original_len,
+        }
+    return shaped, {}
+
+
+def _shape_tool_call_arguments(arguments: Any) -> tuple[Any, bool]:
+    if isinstance(arguments, str):
+        shaped, truncated, _ = _truncate_string(arguments, _TOOL_CALL_ARGUMENTS_MAX_CHARS)
+        return shaped, truncated
+    if _text_char_len(arguments) > _TOOL_CALL_ARGUMENTS_MAX_CHARS:
+        try:
+            serialized = json.dumps(arguments, ensure_ascii=False)
+        except Exception:
+            serialized = str(arguments)
+        shaped, _, _ = _truncate_string(serialized, _TOOL_CALL_ARGUMENTS_MAX_CHARS)
+        return shaped, True
+    return arguments, False
+
+
+def _shape_tool_call_metadata(value: Any) -> tuple[Any, bool]:
+    """Bound a retained provider-neutral tool-call metadata value."""
+    if value is None or isinstance(value, bool):
+        return value, False
+    if isinstance(value, (int, float)):
+        rendered = str(value)
+        if len(rendered) <= _TOOL_CALL_METADATA_MAX_CHARS:
+            return value, False
+        value = rendered
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            value = str(value)
+    shaped, truncated, _ = _truncate_string(value, _TOOL_CALL_METADATA_MAX_CHARS)
+    return shaped, truncated
+
+
+def _shape_tool_calls_for_recall(tool_calls: Any) -> tuple[Any, Dict[str, Any]]:
+    """Return bounded provider-neutral tool-call metadata for recall output.
+
+    Persisted call objects can include arbitrarily large provider bookkeeping.
+    Keep only fields useful for understanding the historical call, and bound
+    every retained value before it re-enters the active model context.
+    """
+    if not tool_calls:
+        return tool_calls, {}
+
+    if not isinstance(tool_calls, list):
+        calls = [tool_calls]
+        original_count = 1
+    else:
+        calls = tool_calls
+        original_count = len(tool_calls)
+
+    allowed_fields = {
+        *_TOOL_CALL_METADATA_FIELDS,
+        *_TOOL_CALL_ARGUMENT_FIELDS,
+        "function",
+    }
+    shaped_calls = []
+    truncated_args = False
+    truncated_fields = False
+    omitted_fields = False
+    for call in calls[:_TOOL_CALLS_MAX_ITEMS]:
+        if not isinstance(call, dict):
+            shaped_call, did_truncate = _shape_tool_call_arguments(call)
+            shaped_calls.append(shaped_call)
+            truncated_args = truncated_args or did_truncate
+            continue
+
+        shaped: Dict[str, Any] = {}
+        for field in _TOOL_CALL_METADATA_FIELDS:
+            if field not in call:
+                continue
+            shaped_value, did_truncate = _shape_tool_call_metadata(call[field])
+            shaped[field] = shaped_value
+            truncated_fields = truncated_fields or did_truncate
+
+        for field in _TOOL_CALL_ARGUMENT_FIELDS:
+            if field not in call:
+                continue
+            shaped_value, did_truncate = _shape_tool_call_arguments(call[field])
+            shaped[field] = shaped_value
+            truncated_args = truncated_args or did_truncate
+
+        fn = call.get("function")
+        if isinstance(fn, dict):
+            fn_shaped: Dict[str, Any] = {}
+            if "name" in fn:
+                shaped_name, did_truncate = _shape_tool_call_metadata(fn["name"])
+                fn_shaped["name"] = shaped_name
+                truncated_fields = truncated_fields or did_truncate
+            if "arguments" in fn:
+                shaped_args, did_truncate = _shape_tool_call_arguments(fn["arguments"])
+                fn_shaped["arguments"] = shaped_args
+                truncated_args = truncated_args or did_truncate
+            shaped["function"] = fn_shaped
+            omitted_fields = omitted_fields or bool(set(fn) - {"name", "arguments"})
+        elif "function" in call:
+            shaped_function, did_truncate = _shape_tool_call_metadata(fn)
+            shaped["function"] = shaped_function
+            truncated_fields = truncated_fields or did_truncate
+
+        omitted_fields = omitted_fields or bool(set(call) - allowed_fields)
+        shaped_calls.append(shaped)
+
+    meta: Dict[str, Any] = {}
+    if original_count > len(shaped_calls):
+        meta["tool_calls_truncated"] = True
+        meta["original_tool_call_count"] = original_count
+    if truncated_args:
+        meta["tool_call_arguments_truncated"] = True
+    if truncated_fields:
+        meta["tool_call_fields_truncated"] = True
+    if omitted_fields:
+        meta["tool_call_fields_omitted"] = True
+
+    return shaped_calls, meta
+
+
 def _shape_message(
     m: Dict[str, Any],
     anchor_id: Optional[int] = None,
     max_content_len: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Slim a message row for the tool response. Keeps content even if empty.
-
-    When *max_content_len* is set, ``content`` is truncated to that many
-    characters and ``content_truncated`` / ``original_content_chars`` metadata
-    is added so callers know the payload was bounded.
-    """
-    raw_content = m.get("content")
-    if max_content_len and raw_content and len(raw_content) > max_content_len:
-        content = raw_content[:max_content_len] + "…"
-        truncated = True
-        original_chars = len(raw_content)
-    else:
-        content = raw_content
-        truncated = False
-        original_chars = None
+    """Slim a message row for the tool response. Keeps content even if empty."""
+    shaped_content, content_meta = _shape_content_for_recall(
+        m.get("content"),
+        max_content_len=max_content_len,
+    )
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": content,
+        "content": shaped_content,
         "timestamp": m.get("timestamp"),
     }
+    entry.update(content_meta)
     if m.get("tool_name"):
-        entry["tool_name"] = m.get("tool_name")
+        tool_name, truncated = _shape_tool_call_metadata(m.get("tool_name"))
+        entry["tool_name"] = tool_name
+        if truncated:
+            entry["tool_name_truncated"] = True
     if m.get("tool_calls"):
-        entry["tool_calls"] = m.get("tool_calls")
+        shaped_tool_calls, tool_meta = _shape_tool_calls_for_recall(m.get("tool_calls"))
+        entry["tool_calls"] = shaped_tool_calls
+        entry.update(tool_meta)
     if m.get("tool_call_id"):
-        entry["tool_call_id"] = m.get("tool_call_id")
+        tool_call_id, truncated = _shape_tool_call_metadata(m.get("tool_call_id"))
+        entry["tool_call_id"] = tool_call_id
+        if truncated:
+            entry["tool_call_id_truncated"] = True
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
-    if truncated:
-        entry["content_truncated"] = True
-        entry["original_content_chars"] = original_chars
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
@@ -352,15 +803,13 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         return tool_error(f"session_id not found: {session_id}", success=False)
 
     try:
-        rows = db.get_messages(session_id)
+        rows, total = db.get_message_head_tail(session_id, head=head, tail=tail)
+        truncated = total > head + tail
     except Exception as e:
-        logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
+        logging.error("get_message_head_tail failed for %s: %s", session_id, e, exc_info=True)
         return tool_error(f"failed to load session: {e}", success=False)
 
-    shaped = [_shape_message(m) for m in rows]
-    total = len(shaped)
-    truncated = total > head + tail
-    window = shaped[:head] + shaped[-tail:] if truncated else shaped
+    window = [_shape_message(m) for m in rows]
 
     response = {
         "success": True,
@@ -384,7 +833,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: Optional[str] = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
@@ -432,7 +881,7 @@ def _scroll(
     session_id: str,
     around_message_id: int,
     window: int = 5,
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -457,12 +906,18 @@ def _scroll(
             window = 5
     window = max(1, min(window, 20))
 
-    # Reject scrolling inside the active session lineage — those messages are
-    # already in context.
+    # Reject scrolling inside the active session lineage only when the anchor
+    # is still live. Discovery intentionally exposes compaction-archived rows
+    # and compression-ended ancestors because they are no longer in context;
+    # their documented anchors must remain scrollable.
     if current_session_id:
-        a_root = _resolve_lineage(db, session_id)
+        anchor_session_id = _message_session_id(db, around_message_id) or session_id
+        a_root = _resolve_lineage(db, anchor_session_id)
         c_root = _resolve_lineage(db, current_session_id)
-        if a_root and c_root and a_root == c_root:
+        anchor_is_recallable = _is_compacted_message(
+            db, around_message_id
+        ) or _is_compression_ended(db, anchor_session_id)
+        if a_root and c_root and a_root == c_root and not anchor_is_recallable:
             return tool_error(
                 "scroll rejected: anchor lives in the current session lineage (already in your active context)",
                 success=False,
@@ -495,11 +950,7 @@ def _scroll(
         try:
             conn = getattr(db, "_conn", None)
             if conn is not None:
-                row = conn.execute(
-                    "SELECT session_id FROM messages WHERE id = ?",
-                    (around_message_id,),
-                ).fetchone()
-                owning = row[0] if row else None
+                owning = _message_session_id(db, around_message_id)
         except Exception as e:
             logging.debug("owning-session lookup failed: %s", e, exc_info=True)
             owning = None
@@ -560,6 +1011,8 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    lineage_cache: Dict[str, str],
+    lineage_lookup_budget: List[int],
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -574,7 +1027,12 @@ def _title_match_result(
     if not session_id:
         return None
 
-    lineage_root = _resolve_lineage(db, session_id)
+    lineage_root = _resolve_lineage(
+        db,
+        session_id,
+        cache=lineage_cache,
+        lookup_budget=lineage_lookup_budget,
+    )
     if current_lineage_root and lineage_root == current_lineage_root:
         return None
 
@@ -587,7 +1045,7 @@ def _title_match_result(
         return None
 
     try:
-        messages = db.get_messages(session_id)
+        messages = db.get_messages(session_id, limit=1)
     except Exception:
         logging.debug("get_messages failed for title match %s", session_id, exc_info=True)
         messages = []
@@ -602,6 +1060,14 @@ def _title_match_result(
     else:
         view = {}
 
+    message_count = session_meta.get("message_count")
+    if (
+        not isinstance(message_count, int)
+        or isinstance(message_count, bool)
+        or message_count < 0
+    ):
+        message_count = len(messages)
+
     entry = {
         "session_id": session_id,
         "when": _format_timestamp(session_meta.get("started_at")),
@@ -615,12 +1081,46 @@ def _title_match_result(
         "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
         "messages_before": view.get("messages_before", 0),
-        "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
+        "messages_after": view.get(
+            "messages_after",
+            max(message_count - 5, 0),
+        ),
         "_lineage_root": lineage_root,
     }
     if lineage_root and lineage_root != session_id:
         entry["parent_session_id"] = lineage_root
     return entry
+
+
+def _search_match_is_context_summary(db, match: Dict[str, Any]) -> bool:
+    """Classify the full anchored FTS row without trusting its short snippet."""
+    session_id = match.get("session_id")
+    message_id = match.get("id")
+    if not session_id or message_id is None:
+        return False
+    try:
+        get_message = getattr(db, "get_message", None)
+        if callable(get_message):
+            anchor = get_message(session_id, message_id)
+        else:
+            view = db.get_messages_around(session_id, message_id, window=0)
+            anchor = next(
+                (
+                    message
+                    for message in (view.get("window") or [])
+                    if message.get("id") == message_id
+                ),
+                None,
+            )
+    except Exception:
+        logging.debug(
+            "message lookup failed while classifying %s/%s",
+            session_id,
+            message_id,
+            exc_info=True,
+        )
+        return False
+    return isinstance(anchor, dict) and _is_compaction_summary_content(anchor.get("content"))
 
 
 def _discover(
@@ -629,12 +1129,29 @@ def _discover(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
-    current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    lineage_cache: Dict[str, str] = {}
+    lineage_lookup_budget = [_MAX_DISCOVERY_LINEAGE_LOOKUPS]
+    current_lineage_root = (
+        _resolve_lineage(
+            db,
+            current_session_id,
+            cache=lineage_cache,
+            lookup_budget=lineage_lookup_budget,
+        )
+        if current_session_id
+        else None
+    )
+    title_result = _title_match_result(
+        db,
+        query,
+        current_lineage_root,
+        lineage_cache,
+        lineage_lookup_budget,
+    )
 
     try:
         raw_results = db.search_messages(
@@ -682,10 +1199,17 @@ def _discover(
         results.append(title_result)
 
     for r in raw_results:
-        if len(seen_sessions) >= limit:
+        if len(seen_sessions) >= limit and not any(
+            row.get("_is_summary_match") for row in seen_sessions.values()
+        ):
             break
         raw_sid = r["session_id"]
-        resolved_sid, _ = _resolve_to_parent(db, raw_sid)
+        resolved_sid = _resolve_lineage(
+            db,
+            raw_sid,
+            cache=lineage_cache,
+            lookup_budget=lineage_lookup_budget,
+        )
         # Skip the current session lineage — UNLESS the content has been
         # compression-summarised out of the live context (memory black hole
         # after compression). Two sub-cases:
@@ -701,23 +1225,34 @@ def _discover(
         # current session, but the matched message row is an archived
         # (active=0, compacted=1) row. The live-context load filters active=1,
         # so that content is no longer in context — let it through.
-        is_compacted_hit = _is_compacted_message(db, r.get("id"))
-        is_ended_session = _is_compression_ended(db, raw_sid)
+        is_compacted_hit = False
         if current_lineage_root and resolved_sid == current_lineage_root:
+            is_compacted_hit = _is_compacted_message(db, r.get("id"))
+            is_ended_session = _is_compression_ended(db, raw_sid)
             if not (is_ended_session or is_compacted_hit):
                 continue
         if current_session_id and raw_sid == current_session_id:
             # Same-session hit: only skip if the matched message is still live
             # (active=1). Archived/compacted rows are pre-compaction content
             # that's been summarised away — let them through.
-            if not is_compacted_hit:
+            if not is_compacted_hit and not _is_compacted_message(db, r.get("id")):
                 continue
-        if resolved_sid not in seen_sessions:
+
+        existing = seen_sessions.get(resolved_sid)
+        if existing is None:
+            if len(seen_sessions) >= limit:
+                continue
             row = dict(r)
-            row["_lineage_root"] = resolved_sid
+            row["_is_summary_match"] = _search_match_is_context_summary(db, row)
             seen_sessions[resolved_sid] = row
-        if len(seen_sessions) >= limit:
-            break
+            continue
+
+        # A generated summary can outrank the real source row in FTS. Prefer the
+        # first non-summary hit in the same lineage so discovery remains useful.
+        if existing.get("_is_summary_match") and not _search_match_is_context_summary(db, r):
+            row = dict(r)
+            row["_is_summary_match"] = False
+            seen_sessions[resolved_sid] = row
 
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
@@ -735,6 +1270,18 @@ def _discover(
         except Exception:
             session_meta = {}
 
+        anchor_content = next(
+            (
+                message.get("content")
+                for message in (view.get("window") or [])
+                if message.get("id") == msg_id
+            ),
+            None,
+        )
+        shaped_snippet, snippet_meta = _shape_snippet_for_recall(
+            match_info.get("snippet"),
+            source_content=anchor_content,
+        )
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
@@ -745,21 +1292,25 @@ def _discover(
             "title": session_meta.get("title") or None,
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
-            "snippet": match_info.get("snippet") or "",
+            "snippet": shaped_snippet,
             "bookend_start": [
                 _shape_message(m, max_content_len=1200)
                 for m in (view.get("bookend_start") or [])
-                if not _is_compaction_summary(m.get("content", ""))
+                if not _is_compaction_summary(m.get("content"))
             ],
-            "messages": [_shape_message(m, anchor_id=msg_id, max_content_len=4000) for m in (view.get("window") or [])],
+            "messages": [
+                _shape_message(m, anchor_id=msg_id, max_content_len=4000)
+                for m in (view.get("window") or [])
+            ],
             "bookend_end": [
                 _shape_message(m, max_content_len=1200)
                 for m in (view.get("bookend_end") or [])
-                if not _is_compaction_summary(m.get("content", ""))
+                if not _is_compaction_summary(m.get("content"))
             ],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }
+        entry.update(snippet_meta)
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
         results.append(entry)
@@ -776,65 +1327,20 @@ def _discover(
     return json.dumps(_final_payload, ensure_ascii=False)
 
 
-def session_search(
+def _session_search_with_db(
     query: str = "",
-    role_filter: str = None,
+    role_filter: Optional[str] = None,
     limit: int = 3,
     db=None,
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
     # Scroll shape
-    session_id: str = None,
-    around_message_id: int = None,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[int] = None,
     window: int = 5,
     # Discovery shape
-    sort: str = None,
-    # Cross-profile (any shape)
-    profile: str = None,
+    sort: Optional[str] = None,
 ) -> str:
-    """Single-shape tool. Mode inferred from which args are set.
-
-    Discovery: pass ``query``.
-    Scroll:    pass ``session_id`` + ``around_message_id``.
-    Read:      pass ``session_id`` (no anchor) — dumps the whole session.
-    Browse:    pass nothing.
-
-    Pass ``profile`` to read another profile's sessions (e.g. resolving an
-    ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
-    anchor is set — the agent has asked for a specific slice.
-    """
-    if db is None:
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-        except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
-            from hermes_state import format_session_db_unavailable
-            return tool_error(format_session_db_unavailable(), success=False)
-
-    # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
-    # Session ids never contain "/", so a slash unambiguously means profile/id —
-    # always strip the prefix off the id, and adopt the embedded profile only
-    # when one wasn't passed explicitly. Handles every permutation the model
-    # might send (full value as id, with or without a separate profile=).
-    if isinstance(session_id, str) and "/" in session_id:
-        emb_profile, _, emb_id = session_id.partition("/")
-        if emb_id:
-            session_id = emb_id
-            if emb_profile and (profile is None or not str(profile).strip()):
-                profile = emb_profile
-
-    # Cross-profile read: swap in the named profile's DB (read-only) for every
-    # shape below. The current-session-lineage guards no longer apply across
-    # profiles, but they key off ids that won't collide, so they stay inert.
-    if profile is not None and str(profile).strip():
-        try:
-            profile_db = _resolve_profile_db(profile)
-        except Exception as e:
-            return tool_error(f"profile '{profile}': {e}", success=False)
-        if profile_db is not None:
-            db = profile_db
-            current_session_id = None
-
+    """Dispatch one inferred recall shape against an already-selected DB."""
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
         return _scroll(
@@ -900,6 +1406,100 @@ def session_search(
     )
 
 
+def _session_search_impl(
+    query: str = "",
+    role_filter: Optional[str] = None,
+    limit: int = 3,
+    db=None,
+    current_session_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[int] = None,
+    window: int = 5,
+    sort: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> str:
+    """Select and own DB handles, then dispatch one recall shape."""
+    owned_db = None
+
+    # Session ids never contain "/", so a raw profile/id link is unambiguous.
+    if isinstance(session_id, str) and "/" in session_id:
+        embedded_profile, _, embedded_id = session_id.partition("/")
+        if embedded_id:
+            session_id = embedded_id
+            if embedded_profile and (profile is None or not str(profile).strip()):
+                profile = embedded_profile
+
+    try:
+        if profile is not None and str(profile).strip():
+            try:
+                profile_db = _resolve_profile_db(profile)
+            except Exception as e:
+                return tool_error(f"profile '{profile}': {e}", success=False)
+            if profile_db is not None:
+                owned_db = profile_db
+                db = profile_db
+                current_session_id = None
+
+        if db is None:
+            try:
+                from hermes_state import SessionDB
+
+                db = SessionDB()
+                owned_db = db
+            except Exception:
+                logging.debug("SessionDB unavailable for session_search", exc_info=True)
+                from hermes_state import format_session_db_unavailable
+
+                return tool_error(format_session_db_unavailable(), success=False)
+
+        return _session_search_with_db(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+        )
+    finally:
+        if owned_db is not None:
+            try:
+                owned_db.close()
+            except Exception:
+                logging.debug("Failed to close session-search DB", exc_info=True)
+
+
+def session_search(
+    query: str = "",
+    role_filter: Optional[str] = None,
+    limit: int = 3,
+    db=None,
+    current_session_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[int] = None,
+    window: int = 5,
+    sort: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> str:
+    """Run session recall and enforce the final serialized response budget."""
+    return _bound_serialized_response(
+        _session_search_impl(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+            profile=profile,
+        )
+    )
+
+
 def check_session_search_requirements() -> bool:
     """Requires the SQLite state database."""
     try:
@@ -914,7 +1514,9 @@ SESSION_SEARCH_SCHEMA = {
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
+        "shape returns source DB messages, but recall payloads are bounded before "
+        "model injection: old compaction-summary bodies may be omitted, and large "
+        "message/tool-call payloads may be truncated with metadata.\n\n"
         "SOURCE-FIRST LIMIT\n\n"
         "  This tool searches Hermes conversation history only. It is not evidence "
         "about the current contents of external sources. If the user provided a "

@@ -6172,6 +6172,100 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def get_message(self, session_id: str, message_id: int) -> Optional[Dict[str, Any]]:
+        """Load one message by id without hydrating an anchored window."""
+        conn = self._conn
+        if conn is None:
+            raise RuntimeError("SessionDB connection is not initialized")
+        with self._lock:
+            row = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND id = ? LIMIT 1",
+                (session_id, message_id),
+            ).fetchone()
+        if row is None:
+            return None
+        msg = dict(row)
+        if "content" in msg:
+            msg["content"] = self._decode_content(msg["content"])
+        if msg.get("tool_calls"):
+            try:
+                msg["tool_calls"] = json.loads(msg["tool_calls"])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Failed to deserialize tool_calls in get_message, falling back to []"
+                )
+                msg["tool_calls"] = []
+        return msg
+
+    def get_message_head_tail(
+        self,
+        session_id: str,
+        head: int = 20,
+        tail: int = 10,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Return active message bookends and their source-of-truth count.
+
+        One CTE query gives the count and both slices from the same SQLite
+        snapshot while hydrating at most ``head + tail`` full message rows.
+        """
+        head = max(0, int(head))
+        tail = max(0, int(tail))
+        conn = self._conn
+        if conn is None:
+            raise RuntimeError("SessionDB connection is not initialized")
+        with self._lock:
+            rows = conn.execute(
+                "WITH "
+                "message_count AS ("
+                " SELECT COUNT(*) AS total FROM messages"
+                " WHERE session_id = ? AND active = 1"
+                "), "
+                "head_ids AS ("
+                " SELECT id FROM messages"
+                " WHERE session_id = ? AND active = 1"
+                " ORDER BY id ASC LIMIT ?"
+                "), "
+                "tail_ids AS ("
+                " SELECT id FROM messages"
+                " WHERE session_id = ? AND active = 1"
+                " ORDER BY id DESC LIMIT ?"
+                "), "
+                "bookend_ids AS ("
+                " SELECT id FROM head_ids UNION SELECT id FROM tail_ids"
+                ")"
+                " SELECT m.*, message_count.total AS _message_count"
+                " FROM bookend_ids"
+                " JOIN messages m ON m.id = bookend_ids.id"
+                " CROSS JOIN message_count"
+                " ORDER BY m.id",
+                (session_id, session_id, head, session_id, tail),
+            ).fetchall()
+            if not rows:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                    (session_id,),
+                ).fetchone()[0]
+                return [], total
+
+        total = int(rows[0]["_message_count"])
+        result = []
+        for row in rows:
+            msg = dict(row)
+            msg.pop("_message_count", None)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_message_head_tail, "
+                        "falling back to []"
+                    )
+                    msg["tool_calls"] = []
+            result.append(msg)
+        return result, total
+
     def get_messages_around(
         self,
         session_id: str,
@@ -6202,7 +6296,8 @@ class SessionDB:
         with self._lock:
             # Confirm the anchor exists in this session.
             anchor_exists = self._conn.execute(
-                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? "
+                "AND (active = 1 OR compacted = 1) LIMIT 1",
                 (around_message_id, session_id),
             ).fetchone()
             if not anchor_exists:
@@ -6213,12 +6308,14 @@ class SessionDB:
             before_rows = self._conn.execute(
                 "SELECT * FROM messages "
                 "WHERE session_id = ? AND id <= ? "
+                "AND (active = 1 OR compacted = 1) "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1),
             ).fetchall()
             after_rows = self._conn.execute(
                 "SELECT * FROM messages "
                 "WHERE session_id = ? AND id > ? "
+                "AND (active = 1 OR compacted = 1) "
                 "ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window),
             ).fetchall()
@@ -6333,6 +6430,7 @@ class SessionDB:
                 bookend_start_rows = self._conn.execute(
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id < ?{role_clause} "
+                    f"AND (active = 1 OR compacted = 1) "
                     f"AND length(content) > 0 "
                     f"ORDER BY id ASC LIMIT ?",
                     (session_id, window_min_id, *role_params, bookend),
@@ -6341,6 +6439,7 @@ class SessionDB:
                 bookend_end_rows = self._conn.execute(
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id > ?{role_clause} "
+                    f"AND (active = 1 OR compacted = 1) "
                     f"AND length(content) > 0 "
                     f"ORDER BY id DESC LIMIT ?",
                     (session_id, window_max_id, *role_params, bookend),

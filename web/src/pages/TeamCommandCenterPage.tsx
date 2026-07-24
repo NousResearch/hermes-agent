@@ -1140,7 +1140,7 @@ function EditBeforeDevelopBlock({
       <div className="mt-3 flex flex-wrap gap-2">
         <Button disabled={busy} onClick={() => void onConfirm()} size="sm">
           {busy ? <Spinner className="mr-1 h-3 w-3" /> : null}
-          Salva e lancia piano ready
+          Salva e mostra preview piano
         </Button>
         <Button disabled={busy} ghost onClick={onCancel} size="sm">Annulla</Button>
       </div>
@@ -1251,7 +1251,7 @@ function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-1 text-sm text-foreground">{value}</div>
+      <div className="mt-1 whitespace-pre-line text-sm text-foreground">{value}</div>
     </div>
   );
 }

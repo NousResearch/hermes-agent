@@ -346,37 +346,44 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // swap/reconnect left its volatile session binding incomplete or
         // cross-wired. Run the full profile-aware resume path. Creating here
         // would fork a contextless chat against whichever profile is active.
+        let resumeSucceeded = false
         try {
           await resumeStoredSession(routedStoredSessionId)
+          resumeSucceeded = true
         } catch {
-          return abortForSessionSwitch(null)
+          // Branch drafts have no persisted row until their first turn, so
+          // resumeStoredSession always throws for them.  Log and fall through
+          // to the create path below instead of silently dropping the message.
+          console.warn('[submit-resume-fallback] stored session resume failed, will attempt create', { routedStoredSessionId })
         }
 
-        const routedResumeDrift = sessionDriftReason()
+        if (resumeSucceeded) {
+          const routedResumeDrift = sessionDriftReason()
 
-        if (routedResumeDrift) {
-          console.warn('[submit-drift-abort]', routedResumeDrift, { phase: 'post-routed-resume' })
+          if (routedResumeDrift) {
+            console.warn('[submit-drift-abort]', routedResumeDrift, { phase: 'post-routed-resume' })
 
-          return abortForSessionSwitch(null)
+            return abortForSessionSwitch(null)
+          }
+
+          const recoveredRuntimeId = activeSessionIdRef.current
+          const validatedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
+
+          // Recovery only succeeded when both sides of the cache agree that the
+          // live runtime belongs to the durable routed session. A failed profile
+          // swap may leave the previous profile's runtime active, while a recycled
+          // runtime id may leave a cross-wired stored-session mapping.
+          if (
+            !recoveredRuntimeId ||
+            recoveredRuntimeId !== validatedRuntimeId ||
+            selectedStoredSessionIdRef.current !== routedStoredSessionId
+          ) {
+            return abortForSessionSwitch(null)
+          }
+
+          sessionId = recoveredRuntimeId
+          seedOptimistic(sessionId)
         }
-
-        const recoveredRuntimeId = activeSessionIdRef.current
-        const validatedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
-
-        // Recovery only succeeded when both sides of the cache agree that the
-        // live runtime belongs to the durable routed session. A failed profile
-        // swap may leave the previous profile's runtime active, while a recycled
-        // runtime id may leave a cross-wired stored-session mapping.
-        if (
-          !recoveredRuntimeId ||
-          recoveredRuntimeId !== validatedRuntimeId ||
-          selectedStoredSessionIdRef.current !== routedStoredSessionId
-        ) {
-          return abortForSessionSwitch(null)
-        }
-
-        sessionId = recoveredRuntimeId
-        seedOptimistic(sessionId)
       }
 
       if (!sessionId && targetStoredSessionId) {

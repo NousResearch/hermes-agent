@@ -1158,15 +1158,18 @@ def skill_view(
             # frontmatter name, so `skill_view(name)` must accept it too even
             # when the on-disk directory is a shorter category/alias.
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
-                if found_skill_md.parent.name == name:
-                    _record(found_skill_md.parent, found_skill_md)
-                    continue
                 try:
                     fm_content = found_skill_md.read_text(encoding="utf-8")
                     fm, _ = _parse_frontmatter(fm_content)
                 except Exception:
                     fm = {}
-                if fm.get("name") == name:
+                canonical_name = fm.get("name")
+                if found_skill_md.parent.name == name and (
+                    not canonical_name or canonical_name == name
+                ):
+                    _record(found_skill_md.parent, found_skill_md)
+                    continue
+                if canonical_name == name:
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.

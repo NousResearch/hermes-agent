@@ -3113,6 +3113,7 @@ class TestSharedBoardPaths:
             def __init__(self, cmd, **kwargs):
                 captured["cmd"] = cmd
                 captured["env"] = kwargs.get("env", {})
+                captured["stdout"] = kwargs["stdout"]
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
@@ -3144,6 +3145,7 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        assert captured["stdout"].closed is True
 
 
 # ---------------------------------------------------------------------------

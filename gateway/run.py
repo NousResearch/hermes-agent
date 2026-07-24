@@ -54,6 +54,16 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
+from agent.conversation_compression import (
+    COMPACTION_STATUS,
+    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
+    IDLE_COMPACTION_STATUS_TEMPLATE,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
+)
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
@@ -105,6 +115,70 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r")",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def _status_template_to_regex(template: str) -> str:
+    """Compile a compression status template constant into a regex source.
+
+    Literal text is escaped verbatim (so wording drift in
+    agent/conversation_compression.py cannot silently diverge from this
+    matcher — the constants ARE the wording) and each ``{field}`` format
+    placeholder is replaced with a numeric-ish pattern covering every value
+    the emit sites format in (ints, ``{:,}`` thousands separators).
+    """
+    parts = re.split(r"\{[^{}]*\}", template)
+    return r"[\d,]+".join(re.escape(part) for part in parts)
+
+
+# ROUTINE compression progress statuses, derived from the SAME template
+# constants the emit sites format (agent/conversation_compression.py, #69550)
+# — never re-inlined wording. Used ONLY by the opt-in
+# ``compression.progress_notices`` gate below (#52995) to decide which of the
+# noisy statuses matched by _TELEGRAM_NOISY_STATUS_RE are compression
+# progress (deliverable when the user opted in) versus unrelated aux/retry
+# chatter (always suppressed on chat surfaces). Failure notices and manual
+# /compress feedback never match _TELEGRAM_NOISY_STATUS_RE in the first
+# place, so they are unaffected by this gate.
+_COMPRESSION_PROGRESS_STATUS_RE = re.compile(
+    "|".join(
+        _status_template_to_regex(_template)
+        for _template in (
+            COMPACTION_STATUS,
+            PRE_API_COMPRESSION_STATUS_TEMPLATE,
+            PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
+            IDLE_COMPACTION_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+        )
+    ),
+    re.IGNORECASE,
+)
+
+
+def _gateway_compression_progress_notices_enabled() -> bool:
+    """True when the user opted into routine compression progress notices.
+
+    Reads ``compression.progress_notices`` from the gateway's raw YAML config
+    (#52995). Default False — routine compression stays silent-by-design on
+    chat platforms unless explicitly enabled. Read live (mtime-cached) so a
+    config edit on a running gateway takes effect on the next status.
+    Fail-closed: any config read error keeps the silent default.
+    """
+    try:
+        config = _load_gateway_config()
+        compression_cfg = config.get("compression") if isinstance(config, dict) else None
+        if isinstance(compression_cfg, dict):
+            return str(compression_cfg.get("progress_notices", False)).strip().lower() in {
+                "true",
+                "1",
+                "yes",
+                "on",
+            }
+    except Exception:
+        pass
+    return False
 
 # Surfaces that consume gateway text programmatically (CLI/TUI "local"
 # diagnostics, API JSON, webhook payloads) and therefore must keep RAW
@@ -495,7 +569,17 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
-        return None
+        # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
+        # compression progress statuses through to chat platforms. The
+        # membership check is derived from the #69550 template constants, so
+        # non-compression noise (aux failures, provider retry chatter, ...)
+        # stays suppressed even when the gate is open. Default False keeps
+        # the silent-by-design behavior byte-identical.
+        if not (
+            _gateway_compression_progress_notices_enabled()
+            and _COMPRESSION_PROGRESS_STATUS_RE.search(text)
+        ):
+            return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
@@ -18166,6 +18250,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("model", "context_length"),
         ("model", "max_tokens"),
         ("compression", "enabled"),
+        ("compression", "progress_notices"),
         ("compression", "threshold"),
         ("compression", "model_thresholds"),
         ("compression", "threshold_tokens"),

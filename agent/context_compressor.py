@@ -303,8 +303,237 @@ _SUMMARY_RATIO = 0.20
 # itself a context-pressure source and slows every compaction.
 _SUMMARY_TOKENS_CEILING = 10_000
 
+# Aggregate cap on the serialized turn block fed to the summarizer prompt
+# (chars). Per-message truncation (_CONTENT_MAX / _TOOL_ARGS_MAX) alone is
+# not enough: a compression window with hundreds of already-truncated turns
+# can still produce a multi-hundred-KB prompt that blows past slow auxiliary
+# backends' context limits or timeouts (Codex Responses fallback paths
+# especially). 160K chars ≈ 40K tokens — comfortably inside every supported
+# aux model's window while leaving room for the template + previous summary.
+# Applied AFTER per-message truncation, with head+tail retention and an
+# explicit omitted-middle marker (see _bound_summary_input). This is a
+# prompt-side bound only — NEVER add a max_tokens wire cap on the summary
+# call (see the no-wire-cap contract test in
+# test_compression_small_ctx_threshold_floor.py).
+_SUMMARY_INPUT_MAX_CHARS = 160_000
+
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+
+# Ghost-skill defense (#32106): when compaction reduces an old ``skill_view``
+# result to a 1-line metadata summary, the model still believes the skill is
+# loaded even though its instructions are gone. The marker below is the ONE
+# canonical prune signal — ``_skill_pruned_marker()`` builds it and every
+# presence check matches against the same string, so the emit side and the
+# check side can never drift apart (the original PR #44166 emitted
+# ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making
+# re-injection fire even when the marker had survived).
+SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
+# skill_view results at or below this size stay verbatim in pruned
+# summaries — small skills are cheap to keep and their loss is unlikely to
+# ghost the model. Shared by the emit site and the summarizer-input scan.
+_SKILL_VIEW_PRUNE_MIN_CHARS = 5000
+# Cap for the deterministic marker re-injection list — keeps a very long
+# session from growing an unbounded "## Pruned Skills" block in every
+# iterative summary update. Newest-referenced skills win.
+_MAX_PRUNED_SKILL_MARKERS = 20
+
+
+def _skill_pruned_marker(skill_name: str) -> str:
+    """Return the canonical prune marker for *skill_name*.
+
+    Used verbatim by BOTH the emit sites (tool-result summarization,
+    summary re-injection) and the survival check in
+    ``_reinject_pruned_skill_markers`` — one string, no drift.
+    """
+    return (
+        f"{SKILL_PRUNED_MARKER_PREFIX} content lost in compression; "
+        f"reload with skill_view(name='{skill_name}')]"
+    )
+
+
+# Matches the canonical marker and captures the skill name. Anchored on the
+# shared prefix constant so a wording change to the marker body updates the
+# emit helper and this extractor together.
+_SKILL_PRUNED_MARKER_RE = re.compile(
+    re.escape(SKILL_PRUNED_MARKER_PREFIX)
+    + r"[^\]]*?reload with skill_view\(name='([^']+)'\)"
+)
+
+
+def _extract_pruned_skill_names(text: str) -> list[str]:
+    """Return skill names referenced by prune markers in *text*, in order."""
+    names: list[str] = []
+    for match in _SKILL_PRUNED_MARKER_RE.finditer(text or ""):
+        name = match.group(1)
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
+    """Skill names whose instructions are about to be lost in compaction.
+
+    Covers BOTH shapes a compacted middle window can carry:
+
+    - a ``skill_view`` result already demoted by Phase-1 pruning — the
+      canonical ``[SKILL_PRUNED: ...]`` marker is in the row content;
+    - a RAW ``skill_view`` body that was never demoted (it sat inside the
+      protected tail of an earlier prune, then aged into the compression
+      window). The summarizer will paraphrase the instructions away, which
+      is exactly the ghost-skill failure — so it needs a marker too.
+    """
+    names: list[str] = []
+
+    def _add(name: str) -> None:
+        if name and name not in names:
+            names.append(name)
+
+    call_id_to_skill: dict[str, str] = {}
+    for idx, skill in _skill_view_call_sites(turns):
+        msg = turns[idx]
+        for tc in msg.get("tool_calls") or []:
+            tc_fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
+            tc_name = tc_fn.get("name", "") if isinstance(tc_fn, dict) else getattr(tc_fn, "name", "")
+            if tc_name != "skill_view":
+                continue
+            cid = tc.get("id", "") if isinstance(tc, dict) else (getattr(tc, "id", "") or "")
+            if cid:
+                call_id_to_skill[cid] = skill
+    for msg in turns:
+        content = msg.get("content")
+        text = content if isinstance(content, str) else _content_text_for_contains(content)
+        for name in _extract_pruned_skill_names(text):
+            _add(name)
+        if (
+            msg.get("role") == "tool"
+            and isinstance(content, str)
+            and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS
+        ):
+            skill = call_id_to_skill.get(str(msg.get("tool_call_id") or ""))
+            if skill:
+                _add(skill)
+    return names
+
+
+_PRUNED_SKILLS_SECTION_HEADING = "## Pruned Skills"
+
+
+def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
+    """Deterministically restore prune markers the summarizer dropped.
+
+    ``skill_names`` was extracted from the summarizer INPUT before the LLM
+    call. For every skill whose canonical marker (``_skill_pruned_marker``)
+    is absent from the model's output, append it under a ``## Pruned
+    Skills`` section. Presence is checked against the SAME canonical string
+    the emit sites produce — a paraphrased or renamed marker counts as
+    dropped and is restored (the original PR checked the literal
+    ``[SKILL_PRUNED]``, which never matches the emitted ``[SKILL_PRUNED:``
+    form, so it duplicated markers that HAD survived).
+
+    The appended block is plain body text: it never carries a handoff
+    prefix, the merged-summary delimiter, or a start-of-content scaffolding
+    marker, so ``classify_summary_content`` / todo-snapshot flag handling
+    are unaffected. The block is routed through ``_redact_compaction_text``
+    like every other compaction-boundary text.
+    """
+    if not skill_names:
+        return summary
+    missing = [
+        name for name in skill_names
+        if _skill_pruned_marker(name) not in summary
+    ]
+    if not missing:
+        return summary
+    lines = [_skill_pruned_marker(name) for name in missing]
+    block = (
+        "\n\n" + _PRUNED_SKILLS_SECTION_HEADING + "\n"
+        + "\n".join(lines)
+        + "\n(The listed skills' instructions were pruned during context "
+        "compression. Reload with the skill_view call in each marker before "
+        "relying on that skill; one reload per skill is enough — ignore any "
+        "older markers for the same skill.)"
+    )
+    return summary + _redact_compaction_text(block)
+
+
+# A skill_view call within this many trailing messages counts as "just
+# loaded": its full instruction body must survive the Phase-1 prune even when
+# the token-budget boundary would otherwise demote it (#32106). Distinct from
+# the protected-tail boundary, which is token-based and can land immediately
+# after a bulky just-loaded skill body.
+_SKILL_PRUNE_RECENT_WINDOW = 10
+
+
+def _skill_view_call_sites(
+    messages: List[Dict[str, Any]],
+) -> list[tuple[int, str]]:
+    """Yield ``(message_index, skill_name)`` for every skill_view tool call."""
+    sites: list[tuple[int, str]] = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                fn = tc.get("function", {})
+                name = fn.get("name", "") if isinstance(fn, dict) else ""
+                args_str = fn.get("arguments", "") if isinstance(fn, dict) else ""
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", "") if fn else ""
+                args_str = getattr(fn, "arguments", "") if fn else ""
+            if name != "skill_view" or not isinstance(args_str, str) or not args_str:
+                continue
+            try:
+                args = json.loads(args_str)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(args, dict):
+                skill = args.get("name", "")
+                if isinstance(skill, str) and skill:
+                    sites.append((i, skill))
+    return sites
+
+
+def _collect_protected_skill_names(
+    messages: List[Dict[str, Any]], prune_boundary: int,
+) -> set[str]:
+    """Skill names whose skill_view bodies must survive Phase-1 demotion.
+
+    A skill is protected (lower-cased set) when any of these hold:
+
+    - its most recent ``skill_view`` call sits within the last
+      ``_SKILL_PRUNE_RECENT_WINDOW`` messages (just loaded / just reloaded);
+    - its most recent ``skill_view`` call sits inside the protected tail
+      (at or after *prune_boundary*);
+    - its name is mentioned in a user message inside the protected tail
+      (the user is actively steering work that depends on it).
+
+    Protection applies to the ordinary Phase-1/2 prune only. The Pass-4
+    pressure demotion deliberately ignores it: when the protected region
+    itself exceeds the soft budget, exempting skill bodies would recreate
+    the #61932 dead-end shape.
+    """
+    total = len(messages)
+    if not total:
+        return set()
+    recent_start = max(0, total - _SKILL_PRUNE_RECENT_WINDOW)
+    tail_start = max(0, prune_boundary)
+    tail_user_texts: list[str] = []
+    for msg in messages[tail_start:]:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            tail_user_texts.append(content.lower())
+    protected: set[str] = set()
+    for idx, skill in _skill_view_call_sites(messages):
+        key = skill.lower()
+        if idx >= recent_start or idx >= tail_start:
+            protected.add(key)
+        elif any(key in text for text in tail_user_texts):
+            protected.add(key)
+    return protected
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
@@ -877,7 +1106,19 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
-    if tool_name in {"skill_view", "skills_list", "skill_manage"}:
+    if tool_name == "skill_view":
+        name = args.get("name", "?")
+        if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS:
+            # Ghost-skill defense (#32106): a metadata-only summary makes the
+            # model believe the skill is still loaded. The canonical marker
+            # tells it the instructions are gone AND how to get them back.
+            return (
+                f"[skill_view] name={name} ({content_len:,} chars) "
+                + _skill_pruned_marker(str(name))
+            )
+        return f"[skill_view] name={name} ({content_len:,} chars)"
+
+    if tool_name in {"skills_list", "skill_manage"}:
         name = args.get("name", "?")
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
@@ -1629,6 +1870,10 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
         threshold_tokens_cap: Any = None,
+        proactive_prune_tokens: int = 0,
+        proactive_prune_min_result_chars: int = 8000,
+        proactive_prune_min_reclaim_tokens: int = 4096,
+        min_tail_user_messages: int = 1,
     ):
         self.model = model
         self.base_url = base_url
@@ -1658,6 +1903,32 @@ class ContextCompressor(ContextEngine):
         )
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
+        # Proactive tool-result pruning (cost-oriented; runs INDEPENDENTLY of the
+        # full-compression trigger, via prune_tool_results_only()). 0 = disabled.
+        self.proactive_prune_tokens = int(proactive_prune_tokens or 0)
+        # Floor the summarize threshold at 200 chars (matching
+        # _prune_old_tool_results' dedup floor). Below ~200 a generated summary
+        # can be longer than the floor it replaces, so Pass 2 would re-summarize
+        # its own output every turn (corrupting it and never converging); a
+        # negative value would strip every non-tail tool result outright. A
+        # configured 0 keeps the 8000 default via `or`. Keep the floor well above
+        # typical summary length (default 8000) to stay idempotent.
+        self.proactive_prune_min_result_chars = max(
+            200, int(proactive_prune_min_result_chars or 8000)
+        )
+        # Minimum estimated token reclaim before a proactive prune COMMITS.
+        # Every commit rewrites messages the provider has already seen, which
+        # invalidates the prompt-cache prefix from the earliest rewritten
+        # message forward. Without this gate a busy tool loop would re-fire
+        # the prune nearly every iteration (each new tool pair ages an old one
+        # out of the protected tail), breaking the cache per turn. Requiring a
+        # meaningful batch of reclaimable tokens makes fires episodic and
+        # amortized — the same way full compression is the one sanctioned
+        # cache break. 0 disables the gate (commit any non-zero prune).
+        self.proactive_prune_min_reclaim_tokens = max(
+            0, int(proactive_prune_min_reclaim_tokens or 0)
+        )
+        self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Output-token reservation: the provider carves max_tokens out of the
@@ -1856,6 +2127,16 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
 
+    def snapshot_preflight_display_tokens(self) -> int:
+        """Capture the display token count before a speculative preflight seed."""
+        return self.last_prompt_tokens
+
+    def rollback_interrupted_preflight_display_tokens(self, snapshot: int) -> None:
+        """Restore a speculative display seed without touching compaction state."""
+        if self.awaiting_real_usage_after_compression and self.last_prompt_tokens == -1:
+            return
+        self.last_prompt_tokens = snapshot
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
 
@@ -2049,6 +2330,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
+        min_prune_chars: int = 200,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 
@@ -2158,7 +2440,14 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
-        def _demote_tool_result_at(idx: int) -> bool:
+        # Ghost-skill defense (#32106): skills just loaded (or actively
+        # referenced in the protected tail) keep their full skill_view
+        # bodies through the ordinary prune passes. Without this, a skill
+        # loaded moments before a compaction can be demoted to metadata
+        # while the model still believes its instructions are in context.
+        protected_skills = _collect_protected_skill_names(result, prune_boundary)
+
+        def _demote_tool_result_at(idx: int, *, spare_protected_skills: bool = True) -> bool:
             """Replace a bulky tool result at ``idx`` with a 1-line summary.
 
             Returns True when the message was modified.
@@ -2191,10 +2480,22 @@ class ContextCompressor(ContextEngine):
                 return False
             if content.startswith("[screenshot removed"):
                 return False
-            if len(content) <= 200:
+            # Only prune if the content is substantial (default >200 chars; the
+            # proactive path raises this floor via min_prune_chars).
+            if len(content) <= min_prune_chars:
                 return False
             call_id = msg.get("tool_call_id", "")
             tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            if spare_protected_skills and tool_name == "skill_view" and protected_skills:
+                # Just-loaded / actively-referenced skills survive verbatim
+                # (#32106). Pass-4 pressure demotion overrides this.
+                try:
+                    _args = json.loads(tool_args) if tool_args else {}
+                except (json.JSONDecodeError, TypeError):
+                    _args = {}
+                _skill = _args.get("name", "") if isinstance(_args, dict) else ""
+                if isinstance(_skill, str) and _skill.lower() in protected_skills:
+                    return False
             summary = _summarize_tool_result(tool_name, tool_args, content)
             result[idx] = {**msg, "content": summary}
             pruned += 1
@@ -2259,7 +2560,10 @@ class ContextCompressor(ContextEngine):
             if demote_end > prune_boundary and _protected_region_tokens() > soft_ceiling:
                 pressure_hits = 0
                 for i in range(max(0, prune_boundary), demote_end):
-                    if _demote_tool_result_at(i):
+                    # Pressure passes override the just-loaded-skill guard:
+                    # when the protected region itself blows the soft budget,
+                    # sparing skill bodies would recreate the #61932 dead-end.
+                    if _demote_tool_result_at(i, spare_protected_skills=False):
                         pressure_hits += 1
                     if _truncate_tool_call_args_at(i):
                         pressure_hits += 1
@@ -2279,7 +2583,7 @@ class ContextCompressor(ContextEngine):
                         if last_tool_idx is not None and i == last_tool_idx:
                             continue
                         if result[i].get("role") == "tool":
-                            if _demote_tool_result_at(i):
+                            if _demote_tool_result_at(i, spare_protected_skills=False):
                                 pressure_hits += 1
                         elif result[i].get("role") == "assistant":
                             if _truncate_tool_call_args_at(i):
@@ -2293,7 +2597,9 @@ class ContextCompressor(ContextEngine):
                         and last_tool_idx >= prune_boundary
                         and _protected_region_tokens() > soft_ceiling
                     ):
-                        if _demote_tool_result_at(last_tool_idx):
+                        if _demote_tool_result_at(
+                            last_tool_idx, spare_protected_skills=False
+                        ):
                             pressure_hits += 1
                 if pressure_hits and not self.quiet_mode:
                     logger.info(
@@ -2306,6 +2612,75 @@ class ContextCompressor(ContextEngine):
                     )
 
         return result, pruned
+
+    def prune_tool_results_only(
+        self, messages: List[Dict[str, Any]], current_tokens: int | None = None,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Deterministic, no-LLM tool-result prune for the cost-oriented path.
+
+        Runs the Phase-1 prune (``_prune_old_tool_results``) WITHOUT the
+        compression summary phase, gated on ``proactive_prune_tokens`` rather
+        than the (much higher) full-compression threshold. On large-window
+        models ``should_compress()`` (≈50% of the window) rarely fires, so old
+        tool outputs otherwise ride in history and are re-sent verbatim on every
+        subsequent turn; this reclaims them early with no quality-risky LLM
+        summarization.
+
+        Protects the recent tail by message COUNT (``protect_last_n``), never by
+        ``tail_token_budget`` — the latter is derived from the 50% compression
+        threshold (≈100K tokens on a 1M window) and would protect the entire
+        session, pruning nothing.
+
+        ``_prune_old_tool_results`` runs all three deterministic passes:
+        (1) dedup byte-identical tool results — keeps the newest full copy and
+        back-references older exact duplicates ANYWHERE in the list (including
+        the protected tail), so no unique content is ever lost; (2) summarize
+        non-tail tool results larger than ``min_prune_chars``; (3) truncate
+        oversized tool_call arguments on non-tail assistant messages. Only
+        pass (2)'s floor is raised by ``proactive_prune_min_result_chars``;
+        passes (1) and (3) keep their own fixed floors. The recent-tail
+        protection applies to passes (2) and (3); pass (1) is tail-agnostic by
+        design because dedup is lossless.
+
+        PROMPT-CACHE CONTRACT: a committed prune rewrites message bodies the
+        provider has already seen, invalidating the cached prefix from the
+        earliest rewritten message forward — exactly like a compression
+        boundary. To keep that break episodic rather than per-turn, the prune
+        only COMMITS when the estimated reclaim meets
+        ``proactive_prune_min_reclaim_tokens`` (measured on the actual pruned
+        output, not guessed up front). Below the gate the INPUT list object is
+        returned unchanged — the standard no-op caller contract (callers gate
+        bookkeeping on ``result is not input``).
+
+        Returns ``(messages, 0)`` — the input object — when disabled, below
+        the trigger, or when the reclaim gate rejects the commit.
+        """
+        if self.proactive_prune_tokens <= 0:
+            return messages, 0
+        if current_tokens is not None and current_tokens < self.proactive_prune_tokens:
+            return messages, 0
+        # Nothing to reclaim until there are messages outside the protected tail.
+        if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
+            return messages, 0
+        pruned_msgs, pruned_count = self._prune_old_tool_results(
+            messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=None,
+            min_prune_chars=self.proactive_prune_min_result_chars,
+        )
+        if not pruned_count:
+            # Standard no-op contract: hand back the INPUT object so callers
+            # can gate bookkeeping on `result is not input`.
+            return messages, 0
+        # Measured-savings gate (prompt-cache hysteresis): only commit when
+        # the prune reclaims a meaningful batch of tokens. Estimated on the
+        # real before/after messages so dedup + arg truncation count too.
+        if self.proactive_prune_min_reclaim_tokens > 0:
+            before = sum(_estimate_msg_budget_tokens(m) for m in messages)
+            after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
+            if (before - after) < self.proactive_prune_min_reclaim_tokens:
+                return messages, 0
+        return pruned_msgs, pruned_count
 
     # ------------------------------------------------------------------
     # Summarization
@@ -2330,6 +2705,10 @@ class ContextCompressor(ContextEngine):
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+    # Aggregate cap over the whole serialized block, applied AFTER the
+    # per-message limits above. Alias of the module-level constant (which
+    # carries the full rationale) so subclasses/tests can override per-class.
+    _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -2620,10 +2999,53 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
+        # Ghost-skill defense (#32106): the fallback's per-turn truncation
+        # (``_FALLBACK_TURN_MAX_CHARS``) routinely cuts [SKILL_PRUNED: ...]
+        # markers out of the compacted turns. Re-derive the ghosted skills
+        # from the raw turn contents and re-inject deterministically,
+        # exactly like the LLM-summary path.
+        _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
+        del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
         summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
+        # Re-inject AFTER the size cap: the markers live at the end of the
+        # body, exactly where the truncation above cuts.
+        summary = _reinject_pruned_skill_markers(summary, _pruned_names)
         return summary
+
+    @classmethod
+    def _bound_summary_input(cls, content: str) -> str:
+        """Cap total summarizer input while preserving beginning and recent tail.
+
+        Per-message truncation alone is not enough for very long sessions: a
+        compression window with hundreds of messages can still produce a huge
+        single prompt that slow auxiliary backends time out on. Keep both edges
+        because the beginning often has task setup and the tail has the most
+        recent state; explicitly mark the omitted middle so the summarizer knows
+        context was intentionally compressed before it saw the prompt.
+        """
+        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
+            return content
+
+        marker_template = (
+            "\n\n...[summary input truncated: omitted "
+            "{omitted:,} chars from the middle to keep compression prompt bounded]...\n\n"
+        )
+        # Estimate once, then rebuild with the exact omitted span after the
+        # head/tail split is known. The second marker can differ by a few chars
+        # if the comma-formatted number changes width, so recompute once.
+        marker = marker_template.format(omitted=len(content))
+        remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
+        head_chars = int(remaining * 0.45)
+        tail_chars = remaining - head_chars
+        omitted = max(len(content) - head_chars - tail_chars, 0)
+        marker = marker_template.format(omitted=omitted)
+        remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
+        head_chars = int(remaining * 0.45)
+        tail_chars = remaining - head_chars
+        tail = content[-tail_chars:].lstrip() if tail_chars else ""
+        return content[:head_chars].rstrip() + marker + tail
 
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.
@@ -2698,6 +3120,23 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        # P2 ghost-skill defense (#32106): [SKILL_PRUNED: ...] markers entering
+        # the summarizer are prompt INPUT only — LLMs routinely paraphrase them
+        # into vague prose ("some skills were loaded"), which erases the reload
+        # instruction. Collect the ghosted skills deterministically BEFORE the
+        # call (both already-pruned marker rows AND raw skill_view bodies whose
+        # instructions are about to be summarized away);
+        # ``_reinject_pruned_skill_markers`` restores any marker the model
+        # dropped AFTER the call. Markers already carried by the previous
+        # summary must survive iterative rewrites the same way. Collection
+        # walks the turn LIST, so the serialized input bound below cannot
+        # hide a marker in its omitted middle.
+        _pruned_skill_names = _collect_ghosted_skill_names(turns_to_summarize)
+        for _name in _extract_pruned_skill_names(self._previous_summary or ""):
+            if _name not in _pruned_skill_names:
+                _pruned_skill_names.append(_name)
+        del _pruned_skill_names[_MAX_PRUNED_SKILL_MARKERS:]
+        content_to_summarize = self._bound_summary_input(content_to_summarize)
         _sanitized_memory_context = sanitize_memory_context(memory_context)
         _serialized_memory_context = json.dumps(
             _sanitized_memory_context,
@@ -2889,18 +3328,33 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
+{_PRUNED_SKILLS_SECTION_HEADING}
+[If any [SKILL_PRUNED: ...reload with skill_view(...)] markers appear in the input,
+repeat each one verbatim here — copy the exact text, do NOT paraphrase, summarize,
+or describe them. These markers tell the agent which skills must be reloaded before
+use. If none appear, omit this section entirely.]
+
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:
-            # Iterative update: preserve existing info, add new progress
+            # Iterative update: preserve existing info, add new progress.
+            # Bound the previous-summary block with the same aggregate cap as
+            # the serialized new turns: a normal summary is far below the cap
+            # (the output side is held to a ~10K-token ceiling), but a
+            # pathological handoff rehydrated from a persisted session can be
+            # arbitrarily large — the iterative prompt (previous summary +
+            # new turns) must stay bounded too.
+            _bounded_previous_summary = self._bound_summary_input(
+                self._previous_summary
+            )
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
-{self._previous_summary}
+{_bounded_previous_summary}
 
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}
@@ -3031,6 +3485,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = _redact_compaction_text(content.strip())
+            # P2 ghost-skill defense (#32106): deterministically restore any
+            # [SKILL_PRUNED: ...] marker the summarizer paraphrased away.
+            summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
             # Store for iterative updates on next compaction
@@ -4091,6 +4548,69 @@ This compaction should PRIORITISE preserving all information related to the focu
             return max(pair_end, head_end + 1)
         return adjusted
 
+    def _ensure_last_n_user_messages_in_tail(
+        self,
+        messages: List[Dict[str, Any]],
+        cut_idx: int,
+        head_end: int,
+        n: int,
+    ) -> int:
+        """Guarantee the last N actionable user messages are in the protected tail.
+
+        Generalizes ``_ensure_last_user_message_in_tail`` to preserve an
+        arbitrary number of recent user messages.  This prevents the token-
+        budget-based tail cut from consuming recent conversation turns
+        when large tool outputs fill the budget.
+
+        When *n* <= 1, delegates directly to the existing single-message
+        method for byte-identical regression safety.
+
+        If the conversation has fewer than *n* user messages, the earliest
+        available user message is used without error.
+
+        Only REAL actionable user turns count toward N — the collector uses
+        the same ``_is_actionable_user_turn`` /
+        ``_is_synthetic_compression_user_turn`` pair as
+        ``_find_last_user_message_idx``, so blank platform echoes, compaction
+        handoffs, continuation markers, and todo-snapshot rows never consume
+        a slot (#69291 bug class).
+
+        A user message is already a clean boundary — there is no
+        tool_call/result group that spans across it, so
+        ``_align_boundary_backward`` is intentionally NOT called.
+        Calling it can pull the cut past the user message into the
+        preceding assistant(tool_calls)→tool group and split it (#22566).
+        """
+        if n <= 1:
+            return self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+
+        # Collect real user message indices walking backward from end.
+        # Mirror _find_last_user_message_idx's filters: compaction handoffs,
+        # blank platform echoes, and synthetic continuation/todo rows are
+        # continuity artifacts, not real user turns.
+        user_indices = []
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            msg = messages[i]
+            if (
+                self._is_actionable_user_turn(msg)
+                and not self._is_synthetic_compression_user_turn(msg)
+            ):
+                user_indices.append(i)
+
+        if len(user_indices) == 0:
+            return cut_idx
+
+        if len(user_indices) < n:
+            target_idx = user_indices[-1]
+        else:
+            target_idx = user_indices[n - 1]
+
+        if target_idx >= cut_idx:
+            return cut_idx
+
+        cut_idx = target_idx
+        return max(cut_idx, head_end + 1)
+
     def _find_turn_pair_end(
         self,
         messages: List[Dict[str, Any]],
@@ -4219,6 +4739,26 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Each anchor only walks ``cut_idx`` backward, so chaining them is
         # monotonic — the tail can only grow, never shrink.
         cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+
+        # Extend to the last N actionable user messages when configured
+        # (compression.min_tail_user_messages > 1).  This prevents the
+        # token-budget tail from consuming recent turns when large tool
+        # outputs fill the budget.  The anchor only walks ``cut_idx``
+        # backward (monotonic — the tail can only grow, never shrink), and
+        # a user message is a clean boundary, so the forward re-alignment
+        # below remains a no-op for the anchored index.  Gated at the call
+        # site so the default (1) path is byte-identical to the historical
+        # single-anchor pipeline — the single-user anchor already ran above,
+        # and re-invoking it here could re-trigger the causal-coupling
+        # forward push (#22523) after the assistant anchor adjusted the cut.
+        # getattr-guarded: bare ``ContextCompressor.__new__`` test doubles
+        # (and plugin engines) skip __init__, so the attribute may be absent
+        # (see the compression-path test-double pitfall).
+        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
+        if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
+            cut_idx = self._ensure_last_n_user_messages_in_tail(
+                messages, cut_idx, head_end, _min_tail_users,
+            )
 
         # The floor guarantees forward progress — compression must always claim
         # at least one message or the caller's compress_start >= compress_end
@@ -4520,6 +5060,39 @@ This compaction should PRIORITISE preserving all information related to the focu
             tail_messages=messages[compress_end:],
         )
         telemetry["chunk_count"] = 1 if turns_to_summarize else 0
+
+        if not turns_to_summarize:
+            # The newest handoff summary consumed the entire compressible
+            # window (every window row was a standalone handoff that strips
+            # to None, and nothing follows it before compress_end) — there
+            # is nothing new to summarize.  Skip the summary call entirely:
+            # without this guard the empty window still reached
+            # _generate_summary, wasting an aux LLM call that aborts
+            # noisily on empty input (#59496).  Mirrors the sibling
+            # "no compressable window" guard above (#40803): record an
+            # ineffective strike through the durable write-through helper
+            # so the anti-thrash breaker in should_compress() can stop the
+            # loop — this shape cannot shrink, so every subsequent turn
+            # would otherwise re-fire the same no-op.  The rehydrated
+            # _previous_summary is deliberately KEPT (not rolled back as
+            # the summary-abort path does for #57835): it came from a
+            # handoff genuinely present in this transcript, which is
+            # returned unchanged.
+            telemetry["failure_class"] = "empty_post_handoff_window"
+            self._record_ineffective_compression_verdict(
+                self._ineffective_compression_count + 1,
+            )
+            self._last_compression_savings_pct = 0.0
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression skipped: latest context summary leaves no "
+                    "new turns to summarize in window %d-%d. "
+                    "ineffective_compression_count=%d",
+                    compress_start,
+                    compress_end,
+                    self._ineffective_compression_count,
+                )
+            return messages
 
         if not self.quiet_mode:
             logger.info(

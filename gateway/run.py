@@ -54,6 +54,16 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
+from agent.conversation_compression import (
+    COMPACTION_STATUS,
+    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
+    IDLE_COMPACTION_STATUS_TEMPLATE,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
+)
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
@@ -105,6 +115,70 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r")",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def _status_template_to_regex(template: str) -> str:
+    """Compile a compression status template constant into a regex source.
+
+    Literal text is escaped verbatim (so wording drift in
+    agent/conversation_compression.py cannot silently diverge from this
+    matcher — the constants ARE the wording) and each ``{field}`` format
+    placeholder is replaced with a numeric-ish pattern covering every value
+    the emit sites format in (ints, ``{:,}`` thousands separators).
+    """
+    parts = re.split(r"\{[^{}]*\}", template)
+    return r"[\d,]+".join(re.escape(part) for part in parts)
+
+
+# ROUTINE compression progress statuses, derived from the SAME template
+# constants the emit sites format (agent/conversation_compression.py, #69550)
+# — never re-inlined wording. Used ONLY by the opt-in
+# ``compression.progress_notices`` gate below (#52995) to decide which of the
+# noisy statuses matched by _TELEGRAM_NOISY_STATUS_RE are compression
+# progress (deliverable when the user opted in) versus unrelated aux/retry
+# chatter (always suppressed on chat surfaces). Failure notices and manual
+# /compress feedback never match _TELEGRAM_NOISY_STATUS_RE in the first
+# place, so they are unaffected by this gate.
+_COMPRESSION_PROGRESS_STATUS_RE = re.compile(
+    "|".join(
+        _status_template_to_regex(_template)
+        for _template in (
+            COMPACTION_STATUS,
+            PRE_API_COMPRESSION_STATUS_TEMPLATE,
+            PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
+            IDLE_COMPACTION_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
+            COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
+        )
+    ),
+    re.IGNORECASE,
+)
+
+
+def _gateway_compression_progress_notices_enabled() -> bool:
+    """True when the user opted into routine compression progress notices.
+
+    Reads ``compression.progress_notices`` from the gateway's raw YAML config
+    (#52995). Default False — routine compression stays silent-by-design on
+    chat platforms unless explicitly enabled. Read live (mtime-cached) so a
+    config edit on a running gateway takes effect on the next status.
+    Fail-closed: any config read error keeps the silent default.
+    """
+    try:
+        config = _load_gateway_config()
+        compression_cfg = config.get("compression") if isinstance(config, dict) else None
+        if isinstance(compression_cfg, dict):
+            return str(compression_cfg.get("progress_notices", False)).strip().lower() in {
+                "true",
+                "1",
+                "yes",
+                "on",
+            }
+    except Exception:
+        pass
+    return False
 
 # Surfaces that consume gateway text programmatically (CLI/TUI "local"
 # diagnostics, API JSON, webhook payloads) and therefore must keep RAW
@@ -495,7 +569,17 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
-        return None
+        # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
+        # compression progress statuses through to chat platforms. The
+        # membership check is derived from the #69550 template constants, so
+        # non-compression noise (aux failures, provider retry chatter, ...)
+        # stays suppressed even when the gate is open. Default False keeps
+        # the silent-by-design behavior byte-identical.
+        if not (
+            _gateway_compression_progress_notices_enabled()
+            and _COMPRESSION_PROGRESS_STATUS_RE.search(text)
+        ):
+            return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
@@ -6970,7 +7054,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # that triggered the /restart command closing its console.
         if sys.platform == "win32":
             import textwrap
-            from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+            from hermes_cli._subprocess_compat import (
+                windows_detach_flags_without_breakaway,
+                windows_detach_popen_kwargs,
+            )
 
             cmd_argv = [*hermes_cmd, "gateway", "restart"]
             watcher = textwrap.dedent(
@@ -7042,13 +7129,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if watcher_env.get("PYTHONPATH"):
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-            subprocess.Popen(
-                [watcher_python, "-c", watcher, str(current_pid), str(restart_after_s), *cmd_argv],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                **windows_detach_popen_kwargs(),
-            )
+            watcher_argv = [
+                watcher_python,
+                "-c",
+                watcher,
+                str(current_pid),
+                str(restart_after_s),
+                *cmd_argv,
+            ]
+            # The watcher process must itself break away from any job object the
+            # parent CLI lives in (Electron/Tauri-wrapped Hermes Desktop, Windows
+            # Terminal, schtasks shells); otherwise it is reaped when the CLI
+            # exits and the gateway never respawns.  windows_detach_popen_kwargs()
+            # carries CREATE_BREAKAWAY_FROM_JOB, but a restrictive job object
+            # (no JOB_OBJECT_LIMIT_BREAKAWAY_OK) rejects that bit with
+            # ERROR_ACCESS_DENIED, surfaced as OSError.  Retry once without the
+            # breakaway bit, preserving argv and the scrubbed watcher_env.
+            # Mirrors the canonical fallback in
+            # hermes_cli/gateway_windows.py::_spawn_detached.
+            try:
+                subprocess.Popen(
+                    watcher_argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=watcher_env,
+                    **windows_detach_popen_kwargs(),
+                )
+            except OSError:
+                try:
+                    subprocess.Popen(
+                        watcher_argv,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        env=watcher_env,
+                        creationflags=windows_detach_flags_without_breakaway(),
+                    )
+                except OSError as exc:
+                    # Both spawn attempts failed (a breakaway-denying job object
+                    # is the common cause, but OSError covers others too).
+                    # Record a minimal, path-safe diagnostic and return without
+                    # crashing the caller: state plainly that no watcher was
+                    # started, and log only the interpreter basename and a
+                    # numeric error code — never argv, env, watcher source, or
+                    # str(exc) (which can carry a full interpreter path for a
+                    # FileNotFoundError).
+                    winerror = getattr(exc, "winerror", None)
+                    error_code = winerror if winerror is not None else exc.errno
+                    error_field = "winerror" if winerror is not None else "errno"
+                    logger.warning(
+                        "Detached restart watcher was not started after the "
+                        "no-breakaway retry (%s; %s=%r). The gateway will not "
+                        "be respawned by this restart attempt.",
+                        os.path.basename(watcher_python),
+                        error_field,
+                        error_code,
+                    )
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
@@ -13915,7 +14050,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # large to process.  Auto-reset it so the next message starts
             # fresh instead of replaying the same oversized context in an
             # infinite fail loop.  (#9893)
-            if agent_result.get("compression_exhausted") and session_entry and session_key:
+            #
+            # A lock-contended defer is the OPPOSITE case: the session is
+            # temporarily uncompressible only because a concurrent path holds
+            # the compression lock and is actively shrinking it. Never wipe
+            # the session for that — retry-next-message semantics apply
+            # (#69870 lock-skip consumer; salvaged from #49874).
+            if agent_result.get("compression_deferred"):
+                logger.info(
+                    "Compression deferred for session %s — the compression "
+                    "lock is held by a concurrent compressor. Keeping the "
+                    "session intact; the next message retries normally.",
+                    session_entry.session_id if session_entry else "?",
+                )
+            elif agent_result.get("compression_exhausted") and session_entry and session_key:
                 logger.info(
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
@@ -18102,6 +18250,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("model", "context_length"),
         ("model", "max_tokens"),
         ("compression", "enabled"),
+        ("compression", "progress_notices"),
         ("compression", "threshold"),
         ("compression", "model_thresholds"),
         ("compression", "threshold_tokens"),
@@ -18109,6 +18258,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("compression", "proactive_prune_tokens"),
+        ("compression", "proactive_prune_min_result_chars"),
+        ("compression", "proactive_prune_min_reclaim_tokens"),
+        ("compression", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
         ("checkpoints", "enabled"),
@@ -21996,6 +22149,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
+                    "compression_deferred": result.get("compression_deferred", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
                     "compacted_in_place": _compacted_in_place,
@@ -22113,6 +22267,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
+                # Soft lock-contention defer (#69870 consumer): distinct from
+                # compression_exhausted so the gateway never auto-resets a
+                # session that a concurrent compressor is about to shrink.
+                "compression_deferred": (
+                    result_holder[0].get("compression_deferred", False)
+                    if result_holder[0] else False
+                ),
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "compacted_in_place": _compacted_in_place,
@@ -23812,7 +23973,35 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
     cron_stop = threading.Event()
     cron_provider = resolve_cron_scheduler()
-    cron_start_kwargs = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+    cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+
+    # Multiplex profiles: tell the built-in ticker which profile homes to
+    # tick so secondary-profile cron jobs actually fire (#69377).
+    # Without this, only the process-global HERMES_HOME (default profile)
+    # is iterated and every secondary profile's cron store is silently
+    # ignored — jobs show as "scheduled" with a valid next_run_at but
+    # never execute because no ticker owns that store.
+    if (
+        isinstance(cron_provider, InProcessCronScheduler)
+        and getattr(runner.config, "multiplex_profiles", False)
+    ):
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+
+            profile_homes = list(profiles_to_serve(multiplex=True))
+            if profile_homes:
+                cron_start_kwargs["profile_homes"] = profile_homes
+                logger.info(
+                    "Cron scheduler will tick %d profile(s) under multiplex: %s",
+                    len(profile_homes),
+                    [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve profile homes for multiplex cron: %s",
+                exc,
+            )
+
     # External cron providers own their remote scheduling contract. Only the
     # in-process ticker polls local due jobs, so only it receives the local
     # external-drain dispatch gate.

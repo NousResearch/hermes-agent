@@ -861,8 +861,13 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["reference_models"]
-        assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
-        assert set(data["aggregator"]) == {"provider", "model"}
+        # Reference slots carry provider/model plus the per-advisor enabled
+        # flag (optional keys like reasoning_effort/max_tokens appear only
+        # when configured).
+        for slot in data["reference_models"]:
+            assert {"provider", "model"} <= set(slot)
+            assert isinstance(slot.get("enabled", True), bool)
+        assert {"provider", "model"} <= set(data["aggregator"])
 
     def test_put_moa_models_persists_provider_model_slots(self):
         from hermes_cli.config import load_config
@@ -875,6 +880,8 @@ class TestWebServerEndpoints:
             "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
             "reference_temperature": 0.6,
             "aggregator_temperature": 0.4,
+            "reference_timeout": 44.5,
+            "degraded_reference_policy": "silent",
             "max_tokens": 4096,
             "enabled": True,
         }
@@ -883,8 +890,50 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         cfg = load_config()
-        assert cfg["moa"]["reference_models"] == payload["reference_models"]
-        assert cfg["moa"]["aggregator"] == payload["aggregator"]
+        saved_refs = cfg["moa"]["reference_models"]
+        # Slots normalize with enabled=True defaulted in; provider/model must
+        # round-trip exactly.
+        assert [
+            {"provider": s["provider"], "model": s["model"]} for s in saved_refs
+        ] == payload["reference_models"]
+        assert all(s.get("enabled", True) is True for s in saved_refs)
+        agg = cfg["moa"]["aggregator"]
+        assert {"provider": agg["provider"], "model": agg["model"]} == payload["aggregator"]
+        assert cfg["moa"]["reference_timeout"] == 44.5
+        assert cfg["moa"]["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()
+        assert returned["reference_timeout"] == 44.5
+        assert returned["degraded_reference_policy"] == "silent"
+
+    def test_put_moa_models_persists_reference_failure_controls_per_preset(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "review",
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"}
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                    "reference_timeout": 87.5,
+                    "degraded_reference_policy": "silent",
+                }
+            },
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 200
+        saved = load_config()["moa"]["presets"]["review"]
+        assert saved["reference_timeout"] == 87.5
+        assert saved["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()["presets"]["review"]
+        assert returned["reference_timeout"] == 87.5
+        assert returned["degraded_reference_policy"] == "silent"
 
     def test_put_moa_models_rejects_half_filled_slot_with_422(self):
         """#64156: a mid-edit autosave (provider picked, model empty) used to be
@@ -1278,6 +1327,34 @@ class TestWebServerEndpoints:
             "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"userPeerAliases": "{not json"}},
         ).status_code == 400
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"reference_timeout": True},
+            {"reference_timeout": False},
+            {"reference_timeout": "nan"},
+            {"reference_timeout": "inf"},
+            {"presets": {"review": {"reference_timeout": True}}},
+            {"presets": {"review": {"reference_timeout": "-inf"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_reference_timeout(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"degraded_reference_policy": "verbose"},
+            {"presets": {"review": {"degraded_reference_policy": "verbose"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_degraded_reference_policy(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
 
     # ── GET /api/media (remote image display) ───────────────────────────
 

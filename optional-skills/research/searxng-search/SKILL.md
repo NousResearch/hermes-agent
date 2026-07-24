@@ -1,6 +1,6 @@
 ---
 name: searxng-search
-description: Free meta-search via SearXNG — aggregates results from 70+ search engines. Self-hosted or use a public instance. No API key needed. Falls back automatically when the web search toolset is unavailable.
+description: Free keyless meta-search aggregating 70+ engines.
 version: 1.0.0
 author: hermes-agent
 license: MIT

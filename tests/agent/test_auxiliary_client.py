@@ -656,6 +656,174 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kwargs["max_tokens"] == 4096
 
+    # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url,expected_key",
+        [
+            ("zai", "glm-5.2", "https://api.z.ai/api/coding/paas/v4", "max_tokens"),
+            ("openrouter", "deepseek/deepseek-v4-flash:nitro", "https://openrouter.ai/api/v1", "max_tokens"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com", "max_completion_tokens"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1", "max_tokens"),
+        ],
+    )
+    def test_moa_task_sends_max_tokens_on_openai_compatible(self, provider, model, base_url, expected_key):
+        """MoA reference tasks must honor max_tokens regardless of provider.
+
+        The ``reference_max_tokens`` config option (PR #56756) caps advisor output
+        to reduce turn latency.  Before the fix, ``_build_call_kwargs`` silently
+        dropped the value for OpenAI-compatible providers (PR #34845), so the cap
+        never reached the API.  With the ``task`` parameter threaded through,
+        ``task == "moa_reference"`` includes the output cap in kwargs.
+
+        Models that require ``max_completion_tokens`` (GPT-5 family, Copilot)
+        get the correct parameter name via ``auxiliary_max_tokens_param()``.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url=base_url,
+            task="moa_reference",
+        )
+        assert kwargs[expected_key] == 800
+
+    def test_moa_task_sends_max_tokens_on_anthropic_wire(self):
+        """MoA reference tasks on Anthropic-compat endpoints keep max_tokens (unchanged behavior)."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="minimax",
+            model="minimax-m2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url="https://api.minimax.io/v1",
+            task="moa_reference",
+        )
+        assert kwargs["max_tokens"] == 600
+
+    def test_moa_aggregator_does_not_get_max_tokens_on_openai_compat(self):
+        """``reference_max_tokens`` is an advisors-only contract (#56756).
+
+        The aggregator is the acting model — it must NOT be capped by the
+        reference token budget.  Only ``task == "moa_reference"`` triggers
+        the exception in ``_build_call_kwargs``.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="zai",
+            model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_aggregator",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_non_moa_tasks_still_omit_max_tokens(self):
+        """Regression guard: compression/titles/vision keep PR #34845 behavior."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for task in ("compression", "vision", "title_generation", None, ""):
+            kwargs = _build_call_kwargs(
+                provider="openrouter",
+                model="deepseek/deepseek-v4-flash:nitro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=800,
+                base_url="https://openrouter.ai/api/v1",
+                task=task,
+            )
+            assert "max_tokens" not in kwargs, f"max_tokens should be dropped for task={task!r}"
+
+    def test_moa_task_exact_match(self):
+        """Only task == "moa_reference" triggers the cap — not the aggregator,
+        not arbitrary 'moa_' prefixed tasks."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        # 'moa_reference' → honored
+        kw = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_reference",
+        )
+        assert kw["max_tokens"] == 500
+
+        # 'moa_aggregator' → dropped (aggregator is the acting model, not an advisor)
+        kw2 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_aggregator",
+        )
+        assert "max_tokens" not in kw2
+
+        # 'moa_custom_future' → dropped (only moa_reference is whitelisted)
+        kw3 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_custom_future",
+        )
+        assert "max_tokens" not in kw3
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("gemini", "gemini-2.5-pro", None),
+            ("google", "gemini-2.5-flash", None),
+            (
+                "custom",
+                "gemini-2.5-pro",
+                "https://generativelanguage.googleapis.com/v1beta",
+            ),
+        ],
+    )
+    def test_keeps_max_tokens_for_gemini_native(self, provider, model, base_url):
+        # Native generateContent maps max_tokens → maxOutputTokens; when it is
+        # omitted Gemini applies a fixed 65,535-token ceiling, which silently
+        # turned MoA's reference_max_tokens into a no-op for gemini advisors.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 600
+        assert "max_completion_tokens" not in kwargs
+
+    def test_omits_max_tokens_for_gemini_model_on_openai_compatible_endpoint(self):
+        # Control: the gemini branch keys on provider/base_url, never the model
+        # name. A gemini model served through an OpenAI-compatible endpoint
+        # keeps the default omission behavior (#34530), including Gemini's own
+        # /openai compatibility endpoint.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for provider, base_url in [
+            ("openrouter", "https://openrouter.ai/api/v1"),
+            ("custom", "https://generativelanguage.googleapis.com/v1beta/openai"),
+        ]:
+            kwargs = _build_call_kwargs(
+                provider=provider,
+                model="google/gemini-2.5-pro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=600,
+                base_url=base_url,
+            )
+            assert "max_tokens" not in kwargs
+            assert "max_completion_tokens" not in kwargs
+
 
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):
@@ -4178,6 +4346,69 @@ class TestAuxiliaryAuthRefreshRetry:
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
         stale_client.close.assert_called_once()
+
+    def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
+        """Vertex tokens live ~1h; on a long-running gateway the cached
+        auxiliary client's bearer token expires mid-session and 401s.
+        _refresh_provider_credentials("vertex") must re-mint the token via
+        the adapter (which refreshes in place when near expiry) and evict
+        the stale cached client so the next call rebuilds with a fresh one —
+        previously there was no "vertex" branch here at all, so this fell
+        through to the final `return False` and the stale client (and its
+        dead token) stayed cached until process restart."""
+        stale_client = MagicMock()
+        cache_key = ("vertex", False, None, None, None)
+
+        with (
+            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),
+            patch(
+                "agent.vertex_adapter.get_vertex_config",
+                return_value=("ya29.FRESH", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+            ) as mock_get_config,
+        ):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials("vertex") is True
+
+        mock_get_config.assert_called_once()
+        stale_client.close.assert_called_once()
+
+    def test_refresh_provider_credentials_vertex_returns_false_when_unminted(self):
+        """No usable token/base_url (e.g. ADC and the service-account file
+        both failed) — refresh must report failure, not silently evict and
+        pretend the client is fixed."""
+        with patch("agent.vertex_adapter.get_vertex_config", return_value=(None, None)):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials("vertex") is False
+
+    def test_resolve_provider_client_vertex_builds_client_from_minted_token(self):
+        """End-to-end: resolve_provider_client("vertex", ...) must reach the
+        auth_type == "vertex" branch and build a working client, not die at
+        the PROVIDER_REGISTRY lookup (a plain HERMES_OVERLAYS-only fix would
+        leave this branch dead code — PROVIDER_REGISTRY is what
+        resolve_provider_client actually gates on)."""
+        with (
+            patch("agent.vertex_adapter.has_vertex_credentials", return_value=True),
+            patch(
+                "agent.vertex_adapter.get_vertex_config",
+                return_value=("ya29.FRESH", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+            ),
+        ):
+            client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert str(client.base_url).rstrip("/") == (
+            "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+        )
+
+    def test_resolve_provider_client_vertex_none_when_no_credentials(self):
+        with patch("agent.vertex_adapter.has_vertex_credentials", return_value=False):
+            client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
+
+        assert client is None
+        assert model is None
 
     @pytest.mark.asyncio
     async def test_async_call_llm_refreshes_anthropic_on_401_for_non_vision(self):

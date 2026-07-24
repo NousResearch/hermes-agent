@@ -691,3 +691,103 @@ class TestGuardJobCredentialExfil:
 
         monkeypatch.setattr(ct, "_validate_cron_base_url", _boom)
         assert _guard_job_credential_exfil({"id": "j8", "provider": "anthropic"}) is None
+
+
+# ── Multiplex profiles: cron per secondary profile (issue #69377) ─────────
+
+
+def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
+    """The multiplex cron scheduler calls tick() once per profile home,
+    scoped via use_cron_store, so secondary-profile jobs actually fire
+    instead of languishing in an unticked store."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    # Set up two profile directories.
+    p1 = tmp_path / "default"
+    p2 = tmp_path / "home-ops"
+    for d in (p1, p2):
+        (d / "cron").mkdir(parents=True)
+
+    profile_homes = [("default", p1), ("home-ops", p2)]
+
+    # Count tick() calls — should be called once per profile per iteration.
+    tick_count: list[int] = []
+
+    def _tracking_tick(*args, **kwargs):
+        tick_count.append(1)
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    with patch("cron.scheduler.tick", side_effect=_tracking_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={"interval": 0, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        t.start()
+        # Wait for at least len(profile_homes) tick calls (one full cycle).
+        deadline = time.monotonic() + 10
+        while len(tick_count) < len(profile_homes) and time.monotonic() < deadline:
+            time.sleep(0.005)
+        # Give one more cycle to ensure it keeps ticking.
+        deadline = time.monotonic() + 3
+        while len(tick_count) < len(profile_homes) * 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    # The ticker called tick() at least once per profile per iteration.
+    # With 2 profiles and multiple iterations, we should have seen at least 2 calls.
+    assert len(tick_count) >= len(profile_homes), \
+        f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
+
+
+def test_multiplex_heartbeat_scoped_per_profile(tmp_path, monkeypatch):
+    """record_ticker_heartbeat is scoped to each profile's store under
+    multiplex, so 'hermes cron status' can report liveness per profile."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron.jobs import record_ticker_heartbeat as _real_heartbeat
+
+    p_default = tmp_path / "default"
+    p_sec = tmp_path / "home-ops"
+    for d in (p_default, p_sec):
+        (d / "cron").mkdir(parents=True)
+    profile_homes = [("default", p_default), ("home-ops", p_sec)]
+
+    beat_log: list[str] = []
+
+    def _track_beat(*, success=False):
+        beat_log.append(str(success))
+        # Write the real heartbeat files so we can check them after.
+        _real_heartbeat(success=success)
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    with patch("cron.scheduler.tick", return_value=0), \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=_track_beat):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={"interval": 0, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        t.start()
+        deadline = time.monotonic() + 10
+        # Wait for at least 2 tick iterations over all profiles (2 profiles).
+        while len(beat_log) < len(profile_homes) * 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    # Every profile should have a heartbeat file.
+    assert (p_default / "cron" / "ticker_heartbeat").exists(), \
+        "default profile heartbeat file missing"
+    assert (p_sec / "cron" / "ticker_heartbeat").exists(), \
+        "secondary profile heartbeat file missing"

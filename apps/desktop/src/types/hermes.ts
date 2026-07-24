@@ -999,6 +999,7 @@ export interface MoaModelSlot {
   model: string
   /** Optional per-slot reasoning effort — round-tripped, not edited here. */
   reasoning_effort?: string
+  enabled?: boolean
 }
 
 export interface MoaConfigResponse {
@@ -1009,22 +1010,26 @@ export interface MoaConfigResponse {
     {
       aggregator: MoaModelSlot
       aggregator_temperature: number
+      degraded_reference_policy: 'loud' | 'silent'
       enabled: boolean
       max_tokens: number
       reference_models: MoaModelSlot[]
       reference_temperature: number
       /** Optional advisor output cap — round-tripped, not edited here. */
       reference_max_tokens?: number | null
-      /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+      /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
       fanout?: string
+      reference_timeout: number | null
     }
   >
   aggregator: MoaModelSlot
   aggregator_temperature: number
+  degraded_reference_policy: 'loud' | 'silent'
   enabled: boolean
   max_tokens: number
   reference_models: MoaModelSlot[]
   reference_temperature: number
+  reference_timeout: number | null
 }
 
 export interface ModelAssignmentRequest {

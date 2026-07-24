@@ -837,3 +837,258 @@ def test_codex_app_server_transport_hides_console_window(monkeypatch):
     # Hide-only: the app-server wire still needs its pipes.
     assert kwargs["stdin"] == subprocess.PIPE
     assert kwargs["stdout"] == subprocess.PIPE
+
+
+# ── #47971 LSP spawn + installer paths (salvage) ────────────────────────────
+#
+# The LSP language-server spawn (agent/lsp/client.py::_spawn) and the
+# npm/go LSP auto-installers (agent/lsp/install.py) are reachable from
+# console-less parents — a VS Code/Zed extension host running the ACP
+# adapter — where a .cmd-wrapped server (pyright-langserver.CMD via
+# cmd.exe /c) or an npm/go console app flashes a window on Windows.
+# All are hide-only (creationflags); PIPE stdio must stay intact and the
+# POSIX start_new_session detach must be preserved on the client spawn.
+
+
+def test_lsp_client_spawn_hides_console_window(monkeypatch):
+    import asyncio
+
+    from agent.lsp import client as lsp_client
+
+    captured = []
+
+    class _FakeProc:
+        stdin = None
+        stdout = None
+        stderr = None
+
+    async def fake_exec(*cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _FakeProc()
+
+    monkeypatch.setattr(lsp_client, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(
+        lsp_client.asyncio, "create_subprocess_exec", fake_exec
+    )
+
+    client = lsp_client.LSPClient(
+        server_id="test-server",
+        workspace_root="/tmp/ws",
+        command=["fake-langserver", "--stdio"],
+    )
+    asyncio.run(client._spawn())
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd == ["fake-langserver", "--stdio"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    # Hide-only: the LSP wire still needs its pipes, and the POSIX
+    # process-group detach (mcp orphan-sweep guard) must survive.
+    assert kwargs["stdin"] == asyncio.subprocess.PIPE
+    assert kwargs["stdout"] == asyncio.subprocess.PIPE
+    assert kwargs["start_new_session"] is True
+
+
+def test_lsp_install_npm_hides_console_window(monkeypatch, tmp_path):
+    from agent.lsp import install as lsp_install
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="")
+
+    monkeypatch.setattr(lsp_install, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lsp_install.subprocess, "run", fake_run)
+    monkeypatch.setattr(lsp_install.shutil, "which", lambda name: f"/fake/bin/{name}")
+    monkeypatch.setattr(
+        lsp_install, "hermes_lsp_bin_dir", lambda: tmp_path / "lsp" / "bin"
+    )
+
+    # Bin lookup after the install misses (nothing staged) → None; the
+    # spawn contract is what is under test here.
+    lsp_install._install_npm("pyright", "pyright-langserver")
+
+    spawns = _spawns(captured, "/fake/bin/npm", "install", "pyright")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["capture_output"] is True
+
+
+def test_lsp_install_go_hides_console_window(monkeypatch, tmp_path):
+    from agent.lsp import install as lsp_install
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="")
+
+    monkeypatch.setattr(lsp_install, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lsp_install.subprocess, "run", fake_run)
+    monkeypatch.setattr(lsp_install.shutil, "which", lambda name: f"/fake/bin/{name}")
+    monkeypatch.setattr(
+        lsp_install, "hermes_lsp_bin_dir", lambda: tmp_path / "lsp" / "bin"
+    )
+
+    lsp_install._install_go("golang.org/x/tools/gopls@latest", "gopls")
+
+    spawns = _spawns(captured, "/fake/bin/go", "install")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["capture_output"] is True
+
+
+# ── #67690 env probes, lazy installs, platform.win32_ver() (@m4r13y) ───────
+#
+# Windowless processes (pythonw gateway + kanban workers) flashed consoles
+# from three more spawn families: tools/env_probe._run's interpreter/pip
+# probes, tools/lazy_deps' uv→pip→ensurepip install ladder, and CPython
+# 3.11/3.12's platform.win32_ver() which shells out `cmd /c ver` with
+# shell=True and no CREATE_NO_WINDOW. All are hide-only (creationflags);
+# win32_ver is neutralized by stubbing platform._syscmd_ver so the
+# documented ValueError fallback reads sys.getwindowsversion() instead.
+
+
+def test_env_probe_run_hides_console_window(monkeypatch):
+    from tools import env_probe
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="", returncode=0)
+
+    monkeypatch.setattr(env_probe, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(env_probe.subprocess, "run", fake_run)
+
+    rc, out, err = env_probe._run(["python3", "--version"], timeout=1.0)
+
+    assert rc == 0
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd == ["python3", "--version"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    # The temp-file capture contract (#67964) must survive: stdout/stderr are
+    # file objects (not PIPE) so a lingering grandchild can't wedge the probe.
+    assert kwargs["stdout"] is not None and kwargs["stdout"] != subprocess.PIPE
+    assert kwargs["stderr"] is not None and kwargs["stderr"] != subprocess.PIPE
+    assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_lazy_deps_uv_install_hides_console_window(monkeypatch):
+    from tools import lazy_deps
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="installed", returncode=0)
+
+    monkeypatch.delenv(lazy_deps._LAZY_TARGET_ENV, raising=False)
+    monkeypatch.setattr(lazy_deps, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lazy_deps.subprocess, "run", fake_run)
+    monkeypatch.setattr(lazy_deps.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    res = lazy_deps._venv_pip_install(("left-pad",))
+
+    assert res.success
+    spawns = _spawns(captured, "pip", "install", "left-pad")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert cmd[:3] == ["/usr/bin/uv", "pip", "install"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_lazy_deps_pip_probe_and_install_hide_console_window(monkeypatch):
+    """No uv: the pip --version probe and the pip install fallback both hide."""
+    from tools import lazy_deps
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="pip 25.0", returncode=0)
+
+    monkeypatch.delenv(lazy_deps._LAZY_TARGET_ENV, raising=False)
+    monkeypatch.setattr(lazy_deps, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lazy_deps.subprocess, "run", fake_run)
+    monkeypatch.setattr(lazy_deps.shutil, "which", lambda name: None)
+
+    res = lazy_deps._venv_pip_install(("left-pad",))
+
+    assert res.success
+    probes = _spawns(captured, "-m", "pip", "--version")
+    installs = _spawns(captured, "-m", "pip", "install", "left-pad")
+    assert len(probes) == 1 and len(installs) == 1, captured
+    for _cmd, kwargs in probes + installs:
+        assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+        assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_lazy_deps_ensurepip_hides_console_window(monkeypatch):
+    """Failed pip probe: the ensurepip bootstrap spawn hides too."""
+    from tools import lazy_deps
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        if "--version" in cmd:
+            return _Completed(stdout="", returncode=1)  # probe fails → ensurepip
+        return _Completed(stdout="ok", returncode=0)
+
+    monkeypatch.delenv(lazy_deps._LAZY_TARGET_ENV, raising=False)
+    monkeypatch.setattr(lazy_deps, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lazy_deps.subprocess, "run", fake_run)
+    monkeypatch.setattr(lazy_deps.shutil, "which", lambda name: None)
+
+    res = lazy_deps._venv_pip_install(("left-pad",))
+
+    assert res.success
+    bootstraps = _spawns(captured, "-m", "ensurepip", "--upgrade")
+    assert len(bootstraps) == 1, captured
+    assert bootstraps[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_suppress_platform_ver_console_posix_noop(monkeypatch):
+    """On POSIX the helper must do nothing at all and never raise."""
+    import platform
+
+    from hermes_cli import _subprocess_compat
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    original = platform._syscmd_ver
+
+    _subprocess_compat.suppress_platform_ver_console()
+
+    assert platform._syscmd_ver is original
+    # win32_ver stays functional (returns empty fields off Windows).
+    assert platform.win32_ver() == ("", "", "", "")
+
+
+def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
+    """Simulated Windows: _syscmd_ver is replaced by an in-process echo stub
+    so win32_ver() takes its ValueError fallback instead of `cmd /c ver`."""
+    import platform
+
+    from hermes_cli import _subprocess_compat
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    # Register the original with monkeypatch so it gets restored after.
+    monkeypatch.setattr(platform, "_syscmd_ver", platform._syscmd_ver)
+
+    _subprocess_compat.suppress_platform_ver_console()
+
+    # The stub echoes its inputs — win32_ver() treats the unparseable value
+    # as the documented ValueError path and falls back to
+    # sys.getwindowsversion().platform_version (no subprocess, no window).
+    assert platform._syscmd_ver("s", "r", "v") == ("s", "r", "v")
+    # Idempotent + never raises on repeat calls.
+    _subprocess_compat.suppress_platform_ver_console()
+    assert platform._syscmd_ver() == ("", "", "")

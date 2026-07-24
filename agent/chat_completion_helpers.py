@@ -1946,7 +1946,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:
-                agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
+                # In MoA mode, agent.model is the virtual preset name,
+                # not the actual aggregator model.  Resolve the real
+                # aggregator model so Gemini preserves thought_signature.
+                _sanitize_model = agent.model
+                if agent.provider == "moa":
+                    _moa_client = getattr(agent, "client", None)
+                    if _moa_client is not None:
+                        _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
+                        if _agg_slot and _agg_slot.get("model"):
+                            _sanitize_model = _agg_slot["model"]
+                agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
@@ -2463,7 +2473,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     request_client_holder = {"client": None, "diag": None, "owner_tid": None}
     # Transport kind of the registered request client — see the non-streaming
     # variant. Routes _close_request_client_once to anthropic vs openai abort/
-    # close helpers (#67142).
+    # close helpers (#67142). ``kind="stream"`` registers a per-request
+    # *stream handle* instead of a client — used under the MoA facade, whose
+    # singleton client has no per-request sockets to abort
+    # (_abort_request_openai_client is a no-op on it), so interrupts must
+    # close the stream object itself (#57354).
     request_client_kind = {"value": "openai"}
     request_client_lock = threading.Lock()
     # Request-local cancellation flag — see interruptible_api_call for the full
@@ -2483,6 +2497,44 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
+    def _stream_close_callable(stream):
+        close = getattr(stream, "close", None)
+        if callable(close):
+            return close
+        response = getattr(stream, "response", None)
+        close = getattr(response, "close", None)
+        if callable(close):
+            return close
+        return None
+
+    def _set_request_stream_handle(stream):
+        # Register the per-request *stream* under kind="stream" so an
+        # interrupt closes the stream handle itself. Under the MoA facade the
+        # registered "client" is the shared facade singleton whose
+        # per-request abort helpers are no-ops, leaving the underlying HTTP
+        # stream open until the provider drained it (#57354).
+        if _stream_close_callable(stream) is None:
+            return stream
+        with request_client_lock:
+            request_client_holder["client"] = stream
+            request_client_kind["value"] = "stream"
+            request_client_holder["owner_tid"] = threading.get_ident()
+        return stream
+
+    def _close_request_stream_handle(stream, reason: str) -> None:
+        close = _stream_close_callable(stream)
+        if close is None:
+            return
+        try:
+            close()
+            logger.info("Streaming response handle closed (%s)", reason)
+        except Exception as exc:
+            logger.debug(
+                "Streaming response handle close failed (%s): %s",
+                reason,
+                exc,
+            )
+
     def _close_request_client_once(reason: str) -> None:
         # See #29507 explanation in the non-streaming variant above. A
         # stranger thread (the interrupt-check / stale-stream detector loop)
@@ -2490,9 +2542,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # so the worker thread retains ownership of the FD release.
         with request_client_lock:
             request_client = request_client_holder.get("client")
+            request_kind = request_client_kind.get("value", "openai")
             owner_tid = request_client_holder.get("owner_tid")
+            # A registered stream handle (kind="stream", MoA facade path) is
+            # safe to close from any thread — closing IS the abort — so the
+            # stranger-thread ownership carve-out only applies to real
+            # per-request clients (#57354).
             stranger_thread = (
-                request_client is not None
+                request_kind != "stream"
+                and request_client is not None
                 and owner_tid is not None
                 and owner_tid != threading.get_ident()
             )
@@ -2501,8 +2559,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 request_client_holder["owner_tid"] = None
         if request_client is None:
             return
-        kind = request_client_kind.get("value", "openai")
-        if kind == "anthropic_messages":
+        if request_kind == "stream":
+            _close_request_stream_handle(request_client, reason)
+        elif request_kind == "anthropic_messages":
             if stranger_thread:
                 agent._abort_request_anthropic_client(request_client, reason=reason)
             else:
@@ -2681,6 +2740,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+        if agent.provider == "moa":
+            # The MoA facade is a shared singleton — abort/close of the
+            # registered client is a no-op, so register the stream handle
+            # itself for interrupt teardown (#57354).
+            stream = _set_request_stream_handle(stream)
         # Claim the delta sink for THIS attempt (#65991). If a prior attempt's
         # stream is somehow still alive (a stale-stream reconnect whose socket
         # abort raced), this claim supersedes it so its late chunks are fenced

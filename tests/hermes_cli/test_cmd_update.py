@@ -981,10 +981,174 @@ def test_is_termux_env_true_for_termux_prefix():
     assert hm._is_termux_env({"PREFIX": "/data/data/com.termux/files/usr"}) is True
 
 
+def test_is_termux_env_true_for_proot_android_host(monkeypatch):
+    from hermes_cli import main as hm
+
+    uname = SimpleNamespace(release="6.1.0-PRoot", version="#1 SMP PREEMPT")
+    monkeypatch.setattr(hm.os, "uname", lambda: uname)
+    monkeypatch.setattr(
+        hm.os.path, "isdir", lambda path: path == "/data/data/com.termux"
+    )
+
+    assert hm._is_termux_env({}) is True
+
+
 def test_is_termux_env_false_for_non_termux_prefix():
     from hermes_cli import main as hm
 
     assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
+
+
+@patch("shutil.which", return_value="/usr/bin/uv")
+def test_install_checkout_deps_falls_back_to_pip_on_termux_uv_failure(
+    _mock_which, monkeypatch
+):
+    from hermes_cli import main as hm
+
+    failure = subprocess.CalledProcessError(1, ["/usr/bin/uv", "pip"])
+    install_calls = []
+
+    def fake_install(cmd, **kwargs):
+        install_calls.append((cmd, kwargs))
+        if len(install_calls) == 1:
+            raise failure
+
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+    monkeypatch.setattr(hm, "_is_android_python", lambda: False)
+    monkeypatch.setattr(hm, "_ensure_pip_for_update", lambda pip_cmd: None)
+    monkeypatch.setattr(
+        hm, "_install_python_dependencies_with_optional_fallback", fake_install
+    )
+
+    install_prefix, install_env = hm._install_checkout_python_dependencies_for_update()
+
+    assert len(install_calls) == 2
+    assert install_calls[0][0] == ["/usr/bin/uv", "pip"]
+    assert install_calls[0][1]["group"] == "termux-all"
+    assert install_calls[0][1]["env"]["VIRTUAL_ENV"] == str(hm.PROJECT_ROOT / "venv")
+    assert install_calls[1][0] == [hm.sys.executable, "-m", "pip"]
+    assert install_calls[1][1] == {"group": "termux-all"}
+    assert install_prefix == [hm.sys.executable, "-m", "pip"]
+    assert install_env is None
+
+
+@patch("shutil.which", return_value="/usr/bin/uv")
+def test_install_checkout_deps_returns_uv_context_on_success(
+    _mock_which, monkeypatch
+):
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(hm, "_is_android_python", lambda: False)
+    monkeypatch.setattr(
+        hm,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *args, **kwargs: None,
+    )
+
+    install_prefix, install_env = hm._install_checkout_python_dependencies_for_update()
+
+    assert install_prefix == ["/usr/bin/uv", "pip"]
+    assert install_env is not None
+    assert install_env["VIRTUAL_ENV"] == str(hm.PROJECT_ROOT / "venv")
+
+
+@patch("shutil.which", return_value="/usr/bin/uv")
+def test_install_checkout_deps_treats_termux_failed_extras_as_uv_failure(
+    _mock_which, monkeypatch
+):
+    from hermes_cli import main as hm
+
+    install_calls = []
+
+    def fake_install(cmd, **kwargs):
+        install_calls.append((cmd, kwargs))
+        if kwargs.get("raise_on_failed_extras"):
+            raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+    monkeypatch.setattr(hm, "_is_android_python", lambda: False)
+    monkeypatch.setattr(hm, "_ensure_pip_for_update", lambda pip_cmd: None)
+    monkeypatch.setattr(
+        hm, "_install_python_dependencies_with_optional_fallback", fake_install
+    )
+
+    hm._install_checkout_python_dependencies_for_update()
+
+    assert len(install_calls) == 2
+    assert install_calls[0][1]["raise_on_failed_extras"] is True
+    assert install_calls[1][0] == [hm.sys.executable, "-m", "pip"]
+
+
+def test_optional_extra_failure_can_be_promoted_to_retry_signal(monkeypatch):
+    from hermes_cli import main as hm
+
+    run_calls = []
+
+    def fake_run(cmd, **_kwargs):
+        run_calls.append(cmd)
+        if cmd[-1] in {".[all]", ".[google]"}:
+            raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(hm, "_venv_scripts_dir", lambda: None)
+    monkeypatch.setattr(hm, "_is_windows", lambda: False)
+    monkeypatch.setattr(hm, "_run_install_with_heartbeat", fake_run)
+    monkeypatch.setattr(
+        hm, "_load_installable_optional_extras", lambda group="all": ["google"]
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        hm._install_python_dependencies_with_optional_fallback(
+            ["/usr/bin/uv", "pip"],
+            group="all",
+            raise_on_failed_extras=True,
+        )
+
+    assert run_calls == [
+        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[google]"],
+    ]
+
+
+@patch("shutil.which", return_value="/usr/bin/uv")
+def test_install_checkout_deps_reraises_non_termux_uv_failure(_mock_which, monkeypatch):
+    from hermes_cli import main as hm
+
+    failure = subprocess.CalledProcessError(1, ["/usr/bin/uv", "pip"])
+    monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(hm, "_is_android_python", lambda: False)
+    monkeypatch.setattr(
+        hm,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *args, **kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        hm._install_checkout_python_dependencies_for_update()
+
+
+def test_interrupted_install_recovery_uses_shared_checkout_installer(tmp_path, monkeypatch):
+    from hermes_cli import main as hm
+
+    marker = tmp_path / ".update-incomplete"
+    marker.write_text("started=1\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    install_calls = []
+
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hm, "_ensure_pip_for_update", lambda pip_cmd: None)
+    monkeypatch.setattr(
+        hm,
+        "_install_checkout_python_dependencies_for_update",
+        lambda: install_calls.append(True),
+    )
+
+    hm._recover_from_interrupted_install()
+
+    assert install_calls == [True]
+    assert not marker.exists()
+    assert not (tmp_path / ".update-incomplete.lock").exists()
 
 
 def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):

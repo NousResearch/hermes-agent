@@ -29,6 +29,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import { clearAllSessionTodoState, clearSessionTodoHistory, clearSessionTodos } from '@/store/todos'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import {
@@ -197,6 +198,8 @@ export function dropSessionState(runtimeId: string) {
   // a just-finished session's row survives merge eviction even if its tile or
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
+  clearSessionTodos(runtimeId)
+  clearSessionTodoHistory(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -221,6 +224,7 @@ export function clearAllSessionStates() {
 
   sessionWatchdogTimers.clear()
   settledExpiry.clear()
+  clearAllSessionTodoState()
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }

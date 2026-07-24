@@ -47,7 +47,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
-import { clearActiveSessionTodos } from '@/store/todos'
+import { clearActiveSessionTodos, finalizeSessionTodoSnapshot } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
@@ -600,9 +600,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
         clearClarifyRequest(undefined, sessionId)
-        // Turn ended without a final `todo` update — drop a still-unfinished
-        // list so "Tasks N/M" doesn't stay pinned above the composer with the
-        // last item stuck pending/in_progress. Finished lists keep their linger.
+        // Turn ended without a final `todo` update — finalize the last live
+        // state first, then drop a still-unfinished live list. Finished lists
+        // keep their 4s linger while history remains reachable.
+        finalizeSessionTodoSnapshot(sessionId, sessionStateByRuntimeIdRef.current.get(sessionId)?.streamId)
         clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
 
@@ -960,6 +961,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (sessionId) {
           clearAllPrompts(sessionId)
           clearClarifyRequest(undefined, sessionId)
+          // A turn that errors out still produced its plan — commit it to history
+          // (same as message.complete) so the task list stays reachable and the
+          // live state matches what a later transcript rebuild reconstructs from
+          // the persisted turn. Then drop a still-unfinished live list.
+          finalizeSessionTodoSnapshot(sessionId, sessionStateByRuntimeIdRef.current.get(sessionId)?.streamId)
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)

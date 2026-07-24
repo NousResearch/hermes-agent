@@ -65,6 +65,7 @@ import {
   type TileDock
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { clearSessionTodoHistory, rebuildResumedSessionTodoHistory, rebuildSessionTodoHistory } from '@/store/todos'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
@@ -671,6 +672,7 @@ export function useSessionActions({
           setActiveSessionId(cachedRuntimeId)
           activeSessionIdRef.current = cachedRuntimeId
           syncSessionStateToView(cachedRuntimeId, cachedViewState)
+          rebuildResumedSessionTodoHistory(cachedRuntimeId, storedSessionId, cachedViewState.messages)
           setCurrentCwd(cachedViewState.cwd)
           setCurrentBranch(cachedViewState.branch)
           setSessionStartedAt(Date.now())
@@ -757,6 +759,8 @@ export function useSessionActions({
                 }),
                 storedSessionId
               )
+
+              rebuildResumedSessionTodoHistory(cachedRuntimeId, storedSessionId, activatedMessages)
 
               busyRef.current = running
               setBusy(running)
@@ -948,6 +952,7 @@ export function useSessionActions({
           }),
           storedSessionId
         )
+        rebuildResumedSessionTodoHistory(resumed.session_id, storedSessionId, messagesForView)
 
         // updateSessionState stages its view sync through requestAnimationFrame.
         // Commit the final, already-reconciled transcript now so resume has one
@@ -982,7 +987,10 @@ export function useSessionActions({
             ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
             : $messages.get()
 
-          setMessages(reconcileAuthoritativeMessages(fallback.messages, previousMessages))
+          const fallbackMessages = reconcileAuthoritativeMessages(fallback.messages, previousMessages)
+
+          setMessages(fallbackMessages)
+          rebuildSessionTodoHistory(storedSessionId, fallbackMessages)
         } catch (e) {
           // Fallback also failed: nothing to paint. Leave whatever messages are
           // already shown and fall through to arm the resume-failure latch so
@@ -1277,12 +1285,16 @@ export function useSessionActions({
         // a deleted session.
         const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
+        runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
 
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
+        for (const runtimeId of new Set([closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+          sessionStateByRuntimeIdRef.current.delete(runtimeId)
+          dropSessionState(runtimeId)
         }
+
+        // REST fallback can paint history before a runtime id exists, so delete
+        // its durable-id cache in addition to every runtime-keyed cache above.
+        clearSessionTodoHistory(storedSessionId)
       } catch (err) {
         if (removed) {
           setSessions(prev => [removed, ...prev])

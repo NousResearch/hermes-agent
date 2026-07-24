@@ -2006,11 +2006,17 @@ class SlashCommandCompleter(Completer):
 
         word = text[1:]
 
+        # Two-pass matching: prefix matches first (existing behaviour),
+        # then substring matches as a fallback.  This lets ``/pdf`` match
+        # ``nano-pdf`` or ``/ocr`` match ``ocr-and-documents``.
+        def _matches(name: str, query: str) -> bool:
+            return name.startswith(query) or query in name
+
         for cmd, desc in COMMANDS.items():
             if not self._command_allowed(cmd):
                 continue
             cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
+            if _matches(cmd_name, word):
                 yield Completion(
                     self._completion_text(cmd_name, word),
                     start_position=-len(word),
@@ -2020,7 +2026,7 @@ class SlashCommandCompleter(Completer):
 
         for cmd, info in self._iter_skill_bundles().items():
             cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
+            if _matches(cmd_name, word):
                 description = str(info.get("description", "Skill bundle"))
                 short_desc = description[:50] + ("..." if len(description) > 50 else "")
                 skill_count = len(info.get("skills", []))
@@ -2033,7 +2039,7 @@ class SlashCommandCompleter(Completer):
 
         for cmd, info in self._iter_skill_commands().items():
             cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
+            if _matches(cmd_name, word):
                 description = str(info.get("description", "Skill command"))
                 short_desc = description[:50] + ("..." if len(description) > 50 else "")
                 yield Completion(
@@ -2047,7 +2053,7 @@ class SlashCommandCompleter(Completer):
         try:
             from hermes_cli.plugins import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
-                if cmd_name.startswith(word):
+                if _matches(cmd_name, word):
                     desc = str(cmd_info.get("description", "Plugin command"))
                     short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
                     yield Completion(

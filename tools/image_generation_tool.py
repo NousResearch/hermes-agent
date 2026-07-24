@@ -771,7 +771,7 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
     if backend in {"docker", "singularity", "modal"}:
         return "/root/.hermes"
-    if backend == "ssh":
+    if backend in ("ssh", "ssh_pwsh"):
         return "~/.hermes"
     return None
 

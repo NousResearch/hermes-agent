@@ -1056,7 +1056,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 }
 
             ssh_config = None
-            if env_type == "ssh":
+            if env_type in ("ssh", "ssh_pwsh"):
                 ssh_config = {
                     "host": config.get("ssh_host", ""),
                     "user": config.get("ssh_user", ""),

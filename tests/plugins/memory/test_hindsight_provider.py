@@ -1819,3 +1819,79 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestLocalRuntimeErrorChain:
+    """_check_local_runtime must surface the exception chain, not just the
+    top message — upstream wrappers re-raise generic "package missing"
+    errors that hide the real dependency conflict (#60783)."""
+
+    def test_format_chain_includes_cause(self):
+        from plugins.memory.hindsight import _format_exception_chain
+
+        try:
+            try:
+                raise ImportError(
+                    "huggingface-hub>=1.5.0,<2.0 is required for a normal "
+                    "functioning of this module, but found huggingface-hub==1.2.3."
+                )
+            except ImportError as real:
+                raise ImportError(
+                    "sentence-transformers is required for LocalSTEmbeddings. "
+                    "Install it with: pip install sentence-transformers"
+                ) from real
+        except ImportError as exc:
+            rendered = _format_exception_chain(exc)
+
+        assert "sentence-transformers is required" in rendered
+        assert "huggingface-hub>=1.5.0,<2.0" in rendered
+        assert "caused by" in rendered
+
+    def test_format_chain_follows_implicit_context(self):
+        """A bare re-raise (no `from e`) still chains via __context__."""
+        from plugins.memory.hindsight import _format_exception_chain
+
+        try:
+            try:
+                raise RuntimeError("real root cause")
+            except RuntimeError:
+                raise ImportError("generic wrapper message")
+        except ImportError as exc:
+            rendered = _format_exception_chain(exc)
+
+        assert "generic wrapper message" in rendered
+        assert "real root cause" in rendered
+
+    def test_format_chain_plain_exception_unchanged_shape(self):
+        from plugins.memory.hindsight import _format_exception_chain
+
+        rendered = _format_exception_chain(ValueError("just one error"))
+        assert rendered == "ValueError: just one error"
+
+    def test_format_chain_survives_cycles(self):
+        from plugins.memory.hindsight import _format_exception_chain
+
+        a = ValueError("a")
+        b = ValueError("b")
+        a.__cause__ = b
+        b.__cause__ = a
+        rendered = _format_exception_chain(a)
+        assert rendered.count("ValueError") == 2
+
+    def test_check_local_runtime_reason_contains_root_cause(self, monkeypatch):
+        import importlib as _importlib
+
+        from plugins.memory import hindsight as hs
+
+        def _fail(name):
+            try:
+                raise ImportError("huggingface-hub>=1.5.0,<2.0 is required")
+            except ImportError as real:
+                raise ImportError("sentence-transformers is required") from real
+
+        monkeypatch.setattr(hs.importlib, "import_module", _fail)
+        available, reason = hs._check_local_runtime()
+
+        assert available is False
+        assert "sentence-transformers is required" in reason
+        assert "huggingface-hub>=1.5.0,<2.0" in reason

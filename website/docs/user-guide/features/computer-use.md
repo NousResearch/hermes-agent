@@ -63,9 +63,71 @@ platform-appropriate prereqs:
 
 | Platform | Prereqs |
 |---|---|
-| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording** → allow your terminal (or Hermes app). `hermes computer-use doctor` will tell you which permission is missing. |
+|| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording** → allow CuaDriver.app. `hermes computer-use doctor` will tell you which permission is missing. See the [macOS permission grant walkthrough](#macos-permission-grant-walkthrough) below. |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
+
+### macOS Permission Grant Walkthrough
+
+macOS's Transparency, Consent, and Control (TCC) framework grants permissions
+per **bundle identifier**, not per binary path. The `cua-driver` binary must
+run under the `com.trycua.driver` bundle identity for permissions to stick.
+
+**Step 1 — Launch the grant helper (this handles the bundle identity):**
+
+```
+cua-driver permissions grant
+```
+
+This opens CuaDriver.app (which has the correct `com.trycua.driver` bundle ID)
+and triggers the macOS permission dialog.
+
+**Step 2 — Approve in System Settings.**
+
+When System Settings opens to **Privacy & Security**:
+
+| Permission | Action |
+|---|---|
+| **Accessibility** | Click the lock to unlock, then **+** → Applications → **CuaDriver.app** → **ensure the checkbox is ticked** (adding it isn't enough — the check must be on). |
+| **Screen Recording** | Same: **+** → Applications → **CuaDriver.app** → tick the checkbox. |
+
+**Step 3 — Verify the grants:**
+
+```
+cua-driver permissions status
+```
+
+Expected output:
+```
+Accessibility:    ✅ granted
+Screen Recording: ✅ granted
+Source: driver-daemon
+```
+
+If a permission still shows `❌ not granted`, the dialog likely appeared behind
+other windows and was dismissed rather than approved. Run `cua-driver
+permissions grant` again, or open **System Settings → Privacy & Security**
+manually and add CuaDriver.app to both lists with the checkbox on.
+
+**Step 4 — Run the full health check:**
+
+```
+hermes computer-use doctor
+```
+
+All 8 checks should show `pass` with `overall: ok`.
+
+**Troubleshooting macOS grants:**
+
+- **"Process has no CFBundleIdentifier"** — cua-driver was invoked outside
+  CuaDriver.app (e.g. directly from the terminal). Use `cua-driver permissions
+  grant` instead of running the binary directly.
+- **Accessibility shows `❌ not granted` despite adding it** — macOS sometimes
+  silently drops the grant if the TCC dialog was dismissed (the "Deny" button
+  or window close). Reset and retry: `sudo tccutil reset Accessibility
+  com.trycua.driver`, then `cua-driver permissions grant` again.
+- **Permissions reset after reboot** — Enable the autostart daemon so
+  permissions persist: `cua-driver autostart enable`.
 
 Then start a session with the toolset enabled:
 

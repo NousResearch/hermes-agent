@@ -389,6 +389,9 @@ def register(ctx):
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
+| [`on_fallback_activated`](#provider-fallback-lifecycle-hooks) | Hermes switches to the next configured fallback provider/model | ignored |
+| [`on_fallback_chain_exhausted`](#provider-fallback-lifecycle-hooks) | A non-empty fallback chain has no remaining route | ignored |
+| [`on_primary_restored`](#provider-fallback-lifecycle-hooks) | Hermes restores the primary provider/model for a later turn | ignored |
 | [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
@@ -397,6 +400,62 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+
+---
+
+### Provider fallback lifecycle hooks
+
+These three hooks expose provider-routing transitions to observability plugins.
+They are **observer-only**: callback return values are ignored, and callback
+failures cannot change fallback selection, restoration, or exhaustion.
+
+#### `on_fallback_activated`
+
+Fires after Hermes successfully switches to one fallback route.
+
+```python
+def callback(from_provider: str, from_model: str,
+             to_provider: str, to_model: str,
+             reason: str | None, session_id: str,
+             platform: str, **kwargs):
+```
+
+#### `on_fallback_chain_exhausted`
+
+Fires once per fallback episode when a non-empty chain has no remaining route.
+A later episode can emit another event after Hermes resets fallback state.
+
+```python
+def callback(provider: str, model: str,
+             primary_provider: str, primary_model: str,
+             reason: str | None, chain_length: int,
+             session_id: str, platform: str, **kwargs):
+```
+
+#### `on_primary_restored`
+
+Fires after Hermes successfully restores the primary runtime for a later turn.
+
+```python
+def callback(provider: str, model: str,
+             session_id: str, platform: str, **kwargs):
+```
+
+Common payload fields:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `provider`, `model` | `str` | Current route at exhaustion or the restored primary route. |
+| `from_provider`, `from_model` | `str` | Route that failed before fallback activation. |
+| `to_provider`, `to_model` | `str` | Newly activated fallback route. |
+| `primary_provider`, `primary_model` | `str` | Original primary route for the exhausted episode. |
+| `reason` | `str \| None` | Classified failover reason when available. |
+| `chain_length` | `int` | Number of configured fallback entries in the exhausted chain. |
+| `session_id` | `str` | Current session identifier, or an empty string when unavailable. |
+| `platform` | `str` | Current surface, or an empty string when unavailable. |
+
+As with every plugin hook, accept `**kwargs` for forward compatibility. All
+three hooks also receive the standard correlation metadata described above.
 
 ---
 

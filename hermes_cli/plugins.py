@@ -157,6 +157,12 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    # Provider-routing observers. Fired after a successful fallback activation
+    # / primary restoration so plugins can emit metrics without parsing logs.
+    # Return values are ignored.
+    "on_fallback_activated",
+    "on_fallback_chain_exhausted",
+    "on_primary_restored",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",

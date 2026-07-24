@@ -450,7 +450,7 @@ export default function ConfigPage() {
             title={t.config.exportConfig}
             aria-label={t.config.exportConfig}
           >
-            <Download />
+            <Upload />
           </Button>
           <Button
             ghost
@@ -459,7 +459,7 @@ export default function ConfigPage() {
             title={t.config.importConfig}
             aria-label={t.config.importConfig}
           >
-            <Upload />
+            <Download />
           </Button>
           <input
             ref={fileInputRef}

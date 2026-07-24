@@ -559,7 +559,7 @@ export default function AnalyticsPage() {
                     },
                     {
                       label: t.analytics.totalSessions,
-                      value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg})`,
+                      value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / (data.span_days ?? days)).toFixed(1)}${t.analytics.perDayAvg})`,
                     },
                     {
                       label: t.analytics.apiCalls,

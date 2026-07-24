@@ -511,10 +511,10 @@ export function StatusRule({
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
-  // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
-  // mid-segment, so status/model/context are never crushed.
+  // if it fits after the pinned essentials. Priority is activity bar, session/
+  // idle timers, compression, voice, session/background/subagent activity,
+  // parked-work resume guidance, then the dev-credit readout. Lower-priority
+  // segments drop first without mid-segment truncation.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 

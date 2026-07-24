@@ -1122,6 +1122,79 @@ class TestSyncTurn:
         assert "你好" in raw_json
         assert "👨‍👩‍👧‍👦" in raw_json
 
+    def test_sync_turn_sanitizes_multimodal_user_content(self, provider_with_config):
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        image_data = "data:image/jpeg;base64," + ("A" * 256)
+        user_content = [
+            {
+                "type": "text",
+                "text": (
+                    "What do you see?\n\n"
+                    "[Image attached at: C:\\Users\\ASUS\\image_cache\\img.jpg]"
+                ),
+            },
+            {"type": "image_url", "image_url": {"url": image_data}},
+        ]
+
+        p.sync_turn(user_content, "It is a photo.")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        raw_json = item["content"]
+        content = json.loads(raw_json)
+        user_message = content[0][0]["content"]
+
+        assert "data:image" not in raw_json
+        assert "base64" not in raw_json
+        assert image_data[-32:] not in raw_json
+        assert "What do you see?" in user_message
+        assert "[Image attached at:" in user_message
+        assert "[image omitted from memory]" in user_message
+
+    def test_sync_turn_redacts_inline_data_urls_in_strings(self, provider_with_config):
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "data:image/png;base64," + ("B" * 128)
+
+        p.sync_turn(f"before {data_url} after", "ok")
+        p._retain_queue.join()
+
+        raw_json = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        user_message = json.loads(raw_json)[0][0]["content"]
+
+        assert "data:image" not in raw_json
+        assert data_url[-32:] not in raw_json
+        assert "before [inline media omitted from memory] after" in user_message
+
+    def test_sync_turn_redacts_parameterized_data_urls(self, provider_with_config):
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "data:image/svg+xml;charset=utf-8;base64," + ("C" * 128)
+
+        p.sync_turn(f"before {data_url} after", "ok")
+        p._retain_queue.join()
+
+        raw_json = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        user_message = json.loads(raw_json)[0][0]["content"]
+
+        assert data_url not in raw_json
+        assert "before [inline media omitted from memory] after" in user_message
+
+    def test_sync_turn_redacts_mixed_case_data_urls(self, provider_with_config):
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "DaTa:ImAgE/PnG;BaSe64," + ("D" * 128)
+
+        p.sync_turn(f"before {data_url} after", "ok")
+        p._retain_queue.join()
+
+        raw_json = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        user_message = json.loads(raw_json)[0][0]["content"]
+
+        assert data_url not in raw_json
+        assert "before [inline media omitted from memory] after" in user_message
+
 
 # ---------------------------------------------------------------------------
 # Shutdown / writer tests

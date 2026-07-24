@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 
@@ -63,6 +64,10 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_INLINE_DATA_URL_RE = re.compile(
+    r"data:[^,\s]*;base64,[A-Za-z0-9+/=_-]+(?:\r?\n[A-Za-z0-9+/=_-]+)*",
+    re.IGNORECASE,
+)
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -74,6 +79,35 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+
+
+def _redact_inline_data_urls(text: str) -> str:
+    return _INLINE_DATA_URL_RE.sub("[inline media omitted from memory]", text)
+
+
+def _memory_text_from_content(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _redact_inline_data_urls(value)
+    if isinstance(value, list):
+        parts = [_memory_text_from_content(item) for item in value]
+        return "\n".join(part for part in parts if part)
+    if isinstance(value, dict):
+        content_type = str(value.get("type") or "").lower()
+        if content_type == "text" and "text" in value:
+            return _memory_text_from_content(value.get("text"))
+        if "image" in content_type:
+            return "[image omitted from memory]"
+        if "content" in value:
+            return _memory_text_from_content(value.get("content"))
+        if "text" in value:
+            return _memory_text_from_content(value.get("text"))
+        try:
+            return _redact_inline_data_urls(json.dumps(value, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            return _redact_inline_data_urls(str(value))
+    return _redact_inline_data_urls(str(value))
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -1526,17 +1560,19 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
-    def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
+    def _build_turn_messages(self, user_content: Any, assistant_content: Any) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        user_text = _memory_text_from_content(user_content)
+        assistant_text = _memory_text_from_content(assistant_content)
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._retain_user_prefix}: {user_text}",
                 "timestamp": now,
             },
             {
                 "role": "assistant",
-                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "content": f"{self._retain_assistant_prefix}: {assistant_text}",
                 "timestamp": now,
             },
         ]
@@ -1600,7 +1636,7 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["observation_scopes"] = self._observation_scopes
         return kwargs
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(self, user_content: Any, assistant_content: Any, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
         The actual aretain_batch runs on a single long-lived writer thread

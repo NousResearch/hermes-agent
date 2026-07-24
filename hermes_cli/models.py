@@ -2715,20 +2715,51 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
     if normalized == "custom":
+        targets = []
+        seen_urls = set()
+        model_cfg = _get_model_config_dict()
         base_url = _get_custom_base_url()
         if base_url:
-            model_cfg = _get_model_config_dict()
-            # Try common API key env vars for custom endpoints
             api_key = (
                 str(model_cfg.get("api_key", "") or "").strip()
                 or os.getenv("CUSTOM_API_KEY", "")
                 or os.getenv("OPENAI_API_KEY", "")
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
-            api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
-            live = fetch_api_models(api_key, base_url, api_mode=api_mode)
-            if live:
-                return live
+            targets.append((base_url, api_key))
+            seen_urls.add(base_url.rstrip("/").lower())
+        
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+            custom_providers = get_compatible_custom_providers()
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                burl = str(entry.get("base_url") or "").strip()
+                if burl:
+                    burl_norm = burl.rstrip("/").lower()
+                    if burl_norm not in seen_urls:
+                        akey = str(entry.get("api_key") or "").strip()
+                        targets.append((burl, akey))
+                        seen_urls.add(burl_norm)
+        except Exception:
+            pass
+
+        all_models = []
+        seen_models = set()
+        for burl, akey in targets:
+            try:
+                api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(burl) else None
+                live = fetch_api_models(akey, burl, api_mode=api_mode)
+                if live:
+                    for m in live:
+                        if m not in seen_models:
+                            all_models.append(m)
+                            seen_models.add(m)
+            except Exception:
+                pass
+        if all_models:
+            return all_models
     # Bedrock uses live discovery keyed by the resolved AWS region so that
     # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
     # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge

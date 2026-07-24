@@ -152,6 +152,81 @@ async def test_hook_exception_does_not_break_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_busy_group_hook_skip_suppresses_queue_ack(monkeypatch):
+    """A silent group policy must run before the generic busy acknowledgement."""
+    calls = {"count": 0}
+
+    def _fake_hook(name, **kwargs):
+        assert name == "pre_gateway_dispatch"
+        calls["count"] += 1
+        return [{"action": "skip", "reason": "site-group-silent"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    event = _make_event("[image received]")
+    event.source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="15551234567@s.whatsapp.net",
+        chat_id="120363426021041405@g.us",
+        user_name="tester",
+        chat_type="group",
+    )
+
+    handled = await runner._handle_active_session_busy_message(event, "busy-site-session")
+
+    assert handled is True
+    assert calls["count"] == 1
+    adapter.send.assert_not_awaited()
+
+
+def test_pre_dispatch_marker_prevents_duplicate_plugin_side_effects(monkeypatch):
+    calls = {"count": 0}
+
+    def _fake_hook(name, **kwargs):
+        calls["count"] += 1
+        return [{"action": "allow"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    event, skipped = runner._apply_pre_gateway_dispatch_hook(_make_event())
+    event, skipped_again = runner._apply_pre_gateway_dispatch_hook(event)
+
+    assert skipped is False
+    assert skipped_again is False
+    assert calls["count"] == 1
+    assert event.metadata["_pre_gateway_dispatch_applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_busy_queue_fallback_preserves_rewrite_and_hook_marker(monkeypatch):
+    calls = {"count": 0}
+
+    def _fake_hook(name, **kwargs):
+        calls["count"] += 1
+        return [{"action": "rewrite", "text": "REWRITTEN"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    runner._draining = False
+    runner._busy_input_mode = "queue"
+    runner._busy_text_mode = "queue"
+    runner._is_user_authorized = lambda source: True
+    runner._adapter_for_source = lambda source: adapter
+    event = _make_event("original")
+
+    handled = await runner._handle_active_session_busy_message(event, "busy-session")
+
+    assert handled is False
+    assert event.text == "REWRITTEN"
+    assert event.metadata["_pre_gateway_dispatch_applied"] is True
+
+    queued_event, skipped = runner._apply_pre_gateway_dispatch_hook(event)
+    assert queued_event.text == "REWRITTEN"
+    assert skipped is False
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_internal_events_bypass_hook(monkeypatch):
     """Internal events (event.internal=True) skip the plugin hook entirely."""
     _clear_auth_env(monkeypatch)

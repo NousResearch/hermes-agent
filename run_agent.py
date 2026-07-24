@@ -809,10 +809,10 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', auth_header=''):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode, auth_header)
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -4534,40 +4534,50 @@ class AIAgent:
         return True
 
     def _try_refresh_vertex_client_credentials(self) -> bool:
-        """Re-mint the Vertex OAuth2 access token and rebuild the OpenAI client.
+        """Re-mint credentials and rebuild the OpenAI client for Vertex.
 
-        Vertex tokens live ~1 hour. On a long-lived agent (gateway session) a
-        cached client's bearer token will expire mid-session, producing a 401.
-        This re-resolves credentials via the adapter (which refreshes the
-        underlying google-auth Credentials object when near expiry), swaps the
-        new token into the client kwargs, and rebuilds the primary OpenAI
-        client. Returns True when a usable token+base_url were obtained.
+        Two auth modes:
+          - API key (Express Mode): static key sent via x-goog-api-key header.
+          - OAuth2 / ADC: short-lived access token sent via Authorization: Bearer.
+
+        For OAuth2, the token is re-minted per call (5-min refresh margin) by
+        get_vertex_config(); mid-session expiry is additionally recovered on 401.
+        Returns True when a usable credential+base_url were obtained.
         """
         if self.api_mode != "chat_completions" or self.provider != "vertex":
             return False
 
         try:
-            from agent.vertex_adapter import get_vertex_config
+            from agent.vertex_adapter import get_vertex_config, has_vertex_api_key
 
-            token, base_url = get_vertex_config()
+            token_or_key, base_url, auth_header = get_vertex_config()
         except Exception as exc:
             logger.debug("Vertex credential refresh failed: %s", exc)
             return False
 
-        if not isinstance(token, str) or not token.strip():
+        if not isinstance(token_or_key, str) or not token_or_key.strip():
             return False
         if not isinstance(base_url, str) or not base_url.strip():
             return False
 
-        self.api_key = token.strip()
+        self.api_key = token_or_key.strip()
         self.base_url = base_url.strip().rstrip("/")
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 
+        # API key mode uses x-goog-api-key header; OAuth2 uses Authorization: Bearer
+        if auth_header == "x-goog-api-key":
+            self._client_kwargs["default_headers"] = {"x-goog-api-key": self.api_key}
+        else:
+            self._client_kwargs.pop("default_headers", None)
+
         if not self._replace_primary_openai_client(reason="vertex_credential_refresh"):
             return False
 
-        logger.info("Vertex AI OAuth token refreshed")
+        logger.info(
+            "Vertex AI %s refreshed",
+            "API key" if auth_header == "x-goog-api-key" else "OAuth token",
+        )
         return True
 
     def _try_refresh_copilot_client_credentials(self) -> bool:
@@ -4681,6 +4691,18 @@ class AIAgent:
             self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
                 self._client_kwargs.get("api_key", "")
             )
+        elif "aiplatform.googleapis.com" in (base_url or ""):
+            # Vertex AI API key (Express Mode) uses x-goog-api-key header instead
+            # of Authorization: Bearer. Only set this when the key is actually
+            # a Vertex API key (not an OAuth2 token).
+            if self.provider == "vertex" and self._client_kwargs.get("api_key", ""):
+                from agent.vertex_adapter import has_vertex_api_key
+                if has_vertex_api_key():
+                    self._client_kwargs["default_headers"] = {
+                        "x-goog-api-key": self._client_kwargs["api_key"],
+                    }
+                    return
+            self._client_kwargs.pop("default_headers", None)
         else:
             # No URL-specific headers — check profile.default_headers before clearing.
             _ph_headers = None

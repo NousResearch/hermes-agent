@@ -1940,7 +1940,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode='', auth_header=''):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2140,6 +2140,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
+            # Vertex API key (Express Mode) uses x-goog-api-key header instead
+            # of Authorization: Bearer *** only works for OAuth2 tokens).
+            if auth_header == "x-goog-api-key":
+                agent._client_kwargs["default_headers"] = {
+                    "x-goog-api-key": effective_key,
+                }
             try:
                 from hermes_cli.config import (
                     apply_custom_provider_tls_to_client_kwargs,

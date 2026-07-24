@@ -450,6 +450,7 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    auth_header: str = ""
 
 
 @dataclass(frozen=True)
@@ -1322,6 +1323,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    auth_header = ""
 
     if provider_changed or explicit_provider:
         import os
@@ -1356,10 +1358,12 @@ def switch_model(
                 api_key = runtime.get("api_key", "") or _ukey
                 base_url = runtime.get("base_url", "") or _user_pdef.base_url
                 api_mode = runtime.get("api_mode", "")
+                auth_header = runtime.get("auth_header", "")
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
                 api_mode = ""
+                auth_header = ""
         elif target_provider == "custom" and current_base_url:
             api_key = current_api_key
             base_url = current_base_url
@@ -1373,6 +1377,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                auth_header = runtime.get("auth_header", "")
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -1397,6 +1402,7 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            auth_header = runtime.get("auth_header", "")
         except Exception:
             pass
 
@@ -1552,6 +1558,7 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        auth_header=auth_header,
     )
 
 

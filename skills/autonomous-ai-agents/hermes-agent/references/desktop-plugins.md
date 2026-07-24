@@ -1,16 +1,4 @@
----
-name: hermes-desktop-plugins
-description: Write desktop app plugins that add UI panes and commands.
-version: 1.0.0
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [desktop, plugins, ui, extension]
-    category: productivity
-    related_skills: []
----
-
-# Hermes Desktop Plugins Skill
+# Desktop App Plugins — UI Panes, Commands, Widgets
 
 Write plugins for the Hermes desktop app: statusbar items, layout panes,
 command-palette commands, keybinds, routes, and themes. A plugin is a single
@@ -37,7 +25,7 @@ Full human reference (every export, area payloads, backend, security):
 ## How to Run
 
 1. Create `$HERMES_HOME/desktop-plugins/<name>/plugin.js` from
-   `templates/plugin.js` (relative to this skill directory) — that's
+   `templates/plugin.js` (in this skill directory) — that's
    `~/.hermes/...` by default, or `~/.hermes/profiles/<profile>/...` under a
    named profile. Keep `<name>` equal to the plugin `id`.
 2. The desktop app watches that directory: the plugin loads within a few

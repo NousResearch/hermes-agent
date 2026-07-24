@@ -1530,6 +1530,13 @@ class TestToolUseEnforcementConfig:
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
 
+    def test_auto_injects_for_minimax(self):
+        """MiniMax-M3 needs the same action-over-description tool-use steer."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="MiniMax-M3", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
     def test_auto_injects_execution_guidance_for_grok(self):
         """Grok also gets OPENAI_MODEL_EXECUTION_GUIDANCE (verification,
         mandatory_tool_use, act_dont_ask). Same failure modes as GPT in
@@ -1545,6 +1552,17 @@ class TestToolUseEnforcementConfig:
         """xai-oauth bare model names (no slash) also match the grok pattern."""
         from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
         agent = self._make_agent(model="grok-4.3", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_auto_injects_execution_guidance_for_minimax(self):
+        """MiniMax also gets OPENAI_MODEL_EXECUTION_GUIDANCE (act_dont_ask,
+        tool_persistence). Addresses the 'helpful reflex' failure modes from
+        #16685 — permission-seeking, option paralysis, and re-verification
+        loops — the same act-over-describe steer GPT and Grok need.
+        """
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(model="MiniMax-M3", tool_use_enforcement="auto")
         prompt = agent._build_system_prompt()
         assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
 

@@ -406,6 +406,45 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
+def normalize_buttons(buttons: Optional[Any]) -> Optional[List[Dict[str, str]]]:
+    """Normalize optional cron inline-button definitions.
+
+    Storage shape is a flat list of ``{text, value}`` mappings.  A plain
+    string becomes both the visible label and the callback value.  Invalid or
+    blank entries are ignored; over-long labels/values are trimmed so Telegram
+    callback payloads stay safely below Bot API limits once the job id/index
+    prefix is added.
+    """
+    if not buttons:
+        return None
+    if isinstance(buttons, str):
+        buttons = [buttons]
+    elif not isinstance(buttons, list):
+        return None
+
+    normalized: List[Dict[str, str]] = []
+    for idx, item in enumerate(buttons):
+        if isinstance(item, str):
+            text = item.strip()
+            value = text
+        elif isinstance(item, dict):
+            text = str(item.get("text") or item.get("label") or "").strip()
+            value = str(item.get("value") or item.get("data") or text).strip()
+        else:
+            continue
+        if not text:
+            continue
+        if not value:
+            value = text
+        normalized.append({
+            "text": text[:80],
+            "value": value[:120],
+        })
+        if len(normalized) >= 20:
+            break
+    return normalized or None
+
+
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
@@ -455,6 +494,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    normalized["buttons"] = normalize_buttons(normalized.get("buttons"))
     return normalized
 
 
@@ -1103,6 +1143,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    buttons: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1147,6 +1188,8 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        buttons: Optional inline buttons to attach when the delivery platform
+                supports them. Stored as ``[{"text": ..., "value": ...}]``.
 
     Returns:
         The created job dict
@@ -1179,6 +1222,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_buttons = normalize_buttons(buttons)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1268,6 +1312,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "buttons": normalized_buttons,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -1373,6 +1418,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = _normalize_workdir(_wd)
 
             previous_inference_axes = _normalized_inference_axes(job)
+
+            if "buttons" in updates:
+                updates["buttons"] = normalize_buttons(updates.get("buttons"))
+
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(

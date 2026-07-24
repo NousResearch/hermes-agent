@@ -16,6 +16,7 @@ import logging
 import os
 import html as _html
 import re
+import secrets
 import threading
 import time
 from contextvars import ContextVar
@@ -1770,6 +1771,9 @@ class TelegramAdapter(BasePlatformAdapter):
         payload.update(self._notification_kwargs(metadata))
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
+        cron_reply_markup = self._cron_buttons_reply_markup(metadata)
+        if cron_reply_markup is not None:
+            payload["reply_markup"] = cron_reply_markup
         if reply_to_id is not None:
             # Spec: sendRichMessage takes reply_parameters (ReplyParameters
             # object), NOT the legacy reply_to_message_id scalar. Unknown
@@ -4086,6 +4090,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
+            cron_reply_markup = self._cron_buttons_reply_markup(metadata)
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -4150,29 +4155,35 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
                         try:
-                            msg = await self._bot.send_message(
-                                chat_id=normalize_telegram_chat_id(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
+                            send_kwargs = {
+                                "chat_id": normalize_telegram_chat_id(chat_id),
+                                "text": chunk,
+                                "parse_mode": ParseMode.MARKDOWN_V2,
+                                "reply_to_message_id": reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
-                            )
+                            }
+                            if cron_reply_markup is not None and i == len(chunks) - 1:
+                                send_kwargs["reply_markup"] = cron_reply_markup
+                            msg = await self._bot.send_message(**send_kwargs)
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
-                                msg = await self._bot.send_message(
-                                    chat_id=normalize_telegram_chat_id(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
-                                    reply_to_message_id=reply_to_id,
+                                plain_send_kwargs = {
+                                    "chat_id": normalize_telegram_chat_id(chat_id),
+                                    "text": plain_chunk,
+                                    "parse_mode": None,
+                                    "reply_to_message_id": reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
-                                )
+                                }
+                                if cron_reply_markup is not None and i == len(chunks) - 1:
+                                    plain_send_kwargs["reply_markup"] = cron_reply_markup
+                                msg = await self._bot.send_message(**plain_send_kwargs)
                             else:
                                 raise
                         break  # success
@@ -4980,6 +4991,187 @@ class TelegramAdapter(BasePlatformAdapter):
                 retry_kwargs.pop("message_thread_id", None)
                 return await self._bot.send_message(**retry_kwargs)
             raise
+
+    def _cron_button_token_path(self):
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "cron" / "button_tokens.json"
+
+    def _load_cron_button_tokens(self) -> Dict[str, Dict[str, Any]]:
+        path = self._cron_button_token_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {
+                        str(token): value
+                        for token, value in data.items()
+                        if isinstance(value, dict)
+                    }
+        except Exception:
+            logger.debug("[%s] failed to load cron button tokens", self.name, exc_info=True)
+        return {}
+
+    def _save_cron_button_tokens(self, tokens: Dict[str, Dict[str, Any]]) -> None:
+        path = self._cron_button_token_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(tokens, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+    def _register_cron_button_token(
+        self,
+        *,
+        job_id: str,
+        job_name: Optional[str],
+        button_index: int,
+        label: str,
+        value: str,
+    ) -> str:
+        """Persist an immutable delivery-time button mapping and return its token."""
+        tokens = self._load_cron_button_tokens()
+        for _ in range(8):
+            token = secrets.token_urlsafe(9)
+            if token not in tokens:
+                break
+        else:
+            token = secrets.token_urlsafe(12)
+        tokens[token] = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "platform": "telegram",
+            "job_id": job_id,
+            "job_name": job_name,
+            "button_index": button_index,
+            "button_text": label,
+            "button_value": value,
+        }
+        # Keep the token store bounded; old buttons remain useful for a long
+        # time, but the file should not grow forever on high-volume gateways.
+        if len(tokens) > 1000:
+            tokens = dict(list(tokens.items())[-1000:])
+        self._save_cron_button_tokens(tokens)
+        return token
+
+    def _cron_buttons_reply_markup(self, metadata: Optional[Dict[str, Any]]) -> Optional[Any]:
+        """Build Telegram inline keyboard for cron delivery buttons."""
+        cron_meta = (metadata or {}).get("cron_buttons") if isinstance(metadata, dict) else None
+        if not isinstance(cron_meta, dict):
+            return None
+        job_id = str(cron_meta.get("job_id") or "").strip()
+        job_name = str(cron_meta.get("job_name") or "").strip() or None
+        buttons = cron_meta.get("buttons")
+        if not job_id or not isinstance(buttons, list):
+            return None
+
+        rows = []
+        row = []
+        for idx, button in enumerate(buttons[:20]):
+            if isinstance(button, str):
+                label = button.strip()
+                value = label
+            elif isinstance(button, dict):
+                label = str(button.get("text") or button.get("label") or "").strip()
+                value = str(button.get("value") or button.get("data") or label).strip()
+            else:
+                continue
+            if not label:
+                continue
+            if not value:
+                value = label
+            token = self._register_cron_button_token(
+                job_id=job_id,
+                job_name=job_name,
+                button_index=idx,
+                label=label,
+                value=value,
+            )
+            row.append(InlineKeyboardButton(label[:64], callback_data=f"cj:{token}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def _handle_cron_button_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Record a cron inline-button response in the local cron journal."""
+        parts = data.split(":", 1)
+        if len(parts) != 2 or not parts[1]:
+            await query.answer(text="Invalid cron button data.")
+            return
+        token = parts[1]
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to answer this cron prompt.")
+            return
+
+        token_record = self._load_cron_button_tokens().get(token)
+        if not isinstance(token_record, dict):
+            await query.answer(text="This cron button is no longer available.")
+            return
+
+        job_id = str(token_record.get("job_id") or "")
+        job_name = token_record.get("job_name")
+        try:
+            idx = int(token_record.get("button_index", 0))
+        except (TypeError, ValueError):
+            idx = 0
+        label = str(token_record.get("button_text") or token_record.get("button_value") or idx + 1)
+        value = str(token_record.get("button_value") or label)
+
+        user_display = getattr(query.from_user, "first_name", "User")
+        try:
+            from hermes_constants import get_hermes_home
+            response_dir = get_hermes_home() / "cron"
+            response_dir.mkdir(parents=True, exist_ok=True)
+            response_path = response_dir / "button_responses.jsonl"
+            record = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "platform": "telegram",
+                "job_id": job_id,
+                "job_name": job_name,
+                "button_index": idx,
+                "button_text": label,
+                "button_value": value,
+                "chat_id": str(query_chat_id) if query_chat_id is not None else None,
+                "thread_id": str(query_thread_id) if query_thread_id is not None else None,
+                "message_id": str(getattr(getattr(query, "message", None), "message_id", "")) or None,
+                "user_id": caller_id or None,
+                "user_name": user_display,
+            }
+            with response_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.error("[%s] failed to record cron button response: %s", self.name, exc, exc_info=True)
+            await query.answer(text="Could not record this response.")
+            return
+
+        await query.answer(text=f"✓ {label[:60]}")
+        try:
+            original = getattr(getattr(query, "message", None), "text", "") or ""
+            await query.edit_message_text(
+                text=f"{_html.escape(original)}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(label)}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
@@ -6243,6 +6435,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Cron delivery feedback callbacks (cj:opaque-token) ---
+        if data.startswith("cj:"):
+            await self._handle_cron_button_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
             return
 
         # --- Update prompt callbacks ---

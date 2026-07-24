@@ -143,3 +143,11 @@ def test_stage2_skips_top_level_chown_for_symlinked_hermes_home(
     stage2_text: str,
 ) -> None:
     assert 'refuse_symlinked_path "chown" "$HERMES_HOME"' in stage2_text
+
+
+def test_stage2_skips_recursive_repairs_when_tree_is_already_owned(
+    stage2_text: str,
+) -> None:
+    assert "tree_has_non_hermes_owner() {" in stage2_text
+    assert 'if [ -e "$HERMES_HOME/$sub" ] && tree_has_non_hermes_owner "$HERMES_HOME/$sub"; then' in stage2_text
+    assert 'if [ -d "$HERMES_HOME/profiles" ] && tree_has_non_hermes_owner "$HERMES_HOME/profiles"; then' in stage2_text

@@ -19972,7 +19972,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Supports interruption via new messages.
         """
         # ---- Proxy mode: delegate to remote API server ----
-        if self._get_proxy_url():
+        proxy_url = self._get_proxy_url()
+        if proxy_url and _is_telegram_business_external_safe_source(source):
+            logger.warning(
+                "Refusing external Telegram Business turn through remote proxy: "
+                "session=%s",
+                session_key or "?",
+            )
+            return {
+                "final_response": (
+                    "I can’t process external Telegram Business contacts through "
+                    "the configured remote agent."
+                ),
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+                "history_offset": len(history),
+                "session_id": session_id,
+                "response_previewed": False,
+            }
+        if proxy_url:
             return await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,

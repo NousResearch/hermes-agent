@@ -110,7 +110,7 @@ def test_business_session_keys_are_profile_actor_thread_and_trust_aware():
     )
     assert (
         build_session_key(source, profile=source.profile)
-        == "agent:coder:telegram:business:456:9:123:external"
+        == "agent:coder:telegram:business:bc:456:9:123:external"
     )
 
 
@@ -120,7 +120,28 @@ def test_business_session_key_uses_unknown_actor_and_trusted_mode():
         chat_id="456",
         business_connection_id="bc",
     )
-    assert build_session_key(source) == "agent:main:telegram:business:456:unknown:trusted"
+    assert build_session_key(source) == "agent:main:telegram:business:bc:456:unknown:trusted"
+
+
+def test_business_session_key_isolates_business_connections():
+    first = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="456",
+        user_id="123",
+        business_connection_id=" bc-one ",
+        external_safe_mode=True,
+    )
+    second = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="456",
+        user_id="123",
+        business_connection_id="bc-two",
+        external_safe_mode=True,
+    )
+    assert build_session_key(first) == (
+        "agent:main:telegram:business:bc-one:456:123:external"
+    )
+    assert build_session_key(first) != build_session_key(second)
 
 
 def test_business_source_persists_only_meaningful_values_and_reads_legacy():
@@ -397,3 +418,39 @@ def test_business_safe_tool_contract_is_exact():
         "web_extract",
     ]
     assert agent.valid_tool_names == {"web_search", "web_extract"}
+
+
+@pytest.mark.asyncio
+async def test_external_business_turn_fails_closed_before_proxy(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    proxy_calls = []
+    runner._get_proxy_url = lambda: "https://unrestricted-agent.example"
+
+    async def proxy(**kwargs):
+        proxy_calls.append(kwargs)
+        return {"final_response": "unsafe"}
+
+    runner._run_agent_via_proxy = proxy
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="456",
+        user_id="123",
+        business_connection_id="bc",
+        external_safe_mode=True,
+    )
+    result = await runner._run_agent_inner(
+        "read local secrets",
+        "",
+        [],
+        source,
+        "session-id",
+        session_key=build_session_key(source),
+    )
+    assert proxy_calls == []
+    assert result["final_response"] == (
+        "I can’t process external Telegram Business contacts through the "
+        "configured remote agent."
+    )
+    assert result["tools"] == []

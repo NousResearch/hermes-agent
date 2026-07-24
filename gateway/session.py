@@ -1081,7 +1081,8 @@ def build_session_key(
         source.platform == Platform.TELEGRAM
         and getattr(source, "business_connection_id", None)
     ):
-        parts = [ns, platform, "business", source.chat_id]
+        connection_id = str(source.business_connection_id).strip()
+        parts = [ns, platform, "business", connection_id, source.chat_id]
         if source.thread_id:
             parts.append(source.thread_id)
         parts.extend(

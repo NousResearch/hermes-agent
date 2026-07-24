@@ -141,3 +141,45 @@ def test_inline_pastes_missing_file_keeps_placeholder(tmp_path):
 
     assert buffer.text == placeholder
     assert cli_obj._skip_paste_collapse is False
+
+
+def test_editor_auto_submit_true_attaches_callback():
+    """When editor_auto_submit is True, the done callback is attached."""
+    cli_obj = _make_cli()
+    cli_obj.config = {"display": {"editor_auto_submit": True}}
+
+    from unittest.mock import MagicMock
+    task = MagicMock()
+    buffer = _FakeBuffer()
+    buffer.open_in_editor = lambda validate_and_handle=False: task
+
+    assert cli_obj._open_external_editor(buffer=buffer) is True
+    task.add_done_callback.assert_called_once()
+
+
+def test_editor_auto_submit_false_skips_callback():
+    """When editor_auto_submit is False, no done callback is attached."""
+    cli_obj = _make_cli()
+    cli_obj.config = {"display": {"editor_auto_submit": False}}
+
+    from unittest.mock import MagicMock
+    task = MagicMock()
+    buffer = _FakeBuffer()
+    buffer.open_in_editor = lambda validate_and_handle=False: task
+
+    assert cli_obj._open_external_editor(buffer=buffer) is True
+    task.add_done_callback.assert_not_called()
+
+
+def test_editor_auto_submit_defaults_true_when_config_missing():
+    """Without config, editor_auto_submit defaults to True."""
+    cli_obj = _make_cli()
+    # No config set — _make_cli doesn't set config
+
+    from unittest.mock import MagicMock
+    task = MagicMock()
+    buffer = _FakeBuffer()
+    buffer.open_in_editor = lambda validate_and_handle=False: task
+
+    assert cli_obj._open_external_editor(buffer=buffer) is True
+    task.add_done_callback.assert_called_once()

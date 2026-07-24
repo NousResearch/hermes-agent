@@ -6356,13 +6356,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._skip_paste_collapse = True
             # Open the editor, then submit the saved draft on a clean exit —
             # matching the TUI's Ctrl+G (openEditor), which sends the buffer
-            # instead of requiring a second Enter. Submission in this CLI is
-            # driven by the custom `enter` keybinding, NOT the buffer's
-            # accept_handler, so validate_and_handle can't route through it;
-            # chain a done-callback on the returned Task that re-uses the
-            # real submit pipeline via _submit_editor_buffer().
+            # instead of requiring a second Enter. This behavior can be
+            # disabled via config.yaml: display.editor_auto_submit=false
+            # to return to the old behavior where the edited text loads back
+            # into the input area and requires Enter to send.
             task = target_buffer.open_in_editor(validate_and_handle=False)
-            if task is not None and hasattr(task, "add_done_callback"):
+            editor_auto_submit = (
+                getattr(self, "config", None) or {}
+            ).get("display", {}).get("editor_auto_submit", True)
+            if editor_auto_submit and task is not None and hasattr(task, "add_done_callback"):
                 task.add_done_callback(
                     lambda _t, b=target_buffer: self._submit_editor_buffer(b)
                 )

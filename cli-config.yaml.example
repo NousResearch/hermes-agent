@@ -1275,6 +1275,13 @@ display:
   #   false: Only keep/send the final response
   interim_assistant_messages: true
 
+  # External editor auto-submit behavior (classic CLI only).
+  # When true (default), the external editor auto-submits on close (Ctrl+G).
+  # When false, Ctrl+G opens the editor but you must explicitly save-and-exit
+  # to submit — restoring the pre-74f0dd6 behavior for users who prefer to
+  # review in-editor before sending.
+  editor_auto_submit: true
+
   # Gateway-only long-running status heartbeats.
   # When false, the platform does not receive periodic "⏳ Working — N min"
   # notifications even if agent.gateway_notify_interval is non-zero. The

@@ -738,7 +738,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_verifier_task: Optional[asyncio.Task] = None
         self._polling_teardown_started: bool = False
         self._polling_error_callback_ref = None
-        self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        self._polling_heartbeat_thread: Optional[threading.Thread] = None
         # Consecutive heartbeat probes that saw queued updates the running
         # poller is not consuming. get_me() can't see this — the send path is
         # healthy while the getUpdates consumer is wedged — so the heartbeat
@@ -2456,55 +2456,57 @@ class TelegramAdapter(BasePlatformAdapter):
                 # second, concurrent recovery for the same outage.
                 self._polling_error_task = task
 
-    async def _polling_heartbeat_loop(self) -> None:
-        """Detect dead Telegram TCP sockets (CLOSE-WAIT) by periodic probing.
+    def _heartbeat_thread_fn(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Detect dead Telegram TCP sockets and frozen event loops from a background thread.
 
-        PTB's long-poll task blocks on epoll waiting for Telegram to push an
-        update.  When the underlying TCP connection enters CLOSE-WAIT (the remote
-        sent a FIN but the httpx pool has not yet noticed), epoll still reports
-        the socket as readable and no exception is raised — so PTB's
-        ``error_callback`` never fires and the gateway silently stops receiving
-        messages.
+        Unlike the original async task, this runs in a native threading.Thread.
+        It uses loop.call_soon_threadsafe() to schedule a "liveness check" on
+        the event loop. If the check does not complete within PROBE_TIMEOUT,
+        the event loop is considered frozen (GIL pressure, blocked syscall, or
+        CLOSE-WAIT epoll stall), and we force a gateway restart (#69089).
 
-        This loop probes ``get_me()`` every ``HEARTBEAT_INTERVAL`` seconds on the
-        *general* request path (not the getUpdates pool), so a healthy long-poll
-        waiting for the 30-second Telegram window is never interrupted.  On any
-        connect-level failure the loop hands off to
-        ``_handle_polling_network_error`` — the same path triggered by PTB's own
-        ``error_callback`` — which drains the dead pool and restarts polling.
-
-        Unlike the generation verifier (a one-shot progress deadline after
-        every polling start), this loop runs for the full lifetime of the
-        polling connection, so it catches a socket that wedges later during
-        steady-state operation without any prior error event.
+        If the loop is alive, it proceeds to run the standard get_me() and
+        pending-update probes via loop.create_task().
         """
         HEARTBEAT_INTERVAL = 90   # seconds between probes
         PROBE_TIMEOUT = 15        # seconds before declaring the path dead
 
-        # Wedged-recovery watchdog state (#66377). Tracked locally so no
-        # _polling_error_task assignment site needs to stamp a timestamp: the
-        # heartbeat notes when it first observes a given recovery task still
-        # in-flight, and force-escalates if the *same* task object is still
-        # running after _POLLING_ERROR_TASK_STUCK_TIMEOUT. A healthy ladder
-        # attempt completes (task done) or chains to a new task well before
-        # then, so a single long-lived task is unambiguously wedged.
         stuck_task_ref: Optional[asyncio.Task] = None
         stuck_task_since = 0.0
 
-        while True:
-            try:
-                await asyncio.sleep(HEARTBEAT_INTERVAL)
-                if getattr(self, "_polling_teardown_started", False):
-                    return
-                if self.has_fatal_error:
+        while not getattr(self, "_polling_teardown_started", False):
+            # Wait for the next probe cycle
+            time.sleep(HEARTBEAT_INTERVAL)
+            if getattr(self, "_polling_teardown_started", False) or self.has_fatal_error:
+                break
+
+            # 1. Verify event loop health (#69089)
+            loop_alive = threading.Event()
+            def _mark_alive():
+                loop_alive.set()
+
+            loop.call_soon_threadsafe(_mark_alive)
+            if not loop_alive.wait(timeout=PROBE_TIMEOUT):
+                logger.error(
+                    "[%s] Telegram event loop frozen (heartbeat timeout); "
+                    "forcing retryable-fatal for gateway recovery.",
+                    self.name,
+                )
+                self._set_fatal_error(
+                    "event_loop_frozen",
+                    "Telegram event loop failed to process heartbeat within %ds" % PROBE_TIMEOUT,
+                    retryable=True,
+                )
+                return
+
+            # 2. Proceed with Bot API probes if the loop is responsive
+            async def _run_probes():
+                if getattr(self, "_polling_teardown_started", False) or self.has_fatal_error:
                     return
 
-                # Independent wedged-recovery watchdog (#66377): if the tracked
-                # recovery task has hung (any await no local bound covers), every
-                # other recovery path is gated behind it and returns early
-                # forever — the gateway stays alive but deaf. Force a
-                # retryable-fatal so the background reconnector rebuilds the
-                # adapter instead of relying on the frozen ladder.
+                nonlocal stuck_task_ref, stuck_task_since
+
+                # Wedged-recovery watchdog (#66377)
                 recovery_task = self._polling_error_task
                 if recovery_task is not None and not recovery_task.done():
                     now = time.monotonic()
@@ -2514,10 +2516,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     elif now - stuck_task_since > _POLLING_ERROR_TASK_STUCK_TIMEOUT:
                         stuck_for = now - stuck_task_since
                         logger.error(
-                            "[%s] Telegram reconnect task wedged for %.0fs with no "
-                            "ladder progress; forcing retryable-fatal so the gateway "
-                            "reconnects instead of staying silently deaf.",
-                            self.name, stuck_for,
+                            "[%s] Telegram reconnect task wedged for %.0fs; "
+                            "forcing retryable-fatal.", self.name, stuck_for,
                         )
                         try:
                             recovery_task.cancel()
@@ -2525,8 +2525,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             pass
                         self._set_fatal_error(
                             "telegram_network_error",
-                            "Telegram reconnect task wedged for %.0fs; forcing "
-                            "gateway reconnect." % stuck_for,
+                            "Telegram reconnect task wedged for %.0fs" % stuck_for,
                             retryable=True,
                         )
                         await self._handoff_polling_fatal_error()
@@ -2535,35 +2534,20 @@ class TelegramAdapter(BasePlatformAdapter):
                     stuck_task_ref = None
 
                 bot = self._app.bot if self._app else None
-                if bot is None:
-                    continue
-                # A real PTB Bot always exposes get_me(); if it's absent the
-                # app isn't a live polling client (e.g. torn down or a test
-                # double), so there is nothing to probe — exit rather than spin.
-                if not callable(getattr(bot, "get_me", None)):
+                if bot is None or not callable(getattr(bot, "get_me", None)):
                     return
-                await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
-                # get_me() succeeded — the general/send request path is healthy.
-                # That does NOT prove the getUpdates consumer is alive: PTB can
-                # report updater.running=True while the long-poll task is wedged,
-                # so DMs queue in the Bot API and never reach handlers (#42909).
-                # get_me() is blind to this; get_webhook_info() exposes it via
-                # pending_update_count. Escalate only after two consecutive
-                # probes see a non-zero queue while we believe we're polling, so
-                # a single in-flight update (consumed before the next probe)
-                # never trips recovery.
-                await self._probe_pending_updates(bot, PROBE_TIMEOUT)
-            except asyncio.CancelledError:
-                return
-            except (asyncio.TimeoutError, OSError) as probe_err:
-                self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
-            except Exception as probe_err:
-                if self._looks_like_network_error(probe_err):
-                    self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
-                    continue
-                # Non-connectivity errors (e.g. TelegramError 401) are not
-                # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
-                pass
+
+                try:
+                    await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
+                    await self._probe_pending_updates(bot, PROBE_TIMEOUT)
+                except (asyncio.TimeoutError, OSError) as e:
+                    self._schedule_polling_recovery(e, reason="heartbeat probe")
+                except Exception as e:
+                    if self._looks_like_network_error(e):
+                        self._schedule_polling_recovery(e, reason="heartbeat probe")
+
+            # Schedule the async probes on the healthy loop
+            asyncio.run_coroutine_threadsafe(_run_probes(), loop)
 
     async def _probe_pending_updates(self, bot, probe_timeout: float) -> None:
         """Detect a wedged getUpdates consumer via pending_update_count.
@@ -2994,17 +2978,16 @@ class TelegramAdapter(BasePlatformAdapter):
         """Notify the runner without letting child teardown cancel this owner.
 
         The runner bounds adapter cleanup in a child task.  ``disconnect()``
-        cancels the tracked polling-recovery task and the heartbeat task, so
-        retaining the current notifier in either field would cancel the fatal
-        callback before the runner can finish its reconnect or shutdown
-        decision.  Release only the current owner from whichever field tracks
-        it; unrelated tasks remain under teardown control.
+        cancels the tracked polling-recovery task, so retaining the current
+        notifier would cancel the fatal callback before the runner can finish
+        its reconnect or shutdown decision.  Release only the current owner
+        from the polling-error field; unrelated tasks remain under teardown
+        control.
         """
         current_task = asyncio.current_task()
         if self._polling_error_task is current_task:
             self._polling_error_task = None
-        if getattr(self, "_polling_heartbeat_task", None) is current_task:
-            self._polling_heartbeat_task = None
+        # Heartbeat is now a thread, no task to clear here
         await self._notify_fatal_error()
 
     async def _create_dm_topic(
@@ -3793,11 +3776,18 @@ class TelegramAdapter(BasePlatformAdapter):
             # receives updates via incoming pushes — there is no long-poll
             # socket to wedge in CLOSE-WAIT, so the loop is not needed there.
             if not self._webhook_mode:
-                if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
-                    self._polling_heartbeat_task.cancel()
-                self._polling_heartbeat_task = asyncio.ensure_future(
-                    self._polling_heartbeat_loop()
-                )
+                if self._polling_heartbeat_thread and self._polling_heartbeat_thread.is_alive():
+                    # Thread already running, no need to restart
+                    pass
+                else:
+                    loop = asyncio.get_event_loop()
+                    self._polling_heartbeat_thread = threading.Thread(
+                        target=self._heartbeat_thread_fn,
+                        args=(loop,),
+                        daemon=True,
+                        name="telegram-heartbeat",
+                    )
+                    self._polling_heartbeat_thread.start()
 
             # Command-menu registration, DM-topic setup, and the status
             # indicator each make Bot API calls that can stall for certain
@@ -3951,16 +3941,15 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.gather(post_connect_task, return_exceptions=True)
         self._post_connect_task = None
 
-        # Cancel the heartbeat before tearing down the app so the probe task
-        # cannot fire get_me() into a half-shutdown bot client.
-        polling_heartbeat_task = getattr(self, "_polling_heartbeat_task", None)
-        if polling_heartbeat_task and not polling_heartbeat_task.done():
-            polling_heartbeat_task.cancel()
-            try:
-                await polling_heartbeat_task
-            except asyncio.CancelledError:
-                pass
-        self._polling_heartbeat_task = None
+        # Signal the heartbeat thread to stop before tearing down the app
+        # so the probe task cannot fire get_me() into a half-shutdown bot client.
+        # The thread checks _polling_teardown_started and exits its loop.
+        heartbeat_thread = getattr(self, "_polling_heartbeat_thread", None)
+        if heartbeat_thread and heartbeat_thread.is_alive():
+            # Thread is daemon — it will be reaped on process exit.
+            # Set the teardown flag so the thread exits its loop promptly.
+            self._polling_teardown_started = True
+        self._polling_heartbeat_thread = None
 
         # Mark the bot "Offline" in its short description while the bot's HTTP
         # client is still alive (before app shutdown closes it). Opt-in via

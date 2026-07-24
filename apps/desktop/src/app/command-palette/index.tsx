@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
@@ -303,6 +303,7 @@ export function CommandPalette() {
   const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
 
   // Server-backed sources for the type-to-search groups, fetched lazily while
   // the palette is open. react-query handles caching/dedup/staleness.
@@ -882,6 +883,19 @@ export function CommandPalette() {
             HUD_SURFACE,
             'z-[210] w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
           )}
+          onCloseAutoFocus={event => {
+            const previousFocus = previousFocusRef.current
+
+            previousFocusRef.current = null
+
+            if (previousFocus?.isConnected) {
+              event.preventDefault()
+              previousFocus.focus({ preventScroll: true })
+            }
+          }}
+          onOpenAutoFocus={() => {
+            previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+          }}
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
           <Command className="bg-transparent" loop shouldFilter={false}>

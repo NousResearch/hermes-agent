@@ -115,3 +115,15 @@ class TestDebugSessionEnabled:
         data = json.loads(files[0].read_text())
         assert data["total_calls"] == 0
         assert data["tool_calls"] == []
+
+    def test_save_handles_error_gracefully(self, tmp_path, caplog):
+        """save() must not raise when the log file cannot be written."""
+        ds = self._make_enabled(tmp_path)
+        # Point log_dir at a file (not a directory) so open() fails.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a dir")
+        ds.log_dir = blocker
+        ds.log_call("search", {"query": "x"})
+        with caplog.at_level("ERROR", logger="tools.debug_helpers"):
+            ds.save()  # must not raise
+        assert any("Error saving" in r.message for r in caplog.records)

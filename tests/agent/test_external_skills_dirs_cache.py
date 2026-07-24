@@ -1,11 +1,11 @@
-"""Guards for ``get_external_skills_dirs`` mtime-based memo.
+"""Guards for ``get_external_skills_dirs`` content-signature memo.
 
 ``get_external_skills_dirs()`` is called once per skill during banner
 construction and tool registration — on a typical install that's 120+
 calls.  Without caching, each call re-reads + YAML-parses the full
 config.yaml (~85ms each, 10+ seconds total).  This test pins the
-behavior: first call parses, subsequent calls return cached result,
-cache invalidates when config.yaml's mtime changes.
+behavior: first call parses, subsequent calls return cached result, and the
+cache invalidates on content changes even when filesystem metadata is tied.
 """
 
 from __future__ import annotations
@@ -95,6 +95,34 @@ def test_cache_invalidates_on_mtime_change(hermes_home_with_config):
 
     second = get_external_skills_dirs()
     assert second == [other.resolve()]
+
+
+def test_cache_invalidates_on_same_metadata_same_length_rewrite(
+    hermes_home_with_config, monkeypatch
+):
+    """A content digest catches rewrites even when stat metadata is tied."""
+    _home, external, config = hermes_home_with_config
+    other = external.parent / "othernal_skills"
+    other.mkdir()
+
+    first_text = f"skills:\n  external_dirs:\n    - {external}\n"
+    second_text = f"skills:\n  external_dirs:\n    - {other}\n"
+    assert len(first_text) == len(second_text)
+    config.write_text(first_text, encoding="utf-8")
+
+    real_stat = Path.stat
+    fixed = real_stat(config)
+
+    def tied_stat(path, *args, **kwargs):
+        if path == config:
+            return fixed
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", tied_stat)
+    assert get_external_skills_dirs() == [external.resolve()]
+
+    config.write_text(second_text, encoding="utf-8")
+    assert get_external_skills_dirs() == [other.resolve()]
 
 
 def test_returns_empty_when_config_missing(tmp_path, monkeypatch):

@@ -90,10 +90,12 @@ logger = logging.getLogger(__name__)
 # Per-session skill discovery cache.  _find_all_skills() re-reads every
 # SKILL.md on every call; with hundreds of skills this is wasteful.
 # Cache validation (mirrors hermes_cli/profiles.py::_count_skills, d5eee133e):
-#   - signature = per-dir max mtime of the dir AND its immediate children
-#     (one scandir per dir; catches skill add/remove inside categories,
-#     which does NOT bump the root dir's mtime), plus the disabled-set
-#     (config-driven — changes with no filesystem mtime bump at all)
+#   - signature = per-dir max mtime of the dir AND its immediate children,
+#     plus immediate child names below category dirs.  Some filesystems can
+#     coalesce rapid mkdir/write operations to the same mtime tick, so names
+#     make add/remove invalidation deterministic even when mtimes tie.
+#   - the disabled-set is part of the key too (config-driven — changes with
+#     no filesystem mtime bump at all)
 #   - a short TTL bounds staleness from in-place SKILL.md edits, which
 #     bump only the file's mtime, invisible to any directory signature.
 # skip_disabled True/False are cached separately.
@@ -117,22 +119,37 @@ def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
     sig = []
     for d in dirs_to_scan:
         try:
-            m = d.stat().st_mtime
+            root_mtime = d.stat().st_mtime
         except OSError:
             continue
+        child_sig = []
         try:
             with os.scandir(d) as it:
                 for entry in it:
                     try:
-                        if entry.is_dir(follow_symlinks=False):
-                            em = entry.stat(follow_symlinks=False).st_mtime
-                            if em > m:
-                                m = em
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        entry_stat = entry.stat(follow_symlinks=False)
+                        entry_mtime = entry_stat.st_mtime
+                        if entry_mtime > root_mtime:
+                            root_mtime = entry_mtime
+                        nested_names = []
+                        try:
+                            with os.scandir(entry.path) as nested:
+                                for child in nested:
+                                    try:
+                                        if child.is_dir(follow_symlinks=False):
+                                            nested_names.append(child.name)
+                                    except OSError:
+                                        continue
+                        except OSError:
+                            pass
+                        child_sig.append((entry.name, entry_mtime, tuple(sorted(nested_names))))
                     except OSError:
                         continue
         except OSError:
             pass
-        sig.append((str(d), m))
+        sig.append((str(d), root_mtime, tuple(sorted(child_sig))))
     return (tuple(sig), frozenset(disabled), platform)
 
 

@@ -423,6 +423,7 @@ class TestWorkerSpawnEnv:
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
         assert env["HERMES_KANBAN_TASK"] == "t_abc"
+        assert env["AGENT_BROWSER_SESSION"] == "kanban-spawntest-t-abc"
         # DB path should match the per-board DB, not the legacy default.
         expected_db = fresh_home / "kanban" / "boards" / "spawntest" / "kanban.db"
         assert env["HERMES_KANBAN_DB"] == str(expected_db)
@@ -461,6 +462,78 @@ class TestWorkerSpawnEnv:
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "default"
         assert env["HERMES_KANBAN_DB"] == str(fresh_home / "kanban.db")
+        assert env["AGENT_BROWSER_SESSION"] == "kanban-default-t-def"
+
+    def test_default_spawn_preserves_explicit_agent_browser_session(
+        self,
+        fresh_home,
+        monkeypatch,
+    ):
+        captured = {}
+
+        class FakeProc:
+            pid = 1
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setenv("AGENT_BROWSER_SESSION", "operator-session")
+        task = kb.Task(
+            id="t_override",
+            title="",
+            body=None,
+            assignee="teknium",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+
+        kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
+
+        assert captured["env"]["AGENT_BROWSER_SESSION"] == "operator-session"
+
+    def test_default_spawn_sanitizes_agent_browser_session(self, fresh_home, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            pid = 1
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        task = kb.Task(
+            id="T_weird_ID",
+            title="",
+            body=None,
+            assignee="teknium",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+
+        kb._default_spawn(task, str(fresh_home / "ws"), board="qa-board")
+
+        assert captured["env"]["AGENT_BROWSER_SESSION"] == "kanban-qa-board-t-weird-id"
 
 
 # ---------------------------------------------------------------------------

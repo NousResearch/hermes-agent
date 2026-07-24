@@ -391,6 +391,20 @@ def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
     return s
 
 
+def _agent_browser_session_slug(value: object) -> str:
+    """Return a conservative slug for agent-browser session names."""
+    text = str(value or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return slug or "unknown"
+
+
+def _kanban_agent_browser_session_name(board: str, task_id: str) -> str:
+    return (
+        f"kanban-{_agent_browser_session_slug(board)}-"
+        f"{_agent_browser_session_slug(task_id)}"
+    )
+
+
 def kanban_home() -> Path:
     """Return the shared Hermes root that anchors the kanban board.
 
@@ -8805,6 +8819,15 @@ def _default_spawn(
     # board slug still forces it to the right directory.
     resolved_board = _normalize_board_slug(board) or get_current_board()
     env["HERMES_KANBAN_BOARD"] = resolved_board
+    # Agent Browser stores CDP bindings and page state per local session.
+    # Give every Kanban worker a deterministic browser session by default
+    # so ad-hoc agent-browser shell-outs cannot collide on the global
+    # "default" session. Preserve explicit operator overrides.
+    if not env.get("AGENT_BROWSER_SESSION", "").strip():
+        env["AGENT_BROWSER_SESSION"] = _kanban_agent_browser_session_name(
+            resolved_board,
+            task.id,
+        )
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are

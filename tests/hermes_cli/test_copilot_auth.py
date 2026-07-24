@@ -1,9 +1,5 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
-import pytest
-from unittest.mock import patch
-
-
 class TestTokenValidation:
     """Token type validation."""
 
@@ -77,32 +73,12 @@ class TestResolveToken:
         assert token == "gho_valid_oauth"
         assert source == "GITHUB_TOKEN"
 
-    def test_gh_cli_fallback(self, monkeypatch):
-        from hermes_cli.copilot_auth import resolve_copilot_token
-        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="gho_from_cli"):
-            token, source = resolve_copilot_token()
-        assert token == "gho_from_cli"
-        assert source == "gh auth token"
-
-    def test_gh_cli_classic_pat_raises(self, monkeypatch):
-        from hermes_cli.copilot_auth import resolve_copilot_token
-        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_classic"):
-            with pytest.raises(ValueError, match="classic PAT"):
-                resolve_copilot_token()
-
     def test_no_token_returns_empty(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value=None):
-            token, source = resolve_copilot_token()
+        token, source = resolve_copilot_token()
         assert token == ""
         assert source == ""
 

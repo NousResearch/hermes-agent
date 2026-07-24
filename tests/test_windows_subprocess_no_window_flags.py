@@ -407,25 +407,6 @@ def test_context_reference_git_and_rg_hide_windows(monkeypatch):
     assert rg_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
 
 
-def test_copilot_gh_cli_probe_hides_gh_windows(monkeypatch):
-    from hermes_cli import copilot_auth
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="gho_from_cli\n")
-
-    monkeypatch.setattr(copilot_auth, "IS_WINDOWS", True)
-    monkeypatch.setattr(copilot_auth, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["gh"])
-    monkeypatch.setattr(copilot_auth.subprocess, "run", fake_run)
-
-    assert copilot_auth._try_gh_cli_token() == "gho_from_cli"
-    assert captured[0][0] == ["gh", "auth", "token"]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
-
-
 def test_gateway_pid_scan_hides_wmic_and_powershell_windows(monkeypatch):
     from hermes_cli import gateway
     from hermes_cli import _subprocess_compat

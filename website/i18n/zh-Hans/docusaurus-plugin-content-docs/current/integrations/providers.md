@@ -16,7 +16,7 @@ sidebar_position: 1
 |----------|-------|
 | **Nous Portal** | `hermes model`（OAuth，订阅制） |
 | **OpenAI Codex** | `hermes model`（ChatGPT OAuth，使用 Codex 模型） |
-| **GitHub Copilot** | `hermes model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `gh auth token`） |
+| **GitHub Copilot** | `hermes model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN`） |
 | **GitHub Copilot ACP** | `hermes model`（在本地生成 `copilot --acp --stdio` 子进程） |
 | **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
 | **OpenRouter** | `~/.hermes/.env` 中的 `OPENROUTER_API_KEY` |
@@ -146,7 +146,8 @@ hermes chat --provider copilot --model gpt-5.4
 1. `COPILOT_GITHUB_TOKEN` 环境变量
 2. `GH_TOKEN` 环境变量
 3. `GITHUB_TOKEN` 环境变量
-4. `gh auth token` CLI 回退
+
+Hermes 不回退到 `gh auth token`：那个 token 证明的是 GitHub CLI 登录，不是 Copilot API 访问权限。
 
 如果未找到 token，`hermes model` 会提供 **OAuth 设备码登录**——与 Copilot CLI 和 opencode 使用的流程相同。
 
@@ -159,7 +160,7 @@ Copilot API **不**支持经典个人访问 token（`ghp_*`）。支持的 token
 | 细粒度 PAT | `github_pat_` | GitHub 设置 → 开发者设置 → 细粒度 token（需要 **Copilot Requests** 权限） |
 | GitHub App token | `ghu_` | 通过 GitHub App 安装获取 |
 
-如果你的 `gh auth token` 返回 `ghp_*` token，请使用 `hermes model` 通过 OAuth 认证。
+如果你手里的是 `gh auth token` 取到的 token，注意它通常是 `ghp_*` 经典 PAT，Copilot API 会拒绝；请使用 `hermes model` 通过 OAuth 认证。
 :::
 
 :::info Hermes 中的 Copilot 认证行为
@@ -167,7 +168,7 @@ Hermes 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接
 
 收到 HTTP 401 时，Hermes 在回退前会执行一次性凭据恢复：
 
-1. 通过正常优先级链重新解析 token（`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`）
+1. 通过正常优先级链重新解析 token（`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN`）
 2. 使用刷新后的请求头重建共享 OpenAI 客户端
 3. 重试请求一次
 

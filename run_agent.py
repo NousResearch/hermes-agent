@@ -4781,8 +4781,8 @@ class AIAgent:
     def _try_refresh_copilot_client_credentials(self) -> bool:
         """Refresh Copilot credentials and rebuild the shared OpenAI client.
 
-        Copilot tokens may remain the same string across refreshes (`gh auth token`
-        returns a stable OAuth token in many setups). We still rebuild the client
+        Copilot tokens may remain the same string across refreshes (OAuth tokens
+        are stable in many setups). We still rebuild the client
         on 401 so retries recover from stale auth/client state without requiring
         a session restart.
         """

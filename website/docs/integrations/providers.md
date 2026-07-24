@@ -16,7 +16,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
-| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
+| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
@@ -160,7 +160,8 @@ hermes chat --provider copilot --model gpt-5.4
 1. `COPILOT_GITHUB_TOKEN` environment variable
 2. `GH_TOKEN` environment variable
 3. `GITHUB_TOKEN` environment variable
-4. `gh auth token` CLI fallback
+
+Hermes does not fall back to `gh auth token`: that token proves GitHub CLI login, not Copilot API access.
 
 If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
 
@@ -173,7 +174,7 @@ The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). S
 | Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
 | GitHub App token | `ghu_` | Via GitHub App installation |
 
-If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
+If `gh auth token` is the token you have, note it is usually a `ghp_*` classic PAT, which the Copilot API rejects; use `hermes model` to authenticate via OAuth instead.
 :::
 
 :::info Copilot auth behavior in Hermes
@@ -181,7 +182,7 @@ Hermes sends a supported GitHub token (`gho_*`, `github_pat_*`, or `ghu_*`) dire
 
 On HTTP 401, Hermes now performs a one-shot credential recovery before fallback:
 
-1. Re-resolve token via the normal priority chain (`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`)
+1. Re-resolve token via the normal priority chain (`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN`)
 2. Rebuild the shared OpenAI client with refreshed headers
 3. Retry the request once
 

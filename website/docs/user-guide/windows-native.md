@@ -177,10 +177,8 @@ hermes gateway install
 What happens under the hood:
 
 1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN HermesGateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
-2. If schtasks is blocked by group policy, falls back to writing a `start /min cmd.exe /d /c <wrapper>` shortcut into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder.
-3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
-
-Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+2. If schtasks is blocked by group policy, falls back to writing a `.vbs` launcher into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. The launcher runs via `wscript.exe` with window style 0 (hidden), avoiding the ``CTRL_CLOSE_EVENT`` broadcasts that used to kill cmd.exe-based gateways at login.
+3. The scheduled task and Startup fallback both route through the same `.vbs` launcher. It spawns the gateway via `python.exe` (not `pythonw.exe`) inside a single hidden console — never shown, inherited by every descendant process (git, gh, node, …) so nothing allocates a visible flashing conhost window.
 
 ### Manage
 
@@ -238,8 +236,8 @@ hermes --version
 Hermes honors both `$env:X` (process-scope) and User environment variables (permanent, set in System Properties → Environment Variables). Setting API keys in `%LOCALAPPDATA%\hermes\.env` (your `HERMES_HOME`) is the normal path — same as Linux:
 
 ```
-OPENROUTER_API_KEY=sk-or-...
-TELEGRAM_BOT_TOKEN=...
+OPENROUTER_API_KEY=***
+TELEGRAM_BOT_TOKEN=***
 ```
 
 Don't put secrets in User environment variables unless you specifically want every Windows process to see them (it isn't what you want).
@@ -316,6 +314,46 @@ This is unrelated to Windows but sometimes surfaces first there. Usually it mean
 
 **"Works on my other machine" encoding weirdness after `git pull`.**
 If you edited Hermes config or a skill on Windows using a non-UTF-8 editor (Notepad on older Windows versions, some Chinese IMEs), the file may have been saved with a BOM. Hermes tolerates `utf-8-sig` on most config reads, but a BOM inside a folded YAML scalar (`description: >`) silently breaks YAML parsing. Re-save the file as plain UTF-8 without BOM.
+
+## Console window & popup notes
+
+Three Windows behaviours worth knowing when Hermes is running as a background agent — not covered by `pythonw.exe` and `CREATE_NO_WINDOW` alone.
+
+### VBS launcher (login-persistence chain)
+
+When Hermes starts at login — via the scheduled task or the Startup-folder fallback — the launcher chain uses a `.vbs` wrapper driven by `wscript.exe`. This avoids the console control events (``CTRL_CLOSE_EVENT``) that used to kill cmd.exe-based gateways during logon.
+
+The VBS launcher is built by ``hermes gateway install`` and used by the login-persistence path. For manual/direct starts, `pythonw.exe` with detached flags is still a valid route — the VBS path is scoped to the background-auto-start chain.
+
+Example of the pattern used by the login launcher:
+
+```vbscript
+' launcher.vbs — point a scheduled task or Startup shortcut at this file
+CreateObject("WScript.Shell").Run "pythonw.exe C:\path\to\script.py", 0, False
+```
+
+Run with `wscript.exe //B //Nologo launcher.vbs`. The `//B` flag suppresses all WScript dialogs (including script errors), and `Run(…, 0)` hides the window before the child process starts. Use this for startup-folder shortcuts and any scheduled task action that must never flash.
+
+### OpenWith.exe storms
+
+Windows `ShellExecute` fires `OpenWith.exe` — the "Open with…" dialog — when it encounters a file with an unrecognised extension in a scanned directory (Startup, Desktop, any auto-run location). In a tight loop or a watchdog, this floods the screen with uncloseable dialogs.
+
+The most common trigger: a renamed script left in Startup — `hermes-gateway.bat.bak`, `watchdog.py.disabled`. Windows tries to execute it at login, fails, and falls back to `OpenWith.exe`.
+
+**Prevention:**
+- Never leave renamed files in the Startup folder. Move stale files out entirely.
+- As a defensive measure, associate dangerous extensions with `txtfile`:
+
+```powershell
+New-Item -Path "HKCU:\Software\Classes\.bak" -Force | Out-Null
+Set-ItemProperty -Path "HKCU:\Software\Classes\.bak" -Name "(Default)" -Value "txtfile"
+```
+
+The `.disabled` suffix is **not** a formal Task Scheduler disable mechanism — it keeps the scheduler from loading the file but does NOT stop Explorer. Delete disabled tasks or move them out of scanned directories.
+
+### conhost lifecycle
+
+`conhost.exe` is the console host process — one instance per console-attached process. It spawns when the process starts, dies when it exits. Lingering `conhost.exe` means the parent is alive — find the parent, not conhost. Killing conhost kills the attached process. A burst of 50+ conhost instances means a console-attached process is spawning children in a loop (classic `python.exe` watchdog misconfiguration).
 
 ## Where to go next
 

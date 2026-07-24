@@ -467,36 +467,59 @@ def auth_remove_command(args) -> None:
     if target is None:
         target = getattr(args, "index", None)
     pool = load_pool(provider)
+
+    def _finish_removed(removed) -> None:
+        # Unified removal dispatch.  Every credential source Hermes reads from
+        # (env vars, external OAuth files, auth.json blocks, custom config)
+        # has a RemovalStep registered in agent.credential_sources.  The step
+        # handles its source-specific cleanup and we centralise suppression +
+        # user-facing output here so every source behaves identically from
+        # the user's perspective.
+        from agent.credential_sources import find_removal_step
+        from hermes_cli.auth import suppress_credential_source
+
+        step = find_removal_step(provider, removed.source)
+        if step is None:
+            # Unregistered source — e.g. "manual", which has nothing external
+            # to clean up.  The pool entry is already gone; we're done.
+            return
+
+        result = step.remove_fn(provider, removed)
+        for line in result.cleaned:
+            print(line)
+        if result.suppress:
+            suppress_credential_source(provider, removed.source)
+        for line in result.hints:
+            print(line)
+
     index, matched, error = pool.resolve_target(target)
+    raw_target = str(target or "").strip()
+    target_is_all_keyword = (
+        raw_target.lower() == "all"
+        and not any(
+            entry.id == raw_target or entry.label.strip().lower() == raw_target.lower()
+            for entry in pool.entries()
+        )
+    )
+    if matched is None and target_is_all_keyword:
+        entries = pool.entries()
+        if not entries:
+            raise SystemExit(f"No credentials for provider {provider}.")
+        for index in range(len(entries), 0, -1):
+            removed = pool.remove_index(index)
+            if removed is None:
+                continue
+            print(f"Removed {provider} credential #{index} ({removed.label})")
+            _finish_removed(removed)
+        return
+
     if matched is None or index is None:
         raise SystemExit(f"{error} Provider: {provider}.")
     removed = pool.remove_index(index)
     if removed is None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
-
-    # Unified removal dispatch.  Every credential source Hermes reads from
-    # (env vars, external OAuth files, auth.json blocks, custom config)
-    # has a RemovalStep registered in agent.credential_sources.  The step
-    # handles its source-specific cleanup and we centralise suppression +
-    # user-facing output here so every source behaves identically from
-    # the user's perspective.
-    from agent.credential_sources import find_removal_step
-    from hermes_cli.auth import suppress_credential_source
-
-    step = find_removal_step(provider, removed.source)
-    if step is None:
-        # Unregistered source — e.g. "manual", which has nothing external
-        # to clean up.  The pool entry is already gone; we're done.
-        return
-
-    result = step.remove_fn(provider, removed)
-    for line in result.cleaned:
-        print(line)
-    if result.suppress:
-        suppress_credential_source(provider, removed.source)
-    for line in result.hints:
-        print(line)
+    _finish_removed(removed)
 
 
 def auth_reset_command(args) -> None:
@@ -718,7 +741,7 @@ def _interactive_remove() -> None:
         print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
 
     try:
-        raw = input("Remove #, id, or label (blank to cancel): ").strip()
+        raw = input("Remove #, id, label, or all (blank to cancel): ").strip()
     except (EOFError, KeyboardInterrupt):
         return
     if not raw:

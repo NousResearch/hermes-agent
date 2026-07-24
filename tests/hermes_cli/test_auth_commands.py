@@ -805,6 +805,195 @@ def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatc
     assert labels == ["first", "third"]
 
 
+def test_auth_remove_all_removes_every_entry_and_suppresses_seeded_sources(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+    (hermes_home / ".env").write_text("")
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "xai": [
+                    {
+                        "id": "manual-1",
+                        "label": "manual",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-xai-manual",
+                    },
+                    {
+                        "id": "env-1",
+                        "label": "XAI_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "env:XAI_API_KEY",
+                        "access_token": "sk-xai-shell-export",
+                    },
+                ]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="xai", target="all"))
+
+    out = capsys.readouterr().out
+    assert "Removed xai credential #2 (XAI_API_KEY)" in out
+    assert "Removed xai credential #1 (manual)" in out
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["credential_pool"]["xai"] == []
+    assert "env:XAI_API_KEY" in payload.get("suppressed_sources", {}).get("xai", [])
+
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("xai")
+    assert not pool.has_credentials()
+
+
+def test_auth_remove_all_prefers_exact_label_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "all",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-all-label",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "keep",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-keep",
+                    },
+                ]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openrouter", target="all"))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openrouter"]
+    assert [entry["label"] for entry in entries] == ["keep"]
+
+
+def test_auth_remove_all_does_not_override_ambiguous_label(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "all",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-one",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "All",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-two",
+                    },
+                ]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    with pytest.raises(SystemExit, match='Ambiguous credential label "all"'):
+        auth_remove_command(SimpleNamespace(provider="openrouter", target="all"))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openrouter"]
+    assert [entry["id"] for entry in entries] == ["cred-1", "cred-2"]
+
+
+def test_auth_remove_all_runs_provider_specific_removal_steps(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "tok", "refresh_token": "refresh"}
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "codex-1",
+                        "label": "codex",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "tok",
+                    }
+                ]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="all"))
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["credential_pool"]["openai-codex"] == []
+    assert "openai-codex" not in payload.get("providers", {})
+    assert is_source_suppressed("openai-codex", "device_code")
+
+
 def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

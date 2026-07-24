@@ -52,11 +52,11 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
     auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
     auth_remove = auth_subparsers.add_parser(
-        "remove", help="Remove a pooled credential by index, id, or label"
+        "remove", help="Remove pooled credentials by index, id, label, or all"
     )
     auth_remove.add_argument("provider", help="Provider id")
     auth_remove.add_argument(
-        "target", help="Credential index, entry id, or exact label"
+        "target", help="Credential index, entry id, exact label, or 'all'"
     )
     auth_reset = auth_subparsers.add_parser(
         "reset", help="Clear exhaustion status for all credentials for a provider"

@@ -697,3 +697,82 @@ class TestInstallUvInternals:
             mock_windows.assert_called_once()
             call_env = mock_windows.call_args[0][0]
             assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "bin")
+
+
+class TestRuntimeRequestMinorLine:
+    """The repair must request the CPython minor line, not the exact patch.
+
+    Real-world constraint (verified live, July 2026): every published
+    python-build-standalone artifact for 3.11.14 links vulnerable SQLite
+    3.50.4 — even with --reinstall. The fixed SQLite (3.53.1) only exists
+    from 3.11.15. An exact-patch pin makes the repair permanently
+    impossible on such installs.
+    """
+
+    def test_requests_minor_line(self):
+        from hermes_cli.managed_uv import _runtime_request
+
+        info = _runtime_info(Path("/venv/bin/python"), (3, 50, 4))
+        assert _runtime_request(info) == "3.11"
+
+    @staticmethod
+    def _run_generation(tmp_path, monkeypatch, current_version, candidate_version):
+        """Drive _install_safe_python_generation with fakes; return result."""
+        import hermes_cli.managed_uv as managed_uv
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        state = {}
+
+        def fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                state["generation"] = Path(kwargs["env"]["UV_PYTHON_INSTALL_DIR"])
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # uv python find → a path inside the generation dir
+            python = state["generation"] / "cpython" / "bin" / "python3"
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.touch()
+            return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
+
+        def fake_probe(python, **kwargs):
+            return SQLiteRuntimeInfo(
+                executable=Path(python),
+                base_prefix=Path(python).parent.parent,
+                python_version=candidate_version,
+                sqlite_version=(3, 53, 1),
+                sqlite_version_string="3.53.1",
+                sqlite_source_id="fixed",
+            )
+
+        current = SQLiteRuntimeInfo(
+            executable=Path("/venv/bin/python"),
+            base_prefix=Path("/venv"),
+            python_version=current_version,
+            sqlite_version=(3, 50, 4),
+            sqlite_version_string="3.50.4",
+            sqlite_source_id="old",
+        )
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        return managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=current
+        )
+
+    def test_accepts_newer_patch_same_minor(self, tmp_path, monkeypatch):
+        result = self._run_generation(
+            tmp_path, monkeypatch, (3, 11, 14), (3, 11, 15)
+        )
+        assert result is not None
+        _, _, candidate = result
+        assert candidate.python_version == (3, 11, 15)
+
+    def test_rejects_minor_drift(self, tmp_path, monkeypatch):
+        assert (
+            self._run_generation(tmp_path, monkeypatch, (3, 11, 14), (3, 12, 1))
+            is None
+        )
+
+    def test_rejects_patch_downgrade(self, tmp_path, monkeypatch):
+        assert (
+            self._run_generation(tmp_path, monkeypatch, (3, 11, 14), (3, 11, 13))
+            is None
+        )

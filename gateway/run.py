@@ -3677,6 +3677,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
 
+        # Registered background services (see plugins/services/ and
+        # gateway/service_registry.py). Wired up in start() after platforms
+        # are connected; stopped before adapters in stop() so they don't
+        # try to deliver during teardown.
+        self.services: Dict[str, Any] = {}
+
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
@@ -8498,8 +8504,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # engages drain on the first tick.
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
+        # Start plugin-registered background services (Nextcloud notifications,
+        # file watchers, RSS pollers, etc.). Each entry in
+        # ``config.services.<name>`` whose ``enabled`` flag is set is matched
+        # against an entry in :data:`gateway.service_registry.service_registry`.
+        # Services that fail to start are logged but do not abort gateway
+        # startup — they can be retried after a config fix + restart.
+        try:
+            await self._start_plugin_background_services()
+        except Exception as _e:
+            logger.error("Plugin background services startup error: %s", _e, exc_info=True)
+
         logger.info("Press Ctrl+C to stop")
-        
+
         return True
 
     _MAX_SUPERVISED_RESTARTS = 5
@@ -8589,6 +8606,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         task.add_done_callback(_done)
         return task
+
+    async def _start_plugin_background_services(self) -> None:
+        """Instantiate and start each enabled background service.
+
+        Iterates ``self.config.services`` (loaded from ``services:`` in
+        config.yaml) and looks each name up in the global
+        ``service_registry``. Misses are logged and skipped — they're either
+        a typo, a disabled plugin, or a service we removed but config still
+        references.
+        """
+        from gateway.service_registry import service_registry
+
+        services_cfg = getattr(self.config, "services", None) or {}
+        if not services_cfg:
+            return
+
+        for svc_name, svc_config in services_cfg.items():
+            if not isinstance(svc_config, dict) or not svc_config.get("enabled", False):
+                continue
+
+            if not service_registry.is_registered(svc_name):
+                logger.warning(
+                    "Background service '%s' is enabled in config.yaml but no "
+                    "plugin registered it. Is the plugin installed and enabled?",
+                    svc_name,
+                )
+                continue
+
+            svc = service_registry.create_service(svc_name, svc_config, self)
+            if svc is None:
+                continue
+
+            try:
+                if await svc.start():
+                    self.services[svc_name] = svc
+                    logger.info("Background service '%s' started", svc_name)
+                else:
+                    logger.warning("Background service '%s' failed to start", svc_name)
+            except Exception as e:
+                logger.error("Background service '%s' startup error: %s", svc_name, e, exc_info=True)
+
+    async def _stop_plugin_background_services(self) -> None:
+        """Stop every running background service and clear the registry dict.
+
+        Called from ``_stop_impl`` BEFORE adapter teardown — services produce
+        events that deliver through the adapters, so producers stop first.
+        A raising ``stop()`` is logged and does not block the remaining
+        services or the rest of shutdown.
+        """
+        services = getattr(self, "services", None)
+        if not services:
+            return
+        for svc_name, svc in list(services.items()):
+            try:
+                await svc.stop()
+                logger.info("Background service '%s' stopped", svc_name)
+            except Exception as e:
+                logger.error("Background service '%s' stop error: %s", svc_name, e)
+        services.clear()
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
@@ -9571,6 +9647,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._cleanup_agent_resources_off_loop(
                         _agent, context="shutdown idle-cache"
                     )
+
+            # Stop plugin-registered background services BEFORE the delivery
+            # adapters disconnect: services are event producers (pollers,
+            # watchers) that deliver through the adapters, so quiescing them
+            # first means no service polls into a world without adapters and
+            # no event is picked up that can no longer be delivered.
+            await self._stop_plugin_background_services()
 
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)

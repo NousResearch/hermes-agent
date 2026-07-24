@@ -111,3 +111,54 @@ async def test_typing_bad_thread_failure_does_not_cool_down(monkeypatch):
 
     assert adapter._bot.send_chat_action.await_count == 2
     assert "123" not in adapter._telegram_typing_cooldown_until
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_prevents_further_send():
+    """After stop_typing(), send_typing() must not re-arm the timer."""
+    adapter = _make_adapter()
+    adapter._bot.send_chat_action = AsyncMock(return_value=None)
+
+    # First call works normally
+    await adapter.send_typing("123")
+    assert adapter._bot.send_chat_action.await_count == 1
+
+    # Stop typing
+    await adapter.stop_typing("123")
+    assert "123" in adapter._telegram_typing_stopped
+
+    # Subsequent calls must be no-ops
+    await adapter.send_typing("123")
+    assert adapter._bot.send_chat_action.await_count == 1  # no new call
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_cleared_by_resume():
+    """After resume_typing_for_chat(), send_typing() must work again."""
+    adapter = _make_adapter()
+    adapter._bot.send_chat_action = AsyncMock(return_value=None)
+
+    await adapter.stop_typing("123")
+    assert "123" in adapter._telegram_typing_stopped
+
+    # Resume clears the flag
+    adapter.resume_typing_for_chat("123")
+    assert "123" not in adapter._telegram_typing_stopped
+
+    # send_typing should work again
+    await adapter.send_typing("123")
+    assert adapter._bot.send_chat_action.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_does_not_affect_other_chats():
+    """stop_typing for one chat must not affect others."""
+    adapter = _make_adapter()
+    adapter._bot.send_chat_action = AsyncMock(return_value=None)
+
+    await adapter.stop_typing("123")
+    assert "123" in adapter._telegram_typing_stopped
+    assert "456" not in adapter._telegram_typing_stopped
+
+    await adapter.send_typing("456")
+    assert adapter._bot.send_chat_action.await_count == 1

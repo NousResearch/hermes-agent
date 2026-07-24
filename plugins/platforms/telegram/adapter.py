@@ -700,6 +700,12 @@ class TelegramAdapter(BasePlatformAdapter):
             min_value=1.0,
             max_value=300.0,
         )
+        # Chats where typing stop has been requested (e.g. after final response
+        # delivery).  send_typing() returns immediately when the chat is in this
+        # set, preventing the Telegram-side 5s typing timer from being re-armed
+        # after the response has been delivered.  Cleared when a new message
+        # arrives (resume_typing_for_chat).  See #69150.
+        self._telegram_typing_stopped: Set[str] = set()
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
@@ -7063,6 +7069,13 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot or self._typing_in_cooldown(chat_id):
             return
 
+        # If typing has been explicitly stopped (e.g. after final response
+        # delivery), don't re-arm the Telegram-side 5s timer.  The response
+        # message itself already cleared the typing indicator; re-arming it
+        # here would leave it lingering with nothing to cancel it (#69150).
+        if hasattr(self, "_telegram_typing_stopped") and chat_id in self._telegram_typing_stopped:
+            return
+
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None
         try:
@@ -7099,6 +7112,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 _redact_telegram_error_text(e),
                 exc_info=True,
             )
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the typing indicator for a chat.
+
+        Marks the chat so subsequent ``send_typing()`` calls return
+        immediately, preventing the Telegram-side ~5s typing timer from
+        being re-armed after the final response has been delivered.
+        The response message itself already cleared the indicator on
+        Telegram's side (Telegram exposes no sendChatAction(cancel) API);
+        this guard prevents any late ``send_typing()`` call (e.g. from
+        retry logic or a race in the keep-typing loop) from re-setting it.
+        Cleared by ``resume_typing_for_chat()`` when a new user message
+        starts a fresh turn.  See #69150.
+        """
+        if not hasattr(self, "_telegram_typing_stopped"):
+            self._telegram_typing_stopped = set()
+        self._telegram_typing_stopped.add(str(chat_id))
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        """Resume typing indicator for a chat after stop.
+
+        Clears the ``_telegram_typing_stopped`` flag set by
+        ``stop_typing()`` so subsequent ``send_typing()`` calls can
+        re-arm the indicator for the next turn.
+        """
+        if hasattr(self, "_telegram_typing_stopped"):
+            self._telegram_typing_stopped.discard(str(chat_id))
+        # Call super so _typing_paused is also cleared.
+        super().resume_typing_for_chat(chat_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""

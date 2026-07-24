@@ -503,6 +503,61 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestZeroCharLimit:
+    """char_limit == 0 means "unlimited" (e.g. provider: atheneum, where the
+    .md file is a benign local cache). The add/replace/apply_batch budget
+    checks must treat 0 as unlimited, not as an impossibly-tight ceiling
+    that rejects every write. (The drift guard is a separate concern: add()
+    skips it entirely since 25e2312230 -- it's append-only and can't clobber
+    -- so replace()/remove() are the only paths left that need to keep
+    detecting real external drift regardless of char_limit.)"""
+
+    @pytest.fixture()
+    def unlimited_store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore(memory_char_limit=0, user_char_limit=0)
+        s.load_from_disk()
+        return s
+
+    def test_add_not_budget_blocked_with_zero_limit(self, unlimited_store, tmp_path):
+        # Regression: a pre-existing entry made the budget check's
+        # `new_total > char_limit` (i.e. > 0) always fire, so every add()
+        # was refused as over-budget. With 0 = unlimited the new entry must
+        # succeed. (Not a drift test -- add() bypasses drift entirely,
+        # see class docstring.)
+        (tmp_path / "MEMORY.md").write_text("prior session fact")
+        result = unlimited_store.add("memory", "new fact, " * 80)
+        assert result["success"] is True
+
+    def test_replace_still_blocks_real_external_clobber_with_zero_limit(self, unlimited_store):
+        # The round-trip-mismatch signal must stay active at char_limit=0 for
+        # replace() (drift protection is unrelated to the budget fix, and
+        # unlike add(), replace() can genuinely clobber un-roundtrippable
+        # external content -- the #26045 data-loss race) so it must still be
+        # refused. Per-entry leading whitespace survives parsing, making the
+        # file non-round-trippable.
+        unlimited_store.add("memory", "original entry")
+        (unlimited_store._path_for("memory")).write_text("good\n§\n appended externally")
+        result = unlimited_store.replace("memory", "good", "updated entry")
+        assert result["success"] is False
+        assert "drift" in result["error"].lower()
+
+    def test_replace_not_budget_blocked_with_zero_limit(self, unlimited_store):
+        unlimited_store.add("memory", "x" * 600)
+        result = unlimited_store.replace("memory", "x", "y" * 800)
+        assert result["success"] is True
+
+    def test_apply_batch_not_budget_blocked_with_zero_limit(self, unlimited_store):
+        # Same class of bug as add()/replace(): apply_batch's final-budget
+        # check (`new_total > limit`) had no `limit > 0` guard, so a
+        # non-empty batch was always rejected at char_limit=0.
+        result = unlimited_store.apply_batch(
+            "memory",
+            [{"action": "add", "content": "z" * 900}],
+        )
+        assert result["success"] is True
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

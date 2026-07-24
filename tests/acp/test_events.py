@@ -17,6 +17,7 @@ from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_gen_cb,
     make_tool_progress_cb,
 )
 
@@ -35,6 +36,156 @@ def event_loop_fixture():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Tool generation callback
+# ---------------------------------------------------------------------------
+
+
+class TestToolGenerationCallback:
+    def test_emits_placeholder_tool_call_start(self, mock_conn, event_loop_fixture):
+        """Tool generation should surface an early placeholder tool call."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-gen"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("web_search")
+
+        assert list(tool_call_ids["web_search"]) == ["tc-gen"]
+        assert tool_call_meta["tc-gen"] == {"args": {}, "snapshot": None, "generated": True}
+        mock_send.assert_called_once()
+        update = mock_send.call_args.args[3]
+        assert getattr(update, "session_update", None) == "tool_call"
+
+    def test_same_generation_key_reuses_existing_placeholder(self, mock_conn, event_loop_fixture):
+        """A streamed retry for the same tool slot should not leak a new card."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("read_file", generation_key="chat:0")
+            cb("read_file", generation_key="chat:0")
+
+        assert list(tool_call_ids["read_file"]) == ["tc-gen-1"]
+        assert tool_call_meta["tc-gen-1"]["generation_key"] == "chat:0"
+        mock_send.assert_called_once()
+
+    def test_distinct_generation_keys_reserve_fifo_tool_calls(self, mock_conn, event_loop_fixture):
+        """Same-name parallel streamed tools should still each get placeholders."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("read_file", generation_key="chat:0")
+            cb("read_file", generation_key="chat:1")
+
+        assert list(tool_call_ids["read_file"]) == ["tc-gen-1", "tc-gen-2"]
+        assert tool_call_meta["tc-gen-1"]["generation_key"] == "chat:0"
+        assert tool_call_meta["tc-gen-2"]["generation_key"] == "chat:1"
+        assert mock_send.call_count == 2
+
+    def test_generation_key_retry_with_new_tool_name_moves_placeholder(self, mock_conn, event_loop_fixture):
+        """A retry that changes the tool name should update the existing card."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("read_file", generation_key="chat:0")
+            cb("terminal", generation_key="chat:0")
+
+        assert "read_file" not in tool_call_ids
+        assert list(tool_call_ids["terminal"]) == ["tc-gen-1"]
+        assert tool_call_meta["tc-gen-1"]["generation_key"] == "chat:0"
+        assert mock_send.call_count == 2
+        update = mock_send.call_args_list[-1].args[3]
+        assert getattr(update, "session_update", None) == "tool_call_update"
+        assert update.tool_call_id == "tc-gen-1"
+        assert update.title == "terminal: "
+
+    def test_tool_started_reuses_generated_tool_call_id(self, mock_conn, event_loop_fixture):
+        """The real tool.started event should complete the early placeholder."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        gen_cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-gen"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            gen_cb("web_search")
+            progress_cb("tool.started", "web_search", "searching", {"query": "hermes"})
+
+        assert list(tool_call_ids["web_search"]) == ["tc-gen"]
+        assert tool_call_meta["tc-gen"] == {
+            "args": {"query": "hermes"},
+            "snapshot": None,
+        }
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert [getattr(update, "session_update", None) for update in updates] == [
+            "tool_call",
+            "tool_call_update",
+        ]
+
+    def test_same_name_generation_callbacks_reserve_fifo_tool_calls(self, mock_conn, event_loop_fixture):
+        """Same-name streamed tool calls should each get an early FIFO placeholder."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        gen_cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
+             patch("acp_adapter.events._send_update") as mock_send, \
+             patch("acp_adapter.events.build_tool_complete") as mock_complete:
+            gen_cb("read_file")
+            gen_cb("read_file")
+            progress_cb("tool.started", "read_file", "reading a.py", {"path": "a.py"})
+            progress_cb("tool.started", "read_file", "reading b.py", {"path": "b.py"})
+            assert list(tool_call_ids["read_file"]) == ["tc-gen-1", "tc-gen-2"]
+            assert tool_call_meta["tc-gen-1"] == {
+                "args": {"path": "a.py"},
+                "snapshot": None,
+            }
+            assert tool_call_meta["tc-gen-2"] == {
+                "args": {"path": "b.py"},
+                "snapshot": None,
+            }
+            updates = [call.args[3] for call in mock_send.call_args_list]
+            assert [getattr(update, "session_update", None) for update in updates] == [
+                "tool_call",
+                "tool_call",
+                "tool_call_update",
+                "tool_call_update",
+            ]
+            step_cb(1, [{"name": "read_file", "result": "contents of a.py"}])
+            step_cb(2, [{"name": "read_file", "result": "contents of b.py"}])
+
+        assert "read_file" not in tool_call_ids
+        assert [call.args[0] for call in mock_complete.call_args_list] == ["tc-gen-1", "tc-gen-2"]
+        assert [call.kwargs["function_args"] for call in mock_complete.call_args_list] == [
+            {"path": "a.py"},
+            {"path": "b.py"},
+        ]
 
 
 # ---------------------------------------------------------------------------

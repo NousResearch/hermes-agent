@@ -19,6 +19,7 @@ from acp.schema import AgentPlanUpdate, PlanEntry
 from .tools import (
     build_tool_complete,
     build_tool_start,
+    build_tool_started_update,
     make_tool_call_id,
 )
 
@@ -108,6 +109,75 @@ def _send_update(
 
 
 # ------------------------------------------------------------------
+# Tool generation callback
+# ------------------------------------------------------------------
+
+def make_tool_gen_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+) -> Callable:
+    """Create a ``tool_gen_callback`` for AIAgent.
+
+    AIAgent fires this callback as soon as the model stream has produced a
+    complete tool name, before the tool input JSON has necessarily finished
+    streaming. Emit a lightweight ToolCallStart with empty arguments so ACP
+    clients can show that a tool call is being prepared instead of appearing
+    idle while large tool inputs are still being generated.
+
+    The later ``tool_progress_callback("tool.started", ...)`` reuses this
+    reserved tool-call id and fills in the real argument metadata for the
+    eventual completion update.
+    """
+
+    def _tool_gen(name: str, *args: Any, **kwargs: Any) -> None:
+        if not name:
+            return
+        generation_key = kwargs.get("generation_key")
+
+        queue = tool_call_ids.get(name)
+        if queue is None:
+            queue = deque()
+            tool_call_ids[name] = queue
+        elif isinstance(queue, str):
+            queue = deque([queue])
+            tool_call_ids[name] = queue
+
+        if generation_key is not None:
+            for existing_name, existing_queue in list(tool_call_ids.items()):
+                if isinstance(existing_queue, str):
+                    existing_queue = deque([existing_queue])
+                    tool_call_ids[existing_name] = existing_queue
+                for candidate in list(existing_queue):
+                    meta = tool_call_meta.get(candidate, {})
+                    if not (meta.get("generated") and meta.get("generation_key") == generation_key):
+                        continue
+                    if existing_name == name:
+                        return
+                    existing_queue.remove(candidate)
+                    if not existing_queue:
+                        tool_call_ids.pop(existing_name, None)
+                    queue.append(candidate)
+                    update = build_tool_started_update(candidate, name, {})
+                    _send_update(conn, session_id, loop, update)
+                    return
+
+        tc_id = make_tool_call_id()
+        queue.append(tc_id)
+        meta = {"args": {}, "snapshot": None, "generated": True}
+        if generation_key is not None:
+            meta["generation_key"] = generation_key
+        tool_call_meta[tc_id] = meta
+
+        update = build_tool_start(tc_id, name, {})
+        _send_update(conn, session_id, loop, update)
+
+    return _tool_gen
+
+
+# ------------------------------------------------------------------
 # Tool progress callback
 # ------------------------------------------------------------------
 
@@ -143,7 +213,6 @@ def make_tool_progress_cb(
         if not isinstance(args, dict):
             args = {}
 
-        tc_id = make_tool_call_id()
         queue = tool_call_ids.get(name)
         if queue is None:
             queue = deque()
@@ -151,7 +220,19 @@ def make_tool_progress_cb(
         elif isinstance(queue, str):
             queue = deque([queue])
             tool_call_ids[name] = queue
-        queue.append(tc_id)
+
+        tc_id = None
+        if queue:
+            for candidate in queue:
+                meta = tool_call_meta.get(candidate, {})
+                if meta.get("generated"):
+                    tc_id = candidate
+                    break
+
+        already_started = tc_id is not None
+        if tc_id is None:
+            tc_id = make_tool_call_id()
+            queue.append(tc_id)
 
         snapshot = None
         if name in {"write_file", "patch", "skill_manage"}:
@@ -176,8 +257,12 @@ def make_tool_progress_cb(
             except Exception:
                 logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
 
-        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
-        _send_update(conn, session_id, loop, update)
+        if already_started:
+            update = build_tool_started_update(tc_id, name, args, edit_diff=edit_diff)
+            _send_update(conn, session_id, loop, update)
+        else:
+            update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
+            _send_update(conn, session_id, loop, update)
 
     return _tool_progress
 

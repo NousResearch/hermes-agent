@@ -5617,6 +5617,10 @@ def run_conversation(
                 # flag so it can fire again if the model goes empty on
                 # a LATER tool round.
                 agent._post_tool_empty_retried = False
+                # A landed tool call means any earlier dropped-tool-call stall
+                # was recovered — refresh that budget too so it guards each
+                # stall independently rather than capping the whole run.
+                agent._dropped_toolcall_retries = 0
 
                 previous_msg = messages[-1] if messages else None
                 current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
@@ -5869,7 +5873,11 @@ def run_conversation(
                 continue
             
             else:
-                # No tool calls - this is the final response
+                # No tool calls - this is the final response.
+                # (Dropped tool-call recovery — finish_reason=="tool_calls" with
+                # an empty tool_calls array — is handled at the finalization
+                # chokepoint below, after final_msg is built, so it catches
+                # every path that reaches turn finalization, not just this one.)
                 final_response = assistant_message.content or ""
                 
                 # Fix: unmute output when entering the no-tool-call branch
@@ -6200,6 +6208,53 @@ def run_conversation(
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+
+                # ── Dropped tool-call recovery (copilot/Claude) ────────
+                # Some providers (observed: claude-opus-4.8 / claude-sonnet-4.5
+                # on GitHub Copilot, ~2026-07) return finish_reason="tool_calls"
+                # while the parsed tool_calls array is empty — the model
+                # signalled it wanted to act but the payload shipped no call.
+                # Reaching finalization with that mismatch means the turn is
+                # about to end with the task unstarted (the narration, which may
+                # be in content or only in the reasoning field, gets treated as
+                # the final answer). Re-prompt (bounded to 3 CONSECUTIVE stalls;
+                # the budget resets after any successful tool round) to make the
+                # model emit the call instead of exiting. finish_reason="stop"
+                # text finishes never enter this guard.
+                if (
+                    finish_reason == "tool_calls"
+                    and not assistant_message.tool_calls
+                    and getattr(agent, "_dropped_toolcall_retries", 0) < 3
+                ):
+                    agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
+                    logger.warning(
+                        "finish_reason=tool_calls with empty tool_calls array "
+                        "(narration only) — re-prompting to emit the call "
+                        "(retry %d/3, model=%s provider=%s)",
+                        agent._dropped_toolcall_retries, agent.model, agent.provider,
+                    )
+                    agent._emit_status(
+                        "↻ Model signaled a tool call but sent none — "
+                        f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+                    )
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous turn indicated a tool call but none was "
+                            "included. Do not narrate a plan or restate intent — issue "
+                            "the actual tool call now to continue the task."
+                        ),
+                        "_dropped_toolcall_nudge": True,
+                    })
+                    agent._session_messages = messages
+                    final_response = None
+                    continue
+
+                # Reached finalization without the dropped-tool-call mismatch —
+                # a genuine turn end. Clear the consecutive-stall budget so the
+                # next turn starts fresh.
+                agent._dropped_toolcall_retries = 0
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending either a final response or a

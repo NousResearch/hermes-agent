@@ -838,6 +838,9 @@ def resolve_display_context_length(
     model_info: Optional[ModelInfo] = None,
     custom_providers: list | None = None,
     config_context_length: int | None = None,
+    configured_model: str | None = None,
+    configured_provider: str | None = None,
+    configured_base_url: str | None = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -856,6 +859,24 @@ def resolve_display_context_length(
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
     """
+    if config_context_length is not None and (
+        configured_model or configured_provider or configured_base_url
+    ):
+        try:
+            from hermes_cli.route_identity import should_clear_context_pin
+
+            if should_clear_context_pin(
+                configured_model,
+                model,
+                configured_base_url,
+                base_url,
+                configured_provider,
+                provider,
+            ):
+                config_context_length = None
+        except Exception:
+            config_context_length = None
+
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
@@ -2003,6 +2024,16 @@ def list_authenticated_providers(
         has_creds = False
         if overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
+        elif overlay.auth_type == "vertex":
+            # Vertex authenticates via OAuth2 (service-account JSON / ADC),
+            # not an API key — mirror the aws_sdk gate above, otherwise the
+            # provider is silently hidden from the /model picker even when
+            # fully configured.
+            try:
+                from agent.vertex_adapter import has_vertex_credentials
+                has_creds = has_vertex_credentials()
+            except Exception as exc:
+                logger.debug("Vertex credential check failed: %s", exc)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type

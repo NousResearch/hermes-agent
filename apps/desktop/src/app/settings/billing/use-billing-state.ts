@@ -5,21 +5,28 @@ import { fmtDate } from '@/lib/time'
 import type { BillingRefusal, BillingResult } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
-import type {
-  BillingStateResponse,
-  SubscriptionStateResponse,
-  SubscriptionTierOption,
-  UsageModelData
-} from './types'
+import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption, UsageModelData } from './types'
 
 export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
 export const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
 
+// The billing endpoint is the authoritative source of truth for balance / cap /
+// plan — the inference `x-nous-credits-*` headers are best-effort and can drift
+// out of sync (notably in team/org accounts where another member's spend moves
+// the shared balance without ever touching THIS client's headers). So the page
+// never trusts a cache: `staleTime: 0` + `refetchOnMount: 'always'` force a
+// fresh fetch every time it opens or regains focus, and it keeps polling every
+// 30s while mounted (react-query only ticks an active observer; it pauses when
+// the window is backgrounded — refetchIntervalInBackground defaults to false).
+// A `credits.*` notice crossing additionally invalidates ['billing','state'] to
+// pull the change in immediately rather than waiting for the next poll tick.
 const BILLING_QUERY_OPTIONS = {
+  refetchInterval: 30_000,
+  refetchOnMount: 'always',
   refetchOnWindowFocus: true,
   retry: false,
-  staleTime: 30_000
+  staleTime: 0
 } as const
 
 export interface BillingSummaryItemView {
@@ -35,6 +42,8 @@ export interface BillingNoticeView {
   }
   message: string
   title: string
+  /** `warn` = an actionable blocker (e.g. no card); `info` = neutral guidance. */
+  tone?: 'info' | 'warn'
 }
 
 export interface BillingRowActionView {
@@ -68,6 +77,15 @@ export interface BillingAccountRowView {
 }
 
 /**
+ * A change scheduled at period end that `subscription.resume` can undo. A downgrade
+ * names its target tier (and marks it in the grid); a cancellation has no target
+ * (the whole plan lapses), so the grid shows no marker for it.
+ */
+export type PendingPlanTransition =
+  | { kind: 'cancellation'; when: string }
+  | { kind: 'downgrade'; tierName: string; when: string }
+
+/**
  * The current-plan summary that replaces the old subscription row. Carries EITHER
  * one in-app `action` (View plans / Change plan) OR a portal `link` ("Adjust plan
  * ↗"), never both — a discriminated pair so consumers don't guard for the impossible
@@ -75,6 +93,8 @@ export interface BillingAccountRowView {
  */
 export type BillingPlanCardView = {
   caption: string
+  /** A scheduled downgrade / cancellation waiting at period end (drives the undo). */
+  pending?: PendingPlanTransition
   price?: string
   tierName: string
 } & ({ action: { label: string }; link?: undefined } | { action?: undefined; link: { label: string; url: string } })
@@ -87,14 +107,15 @@ interface BillingPlanTierBase {
 }
 
 /**
- * One card in the `bview=plans` grid, discriminated by `state`: an `upgrade` always
- * carries its portal `action`; a `downgrade` always carries a `disabledCaption`
- * (ticket 11 wires these in-app); `current` is inert. The union lets consumers read
- * `action` / `disabledCaption` without defensive `?.`.
+ * One card in the `bview=plans` grid, discriminated by `state`: `upgrade` carries its
+ * portal `action`; `downgrade` is actionable IN-APP (the flow keys off `tierId`, so it
+ * needs no url/caption); `scheduled` is the inert pending-downgrade target; `current`
+ * is inert. The union lets consumers read `action` without defensive `?.`.
  */
 export type BillingPlanTierView =
   | (BillingPlanTierBase & { state: 'current' })
-  | (BillingPlanTierBase & { disabledCaption: string; state: 'downgrade' })
+  | (BillingPlanTierBase & { state: 'downgrade' })
+  | (BillingPlanTierBase & { state: 'scheduled' })
   | (BillingPlanTierBase & { action: { label: string; url: string }; state: 'upgrade' })
 
 export interface BillingUsageRowView {
@@ -194,12 +215,15 @@ export function deriveBillingView(
   // link) and the grid (whether upgrade tiles are actionable) so the invariant lives
   // in one place.
   const capable = plansCapable(subscription, subscriptionResult)
-  const tiers = derivePlanTiers(subscription, billing.portal_url, capable)
+  // Computed once and threaded to both the card (caption + undo) and the grid
+  // (Scheduled marker), so the two never disagree about what's pending.
+  const pending = pendingTransition(subscription?.current)
+  const tiers = derivePlanTiers(subscription, billing.portal_url, capable, pending)
 
   return {
-    notice: undefined,
+    notice: noCardNotice(billing),
     paymentRow: paymentMethodRow(billing),
-    plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable),
+    plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable, pending),
     refillRow: autoReloadRow(billing),
     status: 'normal',
     summary: [
@@ -266,26 +290,6 @@ export function formatBillingDate(value?: null | string): string {
   return fmtDate.format(date)
 }
 
-export function formatUsageUpdatedAgo(updatedAt: number, now: number): string {
-  const elapsedSeconds = Math.max(0, Math.floor((now - updatedAt) / 1000))
-
-  if (elapsedSeconds < 1) {
-    return 'just now'
-  }
-
-  if (elapsedSeconds < 60) {
-    return `${elapsedSeconds}s ago`
-  }
-
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
-
-  if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m ago`
-  }
-
-  return `${Math.floor(elapsedMinutes / 60)}h ago`
-}
-
 function emptySummary(): BillingSummaryItemView[] {
   return [
     { label: 'Balance', value: EMPTY_BILLING_VALUE },
@@ -301,7 +305,24 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
   return {
     action: portalUrl ? { label: 'Open portal ↗', url: portalUrl } : undefined,
     message: resolved.message,
-    title: resolved.title
+    title: resolved.title,
+    tone: 'warn'
+  }
+}
+
+// A logged-in account with no card can't buy credits or manage auto-refill, and
+// every one of those controls disables silently — so lead the page with a single
+// warn banner that names the blocker and links straight to the fix.
+function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefined {
+  if (billing.card) {
+    return undefined
+  }
+
+  return {
+    action: { label: 'Add card ↗', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
+    message: 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
+    title: 'No payment method on file',
+    tone: 'warn'
   }
 }
 
@@ -335,6 +356,22 @@ function creditsPerMonthDisplay(monthlyCredits: null | string): string | undefin
 }
 
 /**
+ * A monthly-credits delta from a plan-change preview. NAS sends a bare dollar
+ * decimal ("-88"); credits are DOLLARS, so render it as signed dollars
+ * ("−$88/mo"), never the raw number. Zero / absent → null so the caller hides
+ * the line entirely.
+ */
+export function formatMonthlyCreditsDelta(delta?: null | string): null | string {
+  const amount = parseAmount(delta)
+
+  if (amount == null || amount === 0) {
+    return null
+  }
+
+  return `${amount < 0 ? '−' : '+'}${formatMoney(Math.abs(amount))}/mo`
+}
+
+/**
  * The current-plan card. It offers the in-app "View plans" / "Change plan" button
  * ONLY when the account is plans-capable AND the grid has an actual UPGRADE to offer
  * — a top-tier subscriber (only downgrades / current below them) would otherwise open
@@ -347,7 +384,8 @@ function derivePlanCard(
   subscription: null | SubscriptionStateResponse,
   subscriptionResult: BillingResult<SubscriptionStateResponse> | undefined,
   tiers: BillingPlanTierView[],
-  capable: boolean
+  capable: boolean,
+  pending: PendingPlanTransition | undefined
 ): BillingPlanCardView {
   const current = subscription?.current
   const tierName = current?.tier_name ?? billing.usage?.plan_name ?? 'Free'
@@ -359,17 +397,21 @@ function derivePlanCard(
 
   const caption = unavailable
     ? 'Subscription details are unavailable; opening the portal is still available.'
-    : current
-      ? `Renews ${renewal}`
-      : 'No active subscription — paid models draw down top-up credits.'
+    : pending
+      ? pending.kind === 'downgrade'
+        ? `Changes to ${pending.tierName} on ${pending.when}.`
+        : `Cancels on ${pending.when}.`
+      : current
+        ? `Renews ${renewal}`
+        : 'No active subscription — paid models draw down top-up credits.'
 
-  // Actionable = a tile the user can act on. At ticket 09 only upgrades carry an
-  // `action` (downgrades are inert), so "has an action" ⟺ an upgrade exists. (The
-  // discriminated union means `'action' in tier` rather than `tier.action != null`.)
-  const hasActionableTier = tiers.some(tier => 'action' in tier)
+  // Actionable = a paid tier above (upgrade) or an in-app downgrade below the current
+  // one. Ticket 11 counts downgrades (they act in-app, so they carry no `action`); a
+  // top-tier subscriber with neither still gets the portal-link fallback below.
+  const hasActionableTier = tiers.some(tier => tier.state === 'upgrade' || tier.state === 'downgrade')
 
   if (capable && hasActionableTier) {
-    return { action: { label: current ? 'Change plan' : 'View plans' }, caption, price, tierName }
+    return { action: { label: current ? 'Change plan' : 'View plans' }, caption, pending, price, tierName }
   }
 
   return {
@@ -379,16 +421,44 @@ function derivePlanCard(
       label: 'Adjust plan ↗',
       url: buildManageSubscriptionUrl(subscription, subscription?.portal_url ?? billing.portal_url)
     },
+    pending,
     price,
     tierName
   }
 }
 
+// The change scheduled at period end (undoable via subscription.resume). NAS may
+// carry a pending downgrade (`pending_downgrade_*`, with a target tier name) and/or a
+// scheduled cancellation (`cancel_at_period_end` + `cancellation_effective_*`).
+// Precedence: a downgrade WINS if both are somehow set — it names a concrete target
+// tier, the stronger, more specific signal, and is what the grid marks.
+function pendingTransition(
+  current: null | undefined | NonNullable<SubscriptionStateResponse['current']>
+): PendingPlanTransition | undefined {
+  if (current?.pending_downgrade_tier_name && current.pending_downgrade_at) {
+    return {
+      kind: 'downgrade',
+      tierName: current.pending_downgrade_tier_name,
+      when: current.pending_downgrade_display ?? formatBillingDate(current.pending_downgrade_at)
+    }
+  }
+
+  if (current?.cancel_at_period_end && current.cancellation_effective_at) {
+    return {
+      kind: 'cancellation',
+      when: current.cancellation_effective_display ?? formatBillingDate(current.cancellation_effective_at)
+    }
+  }
+
+  return undefined
+}
+
 /**
  * The plans-grid catalog. Each card's state depends on its order relative to the
  * current tier: current = inert marker; higher = "Choose ↗" opening the portal with
- * the tier pre-selected; lower = disabled with a caption noting downgrades are
- * moving in-app (ticket 11 wires the gateway pending-change flow). With no active
+ * the tier pre-selected; lower = an in-app "Downgrade" (chargeless, scheduled via the
+ * gateway). The already-scheduled downgrade target renders as an inert "Scheduled"
+ * marker; other lower tiers stay actionable (picking one reschedules). With no active
  * subscription the lowest-order ($0 / free) tier stands in as the current plan, so
  * there is no "subscribe to Free" upgrade and no downgrade state.
  *
@@ -401,7 +471,8 @@ function derivePlanCard(
 function derivePlanTiers(
   subscription: null | SubscriptionStateResponse,
   fallbackPortalUrl: null | string,
-  capable: boolean
+  capable: boolean,
+  pending: PendingPlanTransition | undefined
 ): BillingPlanTierView[] {
   if (!capable || !subscription) {
     return []
@@ -428,6 +499,8 @@ function derivePlanTiers(
   const currentTier = explicitCurrent ?? (current == null ? gridTiers[0] : undefined)
   const currentOrder = currentTier?.tier_order
   const manageBase = subscription.portal_url ?? fallbackPortalUrl
+  // Only a downgrade has a target tier to mark; a cancellation has none.
+  const pendingName = pending?.kind === 'downgrade' ? pending.tierName : null
 
   return gridTiers.map((tier): BillingPlanTierView => {
     const base: BillingPlanTierBase = {
@@ -441,9 +514,18 @@ function derivePlanTiers(
       return { ...base, state: 'current' }
     }
 
-    // Downgrade = strictly below the current tier's order.
+    // A scheduled downgrade target is inert (matched by name — NAS sends no id for
+    // the pending target). Name is a safe key: SubscriptionTypes.name is @unique in
+    // NAS, so two tiers can't collide. Checked before the downgrade branch since the
+    // target IS a lower tier.
+    if (pendingName && tier.name === pendingName) {
+      return { ...base, state: 'scheduled' }
+    }
+
+    // Downgrade = strictly below the current tier's order → an in-app chargeless
+    // change (the PlanCard wires the confirm flow by tierId).
     if (currentOrder != null && tier.tier_order < currentOrder) {
-      return { ...base, disabledCaption: 'Downgrades are moving in-app — coming soon.', state: 'downgrade' }
+      return { ...base, state: 'downgrade' }
     }
 
     return {
@@ -459,17 +541,19 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
   const card = billing.card
 
   if (!card) {
+    // No card → a single "Add payment method" link, the way every other app does
+    // it. The reason (buys/auto-refill are blocked) already leads the page as a
+    // notice, so the row stays a bare call-to-action with no redundant status text.
     return {
-      action: { label: 'Update ↗', url: portalUrl },
-      description: 'Add a payment method on the portal before buying top-up credits.',
+      action: { label: 'Add payment method', url: portalUrl },
+      description: '',
       id: 'payment_method',
-      title: 'Payment method',
-      value: 'No card on file'
+      title: 'Payment method'
     }
   }
 
   return {
-    action: { label: 'Update ↗', url: portalUrl },
+    action: { label: 'Update', url: portalUrl },
     description: 'Manage the card used for top-ups and subscription renewals.',
     id: 'payment_method',
     title: 'Payment method',
@@ -479,14 +563,13 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
 
 function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
   if (!billing.card) {
+    // The no-card blocker is already spelled out by the page-level warn banner
+    // (noCardNotice); repeating it here — emoji and all — just clutters the row,
+    // so keep the plain "what buying does" line and let the controls sit disabled.
     return {
       action: { disabled: true, label: 'Buy' },
       chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
-      description: resolveRefusal({
-        kind: 'no_payment_method',
-        message: '',
-        portalUrl: billing.portal_url ?? undefined
-      }).message,
+      description: 'A single charge on your card, added to your balance today.',
       id: 'buy_credits',
       title: 'Buy credits now'
     }

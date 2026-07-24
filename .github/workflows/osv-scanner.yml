@@ -48,6 +48,9 @@ jobs:
         --lockfile=uv.lock
         --lockfile=package-lock.json
         --lockfile=website/package-lock.json
+      # The upstream reusable workflow uploads this exact file under its
+      # fixed artifact name, which the wrapper downloads below.
+      results-file-name: osv-results.sarif
       fail-on-vuln: false
 
   emit-status:
@@ -64,7 +67,7 @@ jobs:
       - name: Download SARIF result
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: osv-results
+          name: OSV Scanner SARIF file
           path: /tmp/osv-results
         continue-on-error: true
 

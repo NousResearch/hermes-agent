@@ -1,6 +1,6 @@
 ---
 name: distributed-llm-pretraining-torchtitan
-description: Provides PyTorch-native distributed LLM pretraining using torchtitan with 4D parallelism (FSDP2, TP, PP, CP). Use when pretraining Llama 3.1, DeepSeek V3, or custom models at scale from 8 to 512+ GPUs with Float8, torch.compile, and distributed checkpointing.
+description: Pretrain LLMs at scale with PyTorch 4D parallelism.
 version: 1.0.0
 author: Orchestra Research
 license: MIT

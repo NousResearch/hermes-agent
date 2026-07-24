@@ -129,6 +129,7 @@ export const zhHant = defineLocale({
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒絕了該 API 金鑰 (401)。',
+      gatewayAuthFailed: '閘道認證失敗 — 請檢查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
@@ -164,12 +165,22 @@ export const zhHant = defineLocale({
       turnDoneBody: '回覆已就緒。',
       turnErrorTitle: '本輪失敗',
       backgroundDoneTitle: '背景工作已完成',
-      backgroundFailedTitle: '背景工作失敗'
+      backgroundFailedTitle: '背景工作失敗',
+      creditsTitle: '額度'
     }
   },
 
   remoteDisplayBanner: {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
+  },
+
+  billingBlock: {
+    titleNous: 'Nous 額度已用盡',
+    titleProvider: provider => `額度已用盡 — ${provider}`,
+    fallbackMessage: '您的帳戶額度已用盡。請儲值以繼續使用。',
+    openBilling: '開啟帳單',
+    addCredits: '新增額度',
+    dismiss: '忽略'
   },
 
   titlebar: {
@@ -247,6 +258,10 @@ export const zhHant = defineLocale({
         backgroundDone: {
           label: '背景工作完成',
           description: '背景終端機指令已完成。'
+        },
+        credits: {
+          label: '額度提醒',
+          description: '額度存取被暫停或恢復。'
         }
       },
       test: '傳送測試通知',
@@ -1025,6 +1040,7 @@ export const zhHant = defineLocale({
     ageSeconds: seconds => `${seconds} 秒前`,
     ageMinutes: minutes => `${minutes} 分鐘前`,
     ageHours: hours => `${hours} 小時前`,
+    ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 詞元`
@@ -2004,7 +2020,8 @@ export const zhHant = defineLocale({
     proNeedsSubscription: 'Pro 模型需要付費 Nous 訂閱。',
     free: '免費',
     freeTier: '免費層',
-    priceTitle: '每百萬 Token 的輸入/輸出價格'
+    priceTitle: '每百萬 Token 的輸入/輸出價格',
+    wasPrice: '原價'
   },
 
   modelVisibility: {
@@ -2279,6 +2296,7 @@ export const zhHant = defineLocale({
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',
     closeAll: '全部關閉',
+    newSessionTab: '新增工作階段分頁',
     split: dir => `向${dir}分割`,
     move: dir => `向${dir}移動`,
     dirUp: '上',
@@ -2369,7 +2387,10 @@ export const zhHant = defineLocale({
       placeholder: '輸入您的答案…',
       skip: '略過',
       skipped: '已略過',
-      continueLabel: '繼續'
+      continueLabel: '繼續',
+      lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
+      lateAnswerTip: '將此回答起草為後續訊息',
+      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
     },
     tool: {
       code: '程式碼',

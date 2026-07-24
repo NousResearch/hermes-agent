@@ -3145,6 +3145,72 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 
+    def test_dispatcher_spawn_merges_plugin_contributed_env(
+        self, tmp_path, monkeypatch
+    ):
+        # Plugins can hand the worker session extra env via the
+        # `contribute_worker_env` hook (observability endpoints, trace
+        # credentials). Contributions only fill gaps: a key the dispatcher
+        # pinned itself must never be overridden, and non-dict results are
+        # ignored.
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        seen = {}
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            seen["hook"] = hook_name
+            seen["kwargs"] = kwargs
+            return [
+                {
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:3000",
+                    "HERMES_KANBAN_TASK": "hijack-attempt",
+                },
+                "not-a-dict",
+            ]
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook", fake_invoke_hook
+        )
+
+        task = kb.Task(
+            id="t_contrib_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name="wt/t_contrib_env",
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:3000"
+        assert env["HERMES_KANBAN_TASK"] == "t_contrib_env"
+        assert seen["hook"] == "contribute_worker_env"
+        assert seen["kwargs"]["task_id"] == "t_contrib_env"
+        assert seen["kwargs"]["branch"] == "wt/t_contrib_env"
+        assert seen["kwargs"]["board"]
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

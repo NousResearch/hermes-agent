@@ -125,13 +125,23 @@ class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
-    """Send RFC 2971 IMAP ID command identifying this client.
+    """Send RFC 2971 IMAP ID command identifying this client when supported.
 
     Required by 163/NetEase mailbox after LOGIN: without it, every UID
-    SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects.  Other
-    IMAP servers either honor it silently or reject the unknown command;
-    we swallow failures so non-supporting servers keep working.
+    SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects. Some servers
+    (notably Purelymail) do not advertise RFC 2971 ``ID`` and can leave the
+    connection poisoned after receiving it, causing the next SELECT to fail
+    with ``Unknown command``. Only send ID when the server advertises it.
     """
+    capabilities = getattr(imap, "capabilities", ()) or ()
+    normalized = {
+        cap.decode("ascii", errors="ignore").upper() if isinstance(cap, bytes) else str(cap).upper()
+        for cap in capabilities
+    }
+    if "ID" not in normalized:
+        logger.debug("[Email] IMAP server does not advertise ID capability; skipping ID command")
+        return
+
     try:
         try:
             from hermes_cli import __version__ as _hermes_version
@@ -267,9 +277,12 @@ def _domains_aligned(a: str, b: str) -> bool:
 
 
 # Match a single "method=result" token in an Authentication-Results header,
-# e.g. ``dmarc=pass`` or ``spf=fail``.
+# e.g. ``dmarc=pass``, ``spf=fail``, or Purelymail's ``auth=pass`` for
+# authenticated SMTP submissions. ``auth=pass`` is accepted only when the
+# operator explicitly pins authserv_id to the receiving server; see
+# _verify_sender_authentication().
 _AUTH_METHOD_RE = re.compile(
-    r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE
+    r"\b(dmarc|dkim|spf|auth)\s*=\s*([a-z]+)", re.IGNORECASE
 )
 # Match a property value like ``header.from=example.com`` or
 # ``smtp.mailfrom=user@example.com``.
@@ -299,7 +312,8 @@ def _verify_sender_authentication(
     Returns ``(authenticated, reason)``. ``authenticated`` is True when:
       * a DMARC pass is recorded for the From domain, OR
       * an SPF pass aligned with the From domain, OR
-      * a DKIM pass aligned (``header.d``) with the From domain.
+      * a DKIM pass aligned (``header.d``) with the From domain, OR
+      * ``auth=pass`` comes from an explicitly pinned ``authserv_id``.
 
     When no ``Authentication-Results`` header is present at all, we return
     ``(False, "no Authentication-Results header")`` — fail-closed. Operators
@@ -355,6 +369,16 @@ def _verify_sender_authentication(
         dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
         if _domains_aligned(dkim_domain, from_domain):
             return True, "dkim=pass aligned"
+
+    # 4) Some receiving servers (notably Purelymail) stamp ``auth=pass`` for
+    # messages submitted through an authenticated SMTP session instead of
+    # emitting SPF/DKIM/DMARC properties. Trust that proprietary result only
+    # when the operator explicitly pinned authserv_id and the selected header
+    # came from that server. Without the pin, an attacker-injected
+    # Authentication-Results header could turn an allowlisted From address into
+    # host access.
+    if authserv_id and methods.get("auth") == "pass":
+        return True, "auth=pass from pinned authserv-id"
 
     return False, f"authentication failed ({trusted[:120]})"
 

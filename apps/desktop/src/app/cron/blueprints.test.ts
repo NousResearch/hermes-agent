@@ -70,7 +70,15 @@ describe('initialBlueprintValues', () => {
   it("seeds the deliver slot to 'local' when it has no default", () => {
     const values = initialBlueprintValues(
       blueprint([
-        { name: 'deliver', type: 'enum', label: 'Deliver', default: null, options: ['origin', 'local'], optional: false, help: '' }
+        {
+          name: 'deliver',
+          type: 'enum',
+          label: 'Deliver',
+          default: null,
+          options: ['origin', 'local'],
+          optional: false,
+          help: ''
+        }
       ])
     )
 

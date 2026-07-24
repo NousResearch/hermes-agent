@@ -59,7 +59,8 @@ function joinPath(base: string, rel: string) {
 }
 
 function pathToFileUrl(path: string) {
-  const encoded = path
+  const normalized = path.replace(/\\/g, '/')
+  const encoded = normalized
     .split('/')
     .map(part => encodeURIComponent(part))
     .join('/')

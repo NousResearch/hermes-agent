@@ -2,6 +2,10 @@ import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
+import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
+import { openPreviewUrl } from '@/store/preview'
 
 import { cn } from './utils'
 
@@ -210,6 +214,27 @@ export function ExternalLinkIcon({ className }: { className?: string }) {
   return <ArrowUpRight aria-hidden className={cn('ml-1 inline size-[0.78em] align-[-0.08em] opacity-70', className)} />
 }
 
+function PreviewPaneIcon({ href, label }: { href: string; label?: string }) {
+  const { t } = useI18n()
+
+  return (
+    <Tip label={t.preview.openInPane}>
+      <Button
+        className="ml-1 inline-flex size-[0.78em] align-[-0.08em] p-0"
+        onClick={event => {
+          event.preventDefault()
+          event.stopPropagation()
+          openPreviewUrl(href, label)
+        }}
+        size="icon-xs"
+        variant="ghost"
+      >
+        <span aria-hidden className="text-[1.15em] leading-none">🖥️</span>
+      </Button>
+    </Tip>
+  )
+}
+
 export function ExternalLink({
   children,
   className,
@@ -240,6 +265,7 @@ export function ExternalLink({
       {...rest}
     >
       {children ?? urlSlugTitleLabel(target)}
+      {showExternalIcon && <PreviewPaneIcon href={target} label={typeof children === 'string' ? children : undefined} />}
       {showExternalIcon && <ExternalLinkIcon />}
     </a>
   )

@@ -348,6 +348,19 @@ def _is_transient_network_error(exc: BaseException) -> bool:
         "ServerDisconnectedError",
         "ClientConnectorError",
         "ClientOSError",
+        # httpx base classes — catch errors reported under their
+        # generic parent name when wrapped by platform libraries
+        "TimeoutException",
+        "RequestError",
+        "TransportError",
+        "ProxyError",
+        "StreamError",
+        # Built-in / asyncio transient errors that can surface
+        # from low-level socket operations
+        "ConnectionResetError",
+        "ConnectionRefusedError",
+        "BrokenPipeError",
+        "TimeoutError",
     }
     while cur is not None and depth < 12:
         ident = id(cur)

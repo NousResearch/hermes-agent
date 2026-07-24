@@ -861,9 +861,15 @@ def _serve_plugin_skill(
     *,
     preprocess: bool = True,
     session_id: str | None = None,
+    file_path: str | None = None,
 ) -> str:
-    """Read a plugin-provided skill, apply guards, return JSON."""
+    """Read a plugin-provided skill, apply guards, return JSON.
+
+    When *file_path* is given, return the content of that file within the skill
+    directory instead of SKILL.md — mirroring the local-skill behaviour.
+    """
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+    from tools.path_security import validate_within_dir, has_traversal_component
 
     if namespace in _get_disabled_plugins():
         return json.dumps(
@@ -930,6 +936,77 @@ def _serve_plugin_skill(
     except Exception:
         banner = ""
 
+    skill_dir = skill_md.parent
+
+    # ── linked_files: probe the skill directory like local skills ────────
+    linked_files: Dict[str, list] = {}
+    if skill_dir.exists():
+        references_dir = skill_dir / "references"
+        if references_dir.is_dir():
+            ref_files = [f.relative_to(skill_dir).as_posix() for f in references_dir.iterdir() if f.is_file()]
+            if ref_files:
+                linked_files["references"] = sorted(ref_files)
+        templates_dir = skill_dir / "templates"
+        if templates_dir.is_dir():
+            tpl_files = [f.relative_to(skill_dir).as_posix() for f in templates_dir.iterdir() if f.is_file()]
+            if tpl_files:
+                linked_files["templates"] = sorted(tpl_files)
+        assets_dir = skill_dir / "assets"
+        if assets_dir.is_dir():
+            asset_files = [f.relative_to(skill_dir).as_posix() for f in assets_dir.iterdir() if f.is_file()]
+            if asset_files:
+                linked_files["assets"] = sorted(asset_files)
+        scripts_dir = skill_dir / "scripts"
+        if scripts_dir.is_dir():
+            script_files = [f.relative_to(skill_dir).as_posix() for f in scripts_dir.iterdir() if f.is_file()]
+            if script_files:
+                linked_files["scripts"] = sorted(script_files)
+
+    # ── file_path: serve a specific sub-file instead of SKILL.md ─────────
+    if file_path:
+        if has_traversal_component(file_path):
+            return json.dumps(
+                {"success": False, "error": f"file_path contains '..' traversal: {file_path}"},
+                ensure_ascii=False,
+            )
+        target = skill_dir / file_path
+        path_err = validate_within_dir(target, skill_dir)
+        if path_err:
+            return json.dumps(
+                {"success": False, "error": f"file_path escapes skill directory: {file_path}"},
+                ensure_ascii=False,
+            )
+        if not target.is_file():
+            available = []
+            if linked_files:
+                for sub in linked_files.values():
+                    available.extend(sub)
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"File not found within skill {namespace}:{bare}: {file_path}",
+                    "available_files": sorted(set(available)),
+                },
+                ensure_ascii=False,
+            )
+        try:
+            sub_content = target.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return json.dumps(
+                {"success": False, "error": f"Cannot read {file_path}: {exc}"},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "success": True,
+                "name": f"{namespace}:{bare}",
+                "file": file_path,
+                "content": sub_content,
+                "linked_files": linked_files if linked_files else None,
+            },
+            ensure_ascii=False,
+        )
+
     rendered_content = content
     if preprocess:
         try:
@@ -951,7 +1028,7 @@ def _serve_plugin_skill(
             "name": f"{namespace}:{bare}",
             "content": f"{banner}{rendered_content}" if banner else rendered_content,
             "description": description,
-            "linked_files": None,
+            "linked_files": linked_files if linked_files else None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
         },
         ensure_ascii=False,
@@ -1042,6 +1119,7 @@ def skill_view(
                     bare,
                     preprocess=preprocess,
                     session_id=task_id,
+                    file_path=file_path,
                 )
 
             # Plugin exists but this specific skill is missing?

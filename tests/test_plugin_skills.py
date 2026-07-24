@@ -267,6 +267,72 @@ class TestSkillViewQualifiedName:
         assert self.pm.find_plugin_skill("superpowers:writing-plans") is None
 
 
+class TestPluginSkillFilePath:
+    """Plugin skills should support file_path like local skills do.
+
+    Previously, _serve_plugin_skill ignored the file_path parameter entirely,
+    always returning SKILL.md content with linked_files=None. These tests
+    verify the fix: file_path reads sub-files, linked_files is probed, and
+    missing files return a helpful error.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        self.pm = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", self.pm)
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", empty)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    def _register_skill_with_files(self, tmp_path):
+        """Register a plugin skill with references/ sub-directory."""
+        d = tmp_path / "plugins" / "myplugin" / "skills" / "foo"
+        d.mkdir(parents=True, exist_ok=True)
+        md = d / "SKILL.md"
+        md.write_text("---\nname: foo\ndescription: test\n---\nFoo body.\n")
+        refs = d / "references"
+        refs.mkdir(exist_ok=True)
+        (refs / "api.md").write_text("# API Reference\nDetails here.")
+        self.pm._plugin_skills["myplugin:foo"] = {
+            "path": md, "plugin": "myplugin", "bare_name": "foo", "description": "",
+        }
+        return md
+
+    def test_file_path_reads_subfile(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill_with_files(tmp_path)
+        result = json.loads(
+            skill_view("myplugin:foo", file_path="references/api.md")
+        )
+        assert result["success"] is True
+        assert "API Reference" in result["content"]
+        assert result.get("file") == "references/api.md"
+
+    def test_linked_files_probed(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill_with_files(tmp_path)
+        result = json.loads(skill_view("myplugin:foo"))
+        assert result["linked_files"] is not None
+        assert "references/api.md" in result["linked_files"]["references"]
+
+    def test_file_path_not_found_lists_available(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill_with_files(tmp_path)
+        result = json.loads(
+            skill_view("myplugin:foo", file_path="references/missing.md")
+        )
+        assert result["success"] is False
+        assert "available_files" in result
+        assert "references/api.md" in result["available_files"]
+
+
 class TestSkillViewPluginGuards:
     @pytest.fixture(autouse=True)
     def _isolate(self, tmp_path, monkeypatch):

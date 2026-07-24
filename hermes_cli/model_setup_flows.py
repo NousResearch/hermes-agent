@@ -2437,10 +2437,16 @@ def _model_flow_bedrock(config, current_model=""):
 def _model_flow_vertex(config, current_model=""):
     """Google Vertex AI provider: Gemini via the OpenAI-compatible endpoint.
 
-    Auth is OAuth2 — short-lived tokens minted from a service-account JSON or
-    Application Default Credentials (ADC). No static API key. The credential
-    *path* lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS);
-    project ID and region are non-secret and saved to config.yaml under vertex:.
+    Supports two authentication methods, auto-detected:
+
+    1. **API Key (Express Mode) — RECOMMENDED.**
+       Set ``GOOGLE_VERTEX_API_KEY``, ``GOOGLE_VERTEX_PROJECT``, and optionally
+       ``GOOGLE_VERTEX_LOCATION`` in .env. No google-auth needed.
+       Supports dynamic model discovery via Vertex's publisher models API.
+
+    2. **OAuth2 / ADC (legacy)**
+       Service-account JSON or ADC via ``google-auth``.
+       Falls back to a curated model list.
     """
     from hermes_cli.auth import (
         _prompt_model_selection,
@@ -2449,18 +2455,35 @@ def _model_flow_vertex(config, current_model=""):
     )
     from hermes_cli.config import load_config, save_config, get_env_value
     from hermes_cli.models import _PROVIDER_MODELS
+    from agent.vertex_adapter import (
+        has_vertex_api_key,
+        resolve_vertex_api_key,
+        discover_vertex_models,
+        GOOGLE_VERTEX_PROJECT as ENV_VERTEX_PROJECT,
+        GOOGLE_VERTEX_LOCATION as ENV_VERTEX_LOCATION,
+        DEFAULT_REGION,
+    )
 
-    # 1. Credential source detection (fast, no network / no google-auth import).
+    # 1. Credential source detection.
+    api_key = resolve_vertex_api_key()
     sa_path = (
         get_env_value("VERTEX_CREDENTIALS_PATH")
         or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
         or ""
     ).strip()
-    if sa_path:
+
+    if api_key and sa_path:
+        print("  Vertex credentials: API key + service account JSON (API key takes priority) ✓")
+    elif api_key:
+        print("  Vertex credentials: API key (Express Mode) ✓")
+        print("    No OAuth, no service-account JSON needed.")
+    elif sa_path:
         print(f"  Vertex credentials: service account JSON ({sa_path}) ✓")
     else:
         print("  Vertex credentials: Application Default Credentials (ADC)")
-        print("    Vertex uses OAuth2, not a static API key. Either:")
+        print("    Option A — API key (recommended):")
+        print("      Set GOOGLE_VERTEX_API_KEY in ~/.hermes/.env")
+        print("    Option B — OAuth2 (legacy):")
         print("      • run 'gcloud auth application-default login', or")
         print("      • set VERTEX_CREDENTIALS_PATH in ~/.hermes/.env to a service account JSON")
     print()
@@ -2470,19 +2493,22 @@ def _model_flow_vertex(config, current_model=""):
     if not isinstance(vertex_cfg, dict):
         vertex_cfg = {}
 
-    # 2. Project ID (optional — falls back to the project embedded in creds).
-    current_project = str(vertex_cfg.get("project_id") or "").strip()
+    # 2. Project ID (required for both auth methods, but API key more strictly).
+    env_project = get_env_value(ENV_VERTEX_PROJECT) or ""
+    current_project = str(env_project or vertex_cfg.get("project_id") or "").strip()
+    prompt_default = current_project if current_project else "from credentials"
     try:
         project_input = input(
-            f"  GCP project ID [{current_project or 'from credentials'}]: "
+            f"  GCP project ID [{prompt_default}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
     project_id = project_input or current_project
 
-    # 3. Region (default global — required for the Gemini 3.x previews).
-    current_region = str(vertex_cfg.get("region") or "global").strip() or "global"
+    # 3. Region.
+    env_location = get_env_value(ENV_VERTEX_LOCATION) or ""
+    current_region = str(env_location or vertex_cfg.get("region") or DEFAULT_REGION).strip() or DEFAULT_REGION
     try:
         region_input = input(f"  Vertex region [{current_region}]: ").strip()
     except (KeyboardInterrupt, EOFError):
@@ -2490,11 +2516,27 @@ def _model_flow_vertex(config, current_model=""):
         return
     region = region_input or current_region
 
-    # 4. Model selection (curated list — Vertex has no /models listing route).
-    model_list = _PROVIDER_MODELS.get("vertex", []) or [
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
-    ]
+    # 4. Model selection — try dynamic discovery first, fall back to curated list.
+    discovered: list[str] | None = None
+    if api_key and project_id:
+        print(f"  Discovering models in {region}...", end=" ", flush=True)
+        discovered = discover_vertex_models(api_key, project_id, region)
+        if discovered:
+            print(f"found {len(discovered)} models ✓")
+        else:
+            print("failed — using curated list.")
+    else:
+        print("  (Model discovery requires API key + project ID; using curated list.)")
+
+    if discovered:
+        # Prefix with ``google/`` to match Hermes model naming convention
+        model_list = [f"google/{m}" for m in discovered]
+    else:
+        model_list = _PROVIDER_MODELS.get("vertex", []) or [
+            "google/gemini-3-pro-preview",
+            "google/gemini-3-flash-preview",
+        ]
+
     base_url_preview = (
         "https://aiplatform.googleapis.com/v1beta1/projects/<project>/"
         f"locations/{region}/endpoints/openapi"

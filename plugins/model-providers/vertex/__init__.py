@@ -2,19 +2,22 @@
 
 vertex: Gemini models via Google Cloud's OpenAI-compatible endpoint.
 
-Auth is OAuth2 — short-lived access tokens minted from a service-account JSON
-or Application Default Credentials (ADC), NOT a static API key. Token
-resolution and refresh live in ``agent/vertex_adapter.py``; runtime_provider.py
-calls it to obtain a fresh ``(token, base_url)`` pair, then hands the token to
-the standard OpenAI client as ``api_key``. Because the wire format is the
-OpenAI-compatible chat/completions surface, no message translation is needed —
-the only Gemini-specific concern is the ``thinking_config`` reasoning hook,
-which is emitted here exactly as the ``gemini`` provider does for its
-OpenAI-compat subpath (``extra_body.google.thinking_config``).
+Supports two authentication methods:
 
-``auth_type="vertex"`` marks this as an OAuth-token provider (resolved
-specially, like bedrock's ``aws_sdk``) so it is never treated as an
-api_key provider that would mistake a credentials-file path for a key.
+1. **API Key (Express Mode) — RECOMMENDED.**
+   Set ``GOOGLE_VERTEX_API_KEY``, ``GOOGLE_VERTEX_PROJECT``, and optionally
+   ``GOOGLE_VERTEX_LOCATION`` in your .env file. No google-auth needed.
+
+2. **OAuth2 / ADC (legacy)**
+   Service-account JSON or ADC. Requires ``google-auth``.
+
+Auth selection is automatic — ``get_vertex_config()`` in ``agent/vertex_adapter.py``
+picks the right path based on which env vars are set.
+
+``auth_type="vertex"`` marks this as a specially-resolved provider (like
+bedrock's ``aws_sdk``) so env-var lookup for a static api_key is not the
+only path. The runtime provider resolver (``runtime_provider.py``) handles
+API key auth directly without needing the full OAuth2 token flow.
 """
 
 from typing import Any
@@ -56,17 +59,45 @@ class VertexProfile(ProviderProfile):
         base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
-        """Vertex's OpenAI-compat endpoint has no ``/models`` listing route;
-        model discovery is not available. The setup wizard ships a curated list.
+        """Discover models via Vertex AI's publisher ``models.list`` API.
+
+        Unlike the legacy OAuth2 path (which has no ``/models`` route on the
+        OpenAI-compatible endpoint), the API key path can query the publisher
+        models endpoint for region-specific model availability.
+
+        If discovery fails (network, auth, or the OAuth2 path), returns None
+        and the setup wizard falls back to its curated model list.
         """
-        return None
+        from agent.vertex_adapter import (
+            discover_vertex_models,
+            resolve_vertex_api_key,
+            _resolve_project_override,
+            _resolve_region,
+        )
+
+        # Only API key auth supports model discovery
+        resolved_key = api_key or resolve_vertex_api_key()
+        if not resolved_key:
+            return None
+
+        project_id = _resolve_project_override()
+        if not project_id:
+            return None
+
+        region = _resolve_region()
+        models = discover_vertex_models(resolved_key, project_id, region, timeout)
+        return models if models else None
 
 
 vertex = VertexProfile(
     name="vertex",
     aliases=("google-vertex", "vertex-ai", "gcp-vertex"),
     api_mode="chat_completions",
-    env_vars=(),  # OAuth2 via service account / ADC — not a static key env var
+    env_vars=(
+        "GOOGLE_VERTEX_API_KEY",
+        "GOOGLE_VERTEX_PROJECT",
+        "GOOGLE_VERTEX_LOCATION",
+    ),
     base_url="https://aiplatform.googleapis.com",  # real base_url computed at runtime
     auth_type="vertex",
     default_aux_model="google/gemini-3-flash-preview",

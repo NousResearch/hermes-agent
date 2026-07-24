@@ -4,16 +4,43 @@ Provides authentication and configuration for Vertex AI's OpenAI-compatible
 endpoint. This allows Hermes to use Gemini models via Google Cloud with
 enterprise-grade rate limits and quotas.
 
-Requires: pip install google-auth
+Supports two authentication methods:
 
-Environment variables honored (all optional):
+1.  **API Key (Express Mode) — RECOMMENDED.**
+    Set ``GOOGLE_VERTEX_API_KEY`` in your .env file. This is a static key that
+    works with Vertex's Express Mode endpoint. No OAuth, no service-account
+    JSON, no ADC setup. You also need:
+
+      - ``GOOGLE_VERTEX_PROJECT`` — your GCP project ID.
+      - ``GOOGLE_VERTEX_LOCATION`` — region (default: ``us-central1``).
+
+    When using API key auth the ``Authorization`` header carries the key as a
+    Bearer token and the request is routed to the global ``aiplatform.googleapis.com``
+    host, which internally fans out to the configured region.
+
+2.  **OAuth2 / ADC (legacy)**
+    Requires ``pip install google-auth`` and one of:
+
+      - ``GOOGLE_APPLICATION_CREDENTIALS`` — path to a service account JSON.
+      - ``VERTEX_CREDENTIALS_PATH`` — alias, takes precedence if set.
+      - ``gcloud auth application-default login`` — local ADC.
+
+    Additional routing settings (non-secret) live in ``config.yaml`` under
+    the ``vertex:`` section — project_id and region.
+
+Auth selection is automatic: if ``GOOGLE_VERTEX_API_KEY`` is set, the API key
+path is used. Otherwise the adapter falls back to OAuth2 / ADC.
+
+API key env vars (all optional):
+  GOOGLE_VERTEX_API_KEY       — Vertex AI API key for Express Mode (secret).
+  GOOGLE_VERTEX_PROJECT       — GCP project ID (secret — read at runtime).
+  GOOGLE_VERTEX_LOCATION      — Vertex region (default: us-central1).
+
+OAuth2 / ADC env vars (all optional):
   GOOGLE_APPLICATION_CREDENTIALS — path to a service account JSON file (secret).
   VERTEX_CREDENTIALS_PATH        — alias, takes precedence if set (secret).
   VERTEX_PROJECT_ID              — override the project_id embedded in creds.
-  VERTEX_REGION                  — override default region ("global" unless set).
-
-Non-secret routing settings (project_id, region) also live in config.yaml
-under the ``vertex:`` section; env vars take precedence over config.yaml.
+  VERTEX_REGION                  — override default region ("us-central1").
 """
 
 import logging
@@ -42,7 +69,15 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REGION = "global"
+# Environment variable constants for API key auth (Express Mode)
+GOOGLE_VERTEX_API_KEY = "GOOGLE_VERTEX_API_KEY"
+GOOGLE_VERTEX_PROJECT = "GOOGLE_VERTEX_PROJECT"
+GOOGLE_VERTEX_LOCATION = "GOOGLE_VERTEX_LOCATION"
+
+# Default region — us-central1 is the most widely available Vertex region.
+# The old default was "global" (required for Gemini 3.x previews via ADC),
+# but API key / Express Mode works best with an explicit region.
+DEFAULT_REGION = "us-central1"
 
 _creds_cache: dict = {}
 
@@ -64,9 +99,13 @@ def _vertex_config() -> dict:
 
 
 def _resolve_region(explicit: Optional[str] = None) -> str:
-    """Region precedence: explicit arg > VERTEX_REGION env > config.yaml > default."""
+    """Region precedence: explicit arg > GOOGLE_VERTEX_LOCATION env > VERTEX_REGION env > config.yaml > default."""
     if explicit:
         return explicit
+    # Check GOOGLE_VERTEX_LOCATION first (API key / Express Mode preferred env var)
+    gv_location = (_get_secret(GOOGLE_VERTEX_LOCATION) or "").strip()
+    if gv_location:
+        return gv_location
     env_region = (_get_secret("VERTEX_REGION") or "").strip()
     if env_region:
         return env_region
@@ -75,11 +114,15 @@ def _resolve_region(explicit: Optional[str] = None) -> str:
 
 
 def _resolve_project_override() -> Optional[str]:
-    """Project-ID override precedence: VERTEX_PROJECT_ID env > config.yaml.
+    """Project-ID override precedence: GOOGLE_VERTEX_PROJECT env > VERTEX_PROJECT_ID env > config.yaml.
 
     Returns None when neither is set (the credentials' embedded project_id
-    is used in that case).
+    is used in that case for OAuth2; for API key mode the caller should
+    prompt for a project if this returns None).
     """
+    gv_project = (_get_secret(GOOGLE_VERTEX_PROJECT) or "").strip()
+    if gv_project:
+        return gv_project
     env_project = (_get_secret("VERTEX_PROJECT_ID") or "").strip()
     if env_project:
         return env_project
@@ -101,6 +144,31 @@ def _resolve_credentials_path(explicit: Optional[str]) -> Optional[str]:
         if path and os.path.exists(path):
             return path
     return None
+
+
+def has_vertex_api_key() -> bool:
+    """Check whether a Vertex AI API key is configured."""
+    return bool(_get_secret(GOOGLE_VERTEX_API_KEY))
+
+
+def resolve_vertex_api_key() -> Optional[str]:
+    """Return the configured Vertex AI API key, or None."""
+    return _get_secret(GOOGLE_VERTEX_API_KEY)
+
+
+def build_vertex_api_key_base_url(project_id: str, region: str) -> str:
+    """Build the OpenAI-compatible base URL for Vertex AI Express Mode.
+
+    Express Mode uses the standard aiplatform.googleapis.com host (or
+    ``{region}-aiplatform.googleapis.com`` for regional endpoints) with the
+    project in the URL path. The API key is passed as a Bearer token in the
+    Authorization header.
+
+    The ``global`` location uses the bare ``aiplatform.googleapis.com`` host.
+    Regional locations use ``{region}-aiplatform.googleapis.com``.
+    """
+    host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
+    return f"https://{host}/v1beta1/projects/{project_id}/locations/{region}/endpoints/openapi"
 
 
 def _refresh_credentials(creds) -> None:
@@ -203,7 +271,37 @@ def get_vertex_config(
     credentials_path: Optional[str] = None,
     region: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve (access_token, base_url) for Vertex AI, or (None, None) on failure."""
+    """Resolve (access_token_or_api_key, base_url) for Vertex AI.
+
+    Two authentication paths, chosen automatically:
+
+    1. **API Key (Express Mode)** — if ``GOOGLE_VERTEX_API_KEY`` is set.
+       Returns (api_key, base_url_with_project). No ``google-auth`` needed.
+
+    2. **OAuth2 / ADC** — legacy path. Returns (oauth2_token, base_url).
+       Requires ``google-auth`` and valid GCP credentials.
+
+    Returns (None, None) when no credentials can be resolved.
+    """
+    # --- Path 1: API Key (Express Mode) ---
+    api_key = resolve_vertex_api_key()
+    if api_key:
+        project_id = _resolve_project_override()
+        if not project_id:
+            logger.warning(
+                "Vertex API key found but no project ID configured. "
+                "Set GOOGLE_VERTEX_PROJECT in ~/.hermes/.env."
+            )
+            return None, None
+        effective_region = _resolve_region(region)
+        base_url = build_vertex_api_key_base_url(project_id, effective_region)
+        logger.debug(
+            "get_vertex_config: using API key (Express Mode) for project %s in %s",
+            project_id, effective_region,
+        )
+        return api_key, base_url
+
+    # --- Path 2: OAuth2 / ADC (legacy) ---
     token, project_id = get_vertex_credentials(credentials_path)
     if not token or not project_id:
         return None, None
@@ -216,13 +314,75 @@ def get_vertex_config(
 def has_vertex_credentials() -> bool:
     """Fast check for whether Vertex credentials appear configured.
 
-    No network calls and no google-auth import — safe for provider
-    auto-detection and setup-status display. True when either a service
-    account JSON path is resolvable, or an explicit project ID is configured
-    (env or config.yaml, implying ADC is intended).
+    Returns True when either:
+    - A Vertex API key (GOOGLE_VERTEX_API_KEY) is set, OR
+    - A service account JSON path is resolvable, OR
+    - An explicit project ID is configured (ADC intended).
+
+    No network calls and no ``google-auth`` import — safe for provider
+    auto-detection and setup-status display.
     """
+    if has_vertex_api_key():
+        return True
     if _resolve_credentials_path(None):
         return True
     if _resolve_project_override():
         return True
     return False
+
+
+# ── Model Discovery ──────────────────────────────────────────────────────────
+
+
+def discover_vertex_models(
+    api_key: str,
+    project_id: str,
+    region: str = DEFAULT_REGION,
+    timeout: float = 10.0,
+) -> list[str]:
+    """Query Vertex AI's ``models.list`` publisher endpoint for models
+    available in the given project and region.
+
+    Returns a sorted list of model ID strings (e.g. ``gemini-2.5-flash``,
+    ``gemini-3-pro-preview``).  Only models that support ``generateContent``
+    (chat / text-generation) are returned.
+
+    Returns the (sorted) model list on success.
+    Returns an empty list on any error (network, auth, parse).
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
+    url = (
+        f"https://{host}/v1/projects/{project_id}/locations/{region}"
+        "/publishers/google/models"
+    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+
+        models: list[str] = []
+        for entry in data.get("models", []):
+            methods = entry.get("supportedGenerationMethods", [])
+            if "generateContent" in methods:
+                # The ``name`` field is a full resource path:
+                #   projects/{project}/locations/{region}/publishers/google/models/{model_id}
+                model_id = entry["name"].rsplit("/", 1)[-1]
+                models.append(model_id)
+
+        return sorted(set(models))
+
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, OSError) as exc:
+        logger.warning("discover_vertex_models: failed to list models — %s", exc)
+        return []
+    except Exception as exc:
+        logger.warning("discover_vertex_models: unexpected error — %s", exc)
+        return []

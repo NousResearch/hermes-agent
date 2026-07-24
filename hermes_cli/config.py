@@ -4884,6 +4884,38 @@ def clear_model_endpoint_credentials(
 
 
 _MISSING = object()
+_LEGACY_RESTART_DRAIN_TIMEOUT = 180
+_RESTART_DRAIN_TIMEOUT_CONFIG_KEY = "agent.restart_drain_timeout"
+
+
+def _is_exact_legacy_restart_drain_timeout(value: Any) -> bool:
+    """Return True only for the persisted numeric former default."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and value == _LEGACY_RESTART_DRAIN_TIMEOUT
+    )
+
+
+def get_legacy_config_warnings(raw_config: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Return read-only warnings for persisted values that shadow safer defaults."""
+    if raw_config is None:
+        raw_config = read_raw_config()
+
+    restart_drain_timeout = _get_nested(raw_config, _RESTART_DRAIN_TIMEOUT_CONFIG_KEY)
+    if not _is_exact_legacy_restart_drain_timeout(restart_drain_timeout):
+        return []
+
+    current_default = DEFAULT_CONFIG["agent"]["restart_drain_timeout"]
+    return [
+        (
+            f"{_RESTART_DRAIN_TIMEOUT_CONFIG_KEY} is explicitly set to "
+            f"{_LEGACY_RESTART_DRAIN_TIMEOUT}, which matches the former default; "
+            f"the current default is {current_default}.\n"
+            "Long drain windows can delay or interfere with supervised gateway restarts.\n"
+            "Run: hermes config set agent.restart_drain_timeout 0"
+        )
+    ]
 
 
 def _get_nested(config, dotted_key: str):
@@ -9272,6 +9304,17 @@ def config_command(args):
             print()
             print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
             print("    Run 'hermes config migrate' to add them")
+
+        legacy_warnings = get_legacy_config_warnings()
+        if legacy_warnings:
+            print()
+            for warning in legacy_warnings:
+                lines = warning.splitlines()
+                if not lines:
+                    continue
+                print(color(f"  ⚠️  {lines[0]}", Colors.YELLOW))
+                for line in lines[1:]:
+                    print(color(f"      {line}", Colors.YELLOW))
         
         print()
     

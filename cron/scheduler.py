@@ -3982,11 +3982,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:
             delivery_outcome = "not_configured"
-        elif should_deliver and job.get("deliver", "local") != "local":
+        elif should_deliver and normalized_deliver != "local":
             delivery_outcome = "delivered"
         else:
             delivery_outcome = "suppressed"

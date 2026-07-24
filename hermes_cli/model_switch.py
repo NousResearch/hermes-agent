@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, List, NamedTuple, Optional
+from typing import Any, Iterable, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     ProviderDef,
@@ -1720,7 +1720,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, is_source_suppressed
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
@@ -1758,6 +1758,15 @@ def list_authenticated_providers(
     # https://coding-intl.dashscope.aliyuncs.com/v1 collides with the built-in
     # alibaba-coding-plan row when DASHSCOPE_API_KEY is present). Fixes #16970.
     _builtin_endpoints: set = set()
+
+    def _has_unsuppressed_env_credentials(
+        provider_id: str, env_vars: Iterable[str]
+    ) -> bool:
+        return any(
+            os.environ.get(env_var)
+            and not is_source_suppressed(provider_id, f"env:{env_var}")
+            for env_var in env_vars
+        )
 
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
@@ -1939,8 +1948,7 @@ def list_authenticated_providers(
             if not isinstance(env_vars, list):
                 continue
 
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        has_creds = _has_unsuppressed_env_credentials(hermes_id, env_vars)
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -2035,13 +2043,17 @@ def list_authenticated_providers(
             except Exception as exc:
                 logger.debug("Vertex credential check failed: %s", exc)
         elif overlay.extra_env_vars:
-            has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
+            has_creds = _has_unsuppressed_env_credentials(
+                hermes_slug, overlay.extra_env_vars
+            )
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
                 if pcfg and pcfg.api_key_env_vars:
-                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                    if _has_unsuppressed_env_credentials(
+                        hermes_slug, pcfg.api_key_env_vars
+                    ):
                         has_creds = True
                         break
         # Check auth store and credential pool for non-env-var credentials.
@@ -2205,7 +2217,9 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_has_creds = _has_unsuppressed_env_credentials(
+                _cp.slug, _cp_config.api_key_env_vars
+            )
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

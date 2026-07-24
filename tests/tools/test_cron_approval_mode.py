@@ -3,6 +3,7 @@
 import pytest
 
 import tools.approval as approval_module
+from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.approval import (
     _get_cron_approval_mode,
     check_all_command_guards,
@@ -16,10 +17,12 @@ def _clear_approval_state():
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    reset_session_vars()
     yield
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    reset_session_vars()
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +84,65 @@ class TestCronApprovalModeParsing:
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"cron_mode": False}}):
             # str(False) = "False", which is not in the approve set, so deny
             assert _get_cron_approval_mode() == "deny"
+
+
+# ---------------------------------------------------------------------------
+# ContextVar cron detection
+# ---------------------------------------------------------------------------
+
+class TestCronContextVarDetection:
+    def test_legacy_env_fallback_still_marks_cron(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        assert approval_module._is_cron_approval_context() is True
+
+    def test_explicit_blank_masks_leaked_cron_env_for_gateway_classification(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        tokens = set_session_vars(platform="api_server", cron_session="")
+        try:
+            assert approval_module._is_cron_approval_context() is False
+            assert approval_module._is_gateway_approval_context() is True
+        finally:
+            clear_session_vars(tokens)
+
+    def test_scoped_cron_deny_for_dangerous_all_and_execute_code(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+        tokens = set_session_vars(cron_session="1")
+        try:
+            dangerous = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            combined = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            code = approval_module.check_execute_code_guard("import os", "local")
+        finally:
+            clear_session_vars(tokens)
+
+        assert dangerous["approved"] is False
+        assert combined["approved"] is False
+        assert code["approved"] is False
+        assert code["outcome"] == "blocked"
+
+    def test_non_cron_blank_context_keeps_headless_execute_code_legacy_approved(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+        tokens = set_session_vars(cron_session="")
+        try:
+            result = approval_module.check_execute_code_guard("import os", "local")
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["approved"] is True
 
 
 # ---------------------------------------------------------------------------

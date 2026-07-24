@@ -10,6 +10,7 @@ from gateway.session_context import (
     get_session_env,
     set_session_vars,
     clear_session_vars,
+    reset_session_vars,
     _VAR_MAP,
     _UNSET,
 )
@@ -325,6 +326,40 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         "user_id": "123456",
         "session_key": "agent:main:telegram:dm:2144471399",
     }
+
+
+def test_cron_session_contextvar_preserves_legacy_env_fallback(monkeypatch):
+    """Unset cron ContextVar keeps old env-only cron callers working."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+
+def test_cron_session_explicit_blank_masks_leaked_env(monkeypatch):
+    """Non-cron session bindings must override a stale process cron env flag."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    tokens = set_session_vars(platform="api_server", cron_session="")
+    try:
+        assert get_session_env("HERMES_CRON_SESSION") == ""
+    finally:
+        clear_session_vars(tokens)
+
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+
+def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
+    """Cron marker supports _UNSET fallback, '1' cron, and '' explicit clear."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    tokens = set_session_vars(cron_session="1")
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+    reset_session_vars()
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
 
 
 @pytest.mark.asyncio

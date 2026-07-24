@@ -340,6 +340,54 @@ class TestProfileScopedModel:
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404
 
+    def test_model_options_offloads_payload_build_to_threadpool(self, client, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        calls = []
+
+        async def _fake_run_in_threadpool(func, *args, **kwargs):
+            calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(
+            web_server,
+            "run_in_threadpool",
+            _fake_run_in_threadpool,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert len(calls) == 1
+
+    def test_model_options_matches_tui_safe_probe_flags(self, client, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context",
+            lambda: object(),
+        )
+
+        def _fake_build_models_payload(_ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_models_payload",
+            _fake_build_models_payload,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert calls[-1]["refresh"] is False
+        assert calls[-1]["probe_custom_providers"] is False
+        assert calls[-1]["probe_current_custom_provider"] is True
+
+        resp = client.get("/api/model/options", params={"refresh": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["refresh"] is True
+        assert calls[-1]["probe_custom_providers"] is True
+        assert calls[-1]["probe_current_custom_provider"] is False
+
     def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
         calls = []
 

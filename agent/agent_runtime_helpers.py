@@ -2077,10 +2077,30 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
 
     try:
-        # Clear the per-config context_length override so the new model's
-        # actual context window is resolved via get_model_context_length()
-        # instead of inheriting the stale value from the previous model.
-        agent._config_context_length = None
+        # Re-read model.context_length from config so the endpoint-level
+        # context_length override survives model switches. The previous code
+        # cleared this to None, but model.context_length is a global setting
+        # (endpoint capacity), not a per-model attribute — clearing it causes
+        # get_model_context_length() to fall through to hardcoded catalog
+        # defaults, ignoring the user's explicit config. See #41944.
+        try:
+            from hermes_cli.config import load_config
+
+            _sm_model_cfg = load_config().get("model")
+            _sm_cfg_ctx = (
+                _sm_model_cfg.get("context_length")
+                if isinstance(_sm_model_cfg, dict)
+                else None
+            )
+            try:
+                _sm_cfg_ctx = int(_sm_cfg_ctx) if _sm_cfg_ctx is not None else None
+            except (TypeError, ValueError):
+                _sm_cfg_ctx = None
+            agent._config_context_length = (
+                _sm_cfg_ctx if _sm_cfg_ctx is not None and _sm_cfg_ctx > 0 else None
+            )
+        except Exception:
+            agent._config_context_length = None
 
         # ── Swap core runtime fields ──
         agent.model = new_model

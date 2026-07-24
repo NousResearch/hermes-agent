@@ -11,7 +11,8 @@ import type {
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
-  DesktopVersionInfo
+  DesktopVersionInfo,
+  HermesConnection
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -299,8 +300,24 @@ function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
   }
 }
 
+// Key of the connection that wants the next check once the in-flight one
+// (if any) clears — set when a check is requested while another is already
+// running for a different target, so that target isn't silently dropped.
+let backendCheckPendingKey: string | undefined
+
 export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null> {
-  if (!isRemoteMode() || $backendUpdateChecking.get()) {
+  if (!isRemoteMode()) {
+    return $backendUpdateStatus.get()
+  }
+
+  // Bind this request to the connection active when it started. Switching
+  // remote targets mid-request must not let a slower, now-stale response
+  // (for the connection we've since left) overwrite the newer one.
+  const requestKey = connectionKey($connection.get())
+
+  if ($backendUpdateChecking.get()) {
+    backendCheckPendingKey = requestKey
+
     return $backendUpdateStatus.get()
   }
 
@@ -308,8 +325,11 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
 
   try {
     const status = mapBackendCheck(await checkHermesUpdate(true))
-    $backendUpdateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
+
+    if (connectionKey($connection.get()) === requestKey) {
+      $backendUpdateStatus.set(status)
+      maybeNotifyUpdateAvailable(status)
+    }
 
     return status
   } catch (error) {
@@ -320,11 +340,24 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
       fetchedAt: Date.now()
     }
 
-    $backendUpdateStatus.set(fallback)
+    if (connectionKey($connection.get()) === requestKey) {
+      $backendUpdateStatus.set(fallback)
+    }
 
     return fallback
   } finally {
     $backendUpdateChecking.set(false)
+
+    const pendingKey = backendCheckPendingKey
+
+    backendCheckPendingKey = undefined
+
+    // Someone asked for a check for a different (still-active) target while
+    // this one was in flight — run it now instead of leaving that target
+    // showing whatever this request happened to return.
+    if (pendingKey && pendingKey !== requestKey && pendingKey === connectionKey($connection.get())) {
+      void checkBackendUpdates()
+    }
   }
 }
 
@@ -642,7 +675,15 @@ let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let lastFocusAt = 0
 let connectionUnsub: (() => void) | null = null
-let lastConnectionMode: string | undefined
+let lastConnectionKey: string | undefined
+
+// mode alone can't tell two remote backends apart — switching directly from
+// remote profile A to remote profile B leaves mode === 'remote' both times.
+// Key on the actual backend target so a target change re-checks even when
+// the mode doesn't.
+function connectionKey(conn: HermesConnection | null): string {
+  return conn?.mode === 'remote' ? `remote:${conn.baseUrl}` : String(conn?.mode)
+}
 
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
@@ -664,13 +705,16 @@ export function startUpdatePoller(): void {
 
   // The poller starts at mount, before the gateway connects — so the first
   // backend check above sees mode≠remote and no-ops. Re-check once the
-  // connection resolves to remote.
+  // connection resolves to remote, and again whenever the remote target
+  // itself changes (switching between two remote profiles).
   connectionUnsub = $connection.subscribe(conn => {
-    if (conn?.mode === lastConnectionMode) {
+    const key = connectionKey(conn)
+
+    if (key === lastConnectionKey) {
       return
     }
 
-    lastConnectionMode = conn?.mode
+    lastConnectionKey = key
 
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()
@@ -695,7 +739,7 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
-  lastConnectionMode = undefined
+  lastConnectionKey = undefined
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

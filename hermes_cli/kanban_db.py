@@ -6251,12 +6251,18 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
 
 
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    """Materialize or validate ``target`` as a linked worktree on ``branch_name``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None:
         target_common = _git_common_dir(target)
         if target_common == repo_common:
+            actual_branch = _git_current_branch(target)
+            if actual_branch != branch_name:
+                raise ValueError(
+                    f"linked worktree target {str(target)!r} has branch mismatch: "
+                    f"expected {branch_name!r}, found {actual_branch!r}"
+                )
             return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
@@ -6334,24 +6340,34 @@ def _resolve_worktree_workspace(
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
-            return requested_resolved, actual_branch
+            return requested_resolved, branch_name
         # The requested path is an existing checkout of a DIFFERENT
         # task's branch. Decompose children inherit the root's
         # workspace_path verbatim, so siblings all point here; reusing
         # the checkout as-is would run this task on the other task's
         # branch — silent cross-task provenance corruption, and unsafe
-        # when siblings run concurrently. Fall back to a fresh worktree
-        # of our own under the same repo.
+        # when siblings run concurrently. If the checkout belongs to the
+        # surrounding repo, fall back to a fresh canonical task worktree.
         fallback_root = _repo_root_for_worktree_target(requested.parent)
-        if fallback_root is not None:
+        requested_common = _git_common_dir(requested)
+        if (
+            fallback_root is not None
+            and _git_common_dir(fallback_root) == requested_common
+        ):
             fallback = fallback_root / ".worktrees" / task.id
             if fallback.resolve(strict=False) != requested_resolved:
                 _ensure_git_worktree(fallback_root, fallback, branch_name)
                 return fallback.resolve(strict=False), branch_name
-        # No repo to anchor a fallback on (or the occupied path IS this
-        # task's own canonical worktree): keep the legacy reuse rather
-        # than failing dispatch.
-        return requested_resolved, actual_branch or branch_name
+            raise ValueError(
+                f"task {task.id} linked worktree target {str(requested)!r} has branch "
+                f"mismatch: expected {branch_name!r}, found {actual_branch!r}"
+            )
+        # The linked checkout is not owned by a surrounding checkout, so it is
+        # itself the requested repo-root anchor. Materialize the task worktree
+        # below that exact linked root instead of silently reusing its branch.
+        target = requested_resolved / ".worktrees" / task.id
+        _ensure_git_worktree(requested_resolved, target, branch_name)
+        return target, branch_name
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
@@ -6384,13 +6400,16 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
       compute the absolute path themselves.
     - ``worktree``: a real linked git worktree. If ``workspace_path`` names
       a repo root, Hermes treats it as an anchor and materializes a linked
-      worktree at ``<repo>/.worktrees/<task-id>``. If ``workspace_path`` names
-      a concrete target path, Hermes creates/reuses that linked worktree. With
-      no ``workspace_path``, Hermes anchors on the board's ``default_workdir``
-      and materializes ``<repo>/.worktrees/<task-id>`` per task; if no
-      ``default_workdir`` is configured it raises rather than guessing from the
-      dispatcher's CWD. When ``branch_name`` is empty, Hermes uses
-      ``wt/<task-id>``.
+      worktree at ``<repo>/.worktrees/<task-id>``. An existing linked checkout
+      on the requested branch is safely reused. A checkout on another branch
+      falls back to the surrounding repo's canonical task worktree when it
+      belongs to that repo; otherwise the linked checkout itself is the anchor
+      and gets ``<linked-root>/.worktrees/<task-id>``. Branch mismatch at an
+      already-canonical target raises explicitly. With no ``workspace_path``,
+      Hermes anchors on the board's ``default_workdir`` and materializes
+      ``<repo>/.worktrees/<task-id>`` per task; if no ``default_workdir`` is
+      configured it raises rather than guessing from the dispatcher's CWD.
+      When ``branch_name`` is empty, Hermes uses ``wt/<task-id>``.
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.

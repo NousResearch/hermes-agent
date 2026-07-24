@@ -66,6 +66,58 @@ def _add_worktree(repo: Path, target: Path, branch: str) -> Path:
     return target
 
 
+def test_resolve_linked_repo_root_anchor_materializes_task_worktree(
+    kanban_home, tmp_path
+):
+    repo = _make_repo(tmp_path)
+    linked_root = _add_worktree(repo, tmp_path / "linked-root", "anchor/main")
+    branch = "wt/linked-anchor-task"
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="linked anchor",
+            workspace_kind="worktree",
+            workspace_path=str(linked_root),
+            branch_name=branch,
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    workspace, resolved_branch = kb._resolve_worktree_workspace(task)
+    expected = linked_root / ".worktrees" / tid
+    assert workspace == expected
+    assert resolved_branch == branch
+    head = subprocess.run(
+        ["git", "-C", str(workspace), "branch", "--show-current"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert head == branch
+
+
+def test_resolve_linked_anchor_rejects_existing_target_branch_mismatch(
+    kanban_home, tmp_path
+):
+    repo = _make_repo(tmp_path)
+    linked_root = _add_worktree(repo, tmp_path / "linked-root", "anchor/main")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="linked anchor",
+            workspace_kind="worktree",
+            workspace_path=str(linked_root),
+            branch_name="wt/intended-task",
+        )
+        target = linked_root / ".worktrees" / tid
+        _add_worktree(linked_root, target, "wt/wrong-task")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    with pytest.raises(ValueError, match="branch mismatch"):
+        kb._resolve_worktree_workspace(task)
+
+
 def test_decompose_worktree_children_get_own_workspace(kanban_home):
     with kb.connect() as conn:
         root = kb.create_task(conn, title="build the feature", triage=True)
@@ -172,7 +224,7 @@ def test_resolve_worktree_same_branch_still_reuses(kanban_home, tmp_path):
     assert branch == f"wt/{tid}"
 
 
-def test_resolve_worktree_own_path_on_foreign_branch_keeps_legacy_reuse(
+def test_resolve_worktree_own_path_on_foreign_branch_rejects_mismatch(
     kanban_home, tmp_path
 ):
     repo = _make_repo(tmp_path)
@@ -191,8 +243,9 @@ def test_resolve_worktree_own_path_on_foreign_branch_keeps_legacy_reuse(
         conn.commit()
         task = kb.get_task(conn, tid)
 
-    # The fallback target would be the occupied path itself, so the
-    # legacy reuse applies rather than failing dispatch.
-    workspace, branch = kb._resolve_worktree_workspace(task)
-    assert workspace == own.resolve()
-    assert branch == "wt/foreign"
+    # The fallback target is the occupied path itself, so no safe alternate
+    # checkout exists. Fail explicitly rather than silently running the task
+    # on the wrong branch.
+    assert task is not None
+    with pytest.raises(ValueError, match="branch mismatch"):
+        kb._resolve_worktree_workspace(task)

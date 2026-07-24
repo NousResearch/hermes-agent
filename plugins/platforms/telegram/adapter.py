@@ -4102,6 +4102,14 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            deferred_timeout: Optional[Exception] = None
+
+            def _failure_or_deferred_timeout(result: SendResult) -> SendResult:
+                """Never let a later direct failure override uncertain delivery."""
+                if deferred_timeout is not None:
+                    raise deferred_timeout
+                return result
+
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
@@ -4128,10 +4136,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     should_thread = self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
                 if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
-                    return SendResult(
-                        success=False,
-                        error=self._dm_topic_missing_anchor_error(),
-                        retryable=False,
+                    return _failure_or_deferred_timeout(
+                        SendResult(
+                            success=False,
+                            error=self._dm_topic_missing_anchor_error(),
+                            retryable=False,
+                        )
                     )
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
@@ -4184,10 +4194,12 @@ class TelegramAdapter(BasePlatformAdapter):
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
                                 if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
-                                    return SendResult(
-                                        success=False,
-                                        error=str(send_err),
-                                        retryable=False,
+                                    return _failure_or_deferred_timeout(
+                                        SendResult(
+                                            success=False,
+                                            error=str(send_err),
+                                            retryable=False,
+                                        )
                                     )
                                 # Telegram has been observed to return a
                                 # one-off "thread not found" that recovers on
@@ -4223,10 +4235,12 @@ class TelegramAdapter(BasePlatformAdapter):
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
                                 if private_dm_topic_send:
                                     safe_send_error = _redact_telegram_error_text(send_err)
-                                    return SendResult(
-                                        success=False,
-                                        error=safe_send_error,
-                                        retryable=False,
+                                    return _failure_or_deferred_timeout(
+                                        SendResult(
+                                            success=False,
+                                            error=safe_send_error,
+                                            retryable=False,
+                                        )
                                     )
                                 # Original message was deleted before we
                                 # could reply. For private-topic fallback
@@ -4267,7 +4281,20 @@ class TelegramAdapter(BasePlatformAdapter):
                             and not self._looks_like_connect_timeout(send_err)
                             and not is_pool_timeout
                         ):
-                            raise
+                            if len(chunks) == 1:
+                                raise
+                            if deferred_timeout is None:
+                                deferred_timeout = send_err
+                            safe_send_error = _redact_telegram_error_text(send_err)
+                            logger.warning(
+                                "[%s] TimedOut on chunk %d/%d; delivery is uncertain, "
+                                "not retrying this chunk and continuing the response: %s",
+                                self.name,
+                                i + 1,
+                                len(chunks),
+                                safe_send_error,
+                            )
+                            break
                         if is_pool_timeout:
                             await self._drain_general_connections_after_pool_timeout()
                         if _send_attempt < 2:
@@ -4294,7 +4321,11 @@ class TelegramAdapter(BasePlatformAdapter):
                                 await asyncio.sleep(wait)
                                 continue
                         raise
-                message_ids.append(str(msg.message_id))
+                if msg is not None:
+                    message_ids.append(str(msg.message_id))
+
+            if deferred_timeout is not None:
+                raise deferred_timeout
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -4323,6 +4354,12 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
         except Exception as e:
+            # Once a chunk's delivery is uncertain, no later error may make the
+            # whole response retryable and resend that chunk. Preserve the first
+            # generic timeout while still attempting every subsequent chunk.
+            pending_timeout = locals().get("deferred_timeout")
+            if pending_timeout is not None:
+                e = pending_timeout
             safe_error = _redact_telegram_error_text(e)
             logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
             err_str = str(e).lower()

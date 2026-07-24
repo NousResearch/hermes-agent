@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "Falha ao guardar o canal principal: {error}"
     success:               "✅ Canal principal definido como **{name}** (ID: {chat_id}).\nAs tarefas cron e mensagens entre plataformas serão entregues aqui."
 
+  start:
+    welcome:           "👋 O Hermes está conectado e ouvindo.\n\nEnvie qualquer mensagem para iniciar uma conversa, ou tente:\n• /help — todos os comandos\n• /status — informações da sessão\n• /new — nova sessão"
+    home_not_set:      "Nenhum canal principal definido ainda. Envie /sethome para receber neste chat as notificações de tarefas agendadas e em segundo plano."
+    home_here:         "Este chat é o canal principal: as notificações de tarefas agendadas e em segundo plano chegam aqui."
+    home_elsewhere:    "O canal principal é outro chat (ID `{chat_id}`). Enviar /sethome aqui o moveria para este chat."
+
   status:
     header:                "📊 **Estado do Hermes Gateway**"
     matrix_scope_header:   "**Matrix scope:**"

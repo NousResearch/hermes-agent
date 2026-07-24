@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "Salvataggio del canale home non riuscito: {error}"
     success:               "✅ Canale home impostato su **{name}** (ID: {chat_id}).\nI cron job e i messaggi cross-platform verranno consegnati qui."
 
+  start:
+    welcome:           "👋 Hermes è connesso e in ascolto.\n\nInvia un messaggio qualsiasi per iniziare una conversazione, oppure prova:\n• /help — tutti i comandi\n• /status — info sessione\n• /new — nuova sessione"
+    home_not_set:      "Nessun canale principale impostato. Invia /sethome per ricevere in questa chat le notifiche delle attività pianificate e in background."
+    home_here:         "Questa chat è il canale principale: le notifiche delle attività pianificate e in background arrivano qui."
+    home_elsewhere:    "Il canale principale è un'altra chat (ID `{chat_id}`). Inviare /sethome qui lo sposterebbe in questa chat."
+
   status:
     header:                "📊 **Stato del Gateway Hermes**"
     matrix_scope_header:   "**Matrix scope:**"

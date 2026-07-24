@@ -294,6 +294,12 @@ gateway:
     save_failed:           "Failed to save home channel: {error}"
     success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
 
+  start:
+    welcome:           "👋 Hermes is connected and listening.\n\nSend any message to start a conversation, or try:\n• /help — all commands\n• /status — session info\n• /new — fresh session"
+    home_not_set:      "No home channel is set yet. Send /sethome to receive scheduled-task and background notifications in this chat."
+    home_here:         "This chat is the home channel: scheduled-task and background notifications arrive here."
+    home_elsewhere:    "Home channel is set to another chat (ID `{chat_id}`). Sending /sethome here would move it to this chat."
+
   status:
     header:                "📊 **Hermes Gateway Status**"
     matrix_scope_header:   "**Matrix scope:**"

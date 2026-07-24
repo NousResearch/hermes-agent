@@ -286,6 +286,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "Theip ar shábháil chainéil bhaile: {error}"
     success:               "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."
 
+  start:
+    welcome:           "👋 Tá Hermes ceangailte agus ag éisteacht.\n\nSeol teachtaireacht ar bith chun comhrá a thosú, nó bain triail as:\n• /help — gach ordú\n• /status — eolas seisiúin\n• /new — seisiún nua"
+    home_not_set:      "Níl aon chainéal baile socraithe fós. Seol /sethome chun fógraí faoi thascanna sceidealta agus tascanna cúlra a fháil sa chomhrá seo."
+    home_here:         "Is é an comhrá seo an cainéal baile: tagann fógraí faoi thascanna sceidealta agus tascanna cúlra anseo."
+    home_elsewhere:    "Tá an cainéal baile socraithe do chomhrá eile (ID `{chat_id}`). Dá seolfá /sethome anseo, bhogfaí go dtí an comhrá seo é."
+
   status:
     header:                "📊 **Stádas Hermes Gateway**"
     matrix_scope_header:   "**Matrix scope:**"

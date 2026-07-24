@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "無法儲存主頻道：{error}"
     success:               "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"
 
+  start:
+    welcome:           "👋 Hermes 已連線並待命中。\n\n傳送任何訊息即可開始對話,也可以試試:\n• /help — 全部指令\n• /status — 工作階段資訊\n• /new — 新工作階段"
+    home_not_set:      "尚未設定主頻道。傳送 /sethome 即可在此聊天接收排程任務和背景任務的通知。"
+    home_here:         "此聊天就是主頻道:排程任務和背景任務的通知會送達這裡。"
+    home_elsewhere:    "主頻道已設定為另一個聊天 (ID `{chat_id}`)。在此傳送 /sethome 會將其移到這裡。"
+
   status:
     header:                "📊 **Hermes 閘道狀態**"
     matrix_scope_header:   "**Matrix scope:**"

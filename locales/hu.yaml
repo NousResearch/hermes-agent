@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "Nem sikerült menteni a kezdőcsatornát: {error}"
     success:               "✅ Kezdőcsatorna beállítva: **{name}** (ID: {chat_id}).\nA cron-feladatok és a platformok közötti üzenetek ide érkeznek."
 
+  start:
+    welcome:           "👋 A Hermes csatlakozva van és figyel.\n\nKüldj bármilyen üzenetet a beszélgetés megkezdéséhez, vagy próbáld ki:\n• /help — összes parancs\n• /status — munkamenet-információ\n• /new — új munkamenet"
+    home_not_set:      "Még nincs beállítva otthoni csatorna. Küldd el a /sethome parancsot, hogy az ütemezett és háttérfeladatok értesítéseit ebben a csevegésben kapd."
+    home_here:         "Ez a csevegés az otthoni csatorna: az ütemezett és háttérfeladatok értesítései ide érkeznek."
+    home_elsewhere:    "Az otthoni csatorna egy másik csevegés (ID `{chat_id}`). A /sethome itt ebbe a csevegésbe helyezné át."
+
   status:
     header:                "📊 **Hermes Gateway állapot**"
     matrix_scope_header:   "**Matrix scope:**"

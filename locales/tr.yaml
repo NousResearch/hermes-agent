@@ -282,6 +282,12 @@ Future messages in this room will use that transcript until `/reset` or another 
     save_failed:           "Ana kanal kaydedilemedi: {error}"
     success:               "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."
 
+  start:
+    welcome:           "👋 Hermes bağlı ve dinliyor.\n\nSohbete başlamak için herhangi bir mesaj gönderin veya şunları deneyin:\n• /help — tüm komutlar\n• /status — oturum bilgisi\n• /new — yeni oturum"
+    home_not_set:      "Henüz ana kanal ayarlanmadı. Zamanlanmış görev ve arka plan bildirimlerini bu sohbette almak için /sethome gönderin."
+    home_here:         "Bu sohbet ana kanaldır: zamanlanmış görev ve arka plan bildirimleri buraya gelir."
+    home_elsewhere:    "Ana kanal başka bir sohbete ayarlı (ID `{chat_id}`). Burada /sethome gönderirseniz bu sohbete taşınır."
+
   status:
     header:                "📊 **Hermes Gateway Durumu**"
     matrix_scope_header:   "**Matrix scope:**"

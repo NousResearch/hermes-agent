@@ -2146,9 +2146,12 @@ def _run_psql(plan: Mapping[str, Any], sql: str, *, read_only: bool) -> bytes:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ArtifactError("artifact_database_execution_failed") from exc
-    if result.returncode != 0 or result.stderr or len(result.stdout) > MAX_JSON + 1:
+    if result.returncode != 0 or result.stderr:
         raise ArtifactError("artifact_database_execution_failed")
-    return result.stdout.rstrip(b"\n")
+    payload = result.stdout.removeprefix(b"\n").removesuffix(b"\n")
+    if len(payload) > MAX_JSON:
+        raise ArtifactError("artifact_database_execution_failed")
+    return payload
 
 
 def _psql_json(plan: Mapping[str, Any], sql: str, *, read_only: bool = True) -> Mapping[str, Any]:

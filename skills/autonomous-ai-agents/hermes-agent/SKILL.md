@@ -1,7 +1,7 @@
 ---
 name: hermes-agent
 description: "Use, configure, theme, extend, and orchestrate Hermes Agent."
-version: 3.0.0
+version: 3.1.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]

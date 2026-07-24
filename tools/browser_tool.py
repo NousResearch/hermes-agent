@@ -87,6 +87,32 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 )
 
 
+def _resolve_browser_executable_path() -> str:
+    """Resolve the Chromium/Chrome binary path from env or config.
+
+    Priority: ``AGENT_BROWSER_EXECUTABLE_PATH`` env var (explicit override)
+    then ``browser.executable_path`` config key.  Returns ``""`` when unset.
+
+    On ARM64 and other platforms without Chrome-for-Testing, users set
+    ``browser.executable_path`` in config.yaml to point agent-browser at a
+    system or Playwright Chromium build.  Without this helper the config key
+    was a dead value — only the env var worked.  (#66111)
+    """
+    env_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if env_path:
+        return env_path
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        cfg_path = (cfg.get("browser", {}).get("executable_path", "") or "").strip()
+        if cfg_path:
+            return cfg_path
+    except Exception:
+        pass
+    return ""
+
+
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
 
@@ -102,6 +128,11 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+    # Propagate browser executable path from config so ARM64/other users who
+    # set ``browser.executable_path`` don't need a separate env var. (#66111)
+    exec_path = _resolve_browser_executable_path()
+    if exec_path:
+        env.setdefault("AGENT_BROWSER_EXECUTABLE_PATH", exec_path)
     return env
 
 try:
@@ -4579,8 +4610,9 @@ def _chromium_installed() -> bool:
 
     Checks, in order:
 
-    1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
-       agent-browser at a pre-installed Chrome/Chromium.
+    1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var or ``browser.executable_path``
+       config key — the official way to point agent-browser at a pre-installed
+       Chrome/Chromium.  (#66111)
     2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
        ``chromium-browser``, ``chrome``).
     3. Playwright's browser cache (current logic) — directories containing
@@ -4597,8 +4629,9 @@ def _chromium_installed() -> bool:
     if _cached_chromium_installed is not None:
         return _cached_chromium_installed
 
-    # 1. AGENT_BROWSER_EXECUTABLE_PATH — explicit user-configured browser
-    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    # 1. AGENT_BROWSER_EXECUTABLE_PATH env or browser.executable_path config
+    #    — explicit user-configured browser (#66111).
+    ab_path = _resolve_browser_executable_path()
     if ab_path:
         if os.path.isfile(ab_path) or shutil.which(ab_path):
             _cached_chromium_installed = True

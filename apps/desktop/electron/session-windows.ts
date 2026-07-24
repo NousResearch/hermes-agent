@@ -5,6 +5,8 @@
 
 import { pathToFileURL } from 'node:url'
 
+import { MACOS_TAHOE_DARWIN_MAJOR } from './titlebar-overlay-width'
+
 // Secondary windows open at the minimum usable size — a compact side panel for
 // subagent watch / cmd-click session pop-out, not a second full desktop.
 const SESSION_WINDOW_MIN_WIDTH = 420
@@ -76,6 +78,14 @@ function instanceWindowBounds(base: { x: number; y: number; width: number; heigh
   }
 }
 
+// Electron 40 can leave additional BrowserWindows presenting only the native
+// vibrancy material on Tahoe even though their renderers have painted. Keep the
+// working primary-window appearance unchanged, but omit vibrancy for compact
+// session and full peer windows on Darwin 25+.
+function secondaryWindowVibrancy({ isMac = false, darwinMajor = 0 } = {}): 'sidebar' | undefined {
+  return isMac && darwinMajor < MACOS_TAHOE_DARWIN_MAJOR ? 'sidebar' : undefined
+}
+
 // A small registry keyed by sessionId that guarantees one window per chat:
 // opening a session that already has a live window focuses it instead of
 // spawning a duplicate, and a window removes itself from the registry when it
@@ -141,6 +151,7 @@ export {
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   instanceWindowBounds,
+  secondaryWindowVibrancy,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 }

@@ -4104,31 +4104,33 @@ def tick(
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
-            # Record the attempt before executor dispatch. Recovery classifies
-            # abandoned records as unknown; it never automatically retries them.
-            execution = create_execution(job_id, source="builtin")
-            dispatched_job = dict(job, execution_id=execution["id"])
-            _ctx = contextvars.copy_context()
-
-            def _run_and_release(j=dispatched_job, ctx=_ctx):
-                try:
-                    return ctx.run(_process_job, j)
-                finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
-
             try:
+                # Record the attempt before executor dispatch. Recovery classifies
+                # abandoned records as unknown; it never automatically retries them.
+                execution = create_execution(job_id, source="builtin")
+                dispatched_job = dict(job, execution_id=execution["id"])
+                _ctx = contextvars.copy_context()
+
+                def _run_and_release(j=dispatched_job, ctx=_ctx):
+                    try:
+                        return ctx.run(_process_job, j)
+                    finally:
+                        with _running_lock:
+                            _running_job_ids.discard(j["id"])
+
                 return pool.submit(_run_and_release)
             except Exception as submit_err:
                 with _running_lock:
                     _running_job_ids.discard(job_id)
-                finish_execution(
-                    execution["id"],
-                    success=False,
-                    error=f"Executor dispatch failed: {submit_err}",
-                )
-                # Interpreter began finalizing between the guard above and the
-                # submit — release the in-flight claim we just took and skip.
+                if "execution" in locals() and isinstance(execution, dict) and execution.get("id"):
+                    try:
+                        finish_execution(
+                            execution["id"],
+                            success=False,
+                            error=f"Executor dispatch failed: {submit_err}",
+                        )
+                    except Exception:
+                        pass
                 if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
                     logger.warning(
                         "Job '%s' not dispatched — interpreter is shutting down",

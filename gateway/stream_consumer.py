@@ -251,6 +251,11 @@ class GatewayStreamConsumer:
         # Telegram overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
         self._fallback_preserve_partial_messages = False
+        # True when the streamed/overflow prefix was visibly degraded relative
+        # to the raw final markdown (e.g. Telegram fell back from MarkdownV2 to
+        # plain text). In that case exact-prefix tail dedupe is unsafe: resend
+        # the full final text and delete the stale partial instead.
+        self._fallback_lossy_prefix = False
         # Keep fallback recovery responsive. Telegram's adapter already bounds
         # edit retries at five seconds; a final-delivery fallback must not hold
         # the stream task through a longer flood cooldown before retrying.
@@ -482,6 +487,7 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+        self._fallback_lossy_prefix = False
         self._segment_preview_message_ids = set()
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
@@ -1170,6 +1176,8 @@ class GatewayStreamConsumer:
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
+        if self._fallback_lossy_prefix:
+            return final_text
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
             return final_text[len(prefix):].lstrip()
@@ -1447,6 +1455,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+        self._fallback_lossy_prefix = False
 
     async def _send_empty_fallback_final(self, final_text: str) -> str:
         """Commit a completed answer after Telegram finalization fails.
@@ -2137,14 +2146,20 @@ class GatewayStreamConsumer:
                                 or self._message_id
                             )
                             delivered_prefix = raw_response.get("delivered_prefix")
+                            lossy_markdown_fallback = bool(
+                                raw_response.get("lossy_markdown_fallback")
+                            )
                             if isinstance(delivered_prefix, str) and delivered_prefix:
                                 self._last_sent_text = delivered_prefix
                                 self._fallback_prefix = delivered_prefix
-                                self._fallback_preserve_partial_messages = text.startswith(
-                                    delivered_prefix
+                                self._fallback_lossy_prefix = lossy_markdown_fallback
+                                self._fallback_preserve_partial_messages = (
+                                    text.startswith(delivered_prefix)
+                                    and not lossy_markdown_fallback
                                 )
                             else:
                                 self._fallback_prefix = self._visible_prefix()
+                                self._fallback_lossy_prefix = False
                                 self._fallback_preserve_partial_messages = False
                             self._fallback_final_send = True
                             self._edit_supported = False
@@ -2157,6 +2172,7 @@ class GatewayStreamConsumer:
                         # limiting, use adaptive backoff: double the edit interval
                         # and retry on the next cycle.  Only permanently disable
                         # edits after _MAX_FLOOD_STRIKES consecutive failures.
+                        immediate_final_fallback = False
                         if self._is_flood_error(result):
                             self._flood_strikes += 1
                             self._current_edit_interval = min(
@@ -2187,7 +2203,6 @@ class GatewayStreamConsumer:
                                 # respects the new interval.
                                 self._last_edit_time = time.monotonic()
                                 return False
-
                             if immediate_final_fallback:
                                 logger.debug(
                                     "Turn-final edit hit flood control; "
@@ -2202,6 +2217,15 @@ class GatewayStreamConsumer:
                             self._flood_strikes,
                         )
                         self._fallback_prefix = self._visible_prefix()
+                        if immediate_final_fallback:
+                            # The visible prefix is a raw streaming preview, not
+                            # a finalized Telegram MarkdownV2/rich chunk.  Do
+                            # not send only the tail: that leaves the first
+                            # visible message unformatted.  Mark it lossy so the
+                            # fallback path resends the full final answer and
+                            # best-effort deletes the stale preview.
+                            self._fallback_lossy_prefix = True
+                            self._fallback_preserve_partial_messages = False
                         self._fallback_final_send = True
                         self._edit_supported = False
                         self._already_sent = True

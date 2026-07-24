@@ -869,11 +869,35 @@ async def test_finalize_edit_plain_content_stays_legacy():
 
 
 @pytest.mark.asyncio
+async def test_finalize_edit_flood_control_does_not_degrade_to_plain_text():
+    """RetryAfter during MarkdownV2 finalize must bubble to flood-control
+    handling instead of downgrading the visible preview to plain text.
+    """
+    adapter = _make_adapter()
+
+    class FakeRetryAfter(Exception):
+        def __init__(self, seconds):
+            super().__init__(f"Flood control exceeded. Retry in {seconds} seconds")
+            self.retry_after = seconds
+
+    adapter._bot.do_api_request = AsyncMock(return_value=None)
+    adapter._bot.edit_message_text = AsyncMock(side_effect=FakeRetryAfter(135))
+
+    result = await adapter.edit_message(
+        "12345", "555", "**bold**\n\n- item one\n- item two", finalize=True,
+    )
+
+    assert result.success is False
+    assert result.error == "flood_control:135"
+    assert adapter._bot.edit_message_text.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monkeypatch, caplog):
     import agent.redact as redact
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
-    token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    token = "123456789:***"
     adapter = _make_adapter()
     adapter._bot.edit_message_text = AsyncMock(
         side_effect=BadRequest(

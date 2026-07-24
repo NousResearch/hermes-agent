@@ -599,6 +599,7 @@ class TelegramAdapter(BasePlatformAdapter):
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
+    FALLBACK_ON_FINAL_EDIT_FLOOD = True
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
@@ -1247,6 +1248,41 @@ class TelegramAdapter(BasePlatformAdapter):
             return isinstance(error, BadRequest)
         except ImportError:
             return False
+
+    @classmethod
+    def _should_fallback_markdown_to_plain_text(cls, error: Exception) -> bool:
+        """True only for permanent markdown-formatting failures.
+
+        Telegram flood control / network faults must bubble to the outer retry
+        logic instead of degrading a streamed preview to plain text. Otherwise
+        users briefly see an unformatted first message, then a later formatted
+        continuation/final message.
+        """
+        err_lower = str(error).lower()
+        if "not modified" in err_lower:
+            return False
+        if getattr(error, "retry_after", None) is not None or "retry after" in err_lower:
+            return False
+        transient_markers = (
+            "timed out",
+            "timeout",
+            "readtimeout",
+            "writetimeout",
+            "connecterror",
+            "connect error",
+            "connection error",
+            "networkerror",
+            "network error",
+            "server disconnected",
+            "temporarily unavailable",
+            "temporary failure",
+            "httpx",
+        )
+        if any(marker in err_lower for marker in transient_markers):
+            return False
+        if cls._is_bad_request_error(error):
+            return True
+        return "parse" in err_lower or "markdown" in err_lower or "entity" in err_lower
 
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
@@ -4481,6 +4517,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
+                if not self._should_fallback_markdown_to_plain_text(fmt_err):
+                    raise
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 safe_format_error = _redact_telegram_error_text(fmt_err)
                 logger.warning(
@@ -4638,6 +4676,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # if truncate_message returned a single chunk just edit normally.
             chunks = [content]
 
+        lossy_markdown_fallback = False
+
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
         try:
@@ -4656,11 +4696,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        if not self._should_fallback_markdown_to_plain_text(fmt_err):
+                            return SendResult(
+                                success=False,
+                                error=str(fmt_err),
+                                retryable=True,
+                            )
                         logger.warning(
                             "[%s] Overflow split: MarkdownV2 first-chunk edit "
                             "failed, falling back to plain text: %s",
                             self.name, _redact_telegram_error_text(fmt_err),
                         )
+                        lossy_markdown_fallback = True
                         await self._bot.edit_message_text(
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_id=int(message_id),
@@ -4697,6 +4744,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
             sent_msg = None
+            continuation_error: Exception | None = None
             reply_to_id = int(prev_id) if prev_id else None
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
@@ -4752,15 +4800,22 @@ class TelegramAdapter(BasePlatformAdapter):
                                 "[%s] Overflow continuation no-reply retry failed: %s",
                                 self.name, _redact_telegram_error_text(_retry_err),
                             )
+                            continuation_error = _retry_err
                             sent_msg = None
                             break
                     if use_markdown:
-                        # try plain text on next loop iteration
-                        continue
+                        if self._should_fallback_markdown_to_plain_text(send_err):
+                            # try plain text on next loop iteration
+                            lossy_markdown_fallback = True
+                            continue
+                        continuation_error = send_err
+                        sent_msg = None
+                        break
                     logger.warning(
                         "[%s] Overflow continuation send failed: %s",
                         self.name, _redact_telegram_error_text(send_err),
                     )
+                    continuation_error = send_err
                     sent_msg = None
                     break
             if sent_msg is None:
@@ -4778,17 +4833,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \(\d+/\d+\)$", "", delivered)
                     for delivered in delivered_chunks
                 )
+                error_text = "overflow_continuation_failed"
+                retry_after = None
+                if continuation_error is not None:
+                    retry_after = getattr(continuation_error, "retry_after", None)
+                    if retry_after is not None or "retry after" in str(continuation_error).lower():
+                        error_text = str(continuation_error)
                 return SendResult(
                     success=False,
                     message_id=prev_id,
-                    error="overflow_continuation_failed",
+                    error=error_text,
                     retryable=True,
+                    retry_after=retry_after,
                     raw_response={
                         "partial_overflow": True,
                         "delivered_chunks": 1 + len(continuation_ids),
                         "total_chunks": len(chunks),
                         "last_message_id": prev_id,
                         "delivered_prefix": delivered_prefix,
+                        "lossy_markdown_fallback": lossy_markdown_fallback,
                         "continuation_message_ids": tuple(continuation_ids),
                     },
                     continuation_message_ids=tuple(continuation_ids),

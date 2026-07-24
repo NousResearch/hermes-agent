@@ -100,6 +100,43 @@ async def test_write_tool_log_writes_and_rotates_handler(tmp_path, monkeypatch):
     await asyncio.sleep(0)  # keep the asyncio marker honest
 
 
+def test_write_tool_log_dir_resolves_via_profile_scope_not_frozen_global(tmp_path):
+    """write_tool_log's log_dir must resolve through get_hermes_home() (which
+    honors the active _HERMES_HOME_OVERRIDE set by _profile_runtime_scope for
+    a multiplexed secondary-profile turn), not the import-time-frozen
+    ``gateway.run._hermes_home`` module global.
+
+    Same import-time-freeze bug class as gateway/hooks.py::HOOKS_DIR,
+    tools/checkpoint_manager.py::CHECKPOINT_BASE, and
+    gateway/sticker_cache.py::CACHE_PATH: a module-level path computed once
+    at import time never sees a later per-task home override, so a secondary
+    profile's tool-call activity would land in the default profile's
+    logs/tool_calls.log instead of its own.
+    """
+    import gateway.run as gateway_run
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    profile_home = tmp_path / "profiles" / "beta"
+    profile_home.mkdir(parents=True)
+
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        # This is the exact expression write_tool_log now uses — must
+        # resolve to the scoped profile's own logs/ directory.
+        assert get_hermes_home() / "logs" == profile_home / "logs"
+        # The frozen module global is the bug this fix removes: it was
+        # captured at import time, before any profile scope ever existed,
+        # so it never reflects the override and would misdirect the log
+        # to the default profile's home instead.
+        assert gateway_run._hermes_home != profile_home
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_log_mode_disables_chat_progress():
     """tool_progress_enabled must be False in log mode (silent in chat)."""
     for mode, expected in [("all", True), ("log", False), ("off", False)]:

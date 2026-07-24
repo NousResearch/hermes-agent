@@ -1065,9 +1065,37 @@ TELEGRAM_GUEST_MODE=true
 
 Default: `false`.
 
-With `guest_mode: true`, a message from a non-allowlisted group is processed **only** if it explicitly @mentions the bot. The mention is required every turn — there's no session stickiness for guest interactions, so the bot never auto-engages in a friend group thread it isn't pinged into.
+With `guest_mode: true`, a message from a non-allowlisted group is processed **only** if it explicitly @mentions the bot. The mention is required every turn, so the bot never auto-engages in a friend group thread it isn't pinged into.
 
 DMs and allowlisted groups behave exactly as before.
+
+### Native guest replies (Bot API 10.0)
+
+Telegram's Bot API 10.0 added **Guest Bots**: a bot can receive an `@mention` from a group it has never joined via a `guest_message` update, and reply to it exactly once via `answerGuestQuery`. This is the delivery mechanism behind `guest_mode: true` above — when your bot's Telegram client library and Bot API version support it, Hermes uses it automatically. There's no separate config flag; it's covered by the same `guest_mode: true` setting.
+
+**Who can use it.** Guest mode gates the *chat* by mention, but the *person* @mentioning still has to be someone your bot already trusts: the caller is checked against the same user authorization as the rest of the bot — your Telegram allowlist (`TELEGRAM_ALLOWED_USERS` and the group variants) plus paired users. A mention from anyone else is ignored entirely: no placeholder, no reply, just a `Guest caller not authorized` warning in the gateway log (worth knowing when testing — a silent bot usually means the tester isn't allowlisted, not an outage). This applies to every guest interaction, including tapping a "tap to receive" media button. To deliberately open guest mode to everyone, add `*` to `TELEGRAM_ALLOWED_USERS`; with no allowlist configured at all, guest mentions are denied for everyone.
+
+**How a reply looks to the user:**
+
+1. Someone @mentions the bot in a group it isn't a member of.
+2. The bot immediately posts a placeholder (a short "⏳ Thinking..." style message) — guest replies are one-shot and Telegram expects a fast acknowledgement.
+3. Once the agent finishes processing, that placeholder is edited in place with the final answer.
+
+**Media in guest replies.** A `guest_message` reply can only carry text and buttons — Telegram doesn't allow pushing a file directly into it. If the agent's reply includes a file (image, audio, video, document), Hermes instead edits the placeholder to a **"✅ Ready — tap to receive"** button. Tapping it sends a fresh `guest_message` carrying a one-time delivery token; the bot answers that one with the actual file, delivered inline as a cached-file result. This two-step dance is purely a side effect of the one-shot `answerGuestQuery` constraint — from the user's side it's just "tap the button to get the file."
+
+This requires one more setting: a home chat the bot **is** a member of, used to stage the file before Telegram will let it be reused as a cached inline result. This can be a group/channel (negative id) or simply your own private DM with the bot (positive id) — any chat the bot can already message works.
+
+```bash
+TELEGRAM_HOME_CHANNEL="123456789"   # e.g. your own DM with the bot, or a group/channel id
+```
+
+Without `TELEGRAM_HOME_CHANNEL` set, guest-mode media delivery falls back to a text-only reply (no button, no file).
+
+**Limitations:**
+
+- Delivery tokens expire **10 minutes** after the button is posted. Tapping "tap to receive" after that shows an error instead of the file — just ask again.
+- Tapping the same button more than once re-delivers the file rather than erroring, as long as it's still within the 10-minute window.
+- Each guest caller gets their own conversation session (keyed per chat + caller when `group_sessions_per_user` is on, which is the default), so repeat mentions from the same person continue their conversation, while different people asking in the same group stay isolated from each other. The @mention is still required every turn — memory persists, auto-engagement doesn't. Tapping a deliver button is independent of this: token redemption works regardless of session state.
 
 ## Slash Command Access Control
 

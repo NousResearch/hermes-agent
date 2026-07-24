@@ -256,6 +256,28 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     document.head.appendChild(link)
     INJECTED_FONT_URLS.add(typo.fontUrl)
   }
+
+  // Inject / clear customCSS from the skin (mirrors web/src/themes/context.tsx).
+  // A theme carries the optional customCSS field; we inject/remove a single
+  // <style> tag to keep the DOM clean and avoid stale rules on switch.
+  const cssId = 'hermes-desktop-custom-css'
+  let cssEl = document.getElementById(cssId) as HTMLStyleElement | null
+  const customCSS = theme.customCSS?.trim()
+
+  if (!customCSS) {
+    if (cssEl) {
+      cssEl.remove()
+    }
+  } else {
+    if (!cssEl) {
+      cssEl = document.createElement('style')
+      cssEl.id = cssId
+      cssEl.dataset.hermesSkinCSS = 'true'
+      document.head.appendChild(cssEl)
+    }
+
+    cssEl.textContent = customCSS
+  }
 }
 
 // Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome

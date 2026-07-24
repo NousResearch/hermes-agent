@@ -14847,9 +14847,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from hermes_cli.config import load_config
 
                 goals_cfg = (load_config() or {}).get("goals") or {}
-            return int(goals_cfg.get("max_turns", 20) or 20)
+            return {
+                "default_max_turns": int(goals_cfg.get("max_turns", 20) or 20),
+                "default_max_no_progress_turns": int(goals_cfg.get("max_no_progress_turns", 3) or 0),
+                "default_max_elapsed_minutes": float(goals_cfg.get("max_elapsed_minutes", 0) or 0),
+                "default_evidence_max_items": int(goals_cfg.get("evidence_max_items", 8) or 0),
+                "default_evidence_item_chars": int(goals_cfg.get("evidence_item_chars", 240) or 240),
+            }
         except Exception:
-            return 20
+            return {
+                "default_max_turns": 20,
+                "default_max_no_progress_turns": 3,
+                "default_max_elapsed_minutes": 0,
+                "default_evidence_max_items": 8,
+                "default_evidence_item_chars": 240,
+            }
 
     async def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.
@@ -14870,8 +14882,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:
             return None, None
-        max_turns = self._goal_max_turns_from_config()
-        return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+        goal_options = self._goal_max_turns_from_config()
+        return GoalManager(session_id=sid, **goal_options), session_entry
 
 
 
@@ -14964,9 +14976,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not sid:
             return
 
-        max_turns = self._goal_max_turns_from_config()
+        goal_options = self._goal_max_turns_from_config()
 
-        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        mgr = GoalManager(session_id=sid, **goal_options)
         if not mgr.is_active():
             return
 

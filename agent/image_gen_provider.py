@@ -48,6 +48,7 @@ import logging
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,13 @@ _URL_IMAGE_CONTENT_TYPES = {
     "image/gif": "gif",
 }
 
+_MAX_IMAGE_URL_REDIRECTS = 10
+
+
+def _is_safe_image_url(url: str) -> bool:
+    from tools.url_safety import is_safe_url
+    return is_safe_url(url)
+
 
 def save_url_image(
     url: str,
@@ -290,7 +298,31 @@ def save_url_image(
     """
     import requests
 
-    response = requests.get(url, timeout=timeout, stream=True)
+    current_url = url
+    response = None
+    for _ in range(_MAX_IMAGE_URL_REDIRECTS + 1):
+        if not _is_safe_image_url(current_url):
+            raise ValueError(
+                f"Blocked: image URL targets a private or internal address: {current_url}"
+            )
+        response = requests.get(
+            current_url,
+            timeout=timeout,
+            stream=True,
+            allow_redirects=False,
+        )
+        if not response.is_redirect:
+            break
+        location = response.headers.get("Location")
+        response.close()
+        if not location:
+            raise ValueError(f"Image URL redirect at {current_url} did not include Location.")
+        current_url = urljoin(current_url, location)
+    else:
+        raise ValueError(f"Image URL exceeded {_MAX_IMAGE_URL_REDIRECTS} redirects.")
+
+    if response is None:
+        raise ValueError(f"Image URL at {url} did not return a response.")
     response.raise_for_status()
 
     # Infer extension from the response content-type, falling back to the
@@ -299,7 +331,7 @@ def save_url_image(
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
     extension = _URL_IMAGE_CONTENT_TYPES.get(content_type)
     if extension is None:
-        url_path = url.split("?", 1)[0].lower()
+        url_path = current_url.split("?", 1)[0].lower()
         for ext in ("png", "jpg", "jpeg", "webp", "gif"):
             if url_path.endswith(f".{ext}"):
                 extension = "jpg" if ext == "jpeg" else ext

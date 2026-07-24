@@ -65,6 +65,27 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(PNG_1PX)
+        elif self.path == "/redirect-image":
+            self.send_response(302)
+            self.send_header("Location", "/image.png")
+            self.end_headers()
+        elif self.path == "/redirect-private":
+            self.send_response(302)
+            self.send_header("Location", "/private")
+            self.end_headers()
+        elif self.path == "/private":
+            self.server.private_hits += 1
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.end_headers()
+            self.wfile.write(PNG_1PX)
+        elif self.path.startswith("/r") and self.path[2:].isdigit():
+            idx = int(self.path[2:])
+            self.send_response(302)
+            self.send_header("Location", f"/r{idx + 1}")
+            self.send_header("Content-Type", "image/png")
+            self.end_headers()
+            self.wfile.write(b"redirect body must not be cached")
         else:
             self.send_response(404)
             self.end_headers()
@@ -86,9 +107,14 @@ def http_server(tmp_path, monkeypatch):
             sys.modules.pop(mod, None)
 
     httpd = socketserver.TCPServer(("127.0.0.1", 0), _TinyImageHandler)
+    httpd.private_hits = 0
     port = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
+
+    import agent.image_gen_provider as image_gen_provider
+    monkeypatch.setattr(image_gen_provider, "_is_safe_image_url", lambda _url: True)
+
     yield f"http://127.0.0.1:{port}", httpd
     httpd.shutdown()
 
@@ -104,7 +130,7 @@ class TestSaveUrlImage:
         assert path.read_bytes() == PNG_1PX
         # The cache directory must be under HERMES_HOME — gateway cleanup
         # relies on this being the canonical location.
-        assert "cache/images" in str(path)
+        assert path.parts[-3:-1] == ("cache", "images")
         assert path.suffix == ".png"
 
     def test_extension_inferred_from_content_type(self, http_server):
@@ -128,6 +154,56 @@ class TestSaveUrlImage:
 
         path = save_url_image(f"{base}/no-type-no-ext", prefix="xai_test")
         assert path.suffix == ".png"
+
+    def test_safe_redirect_is_followed(self, http_server):
+        base, _ = http_server
+        from agent.image_gen_provider import save_url_image
+
+        path = save_url_image(f"{base}/redirect-image", prefix="xai_redirect")
+        assert path.exists()
+        assert path.read_bytes() == PNG_1PX
+
+    def test_direct_private_url_is_blocked_before_fetch(self, http_server, monkeypatch):
+        base, server = http_server
+        import agent.image_gen_provider as image_gen_provider
+        from agent.image_gen_provider import save_url_image
+
+        monkeypatch.setattr(image_gen_provider, "_is_safe_image_url", lambda _url: False)
+
+        with pytest.raises(ValueError, match="private or internal"):
+            save_url_image(f"{base}/private")
+
+        assert server.private_hits == 0
+
+    def test_private_redirect_is_blocked_before_following(self, http_server, monkeypatch):
+        base, server = http_server
+        import agent.image_gen_provider as image_gen_provider
+        from agent.image_gen_provider import save_url_image
+
+        def safe_url(url: str) -> bool:
+            return not url.endswith("/private")
+
+        monkeypatch.setattr(image_gen_provider, "_is_safe_image_url", safe_url)
+
+        with pytest.raises(ValueError, match="private or internal"):
+            save_url_image(f"{base}/redirect-private")
+
+        assert server.private_hits == 0
+
+    def test_too_many_redirects_raises_without_caching_body(self, http_server, monkeypatch):
+        base, _ = http_server
+        import agent.image_gen_provider as image_gen_provider
+        from agent.image_gen_provider import save_url_image, _images_cache_dir
+
+        monkeypatch.setattr(image_gen_provider, "_MAX_IMAGE_URL_REDIRECTS", 2)
+        cache_dir = _images_cache_dir()
+        before = set(cache_dir.glob("*"))
+
+        with pytest.raises(ValueError, match="exceeded 2 redirects"):
+            save_url_image(f"{base}/r0")
+
+        after = set(cache_dir.glob("*"))
+        assert after == before
 
     def test_404_raises(self, http_server):
         """HTTP errors must propagate — caller decides whether to fall back."""

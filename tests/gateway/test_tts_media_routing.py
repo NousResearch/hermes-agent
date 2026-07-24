@@ -282,6 +282,50 @@ async def test_queued_followup_delivery_keeps_remote_image_url_in_text():
 
 
 @pytest.mark.asyncio
+async def test_queued_followup_delivery_keeps_bare_local_path_in_text(
+    tmp_path, monkeypatch,
+):
+    """Queued delivery must not strip paths its explicit-only uploader ignores."""
+    event = _event(thread_id="topic-1")
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "inspected.png")
+    runner = object.__new__(GatewayRunner)
+    runner._thread_metadata_for_source = (
+        lambda source, reply_to_message_id=None: {"thread_id": "topic-1"}
+    )
+    runner._reply_anchor_for_event = lambda event: event.message_id
+
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(return_value=SendResult(success=True, message_id="text")),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    response = f"The inspected file is at {media_file}."
+    await GatewayRunner._deliver_queued_first_response(
+        runner,
+        response,
+        source=event.source,
+        adapter=adapter,
+        metadata={"thread_id": "topic-1"},
+        event_message_id=event.message_id,
+    )
+
+    adapter.send.assert_awaited_once_with(
+        "chat-1",
+        response,
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_multiple_images.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_queued_followup_delivery_preserves_protected_media_example():
     """Inline-code MEDIA examples must remain visible after queued text cleanup."""
     event = _event(thread_id="topic-1")

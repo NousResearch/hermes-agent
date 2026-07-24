@@ -94,6 +94,21 @@ class GatewayAuthorizationMixin:
             return None
         transport_adapter = self._registered_transport_adapter(source)
         if transport_adapter is not None:
+            # Per-credential routing: when a profile_route stamps a secondary
+            # profile that owns its own adapter for this platform, replies must
+            # go out that profile's bot — not the transport that received the
+            # inbound event.  The transport-adapter shortcut is only correct
+            # when the transport and the routed profile share the same
+            # credential (shared-token scenario, ff4637661).  When they differ,
+            # the routed profile's adapter is the right delivery path.
+            profile = getattr(source, "profile", None)
+            if profile and profile not in ("default", ""):
+                profile_maps = getattr(self, "_profile_adapters", None) or {}
+                routed = profile_maps.get(profile, {})
+                platform = getattr(source, "platform", None)
+                routed_adapter = routed.get(platform) if platform else None
+                if routed_adapter is not None and routed_adapter is not transport_adapter:
+                    return routed_adapter
             return transport_adapter
         # Relay ingress deliberately keeps the underlying platform on the
         # source so session keys and display policy remain Slack/Discord/etc.

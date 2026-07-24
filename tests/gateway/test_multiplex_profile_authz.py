@@ -263,6 +263,73 @@ def test_adapter_auth_check_defaults_to_active_profile(monkeypatch):
     assert captured["profile"] is None
 
 
+def test_per_credential_route_uses_secondary_adapter_not_transport(monkeypatch):
+    """Per-credential routing must deliver via the routed profile's own adapter.
+
+    When a profile_route stamps ``source.profile`` to a secondary profile that
+    owns its own adapter for the platform (separate bot token), replies must
+    go out that profile's adapter — NOT the transport adapter that received
+    the inbound event.  Regression for the per-credential gap introduced by
+    ff4637661 (shared-token transport shortcut).
+    """
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+
+    default_adapter = SimpleNamespace(send=AsyncMock())
+    secondary_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters = {Platform.DISCORD: default_adapter}
+    runner._profile_adapters = {
+        "sysman": {Platform.DISCORD: secondary_adapter},
+    }
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        user_id="user-1",
+        chat_id="thread-123",
+        user_name="tester",
+        chat_type="thread",
+        profile="sysman",
+    )
+    # Simulate: default adapter received the inbound message and stamped
+    # _transport_adapter_ref (as build_source does).
+    source._transport_adapter_ref = lambda: default_adapter
+
+    # Must resolve to the secondary profile's adapter, not the transport.
+    assert runner._adapter_for_source(source) is secondary_adapter
+
+
+def test_shared_credential_route_still_keeps_transport(monkeypatch):
+    """Shared-token routing must keep the transport adapter (ff4637661 intent).
+
+    When the routed profile does NOT own a separate adapter for the platform
+    (shared bot token scenario), the transport adapter that received the
+    message is the only live delivery path and must be preserved.
+    """
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+
+    shared_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters = {Platform.DISCORD: shared_adapter}
+    # Routed profile has no adapter of its own (shared credential).
+    runner._profile_adapters = {"routed": {}}
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        user_id="user-1",
+        chat_id="thread-456",
+        user_name="tester",
+        chat_type="thread",
+        profile="routed",
+    )
+    source._transport_adapter_ref = lambda: shared_adapter
+
+    assert runner._adapter_for_source(source) is shared_adapter
+
+
 def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     """Secondary profiles must pass the same open-policy startup guard."""
     from gateway.run import _own_policy_open_startup_violation

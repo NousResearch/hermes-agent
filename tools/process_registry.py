@@ -3044,7 +3044,7 @@ PROCESS_SCHEMA = {
 }
 
 
-def _redact_process_result(result: dict) -> dict:
+def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
     """Redact secrets from background-process output before it reaches the
     model, session.db, and CLI display.
 
@@ -3054,18 +3054,59 @@ def _redact_process_result(result: dict) -> dict:
     pass through ``redact_terminal_output`` which picks ``code_file`` based on
     the recorded command (env dumps get the ENV-assignment pass). The command
     string itself is also redacted in case it carried an inline credential.
+
+    Invokes ``transform_terminal_output`` before redaction so background output
+    follows the documented foreground pipeline. Any hook replacement then
+    passes through the existing redaction loop before it can reach the model.
+    Every background action returns through here, so ``poll``, ``wait``,
+    ``log``, and ``kill`` are covered by the single call site. ``returncode``
+    is None while a process has not exited. The hook is fail-open (first valid
+    string return wins); exceptions are swallowed so a misbehaving plugin
+    can't break process polling.
     """
     if not isinstance(result, dict):
         return result
+    command = result.get("command") or ""
+
+    # Match the foreground terminal path: transform raw output first, then
+    # redact the final value. This prevents a hook replacement from injecting
+    # an unmasked credential into the model-visible result.
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        # ``exit_code`` is only present once the process has exited, so a poll
+        # on a running process and every ``log`` read have none. Pass that
+        # through as None instead of defaulting to 0, which would tell a plugin
+        # the command succeeded when it has not finished at all.
+        returncode = result.get("exit_code")
+        for field in ("output", "output_preview"):
+            value = result.get(field)
+            if not isinstance(value, str) or not value:
+                continue
+            hook_results = invoke_hook(
+                "transform_terminal_output",
+                command=command,
+                output=value,
+                returncode=returncode,
+                task_id=task_id or "",
+                env_type="",
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    result[field] = hook_result
+                    break
+    except Exception:
+        pass
+
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
-    command = result.get("command") or ""
     for field in ("output", "output_preview"):
         value = result.get(field)
         if isinstance(value, str) and value:
             result[field] = redact_terminal_output(value, command)
     if isinstance(result.get("command"), str) and result["command"]:
         result["command"] = redact_sensitive_text(result["command"], code_file=True)
+
     return result
 
 
@@ -3097,15 +3138,37 @@ def _handle_process(args, **kw):
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":
-            return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
+            return json.dumps(
+                _redact_process_result(
+                    process_registry.poll(session_id), task_id=task_id or ""
+                ),
+                ensure_ascii=False,
+            )
         elif action == "log":
-            return json.dumps(_redact_process_result(process_registry.read_log(
-                session_id, offset=args.get("offset"), limit=args.get("limit", 200))), ensure_ascii=False)
+            return json.dumps(
+                _redact_process_result(
+                    process_registry.read_log(
+                        session_id,
+                        offset=args.get("offset", 0),
+                        limit=args.get("limit", 200),
+                    ),
+                    task_id=task_id or "",
+                ),
+                ensure_ascii=False,
+            )
         elif action == "wait":
-            return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
+            return json.dumps(
+                _redact_process_result(
+                    process_registry.wait(session_id, timeout=args.get("timeout")),
+                    task_id=task_id or "",
+                ),
+                ensure_ascii=False,
+            )
         elif action == "kill":
             return json.dumps(
-                _redact_process_result(process_registry.kill_process(session_id)),
+                _redact_process_result(
+                    process_registry.kill_process(session_id), task_id=task_id or ""
+                ),
                 ensure_ascii=False,
             )
         elif action == "write":

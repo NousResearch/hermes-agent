@@ -1,0 +1,171 @@
+[+] 加载 1 个 provider, 跑 6 个模块
+
+── 中转站 Apimart (Apimart) · gpt-5.5 ──
+  [connectivity] ... FAIL (1.5s)
+      ⚠ /v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620092156764936822g1xmauG)', 'par
+      ✗ 鉴权失败, 检查 api_key
+  [context] ... FAIL (0.2s)
+      ✗ 无法确定 context 上限 (可能限流或网络不稳)
+  [speed] ... FAIL (0.2s)
+      ⚠ 第 1 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921563750
+      ⚠ 第 2 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921564312
+      ⚠ 第 3 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921564869
+      ✗ 所有顺序请求都失败
+  [stability] ... OK (1.3s)
+      ⚠ burst 10 次中有 10 次失败: {'auth': 10}
+      ⚠ 长会话测试失败: auth
+      · max_tokens 边界正确报错: auth
+  [security] ... OK (0.4s)
+      ⚠ canary 测试本身失败: auth
+  [ability] ... OK (0.7s)
+      ⚠ 能力通过率仅 0.0% — 强烈怀疑该 key 接入的是降级模型或被偷换
+      · 能力基线: 0/10 通过 (0.0%)
+
+── 中转站 Apimart (Apimart) · claude-opus-4-7 ──
+  [connectivity] ... FAIL (0.1s)
+      ⚠ /v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620092158986786458LIbRTPfE)', 'pa
+      ✗ 鉴权失败, 检查 api_key
+  [context] ... FAIL (0.2s)
+      ✗ 无法确定 context 上限 (可能限流或网络不稳)
+  [speed] ... FAIL (0.2s)
+      ⚠ 第 1 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921592822
+      ⚠ 第 2 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921593396
+      ⚠ 第 3 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921593974
+      ✗ 所有顺序请求都失败
+  [stability] ... OK (1.4s)
+      ⚠ burst 10 次中有 10 次失败: {'auth': 10}
+      ⚠ 长会话测试失败: auth
+      · max_tokens 边界正确报错: auth
+  [security] ... OK (0.4s)
+      ⚠ canary 测试本身失败: auth
+  [ability] ... OK (0.7s)
+      ⚠ 能力通过率仅 0.0% — 强烈怀疑该 key 接入的是降级模型或被偷换
+      · 能力基线: 0/10 通过 (0.0%)
+
+── 中转站 Apimart (Apimart) · deepseek-v4-pro ──
+  [connectivity] ... FAIL (0.1s)
+      ⚠ /v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620092201994459700Bkw5S6f2)', 'pa
+      ✗ 鉴权失败, 检查 api_key
+  [context] ... FAIL (0.3s)
+      ✗ 无法确定 context 上限 (可能限流或网络不稳)
+  [speed] ... FAIL (0.3s)
+      ⚠ 第 1 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200922024126
+      ⚠ 第 2 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200922024683
+      ⚠ 第 3 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200922025313
+      ✗ 所有顺序请求都失败
+  [stability] ... OK (1.4s)
+      ⚠ burst 10 次中有 10 次失败: {'auth': 10}
+      ⚠ 长会话测试失败: auth
+      · max_tokens 边界正确报错: auth
+  [security] ... OK (0.4s)
+      ⚠ canary 测试本身失败: auth
+  [ability] ... OK (0.6s)
+      ⚠ 能力通过率仅 0.0% — 强烈怀疑该 key 接入的是降级模型或被偷换
+      · 能力基线: 0/10 通过 (0.0%)
+
+========================================================================================
+LLM API Probe — 报告  (2026-06-20 09:22:04)
+========================================================================================
+
+## Provider 概览
+  name                   label                  category       base_url
+  ---------------------- ---------------------- -------------- ----------------------------------------
+  Apimart                中转站 Apimart            aggregator     https://api.apib.ai/v1
+
+## CONNECTIVITY
+  provider               ok   metrics
+  ---------------------- ---- --------------------------------------------------------
+  Apimart                ✗    
+  Apimart                ✗    
+  Apimart                ✗    
+    ⚠ [Apimart] /v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620092156764936822g1xmauG)', 'par
+    ✗ [Apimart] 鉴权失败, 检查 api_key
+    ⚠ [Apimart] /v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620092158986786458LIbRTPfE)', 'pa
+    ✗ [Apimart] 鉴权失败, 检查 api_key
+    ⚠ [Apimart] /v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620092201994459700Bkw5S6f2)', 'pa
+    ✗ [Apimart] 鉴权失败, 检查 api_key
+
+## CONTEXT
+  provider               ok   metrics
+  ---------------------- ---- --------------------------------------------------------
+  Apimart                ✗    
+  Apimart                ✗    
+  Apimart                ✗    
+    ✗ [Apimart] 无法确定 context 上限 (可能限流或网络不稳)
+    ✗ [Apimart] 无法确定 context 上限 (可能限流或网络不稳)
+    ✗ [Apimart] 无法确定 context 上限 (可能限流或网络不稳)
+
+## SPEED
+  provider               ok   metrics
+  ---------------------- ---- --------------------------------------------------------
+  Apimart                ✗    
+  Apimart                ✗    
+  Apimart                ✗    
+    ⚠ [Apimart] 第 1 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921563750
+    ⚠ [Apimart] 第 2 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921564312
+    ⚠ [Apimart] 第 3 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921564869
+    ✗ [Apimart] 所有顺序请求都失败
+    ⚠ [Apimart] 第 1 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921592822
+    ⚠ [Apimart] 第 2 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921593396
+    ⚠ [Apimart] 第 3 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200921593974
+    ✗ [Apimart] 所有顺序请求都失败
+    ⚠ [Apimart] 第 1 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200922024126
+    ⚠ [Apimart] 第 2 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200922024683
+    ⚠ [Apimart] 第 3 轮失败: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 202606200922025313
+    ✗ [Apimart] 所有顺序请求都失败
+
+## STABILITY
+  provider               ok   metrics
+  ---------------------- ---- --------------------------------------------------------
+  Apimart                ✓    burst_total=10; burst_ok=0; burst_error_rate=100.0%; retries_recovered=0; retries_failed=10; error_breakdown={'auth': 10}
+  Apimart                ✓    burst_total=10; burst_ok=0; burst_error_rate=100.0%; retries_recovered=0; retries_failed=10; error_breakdown={'auth': 10}
+  Apimart                ✓    burst_total=10; burst_ok=0; burst_error_rate=100.0%; retries_recovered=0; retries_failed=10; error_breakdown={'auth': 10}
+    ⚠ [Apimart] burst 10 次中有 10 次失败: {'auth': 10}
+    ⚠ [Apimart] 长会话测试失败: auth
+    · [Apimart] max_tokens 边界正确报错: auth
+    ⚠ [Apimart] burst 10 次中有 10 次失败: {'auth': 10}
+    ⚠ [Apimart] 长会话测试失败: auth
+    · [Apimart] max_tokens 边界正确报错: auth
+    ⚠ [Apimart] burst 10 次中有 10 次失败: {'auth': 10}
+    ⚠ [Apimart] 长会话测试失败: auth
+    · [Apimart] max_tokens 边界正确报错: auth
+
+## SECURITY
+  provider               ok   metrics
+  ---------------------- ---- --------------------------------------------------------
+  Apimart                ✓    
+  Apimart                ✓    
+  Apimart                ✓    
+    ⚠ [Apimart] canary 测试本身失败: auth
+    ⚠ [Apimart] canary 测试本身失败: auth
+    ⚠ [Apimart] canary 测试本身失败: auth
+
+## ABILITY
+  provider               ok   metrics
+  ---------------------- ---- --------------------------------------------------------
+  Apimart                ✓    total_questions=10; total_pass=0; overall_pass_rate=0.0%; math_pass_rate=0/3 (0.0%); reasoning_pass_rate=0/3 (0.0%); code_pass_rate=0/2 (0.0%) ... (+1)
+  Apimart                ✓    total_questions=10; total_pass=0; overall_pass_rate=0.0%; math_pass_rate=0/3 (0.0%); reasoning_pass_rate=0/3 (0.0%); code_pass_rate=0/2 (0.0%) ... (+1)
+  Apimart                ✓    total_questions=10; total_pass=0; overall_pass_rate=0.0%; math_pass_rate=0/3 (0.0%); reasoning_pass_rate=0/3 (0.0%); code_pass_rate=0/2 (0.0%) ... (+1)
+    ⚠ [Apimart] 能力通过率仅 0.0% — 强烈怀疑该 key 接入的是降级模型或被偷换
+    · [Apimart] 能力基线: 0/10 通过 (0.0%)
+    ⚠ [Apimart] 能力通过率仅 0.0% — 强烈怀疑该 key 接入的是降级模型或被偷换
+    · [Apimart] 能力基线: 0/10 通过 (0.0%)
+    ⚠ [Apimart] 能力通过率仅 0.0% — 强烈怀疑该 key 接入的是降级模型或被偷换
+    · [Apimart] 能力基线: 0/10 通过 (0.0%)
+
+## 能力基线对比
+  provider                   总数     通过      通过率
+  ---------------------- ------ ------ --------
+  Apimart                    10      0     0.0%
+  Apimart                    10      0     0.0%
+  Apimart                    10      0     0.0%
+
+## ⚠ 安全审计警告汇总
+  - [Apimart] canary 测试本身失败: auth
+  - [Apimart] canary 测试本身失败: auth
+  - [Apimart] canary 测试本身失败: auth
+
+========================================================================================
+
+[+] 报告已保存到 reports/report_20260620_092204.{json,md}
+[+] 总耗时 10.3s

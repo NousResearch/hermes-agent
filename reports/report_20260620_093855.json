@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-06-20T09:38:55.739945",
+  "providers": [
+    {
+      "name": "Apimart",
+      "label": "中转站 Apimart",
+      "category": "aggregator",
+      "base_url": "https://api.apib.ai/v1",
+      "api_key": "sk-N***zrgP",
+      "models": [
+        "gpt-5.5",
+        "deepseek-v4-pro"
+      ],
+      "headers": {},
+      "timeout": 60.0,
+      "note": "价格计算模糊, 了解实际使用计费方式"
+    }
+  ],
+  "results": [
+    {
+      "probe": "connectivity",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "鉴权失败, 检查 api_key",
+      "metrics": [],
+      "findings": [],
+      "warnings": [
+        "/v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620093855588466908PuF55gaT)', 'pa"
+      ],
+      "raw": {}
+    },
+    {
+      "probe": "connectivity",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "鉴权失败, 检查 api_key",
+      "metrics": [],
+      "findings": [],
+      "warnings": [
+        "/v1/models 不可用: auth — Error code: 401 - {'error': {'code': '', 'message': 'invalid API key (request id: 20260620093855717770047jowlcJne)', 'pa"
+      ],
+      "raw": {}
+    }
+  ]
+}

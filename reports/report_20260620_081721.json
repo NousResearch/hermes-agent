@@ -1,0 +1,628 @@
+{
+  "generated_at": "2026-06-20T08:17:21.557844",
+  "providers": [
+    {
+      "name": "Apimart",
+      "label": "中转站 Apimart",
+      "category": "aggregator",
+      "base_url": "https://api.apib.ai/v1",
+      "api_key": "sk-N***zrgP",
+      "models": [
+        "deepseek-v4-flash"
+      ],
+      "headers": {},
+      "timeout": 60.0,
+      "note": "价格计算模糊, 了解实际使用计费方式"
+    }
+  ],
+  "results": [
+    {
+      "probe": "connectivity",
+      "provider": "Apimart",
+      "ok": true,
+      "error": null,
+      "metrics": [
+        {
+          "name": "models_endpoint_ms",
+          "value": 440.4,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "available_models",
+          "value": 183,
+          "unit": "个",
+          "note": ""
+        },
+        {
+          "name": "hello_latency_ms",
+          "value": 3873.8,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "hello_output_tokens",
+          "value": 11,
+          "unit": "tokens",
+          "note": ""
+        },
+        {
+          "name": "hello_prompt_tokens",
+          "value": 16,
+          "unit": "tokens",
+          "note": ""
+        }
+      ],
+      "findings": [
+        "连通正常, 模型 'deepseek-v4-flash' 返回: 一个热爱思考、乐于助人的AI助手。"
+      ],
+      "warnings": [
+        "模型名被改写: 请求 'deepseek-v4-flash', 实际返回 'ds-v4-flash' — 可能走了其他模型或被代理覆盖"
+      ],
+      "raw": {
+        "models": [
+          "chatgpt-4o-latest",
+          "claude-haiku-4-5-20251001",
+          "claude-haiku-4-5-20251001-thinking",
+          "claude-opus-4-5-20251101",
+          "claude-opus-4-5-20251101-thinking",
+          "claude-opus-4-6",
+          "claude-opus-4-6-thinking",
+          "claude-opus-4-7",
+          "claude-opus-4-8",
+          "claude-sonnet-4-5-20250929",
+          "claude-sonnet-4-5-20250929-thinking",
+          "claude-sonnet-4-6",
+          "claude-sonnet-4-6-thinking",
+          "deepseek-ocr",
+          "deepseek-r1-0528",
+          "deepseek-r1-250528",
+          "deepseek-v3-0324",
+          "deepseek-v3.1-terminus",
+          "deepseek-v3.2",
+          "deepseek-v3.2-exp",
+          "deepseek-v4-flash",
+          "deepseek-v4-pro",
+          "doubao-seedance-1-0-pro-fast",
+          "doubao-seedance-1-0-pro-quality",
+          "doubao-seedance-1-5-pro",
+          "doubao-seedance-2.0",
+          "doubao-seedance-2.0-face",
+          "doubao-seedance-2.0-fast",
+          "doubao-seedance-2.0-fast-face",
+          "doubao-seedance-4-0",
+          "doubao-seedance-4-5",
+          "doubao-seedream-5-0-lite",
+          "flux-2-flex",
+          "flux-2-pro",
+          "flux-kontext-max",
+          "flux-kontext-pro",
+          "gemini-2.0-flash",
+          "gemini-2.5-flash",
+          "gemini-2.5-flash-image-preview",
+          "gemini-2.5-flash-image-preview-official",
+          "gemini-2.5-flash-lite",
+          "gemini-2.5-flash-nothinking",
+          "gemini-2.5-flash-thinking",
+          "gemini-2.5-pro",
+          "gemini-2.5-pro-nothinking",
+          "gemini-2.5-pro-thinking",
+          "gemini-3-flash-preview",
+          "gemini-3-flash-preview-nothinking",
+          "gemini-3-flash-preview-thinking",
+          "gemini-3-pro-image-preview",
+          "gemini-3-pro-image-preview-official",
+          "gemini-3-pro-preview",
+          "gemini-3-pro-preview-thinking",
+          "gemini-3.1-flash-image-preview",
+          "gemini-3.1-flash-image-preview-official",
+          "gemini-3.1-flash-lite-preview",
+          "gemini-3.1-pro-preview",
+          "gemini-3.1-pro-preview-thinking",
+          "gemini-3.5-flash",
+          "glm-4.6",
+          "glm-4.7",
+          "glm-5",
+          "glm-5.1",
+          "gpt-3.5-turbo",
+          "gpt-3.5-turbo-0125",
+          "gpt-3.5-turbo-1106",
+          "gpt-3.5-turbo-16k",
+          "gpt-4-1106-preview",
+          "gpt-4.1",
+          "gpt-4.1-2025-04-14",
+          "gpt-4.1-mini",
+          "gpt-4.1-mini-2025-04-14",
+          "gpt-4.1-nano",
+          "gpt-4.1-nano-2025-04-14",
+          "gpt-4o",
+          "gpt-4o-2024-05-13",
+          "gpt-4o-2024-11-20",
+          "gpt-4o-mini",
+          "gpt-4o-mini-transcribe",
+          "gpt-4o-mini-tts",
+          "gpt-4o-transcribe",
+          "gpt-5",
+          "gpt-5-2025-08-07",
+          "gpt-5-chat-latest",
+          "gpt-5-codex",
+          "gpt-5-mini",
+          "gpt-5-mini-2025-08-07",
+          "gpt-5-nano",
+          "gpt-5-nano-2025-08-07",
+          "gpt-5-pro",
+          "gpt-5-pro-2025-10-06",
+          "gpt-5-search-api",
+          "gpt-5-search-api-2025-10-14",
+          "gpt-5.1",
+          "gpt-5.1-2025-11-13",
+          "gpt-5.1-chat-latest",
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-max",
+          "gpt-5.1-codex-mini",
+          "gpt-5.2",
+          "gpt-5.2-chat-latest",
+          "gpt-5.2-codex",
+          "gpt-5.2-pro",
+          "gpt-5.3-codex",
+          "gpt-5.4",
+          "gpt-5.4-mini",
+          "gpt-5.4-nano",
+          "gpt-5.4-pro",
+          "gpt-5.5",
+          "gpt-audio-mini",
+          "gpt-audio-mini-2025-10-06",
+          "gpt-image-1-official",
+          "gpt-image-1.5-official",
+          "gpt-image-2",
+          "gpt-image-2-official",
+          "grok-imagine-1.0-apimart",
+          "grok-imagine-1.0-edit-apimart",
+          "grok-imagine-1.0-video-apimart",
+          "grok-imagine-1.5-apimart",
+          "grok-imagine-1.5-edit-apimart",
+          "grok-imagine-1.5-video-apimart",
+          "happyhorse-1.0",
+          "imagen-4.0-apimart",
+          "kimi-k2-instruct",
+          "kimi-k2-thinking",
+          "kimi-k2.5",
+          "kling-3.0-turbo",
+          "kling-v2-6",
+          "kling-v2-6-motion-control",
+          "kling-v3",
+          "kling-v3-motion-control",
+          "kling-v3-omni",
+          "kling-video-o1",
+          "ltx-2.3-image-video",
+          "ltx-2.3-text-image",
+          "ltx-2.3-text-video",
+          "midjourney",
+          "MiniMax-Hailuo-02",
+          "MiniMax-Hailuo-2.3",
+          "MiniMax-Hailuo-2.3-Fast",
+          "minimax-m2.1",
+          "minimax-m2.5",
+          "o1",
+          "o1-2024-12-17",
+          "o1-mini-2024-09-12",
+          "o3-2025-04-16",
+          "o3-mini",
+          "o3-mini-2025-01-31",
+          "o4-mini",
+          "o4-mini-2025-04-16",
+          "Omni-Flash-Ext",
+          "omni-moderation-latest",
+          "pixverse-v6",
+          "qwen-image-2.0",
+          "qwen-image-2.0-pro",
+          "skyreels-v4-fast",
+          "skyreels-v4-std",
+          "sora-2",
+          "sora-2-preview",
+          "sora-2-pro",
+          "text-embedding-3-large",
+          "text-embedding-3-small",
+          "text-embedding-ada-002",
+          "veo3.1-fast",
+          "veo3.1-fast-official",
+          "veo3.1-lite",
+          "veo3.1-quality",
+          "veo3.1-quality-official",
+          "viduq3",
+          "viduq3-mix",
+          "viduq3-pro",
+          "viduq3-turbo",
+          "wan2.5-preview",
+          "wan2.6",
+          "wan2.6-i2v",
+          "wan2.6-i2v-flash",
+          "wan2.7",
+          "wan2.7-image",
+          "wan2.7-image-pro",
+          "wan2.7-r2v",
+          "wan2.7-videoedit",
+          "whisper-1",
+          "z-image-turbo"
+        ],
+        "hello_response": "一个热爱思考、乐于助人的AI助手。",
+        "hello_model_returned": "ds-v4-flash"
+      }
+    },
+    {
+      "probe": "context",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "NameError: name 'verbose' is not defined",
+      "metrics": [],
+      "findings": [],
+      "warnings": [],
+      "raw": {}
+    },
+    {
+      "probe": "speed",
+      "provider": "Apimart",
+      "ok": true,
+      "error": null,
+      "metrics": [
+        {
+          "name": "ttft_median_ms",
+          "value": 1335.0,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "ttft_min_ms",
+          "value": 1157.4,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "ttft_max_ms",
+          "value": 1761.0,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "output_tps_median",
+          "value": 93.06,
+          "unit": " tokens/s",
+          "note": ""
+        },
+        {
+          "name": "output_tps_max",
+          "value": 107.79,
+          "unit": " tokens/s",
+          "note": ""
+        },
+        {
+          "name": "e2e_total_ms_median",
+          "value": 12338.6,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "output_tokens_median",
+          "value": 1024,
+          "unit": "tokens",
+          "note": ""
+        },
+        {
+          "name": "seq_success_rate",
+          "value": "3/3",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "concurrency",
+          "value": 4,
+          "unit": " 路",
+          "note": ""
+        },
+        {
+          "name": "concurrency_total_ms",
+          "value": 12425.0,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "concurrency_success_rate",
+          "value": "4/4",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "concurrency_total_out_tps",
+          "value": 338.83,
+          "unit": " tokens/s",
+          "note": ""
+        }
+      ],
+      "findings": [
+        "顺序 TTFT 中位 1335ms, 输出速度中位 93.1 tok/s"
+      ],
+      "warnings": [],
+      "raw": {
+        "seq_results": [
+          {
+            "ok": true,
+            "ttft_ms": 1157.4263591319323,
+            "total_ms": 14609.40367123112,
+            "out_tps": 76.12263805106018,
+            "out_tokens": 1024,
+            "error_type": null,
+            "error": null
+          },
+          {
+            "ok": true,
+            "ttft_ms": 1335.0108889862895,
+            "total_ms": 12338.584350887686,
+            "out_tps": 93.06067738316847,
+            "out_tokens": 1024,
+            "error_type": null,
+            "error": null
+          },
+          {
+            "ok": true,
+            "ttft_ms": 1761.005227919668,
+            "total_ms": 11260.787684004754,
+            "out_tps": 107.79194205063894,
+            "out_tokens": 1024,
+            "error_type": null,
+            "error": null
+          }
+        ],
+        "concurrency_results": [
+          {
+            "ok": true,
+            "ttft_ms": 2323.962076101452,
+            "total_ms": 10218.419340904802,
+            "out_tps": 129.71126014772437,
+            "out_tokens": 1024,
+            "error_type": null,
+            "error": null
+          },
+          {
+            "ok": true,
+            "ttft_ms": 2267.558369319886,
+            "total_ms": 10289.101598318666,
+            "out_tps": 127.65623406455317,
+            "out_tokens": 1024,
+            "error_type": null,
+            "error": null
+          },
+          {
+            "ok": true,
+            "ttft_ms": 2275.1965997740626,
+            "total_ms": 12283.35295477882,
+            "out_tps": 113.70725632507957,
+            "out_tokens": 1138,
+            "error_type": null,
+            "error": null
+          },
+          {
+            "ok": true,
+            "ttft_ms": 2281.0479081235826,
+            "total_ms": 12417.19397623092,
+            "out_tps": 101.02458992988896,
+            "out_tokens": 1024,
+            "error_type": null,
+            "error": null
+          }
+        ]
+      }
+    },
+    {
+      "probe": "stability",
+      "provider": "Apimart",
+      "ok": true,
+      "error": null,
+      "metrics": [
+        {
+          "name": "burst_total",
+          "value": 10,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "burst_ok",
+          "value": 10,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "burst_error_rate",
+          "value": 0.0,
+          "unit": "%",
+          "note": ""
+        },
+        {
+          "name": "retries_recovered",
+          "value": 0,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "retries_failed",
+          "value": 0,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "long_session_pass",
+          "value": true,
+          "unit": "",
+          "note": ""
+        }
+      ],
+      "findings": [
+        "burst 10 次全部成功",
+        "10 轮多轮对话成功回忆开头信息"
+      ],
+      "warnings": [
+        "max_tokens=100000 没被正确限制, 返回 4068 tokens"
+      ],
+      "raw": {
+        "outcomes": [
+          "ok",
+          "ok",
+          "ok",
+          "ok",
+          "ok",
+          "ok",
+          "ok",
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "long_session_response": "记得，最开始那个数是 84291567。"
+      }
+    },
+    {
+      "probe": "security",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "TypeError: run() got an unexpected keyword argument 'verbose'",
+      "metrics": [],
+      "findings": [],
+      "warnings": [],
+      "raw": {}
+    },
+    {
+      "probe": "ability",
+      "provider": "Apimart",
+      "ok": true,
+      "error": null,
+      "metrics": [
+        {
+          "name": "total_questions",
+          "value": 10,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "total_pass",
+          "value": 9,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "overall_pass_rate",
+          "value": 90.0,
+          "unit": "%",
+          "note": ""
+        },
+        {
+          "name": "math_pass_rate",
+          "value": "2/3 (66.7%)",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "reasoning_pass_rate",
+          "value": "3/3 (100.0%)",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "code_pass_rate",
+          "value": "2/2 (100.0%)",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "zh_pass_rate",
+          "value": "2/2 (100.0%)",
+          "unit": "",
+          "note": ""
+        }
+      ],
+      "findings": [
+        "能力基线: 9/10 通过 (90.0%)"
+      ],
+      "warnings": [],
+      "raw": {
+        "detail": [
+          {
+            "cat": "math",
+            "q": "一个商店卖苹果, 进货价每斤 3 元, 售价每斤 5 元, 每天能卖 100 斤。如果某天苹果损耗了 10%, 当天净利润是多少元?",
+            "ok": false,
+            "answer": ""
+          },
+          {
+            "cat": "math",
+            "q": "小明有 50 元, 买书花了 18 元, 妈妈又给了他 15 元, 之后他买零食花了 12 元。请问他现在还剩多少钱?",
+            "ok": true,
+            "answer": "好的，我们一步一步把这个问题理清楚。题目说小明一开始有50元，然后他买书花了18元，这时候他的钱会减少。我们可以先算第一步：\n\n50 − 18 = 32元  \n买完书后，他还剩32元。\n\n接着，妈妈又给了他15元，所以钱增加了：\n\n32 + 15 = 47元  \n这时候他有47元。\n\n然后，他买零食花了12元，所以再减去12元：\n\n47 − 12 = 35元  \n\n所以，小明现在还剩 **35元*"
+          },
+          {
+            "cat": "math",
+            "q": "一辆车 3 小时行驶 180 公里, 按同样速度, 5 小时能行驶多少公里?",
+            "ok": true,
+            "answer": "好的，我们一步一步来分析这个行程问题。题目说一辆车3小时行驶了180公里，而且速度保持不变，问5小时能行驶多少公里。  \n\n**第一步：求速度**  \n速度 = 路程 ÷ 时间  \n已知路程是180公里，时间是3小时，所以：  \n速度 = 180 ÷ 3 = 60 公里/小时  \n\n**第二步：用速度求5小时的路程**  \n路程 = 速度 × 时间  \n速度是60公里/小时，时间是5小时，所以： "
+          },
+          {
+            "cat": "reasoning",
+            "q": "所有的 A 都是 B, 所有的 B 都是 C, 那么所有的 A 都是 C 吗? 请回答 是 或 否。",
+            "ok": true,
+            "answer": "是"
+          },
+          {
+            "cat": "reasoning",
+            "q": "有 5 个连续整数, 它们的和是 100。最大的那个数是多少?",
+            "ok": true,
+            "answer": "好的，我们先把题目意思理清。题目说“有5个连续整数，它们的和是100”，然后问最大的那个数是多少。我们一步步来推理。\n\n首先，连续整数就是像 1, 2, 3, 4, 5 这样，每个数比前一个大1。  \n假设这五个数里最小的那个是 x，那么它们就是：\n\nx, x+1, x+2, x+3, x+4\n\n它们的和可以写成：\n\nx + (x+1) + (x+2) + (x+3) + (x+4)  \n= 5x"
+          },
+          {
+            "cat": "reasoning",
+            "q": "Alice 比 Bob 高, Bob 比 Charlie 高, Charlie 比 David 高。谁最矮? 只回答名字。",
+            "ok": true,
+            "answer": "David"
+          },
+          {
+            "cat": "code",
+            "q": "用 Python 写一个函数 is_prime(n) 判断 n 是否为素数, 只写函数体, 不要解释。",
+            "ok": true,
+            "answer": "```python\ndef is_prime(n):\n    if n <= 1:\n        return False\n    if n <= 3:\n        return True\n    if n % 2 == 0 or n % 3 == 0:\n        return False\n    i = 5\n    while i * i <= n:\n        if n % i"
+          },
+          {
+            "cat": "code",
+            "q": "Python: 用一行代码把列表 [1,2,3,4,5] 的元素求平方并组成新列表。只输出代码, 不要解释。",
+            "ok": true,
+            "answer": "```python\nprint([x**2 for x in [1,2,3,4,5]])\n```"
+          },
+          {
+            "cat": "zh",
+            "q": "把'出师表'翻译成现代汉语的最后一句是什么含义? 一句话回答。",
+            "ok": true,
+            "answer": "《出师表》最后一句“今当远离，临表涕零，不知所言”的含义是：即将远行出征，面对奏章泪流满面，激动得不知说了些什么，表达了诸葛亮对蜀汉的无限忠诚与临别时的沉重心情。"
+          },
+          {
+            "cat": "zh",
+            "q": "用一句话解释什么是'内卷'。",
+            "ok": true,
+            "answer": "内卷是指在资源有限的环境中，个体或群体为争夺优势而进行过度竞争，导致整体效率下降、内耗加剧的现象。"
+          }
+        ],
+        "cat_pass": {
+          "math": [
+            2,
+            3
+          ],
+          "reasoning": [
+            3,
+            3
+          ],
+          "code": [
+            2,
+            2
+          ],
+          "zh": [
+            2,
+            2
+          ]
+        }
+      }
+    }
+  ]
+}

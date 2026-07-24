@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-06-20T07:22:47.157446",
+  "providers": [
+    {
+      "name": "self-ollama",
+      "label": "本地 Ollama",
+      "category": "self_hosted",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "api_key": "***",
+      "models": [
+        "qwen2.5:7b"
+      ],
+      "headers": {},
+      "timeout": 120.0,
+      "note": "本地 mac/PC"
+    }
+  ],
+  "results": [
+    {
+      "probe": "connectivity",
+      "provider": "self-ollama",
+      "ok": false,
+      "error": "hello 调用失败: conn — Connection error.",
+      "metrics": [
+        {
+          "name": "hello_latency_ms",
+          "value": 7.0,
+          "unit": "ms",
+          "note": ""
+        }
+      ],
+      "findings": [],
+      "warnings": [
+        "/v1/models 不可用: conn — Connection error."
+      ],
+      "raw": {
+        "hello_error": "conn"
+      }
+    }
+  ]
+}

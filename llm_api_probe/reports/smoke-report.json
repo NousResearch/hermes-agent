@@ -1,0 +1,143 @@
+{
+  "generated_at": "2026-06-20T08:29:18.773220",
+  "providers": [
+    {
+      "name": "mock-provider",
+      "label": "本地 mock",
+      "category": "self_hosted",
+      "base_url": "http://127.0.0.1:18080/v1",
+      "api_key": "***",
+      "models": [
+        "mock-1"
+      ],
+      "headers": {},
+      "timeout": 60.0,
+      "note": ""
+    }
+  ],
+  "results": [
+    {
+      "probe": "connectivity",
+      "provider": "mock-provider",
+      "ok": true,
+      "error": null,
+      "metrics": [
+        {
+          "name": "models_endpoint_ms",
+          "value": 3.7,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "available_models",
+          "value": 2,
+          "unit": "个",
+          "note": ""
+        },
+        {
+          "name": "hello_latency_ms",
+          "value": 104.4,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "hello_output_tokens",
+          "value": 50,
+          "unit": "tokens",
+          "note": ""
+        },
+        {
+          "name": "hello_prompt_tokens",
+          "value": 20,
+          "unit": "tokens",
+          "note": ""
+        }
+      ],
+      "findings": [
+        "连通正常, 模型 'mock-1' 返回: 我是 mock 模型, 用了 50 tokens。"
+      ],
+      "warnings": [],
+      "raw": {
+        "models": [
+          "mock-1",
+          "mock-2"
+        ],
+        "hello_response": "我是 mock 模型, 用了 50 tokens。",
+        "hello_model_returned": "mock-1"
+      }
+    },
+    {
+      "probe": "speed",
+      "provider": "mock-provider",
+      "ok": true,
+      "error": null,
+      "metrics": [
+        {
+          "name": "ttft_median_ms",
+          "value": 105.9,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "ttft_min_ms",
+          "value": 105.9,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "ttft_max_ms",
+          "value": 105.9,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "output_tps_median",
+          "value": 4078.7,
+          "unit": " tokens/s",
+          "note": ""
+        },
+        {
+          "name": "output_tps_max",
+          "value": 4078.7,
+          "unit": " tokens/s",
+          "note": ""
+        },
+        {
+          "name": "e2e_total_ms_median",
+          "value": 118.1,
+          "unit": "ms",
+          "note": ""
+        },
+        {
+          "name": "output_tokens_median",
+          "value": 50,
+          "unit": "tokens",
+          "note": ""
+        },
+        {
+          "name": "seq_success_rate",
+          "value": "1/1",
+          "unit": "",
+          "note": ""
+        }
+      ],
+      "findings": [
+        "顺序 TTFT 中位 106ms, 输出速度中位 4078.7 tok/s"
+      ],
+      "warnings": [],
+      "raw": {
+        "seq_results": [
+          {
+            "ok": true,
+            "ttft_ms": 105.88225815445185,
+            "total_ms": 118.14106116071343,
+            "out_tps": 4078.7016460302734,
+            "out_tokens": 50,
+            "error_type": null,
+            "error": null
+          }
+        ]
+      }
+    }
+  ]
+}

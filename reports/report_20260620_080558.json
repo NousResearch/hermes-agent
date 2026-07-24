@@ -1,0 +1,168 @@
+{
+  "generated_at": "2026-06-20T08:05:58.972626",
+  "providers": [
+    {
+      "name": "Apimart",
+      "label": "中转站 Apimart",
+      "category": "aggregator",
+      "base_url": "https://api.apib.ai/v1",
+      "api_key": "sk-N***zrgP",
+      "models": [
+        "deepseek-v4-flash"
+      ],
+      "headers": {},
+      "timeout": 60.0,
+      "note": "价格计算模糊, 了解实际使用计费方式"
+    }
+  ],
+  "results": [
+    {
+      "probe": "context",
+      "provider": "Apimart",
+      "ok": false,
+      "error": "无法确定 context 上限 (可能限流或网络不稳)",
+      "metrics": [],
+      "findings": [],
+      "warnings": [],
+      "raw": {}
+    },
+    {
+      "probe": "ability",
+      "provider": "Apimart",
+      "ok": true,
+      "error": null,
+      "metrics": [
+        {
+          "name": "total_questions",
+          "value": 10,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "total_pass",
+          "value": 0,
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "overall_pass_rate",
+          "value": 0.0,
+          "unit": "%",
+          "note": ""
+        },
+        {
+          "name": "math_pass_rate",
+          "value": "0/3 (0.0%)",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "reasoning_pass_rate",
+          "value": "0/3 (0.0%)",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "code_pass_rate",
+          "value": "0/2 (0.0%)",
+          "unit": "",
+          "note": ""
+        },
+        {
+          "name": "zh_pass_rate",
+          "value": "0/2 (0.0%)",
+          "unit": "",
+          "note": ""
+        }
+      ],
+      "findings": [
+        "能力基线: 0/10 通过 (0.0%)"
+      ],
+      "warnings": [
+        "能力通过率仅 0.0% — 强烈怀疑该 key 接入的是降级模型或被偷换"
+      ],
+      "raw": {
+        "detail": [
+          {
+            "cat": "math",
+            "q": "一个商店卖苹果, 进货价每斤 3 元, 售价每斤 5 元, 每天能卖 100 斤。如果某天苹果损耗了 10%, 当天净利润是多少元?",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "math",
+            "q": "小明有 50 元, 买书花了 18 元, 妈妈又给了他 15 元, 之后他买零食花了 12 元。请问他现在还剩多少钱?",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "math",
+            "q": "一辆车 3 小时行驶 180 公里, 按同样速度, 5 小时能行驶多少公里?",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "reasoning",
+            "q": "所有的 A 都是 B, 所有的 B 都是 C, 那么所有的 A 都是 C 吗? 请回答 是 或 否。",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "reasoning",
+            "q": "有 5 个连续整数, 它们的和是 100。最大的那个数是多少?",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "reasoning",
+            "q": "Alice 比 Bob 高, Bob 比 Charlie 高, Charlie 比 David 高。谁最矮? 只回答名字。",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "code",
+            "q": "用 Python 写一个函数 is_prime(n) 判断 n 是否为素数, 只写函数体, 不要解释。",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "code",
+            "q": "Python: 用一行代码把列表 [1,2,3,4,5] 的元素求平方并组成新列表。只输出代码, 不要解释。",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "zh",
+            "q": "把'出师表'翻译成现代汉语的最后一句是什么含义? 一句话回答。",
+            "ok": false,
+            "error": "auth"
+          },
+          {
+            "cat": "zh",
+            "q": "用一句话解释什么是'内卷'。",
+            "ok": false,
+            "error": "auth"
+          }
+        ],
+        "cat_pass": {
+          "math": [
+            0,
+            3
+          ],
+          "reasoning": [
+            0,
+            3
+          ],
+          "code": [
+            0,
+            2
+          ],
+          "zh": [
+            0,
+            2
+          ]
+        }
+      }
+    }
+  ]
+}

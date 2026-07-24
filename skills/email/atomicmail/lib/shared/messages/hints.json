@@ -1,0 +1,8 @@
+{
+  "jmap_next_hints": [
+    "Use jmap_request with Mailbox/get or Email/query to work with mail data.",
+    "Use presets with $VAR placeholders — $ACCOUNT_ID, $INBOX, and $INBOX_MAILBOX_ID come from the session; pass others via vars / --vars.",
+    "Call help for the JMAP cheatsheet and troubleshooting."
+  ],
+  "post_register_cron_reminder": "After register, arrange hourly inbox polling per help topic cron: native scheduler if available; otherwise ask operator or remind manual fetch. Do not cron jmap_request alone."
+}

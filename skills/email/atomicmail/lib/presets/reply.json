@@ -1,0 +1,97 @@
+{
+  "using": [
+    "urn:ietf:params:jmap:core",
+    "urn:ietf:params:jmap:mail",
+    "urn:ietf:params:jmap:submission"
+  ],
+  "methodCalls": [
+    [
+      "Email/get",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "ids": [
+          "$MAIL_ID"
+        ],
+        "properties": [
+          "id",
+          "threadId",
+          "from",
+          "replyTo",
+          "subject",
+          "messageId"
+        ]
+      },
+      "g0"
+    ],
+    [
+      "Email/set",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "create": {
+          "d1": {
+            "mailboxIds": {
+              "$INBOX_MAILBOX_ID": true
+            },
+            "from": [
+              {
+                "email": "$INBOX"
+              }
+            ],
+            "#to": {
+              "resultOf": "g0",
+              "name": "Email/get",
+              "path": "/list/0/replyTo"
+            },
+            "#subject": {
+              "resultOf": "g0",
+              "name": "Email/get",
+              "path": "/list/0/subject"
+            },
+            "#inReplyTo": {
+              "resultOf": "g0",
+              "name": "Email/get",
+              "path": "/list/0/messageId"
+            },
+            "textBody": [
+              {
+                "partId": "b",
+                "type": "text/plain"
+              }
+            ],
+            "bodyValues": {
+              "b": {
+                "value": "$BODY"
+              }
+            },
+            "keywords": {
+              "$draft": true
+            }
+          }
+        }
+      },
+      "c0"
+    ],
+    [
+      "EmailSubmission/set",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "create": {
+          "s1": {
+            "emailId": "#d1",
+            "envelope": {
+              "mailFrom": {
+                "email": "$INBOX"
+              },
+              "#rcptTo": {
+                "resultOf": "g0",
+                "name": "Email/get",
+                "path": "/list/0/replyTo"
+              }
+            }
+          }
+        }
+      },
+      "c1"
+    ]
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "using": [
+    "urn:ietf:params:jmap:core",
+    "urn:ietf:params:jmap:mail",
+    "urn:ietf:params:jmap:submission",
+    "urn:ietf:params:jmap:blob"
+  ],
+  "methodCalls": [
+    [
+      "Blob/upload",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "create": {
+          "b1": {
+            "data": [
+              {
+                "data:asBase64": "$ATTACHMENT_BASE64"
+              }
+            ],
+            "type": "$ATTACHMENT_TYPE"
+          }
+        }
+      },
+      "b0"
+    ],
+    [
+      "Email/set",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "create": {
+          "m1": {
+            "mailboxIds": {
+              "$INBOX_MAILBOX_ID": true
+            },
+            "from": [
+              {
+                "email": "$INBOX"
+              }
+            ],
+            "to": [
+              {
+                "email": "$TO"
+              }
+            ],
+            "subject": "$SUBJECT",
+            "bodyValues": {
+              "body1": {
+                "value": "$BODY"
+              }
+            },
+            "textBody": [
+              {
+                "partId": "body1",
+                "type": "text/plain"
+              }
+            ],
+            "attachments": [
+              {
+                "blobId": "#b1",
+                "type": "$ATTACHMENT_TYPE",
+                "name": "$ATTACHMENT_NAME"
+              }
+            ]
+          }
+        }
+      },
+      "m0"
+    ],
+    [
+      "EmailSubmission/set",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "create": {
+          "s1": {
+            "emailId": "#m1",
+            "envelope": {
+              "mailFrom": {
+                "email": "$INBOX"
+              },
+              "rcptTo": [
+                {
+                  "email": "$TO"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "s0"
+    ]
+  ]
+}

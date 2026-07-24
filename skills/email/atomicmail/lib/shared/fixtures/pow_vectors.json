@@ -1,0 +1,32 @@
+{
+  "generated_by": "ts/generate_pow_vectors.ts",
+  "scrypt": {
+    "N": 16384,
+    "r": 8,
+    "p": 1,
+    "dklen": 64
+  },
+  "vectors": [
+    {
+      "challenge": "fixture-alpha",
+      "difficulty": 4,
+      "nonce": "4",
+      "powHex": "0e365cf9d7a9a9d515b5362da1ed60b3c287d6b5de7f5f0e55b15bd8a34dd3605695e20f01fb60fbfd64f21dfafe151dcf22ba6b85bbd932fb569f89150c7c50",
+      "salt": "0b980734412c292d6549110276b604ab1dea4883bd460d77d1b984adf8bca083"
+    },
+    {
+      "challenge": "fixture-beta",
+      "difficulty": 6,
+      "nonce": "51",
+      "powHex": "0326f14661b1f70377aafd19280fcf8f6f21a0aec4ef3af4bd3c37493cc9b306ddaadce199044c03dbc013de84be945ef22e87675af65398de37b64a8cfedf38",
+      "salt": "0b980734412c292d6549110276b604ab1dea4883bd460d77d1b984adf8bca083"
+    },
+    {
+      "challenge": "fixture-gamma",
+      "difficulty": 8,
+      "nonce": "80",
+      "powHex": "004f0f2b137a745d72ff9ba1cacda12d8a8c8c309060abd918d78116e4f3e7b60dbe9f2653d1c357e6835e552523f132baaf39877deb2b14f36b3f0c3cd41748",
+      "salt": "0b980734412c292d6549110276b604ab1dea4883bd460d77d1b984adf8bca083"
+    }
+  ]
+}

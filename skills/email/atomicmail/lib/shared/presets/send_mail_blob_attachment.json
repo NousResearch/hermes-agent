@@ -1,0 +1,74 @@
+{
+  "using": [
+    "urn:ietf:params:jmap:core",
+    "urn:ietf:params:jmap:mail",
+    "urn:ietf:params:jmap:submission"
+  ],
+  "methodCalls": [
+    [
+      "Email/set",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "create": {
+          "m1": {
+            "mailboxIds": {
+              "$INBOX_MAILBOX_ID": true
+            },
+            "from": [
+              {
+                "email": "$INBOX"
+              }
+            ],
+            "to": [
+              {
+                "email": "$TO"
+              }
+            ],
+            "subject": "$SUBJECT",
+            "bodyValues": {
+              "body1": {
+                "value": "$BODY"
+              }
+            },
+            "textBody": [
+              {
+                "partId": "body1",
+                "type": "text/plain"
+              }
+            ],
+            "attachments": [
+              {
+                "blobId": "$ATTACHMENT_0_BLOB_ID",
+                "type": "$ATTACHMENT_0_TYPE",
+                "name": "$ATTACHMENT_0_NAME"
+              }
+            ]
+          }
+        }
+      },
+      "m0"
+    ],
+    [
+      "EmailSubmission/set",
+      {
+        "accountId": "$ACCOUNT_ID",
+        "create": {
+          "s1": {
+            "emailId": "#m1",
+            "envelope": {
+              "mailFrom": {
+                "email": "$INBOX"
+              },
+              "rcptTo": [
+                {
+                  "email": "$TO"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "s0"
+    ]
+  ]
+}

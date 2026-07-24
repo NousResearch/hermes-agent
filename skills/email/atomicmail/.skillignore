@@ -1,0 +1,11 @@
+# TypeScript / build artifacts — not used at runtime
+**/*.d.ts
+**/*.d.ts.map
+**/*.js.map
+
+# Deno npm shim; required by cli.js but triggers eval obfuscation heuristics
+lib/esm/_dnt.polyfills.js
+
+# Embedded help fallbacks duplicate lib/shared/help (cron/host/$VAR false positives)
+lib/esm/lib/agent/jmap/help-content/**
+lib/shared/help/**

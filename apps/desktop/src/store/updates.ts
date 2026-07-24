@@ -198,7 +198,7 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  * (re)starts the cooldown, so a busy upstream branch doesn't re-spam the user
  * on every new commit. The snooze is persisted, so it survives relaunches too.
  */
-export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
+export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   if (!status || status.supported === false || status.error || !status.targetSha) {
     return
   }
@@ -222,7 +222,7 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
       label: translateNow('notifications.seeWhatsNew'),
       onClick: () => {
         snoozeUpdateToast()
-        openUpdatesWindow()
+        openUpdateOverlayFor(target)
       }
     },
     durationMs: 0,
@@ -236,21 +236,20 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 }
 
 export function openUpdatesWindow(): void {
-  openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
+  openUpdateOverlayFor('client')
 }
 
 /**
- * Start applying the available update for the active target right away. Opens
- * the updates overlay first so the user sees apply progress (the overlay
- * renders ApplyingView once `applying` flips true), then kicks off the install.
- * Used by the "Update now" affordance on the About panel, which would otherwise
- * only be able to open the changelog overlay.
+ * Start applying the Desktop client update right away. Opens the client
+ * updates overlay first so the user sees apply progress (the overlay renders
+ * ApplyingView once `applying` flips true), then kicks off the install. Used
+ * by the "Update now" affordance on the About panel, whose status comes from
+ * the local Desktop updater even when the active backend is remote.
  */
 export function startActiveUpdate(): void {
-  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
-  $updateOverlayTarget.set(target)
+  $updateOverlayTarget.set('client')
   $updateOverlayOpen.set(true)
-  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
+  void applyUpdates()
 }
 
 /** Re-read the running app's version from the Electron main process and
@@ -309,7 +308,7 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
   try {
     const status = mapBackendCheck(await checkHermesUpdate(true))
     $backendUpdateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
+    maybeNotifyUpdateAvailable(status, 'backend')
 
     return status
   } catch (error) {

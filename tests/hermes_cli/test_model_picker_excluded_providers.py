@@ -126,3 +126,68 @@ def test_cli_picker_empty_excluded_is_noop(config_home):
     baseline_labels = _capture_provider_labels(config_home)
 
     assert excluded_labels == baseline_labels
+
+
+# ─── include_unconfigured (in-session TUI ``/model``) path ────────────────────
+# The TUI picker calls ``build_models_payload(include_unconfigured=True)``, which
+# appends ``CANONICAL_PROVIDERS`` skeleton rows via ``_append_unconfigured_rows``.
+# That loop must honor ``excluded_providers`` too, or excluded providers reappear
+# in the TUI ``/model`` picker even though ``hermes model`` hides them (#68816).
+
+
+def _picker_ctx(excluded=None, *, current_provider="", current_model=""):
+    from hermes_cli.inventory import ConfigContext
+
+    return ConfigContext(
+        current_provider=current_provider,
+        current_model=current_model,
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_providers=excluded,
+    )
+
+
+def test_unconfigured_rows_hide_excluded_provider():
+    from hermes_cli.inventory import _append_unconfigured_rows
+
+    baseline = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx())}
+    assert "openrouter" in baseline, "sanity: openrouter should be a canonical skeleton row"
+
+    slugs = {
+        r["slug"].lower()
+        for r in _append_unconfigured_rows([], _picker_ctx(excluded=["openrouter"]))
+    }
+    assert "openrouter" not in slugs, "excluded provider must not be re-added as a skeleton row"
+    assert slugs == baseline - {"openrouter"}, "only the excluded provider should be removed"
+
+
+def test_unconfigured_rows_exclusion_is_case_insensitive():
+    from hermes_cli.inventory import _append_unconfigured_rows
+
+    slugs = {
+        r["slug"].lower()
+        for r in _append_unconfigured_rows([], _picker_ctx(excluded=["OpenRouter"]))
+    }
+    assert "openrouter" not in slugs
+
+
+def test_unconfigured_rows_exclude_current_provider_matches_cli():
+    """``list_authenticated_providers`` drops an excluded provider even when it is
+    the current one; the skeleton loop must not re-surface it as the
+    ``configured-current`` warning row."""
+    from hermes_cli.inventory import _append_unconfigured_rows
+
+    rows = _append_unconfigured_rows(
+        [], _picker_ctx(excluded=["openrouter"], current_provider="openrouter", current_model="some-model")
+    )
+    assert "openrouter" not in {r["slug"].lower() for r in rows}
+
+
+def test_unconfigured_rows_empty_excluded_is_noop():
+    from hermes_cli.inventory import _append_unconfigured_rows
+
+    base = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx())}
+    empty = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx(excluded=[]))}
+    none = {r["slug"].lower() for r in _append_unconfigured_rows([], _picker_ctx(excluded=None))}
+    assert base == empty == none

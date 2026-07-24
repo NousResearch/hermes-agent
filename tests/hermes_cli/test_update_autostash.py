@@ -534,6 +534,9 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    is_shallow=False,
+    head_sha="local-sha",
+    target_sha="origin-sha",
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
@@ -551,6 +554,16 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(
+                stdout="true\n" if is_shallow else "false\n",
+                stderr="",
+                returncode=0,
+            )
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout=f"{head_sha}\n", stderr="", returncode=0)
+        if len(cmd) == 3 and cmd[:2] == ["git", "rev-parse"] and cmd[2].startswith("origin/"):
+            return SimpleNamespace(stdout=f"{target_sha}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -706,6 +719,65 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     fetch_calls = [c for c in recorded if "fetch" in c]
     assert fetch_calls == [["git", "fetch", "origin", "main"]]
     assert ["git", "fetch", "origin"] not in recorded
+
+
+def test_cmd_update_shallow_clone_skips_exact_count_when_up_to_date(monkeypatch, tmp_path, capsys):
+    """Shallow checkouts should compare SHAs and never run rev-list."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        commit_count="12492",
+        is_shallow=True,
+        head_sha="same-sha",
+        target_sha="same-sha",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if "rev-list" in " ".join(str(c) for c in cmd):
+            raise AssertionError("shallow path must not count across the boundary")
+        return side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "Already up to date!" in out
+    assert ["git", "fetch", "--depth", "1", "origin", "main"] in recorded
+    assert not any("rev-list" in " ".join(c) for c in recorded)
+    assert not any(c[:3] == ["git", "pull", "--ff-only"] for c in recorded)
+
+
+def test_cmd_update_shallow_clone_reports_generic_update_without_rev_list(
+    monkeypatch, tmp_path, capsys
+):
+    """Shallow checkouts should avoid bogus exact counts before updating."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+
+    side_effect, recorded = _make_update_side_effect(
+        commit_count="12492",
+        is_shallow=True,
+        head_sha="local-sha",
+        target_sha="upstream-sha",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if "rev-list" in " ".join(str(c) for c in cmd):
+            raise AssertionError("shallow path must not count across the boundary")
+        return side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "Update available (behind origin/main)." in out
+    assert "Found 12492 new commit(s)" not in out
+    assert ["git", "fetch", "--depth", "1", "origin", "main"] in recorded
+    assert not any("rev-list" in " ".join(c) for c in recorded)
 
 
 # ---------------------------------------------------------------------------

@@ -5521,8 +5521,9 @@ def run_conversation(
                             })
                         continue
                 
-                # Reset retry counter on successful JSON validation
+                # Reset retry counters on successful JSON validation
                 agent._invalid_json_retries = 0
+                agent._ghost_tool_call_retries = 0
 
                 # ── Post-call guardrails ──────────────────────────
                 assistant_message.tool_calls = agent._cap_delegate_task_calls(
@@ -5869,9 +5870,49 @@ def run_conversation(
                 continue
             
             else:
+                # Guard: if the provider signalled tool_calls but the
+                # normalized tool_calls list is empty (transport parsing
+                # lost them), do NOT treat the accompanying narration as
+                # a final response.  Re-prompt the model to emit the tool
+                # calls properly.  Cap retries to avoid infinite loops.
+                # See #65430.
+                if finish_reason == "tool_calls":
+                    _ghost_tc_retries = getattr(agent, "_ghost_tool_call_retries", 0)
+                    if _ghost_tc_retries < 3:
+                        agent._ghost_tool_call_retries = _ghost_tc_retries + 1
+                        logger.warning(
+                            "finish_reason=tool_calls but tool_calls is empty "
+                            "(attempt %d/3) — re-prompting model",
+                            _ghost_tc_retries + 1,
+                        )
+                        # Append the assistant message so context is preserved
+                        interim_msg = agent._build_assistant_message(
+                            assistant_message, "incomplete"
+                        )
+                        messages.append(interim_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[System: Your response indicated tool_calls but none "
+                                "were received. Please re-emit your tool calls.]"
+                            ),
+                        })
+                        agent._session_messages = messages
+                        continue
+                    else:
+                        # Exhausted retries — fall through as partial
+                        agent._ghost_tool_call_retries = 0
+                        logger.error(
+                            "finish_reason=tool_calls with empty tool_calls "
+                            "persisted after 3 retries — treating as partial response"
+                        )
+
+                # Reset ghost retry counter on normal (non-ghost) text completion
+                agent._ghost_tool_call_retries = 0
+
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
-                
+
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

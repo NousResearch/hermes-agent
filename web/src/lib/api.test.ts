@@ -49,6 +49,85 @@ describe("api.getModelOptions", () => {
   });
 });
 
+describe("api Team Proposal gated launch helpers", () => {
+  it("requests a read-only plan preview before launch conversion", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ preview_hash: "hash-123", plan: { tasks: [] } });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getTeamProposalPlanPreview("proposal/with spaces");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/team-proposals/proposal%2Fwith%20spaces/plan-preview",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined();
+  });
+
+  it("requires an explicit approval payload before converting a proposal to a plan", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.approveTeamProposalMinStep("proposal-1", {
+      action_type: "plan",
+      board: "mission-control",
+      confirmed_preview_hash: "hash-123",
+      note: "human confirmed preview",
+    });
+    await api.convertTeamProposalToPlan("proposal-1", "hash-123", "mission-control");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/team-proposals/proposal-1/approve-min-step",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      action_type: "plan",
+      board: "mission-control",
+      confirmed_preview_hash: "hash-123",
+      note: "human confirmed preview",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/team-proposals/proposal-1/convert-to-plan",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      board: "mission-control",
+      confirmed_preview_hash: "hash-123",
+    });
+  });
+
+  it("keeps chief review registry-only actions separate from conversion", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.reviewTeamProposalAsChief("proposal-1", "shortlist", "standby only");
+    await api.updateTeamProposal("proposal-1", { acceptance: "clear acceptance", title: "Refined title" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/team-proposals/proposal-1/chief-review",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      action: "shortlist",
+      note: "standby only",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/team-proposals/proposal-1",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      acceptance: "clear acceptance",
+      title: "Refined title",
+    });
+  });
+});
+
 describe("api OAuth helpers", () => {
   it("starts OAuth login in gated mode without requiring an injected session token", async () => {
     vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });

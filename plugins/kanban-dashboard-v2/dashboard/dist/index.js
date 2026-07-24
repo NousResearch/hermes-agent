@@ -315,7 +315,7 @@
     }
     function prepareDocumentAction(d, template) {
       if (!template || !template.id) return;
-      const ok = window.confirm("Preparare una task in todo per: " + (template.label || template.id) + "? Nessun dispatch e nessun invio esterno verranno avviati.");
+      const ok = window.confirm("Preparare una task non-dispatchable in triage per: " + (template.label || template.id) + "? Nessun dispatch e nessun invio esterno verranno avviati.");
       if (!ok) return;
       setDocumentActionStatus("Preparo task…");
       const qs = board ? "?board=" + encodeURIComponent(board) : "";
@@ -326,13 +326,13 @@
         assignee: "default",
         confirm: true
       }).then(function (j) {
-        setDocumentActionStatus("Task preparata in todo: " + j.task_id + ". Nessun dispatch avviato.");
+        setDocumentActionStatus("Task preparata in triage: " + j.task_id + ". Nessun dispatch avviato.");
         load();
       }).catch(function (e) { setDocumentActionStatus("Errore preparazione task: " + e.message); });
     }
     function prepareTeamAction(preset) {
       if (!preset || !preset.id) return;
-      const ok = window.confirm("Preparare il flow team: " + (preset.label || preset.id) + "? Verrà creata una task in todo, senza dispatch.");
+      const ok = window.confirm("Preparare il flow team: " + (preset.label || preset.id) + "? Verrà creata una task non-dispatchable in triage, senza dispatch.");
       if (!ok) return;
       setTeamActionStatus("Preparo flow team…");
       const qs = board ? "?board=" + encodeURIComponent(board) : "";
@@ -342,7 +342,7 @@
         assignee: "default",
         confirm: true
       }).then(function (j) {
-        setTeamActionStatus("Flow team preparato in todo: " + j.task_id + ". Nessun dispatch avviato.");
+        setTeamActionStatus("Flow team preparato in triage: " + j.task_id + ". Nessun dispatch avviato.");
         load();
       }).catch(function (e) { setTeamActionStatus("Errore flow team: " + e.message); });
     }

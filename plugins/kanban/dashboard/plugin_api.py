@@ -744,118 +744,8 @@ def _v2_document_outputs(board: Optional[str], task_id: Optional[str] = None, li
     return items
 
 
-def _v2_vault_root() -> Path:
-    return Path.home() / "HermesDocumentVault"
-
-
-def _v2_current_review_pack_manifest() -> Optional[Path]:
-    vault = _v2_vault_root()
-    candidate = vault / "01_PROJECTS" / "CO2FARM" / "Progetto 1 Kania" / "Kania_CURRENT_REVIEW_PACK" / "manifest_current_pack.json"
-    return candidate if candidate.is_file() else None
-
-
-def _v2_document_action_templates(record: dict[str, Any]) -> list[dict[str, Any]]:
-    code = str(record.get("code") or "")
-    doc_type = str(record.get("type") or "Documento")
-    filename = str(record.get("file") or "documento")
-    templates = [
-        {
-            "id": "prepare_internal_review",
-            "label": "Prepara review interna",
-            "title": f"Review interna Kania — {code or filename}",
-            "body": (
-                "Rivedere il documento del Kania CURRENT REVIEW PACK prima di qualsiasi uso esterno.\n"
-                f"Documento: {filename}\n"
-                f"Tipo: {doc_type}\n"
-                "Output atteso: punti ok, punti da correggere, evidenze mancanti, e decisione go/no-go interna.\n"
-                "Guardrail: no invio esterno, no dispatch automatico, no claim crediti/tonnellate."
-            ),
-            "requires_confirmation": True,
-        }
-    ]
-    if code in {"01_PDD", "04_Evidence_Register", "08_Check_Registration_Readiness"}:
-        templates.append({
-            "id": "prepare_chief_synthesis",
-            "label": "Prepara Chief synthesis",
-            "title": f"Chief synthesis Kania — {code}",
-            "body": (
-                "Preparare una sintesi Chief-of-Staff del documento prioritario Kania.\n"
-                f"Documento: {filename}\n"
-                "Concentrarsi su decisione consigliata, rischi, blocchi, evidenze mancanti e prossimo step.\n"
-                "Guardrail: task creata in todo; nessun subagente avviato; nessun invio esterno."
-            ),
-            "requires_confirmation": True,
-        })
-    if "CarbonRights" in filename or "Claim" in filename or "NoDoubleCounting" in filename:
-        templates.append({
-            "id": "prepare_team_challenge",
-            "label": "Prepara team challenge",
-            "title": "Team challenge Kania — carbon rights / claims",
-            "body": (
-                "Preparare un controllo critico su carbon rights, no double counting e claims policy.\n"
-                f"Documento: {filename}\n"
-                "Output atteso: ambiguità legali/claims, rischi greenwashing, evidenze mancanti, blocchi per uso esterno.\n"
-                "Guardrail: preparazione task soltanto; dispatch separato con conferma esplicita."
-            ),
-            "requires_confirmation": True,
-        })
-    return templates
-
-
-def _v2_vault_current_review_documents(limit: int = 50) -> list[dict[str, Any]]:
-    manifest_path = _v2_current_review_pack_manifest()
-    if manifest_path is None:
-        return []
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    pack_dir = Path(manifest.get("current_dir") or manifest_path.parent).resolve()
-    try:
-        pack_dir.relative_to(_v2_vault_root().resolve())
-    except (ValueError, OSError):
-        return []
-    items: list[dict[str, Any]] = []
-    for record in manifest.get("files", []):
-        filename = str(record.get("file") or "")
-        if not filename or "/" in filename or "\\" in filename:
-            continue
-        path = (pack_dir / filename).resolve()
-        try:
-            path.relative_to(pack_dir)
-        except (ValueError, OSError):
-            continue
-        if not path.is_file() or path.suffix.lower() not in _DOCUMENT_OUTPUT_SUFFIXES:
-            continue
-        items.append({
-            "task_id": None,
-            "filename": filename,
-            "entry_name": filename,
-            "path": str(path),
-            "size": int(record.get("size") or path.stat().st_size),
-            "source": "vault_current_review_pack",
-            "project": "CO2FARM / Progetto 1 Kania",
-            "pack": "Kania_CURRENT_REVIEW_PACK",
-            "code": record.get("code"),
-            "document_type": record.get("type"),
-            "review_status": record.get("status") or "CURRENT_REVIEW",
-            "sha256_short": record.get("sha256_short"),
-            "next_action": "review_output",
-            "action_templates": _v2_document_action_templates(record),
-            "download_url": f"/api/plugins/kanban/v2/vault-documents/Kania_CURRENT_REVIEW_PACK/{filename}",
-        })
-        if len(items) >= limit:
-            break
-    return items
-
-
 def _v2_document_registry(board: Optional[str], task_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
-    if task_id is not None:
-        return _v2_document_outputs(board=board, task_id=task_id, limit=limit)
-    items = _v2_vault_current_review_documents(limit=limit)
-    if len(items) < limit:
-        items.extend(_v2_document_outputs(board=board, task_id=None, limit=limit - len(items)))
-    return items[:limit]
+    return _v2_document_outputs(board=board, task_id=task_id, limit=limit)
 
 
 def _v2_team_presets() -> list[dict[str, Any]]:
@@ -1044,38 +934,6 @@ def mission_control_v2_download_document(entry_name: str, board: Optional[str] =
     return FileResponse(path=str(target), filename=filename, media_type="application/octet-stream")
 
 
-@router.get("/v2/vault-documents/{pack}/{filename}")
-def mission_control_v2_download_vault_document(pack: str, filename: str):
-    if pack != "Kania_CURRENT_REVIEW_PACK":
-        raise HTTPException(status_code=404, detail="vault pack not found")
-    if "/" in filename or "\\" in filename or filename.startswith("."):
-        raise HTTPException(status_code=400, detail="invalid vault document name")
-    manifest_path = _v2_current_review_pack_manifest()
-    if manifest_path is None:
-        raise HTTPException(status_code=404, detail="vault manifest not found")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        raise HTTPException(status_code=404, detail="vault manifest unavailable")
-    allowed = {str(row.get("file") or "") for row in manifest.get("files", [])}
-    if filename not in allowed or Path(filename).suffix.lower() not in _DOCUMENT_OUTPUT_SUFFIXES:
-        raise HTTPException(status_code=404, detail="vault document not indexed")
-    pack_dir = Path(manifest.get("current_dir") or manifest_path.parent).resolve()
-    root = _v2_vault_root().resolve()
-    try:
-        pack_dir.relative_to(root)
-    except (ValueError, OSError):
-        raise HTTPException(status_code=404, detail="vault pack unavailable")
-    target = (pack_dir / filename).resolve()
-    try:
-        target.relative_to(pack_dir)
-    except (ValueError, OSError):
-        raise HTTPException(status_code=404, detail="vault document unavailable")
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="vault document missing")
-    return FileResponse(path=str(target), filename=filename, media_type="application/octet-stream")
-
-
 @router.post("/v2/document-actions/prepare-followup")
 def mission_control_v2_prepare_document_action(
     payload: MissionControlDocumentActionBody,
@@ -1120,7 +978,7 @@ def mission_control_v2_prepare_document_action(
             f"Review status: {doc.get('review_status') or ''}\n"
             f"Download URL: {doc.get('download_url') or ''}\n\n"
             f"{body}\n\n"
-            "Guardrail: created as ready for automatic Kanban dispatch; no external send."
+            "Guardrail: prepared as non-dispatchable triage work; dispatch requires separate DISPATCH_ONE_TICK confirmation; no external send."
         )
         task_id = kanban_db.create_task(
             conn,
@@ -1129,11 +987,9 @@ def mission_control_v2_prepare_document_action(
             assignee=payload.assignee or "default",
             created_by=payload.author or "dashboard",
             priority=8,
+            triage=True,
         )
         task = kanban_db.get_task(conn, task_id)
-        if task and task.status != "ready":
-            _set_status_direct(conn, task_id, "ready")
-            task = kanban_db.get_task(conn, task_id)
         kanban_db.add_comment(
             conn,
             task_id,
@@ -1142,7 +998,7 @@ def mission_control_v2_prepare_document_action(
                 "DOCUMENT_ACTION_PREPARED\n"
                 f"Document: {filename}\n"
                 f"Action: {action_id}\n"
-                "Guardrail: dispatch_started=true via Kanban dispatcher; external_send=false"
+                "Guardrail: dispatch_started=false; prepared task remains non-dispatchable until explicit dispatch confirmation."
             ),
         )
         return {
@@ -1152,9 +1008,9 @@ def mission_control_v2_prepare_document_action(
             "task": _task_dict(task) if task else None,
             "document": doc,
             "action_id": action_id,
-            "dispatch_started": True,
+            "dispatch_started": False,
             "external_send": False,
-            "status_changed": True,
+            "status_changed": False,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1181,8 +1037,8 @@ def mission_control_v2_prepare_team_action(
         "Preparare il flusso team selezionato da Mission Control v2.\n"
         f"Preset: {preset_id} — {label}\n"
         f"Descrizione: {preset.get('description') or ''}\n\n"
-        "Obiettivo: lanciare il prossimo passo operativo come task ready, ispezionabile da Daniele ma già eleggibile dal dispatcher.\n"
-        "Guardrail: dispatch automatico secondo priorità e limiti Kanban; no external send; no cron."
+        "Obiettivo: preparare il prossimo passo operativo come task non-dispatchable, ispezionabile da Daniele prima dell'esecuzione.\n"
+        "Guardrail: nessun dispatch automatico; dispatch solo tramite conferma separata DISPATCH_ONE_TICK; no external send; no cron."
     )
     title = (payload.title or default_title).strip()
     body = (payload.body or default_body).strip()
@@ -1198,11 +1054,9 @@ def mission_control_v2_prepare_team_action(
             assignee=payload.assignee or "default",
             created_by=payload.author or "dashboard",
             priority=7,
+            triage=True,
         )
         task = kanban_db.get_task(conn, task_id)
-        if task and task.status != "ready":
-            _set_status_direct(conn, task_id, "ready")
-            task = kanban_db.get_task(conn, task_id)
         kanban_db.add_comment(
             conn,
             task_id,
@@ -1210,7 +1064,7 @@ def mission_control_v2_prepare_team_action(
             body=(
                 "TEAM_ACTION_PREPARED\n"
                 f"Preset: {preset_id}\n"
-                "Guardrail: dispatch_started=true via Kanban dispatcher; external_send=false"
+                "Guardrail: dispatch_started=false; prepared task remains non-dispatchable until explicit dispatch confirmation."
             ),
         )
         return {
@@ -1219,9 +1073,9 @@ def mission_control_v2_prepare_team_action(
             "task_id": task_id,
             "task": _task_dict(task) if task else None,
             "preset": preset,
-            "dispatch_started": True,
+            "dispatch_started": False,
             "external_send": False,
-            "status_changed": True,
+            "status_changed": False,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

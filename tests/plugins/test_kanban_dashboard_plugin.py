@@ -2674,82 +2674,85 @@ def test_mission_control_v2_documents_registry_lists_only_document_outputs(clien
     assert download.content == b"doc"
 
 
-def test_mission_control_v2_documents_registry_lists_vault_current_review_pack(client, tmp_path):
-    pack_dir = (
+def test_mission_control_v2_documents_registry_ignores_user_vault_and_prepares_in_triage(client, tmp_path):
+    private_pack_dir = (
         tmp_path / "HermesDocumentVault" / "01_PROJECTS" / "CO2FARM" /
         "Progetto 1 Kania" / "Kania_CURRENT_REVIEW_PACK"
     )
-    pack_dir.mkdir(parents=True)
-    doc = pack_dir / "01_PDD_TEST.docx"
-    doc.write_bytes(b"vault-doc")
-    (pack_dir / "ignored.log").write_text("debug")
-    (pack_dir / "manifest_current_pack.json").write_text(
-        '''{
-          "created_at": "2026-06-18T10:05:31",
-          "current_dir": "''' + str(pack_dir) + '''",
-          "files": [
-            {"code": "01_PDD", "file": "01_PDD_TEST.docx", "type": "PDD", "status": "CURRENT_REVIEW", "size": 9, "sha256_short": "abc123"},
-            {"code": "DEBUG", "file": "ignored.log", "type": "Log", "status": "TECHNICAL", "size": 5}
-          ]
-        }''',
+    private_pack_dir.mkdir(parents=True)
+    (private_pack_dir / "01_PDD_TEST.docx").write_bytes(b"private-vault-doc")
+    (private_pack_dir / "manifest_current_pack.json").write_text(
+        '{"files":[{"file":"01_PDD_TEST.docx"}]}',
         encoding="utf-8",
     )
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Completed reviewable output", "assignee": "reviewer"},
+    ).json()["task"]
+    output_dir = kb.board_dir() / "completed_outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    produced = output_dir / f"{task['id']}_methodology.docx"
+    produced.write_bytes(b"reviewable-doc")
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (task["id"],))
+    finally:
+        conn.close()
 
     r = client.get("/api/plugins/kanban/v2/documents")
 
     assert r.status_code == 200, r.text
     data = r.json()
-    vault_items = [item for item in data["items"] if item["source"] == "vault_current_review_pack"]
-    assert len(vault_items) == 1
-    item = vault_items[0]
-    assert item["filename"] == "01_PDD_TEST.docx"
-    assert item["pack"] == "Kania_CURRENT_REVIEW_PACK"
-    assert item["review_status"] == "CURRENT_REVIEW"
-    assert item["document_type"] == "PDD"
-    assert item["download_url"].endswith("/v2/vault-documents/Kania_CURRENT_REVIEW_PACK/01_PDD_TEST.docx")
-    action_ids = {template["id"] for template in item["action_templates"]}
-    assert {"prepare_internal_review", "prepare_chief_synthesis"} <= action_ids
+    assert {item["source"] for item in data["items"]} == {"completed_outputs"}
+    filenames = [item["filename"] for item in data["items"]]
+    assert "methodology.docx" in filenames
+    assert "01_PDD_TEST.docx" not in filenames
+    item = next(item for item in data["items"] if item["filename"] == "methodology.docx")
 
     missing_confirm = client.post(
         "/api/plugins/kanban/v2/document-actions/prepare-followup",
-        json={"filename": "01_PDD_TEST.docx", "action_id": "prepare_internal_review"},
+        json={"filename": "methodology.docx", "action_id": "prepare_internal_review"},
     )
     assert missing_confirm.status_code == 400
 
     prepared = client.post(
         "/api/plugins/kanban/v2/document-actions/prepare-followup",
         json={
-            "filename": "01_PDD_TEST.docx",
-            "action_id": "prepare_chief_synthesis",
-            "author": "daniele",
+            "filename": "methodology.docx",
+            "action_id": "prepare_internal_review",
+            "author": "dashboard",
             "confirm": True,
         },
     )
     assert prepared.status_code == 200, prepared.text
     prepared_data = prepared.json()
     assert prepared_data["mutation"] == "document_action_prepared"
-    assert prepared_data["dispatch_started"] is True
+    assert prepared_data["dispatch_started"] is False
     assert prepared_data["external_send"] is False
-    assert prepared_data["task"]["status"] == "ready"
-    assert prepared_data["document"]["filename"] == "01_PDD_TEST.docx"
+    assert prepared_data["status_changed"] is False
+    assert prepared_data["task"]["status"] == "triage"
+    assert prepared_data["document"]["filename"] == "methodology.docx"
     conn = kb.connect()
     try:
-        task = kb.get_task(conn, prepared_data["task_id"])
-        assert task is not None
-        assert task.status == "ready"
-        assert "MISSION_CONTROL_DOCUMENT_ACTION" in (task.body or "")
-        assert "01_PDD_TEST.docx" in (task.body or "")
+        prepared_task = kb.get_task(conn, prepared_data["task_id"])
+        assert prepared_task is not None
+        assert prepared_task.status == "triage"
+        assert "MISSION_CONTROL_DOCUMENT_ACTION" in (prepared_task.body or "")
+        assert "methodology.docx" in (prepared_task.body or "")
+        assert "DISPATCH_ONE_TICK" in (prepared_task.body or "")
         comments = conn.execute(
             "SELECT body FROM task_comments WHERE task_id = ?",
             (prepared_data["task_id"],),
         ).fetchall()
-        assert any("DOCUMENT_ACTION_PREPARED" in row["body"] for row in comments)
+        assert any("dispatch_started=false" in row["body"] for row in comments)
     finally:
         conn.close()
 
     download = client.get(item["download_url"])
     assert download.status_code == 200
-    assert download.content == b"vault-doc"
+    assert download.content == b"reviewable-doc"
 
 
 def test_mission_control_v2_dispatch_preview_is_inert_and_confirm_is_capped(client, monkeypatch):
@@ -2807,7 +2810,7 @@ def test_mission_control_v2_dispatch_preview_is_inert_and_confirm_is_capped(clie
     assert captured["max_in_progress_per_profile"] == 1
 
 
-def test_mission_control_v2_team_flow_launches_ready_task_for_dispatch(client):
+def test_mission_control_v2_team_flow_prepares_triage_task_without_dispatch(client):
     missing_confirm = client.post(
         "/api/plugins/kanban/v2/team-actions/prepare",
         json={"preset_id": "team_review"},
@@ -2822,22 +2825,23 @@ def test_mission_control_v2_team_flow_launches_ready_task_for_dispatch(client):
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["mutation"] == "team_action_prepared"
-    assert data["dispatch_started"] is True
+    assert data["dispatch_started"] is False
     assert data["external_send"] is False
-    assert data["task"]["status"] == "ready"
+    assert data["status_changed"] is False
+    assert data["task"]["status"] == "triage"
     assert data["preset"]["id"] == "team_challenge"
     conn = kb.connect()
     try:
         task = kb.get_task(conn, data["task_id"])
         assert task is not None
-        assert task.status == "ready"
+        assert task.status == "triage"
         assert "MISSION_CONTROL_TEAM_ACTION" in (task.body or "")
-        assert "dispatch automatico" in (task.body or "")
+        assert "DISPATCH_ONE_TICK" in (task.body or "")
         comments = conn.execute(
             "SELECT body FROM task_comments WHERE task_id = ?",
             (data["task_id"],),
         ).fetchall()
-        assert any("TEAM_ACTION_PREPARED" in row["body"] for row in comments)
+        assert any("TEAM_ACTION_PREPARED" in row["body"] and "dispatch_started=false" in row["body"] for row in comments)
     finally:
         conn.close()
 

@@ -542,6 +542,14 @@ def _resolve_runtime_from_pool_entry(
     if provider == "lmstudio":
         base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
 
+    # Kimi Code Anthropic-compatible endpoint requires a trailing slash.
+    if (
+        provider in ("kimi-coding", "kimi-coding-cn")
+        and api_mode == "anthropic_messages"
+        and base_url.rstrip("/") == "https://api.kimi.com/coding"
+    ):
+        base_url = "https://api.kimi.com/coding/"
+
     return {
         "provider": provider,
         "api_mode": api_mode,
@@ -1578,6 +1586,9 @@ def _resolve_explicit_runtime(
             if provider in {"kimi-coding", "kimi-coding-cn"}:
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
+                # Kimi Code Anthropic-compatible endpoint requires trailing slash.
+                if base_url == "https://api.kimi.com/coding":
+                    base_url = "https://api.kimi.com/coding/"
             else:
                 base_url = env_url or pconfig.inference_base_url
 
@@ -1599,7 +1610,10 @@ def _resolve_explicit_runtime(
             api_mode = "codex_responses"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
+            if configured_mode and _provider_supports_explicit_api_mode(
+                provider,
+                configured_provider=str(model_cfg.get("provider") or "").strip().lower(),
+            ):
                 api_mode = configured_mode
             else:
                 # Auto-detect from URL (Anthropic /anthropic suffix,
@@ -1611,7 +1625,12 @@ def _resolve_explicit_runtime(
         return {
             "provider": provider,
             "api_mode": api_mode,
-            "base_url": base_url.rstrip("/"),
+            "base_url": (
+                "https://api.kimi.com/coding/"
+                if provider in ("kimi-coding", "kimi-coding-cn")
+                and base_url.rstrip("/") == "https://api.kimi.com/coding"
+                else base_url.rstrip("/")
+            ),
             "api_key": api_key,
             "source": "explicit",
             "requested_provider": requested_provider,

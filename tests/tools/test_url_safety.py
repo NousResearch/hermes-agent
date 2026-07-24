@@ -845,3 +845,95 @@ class TestRedirectTargetFromResponse:
     def test_no_location_no_next_request_returns_none(self):
         resp = _FakeResponse(is_redirect=True)
         assert redirect_target_from_response(resp) is None
+
+
+class _FakeNextRequestWithHeaders:
+    def __init__(self, url):
+        self.url = url
+        self.headers = {"authorization": "Bearer secret", "Authorization": "Bearer secret"}
+
+
+class TestMakeOriginAwareRedirectHooks:
+    """Origin-aware redirect policy for localhost-capable HTTP clients."""
+
+    def test_blocks_metadata_even_from_loopback_origin(self):
+        from tools.url_safety import make_origin_aware_redirect_hooks
+
+        hooks = make_origin_aware_redirect_hooks(
+            "http://127.0.0.1:1234", label="BlueBubbles"
+        )
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="http://169.254.169.254/latest/meta-data",
+            url="http://127.0.0.1:1234/attachment",
+            next_request=_FakeNextRequestWithHeaders(
+                "http://169.254.169.254/latest/meta-data"
+            ),
+        )
+        with pytest.raises(ValueError, match="always-blocked"):
+            import asyncio
+
+            asyncio.run(hooks[0](resp))
+
+    def test_public_origin_cannot_redirect_to_private(self):
+        from tools.url_safety import make_origin_aware_redirect_hooks
+
+        hooks = make_origin_aware_redirect_hooks(
+            "https://bb.example.com", label="BlueBubbles"
+        )
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="http://10.0.0.5/secret",
+            url="https://bb.example.com/attachment",
+        )
+        with patch(
+            "tools.url_safety.is_safe_url",
+            side_effect=lambda u: not (
+                "10.0.0.5" in u or "169.254" in u or "127.0.0.1" in u
+            ),
+        ), patch(
+            "tools.url_safety.is_always_blocked_url",
+            return_value=False,
+        ):
+            # Re-bind hooks after patch so original_is_public uses patched is_safe_url
+            hooks = make_origin_aware_redirect_hooks(
+                "https://bb.example.com", label="BlueBubbles"
+            )
+            with pytest.raises(ValueError, match="private/internal"):
+                import asyncio
+
+                asyncio.run(hooks[0](resp))
+
+    def test_loopback_origin_may_redirect_within_private(self):
+        from tools.url_safety import make_origin_aware_redirect_hooks
+
+        hooks = make_origin_aware_redirect_hooks(
+            "http://127.0.0.1:1234", label="BlueBubbles"
+        )
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="http://127.0.0.1:1234/cdn/file",
+            url="http://127.0.0.1:1234/attachment",
+        )
+        import asyncio
+
+        asyncio.run(hooks[0](resp))  # must not raise
+
+    def test_strips_authorization_on_cross_origin_redirect(self):
+        from tools.url_safety import make_origin_aware_redirect_hooks
+
+        hooks = make_origin_aware_redirect_hooks(
+            "https://bb.example.com", label="BlueBubbles"
+        )
+        next_req = _FakeNextRequestWithHeaders("https://cdn.example.com/file")
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="https://cdn.example.com/file",
+            url="https://bb.example.com/attachment",
+            next_request=next_req,
+        )
+        import asyncio
+
+        asyncio.run(hooks[0](resp))
+        assert "authorization" not in next_req.headers
+        assert "Authorization" not in next_req.headers

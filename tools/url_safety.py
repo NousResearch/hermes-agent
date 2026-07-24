@@ -824,3 +824,58 @@ def redirect_target_from_response(response: Any) -> Optional[str]:
         return str(next_request.url)
 
     return None
+
+
+def make_origin_aware_redirect_hooks(
+    original_url: str,
+    *,
+    label: str = "HTTP",
+):
+    """Build httpx async response hooks for origin-aware redirect SSRF policy.
+
+    Use when the configured endpoint may legitimately be loopback/private
+    (local BlueBubbles, local MCP) but a *public* origin must not 302 into
+    private/link-local space. Cloud metadata is always blocked.
+
+    Also strips ``Authorization`` on cross-origin redirects when
+    ``response.next_request`` is available (salvage of auth-leak mitigations).
+    """
+    import httpx
+
+    _original = httpx.URL(original_url)
+    _original_is_public = is_safe_url(original_url)
+
+    async def _on_redirect(response):
+        if not getattr(response, "is_redirect", False):
+            return
+
+        target_url = redirect_target_from_response(response)
+        if not target_url:
+            return
+
+        target = httpx.URL(target_url)
+        next_req = getattr(response, "next_request", None)
+        if next_req is not None and (
+            target.scheme,
+            target.host,
+            target.port,
+        ) != (
+            _original.scheme,
+            _original.host,
+            _original.port,
+        ):
+            next_req.headers.pop("authorization", None)
+            next_req.headers.pop("Authorization", None)
+
+        if is_always_blocked_url(target_url):
+            raise ValueError(
+                f"Blocked {label} redirect to cloud metadata / "
+                f"always-blocked address: {target_url}"
+            )
+        if _original_is_public and not is_safe_url(target_url):
+            raise ValueError(
+                f"Blocked {label} redirect to private/internal address: "
+                f"{target_url}"
+            )
+
+    return [_on_redirect]

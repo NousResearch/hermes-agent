@@ -26,6 +26,7 @@ import {
   $busy,
   $connection,
   $messages,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setMessages,
@@ -176,6 +177,7 @@ interface PromptActionsOptions {
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
+  getSelectionGeneration: () => number
   handleSkinCommand: (arg: string) => string
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
@@ -207,6 +209,7 @@ export function usePromptActions({
   getRoutedStoredSessionId,
   getRuntimeIdForStoredSession,
   getRouteToken,
+  getSelectionGeneration,
   handleSkinCommand,
   openMemoryGraph,
   refreshSessions,
@@ -401,6 +404,7 @@ export function usePromptActions({
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
+    getSelectionGeneration,
     requestGateway,
     resumeStoredSession,
     selectedStoredSessionIdRef,
@@ -551,6 +555,16 @@ export function usePromptActions({
     // The ref is updated via useEffect on every activeSessionId change, so it
     // always reflects the current session — same pattern submitText uses.
     const sessionId = activeSessionIdRef.current
+    let expectedRuntimeSessionId = sessionId
+    const startingStoredSessionId = selectedStoredSessionIdRef.current
+    const startingRouteToken = getRouteToken()
+    const startingSelectionGeneration = getSelectionGeneration()
+
+    const stopContextDrifted = () =>
+      activeSessionIdRef.current !== expectedRuntimeSessionId ||
+      selectedStoredSessionIdRef.current !== startingStoredSessionId ||
+      getRouteToken() !== startingRouteToken ||
+      getSelectionGeneration() !== startingSelectionGeneration
 
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
@@ -596,16 +610,27 @@ export function usePromptActions({
 
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
+
+      if (stopContextDrifted()) {
+        return
+      }
+
       releaseBusy()
     } catch (err) {
       let stopError = err
 
-      if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+      if (isSessionNotFoundError(err) && startingStoredSessionId) {
+        if (stopContextDrifted()) {
+          releaseBusy()
+
+          return
+        }
+
         try {
-          const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
+          const resumeProfile = await resolveSessionProfile(startingStoredSessionId)
 
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: selectedStoredSessionIdRef.current,
+            session_id: startingStoredSessionId,
             source: 'desktop',
             ...(resumeProfile ? { profile: resumeProfile } : {})
           })
@@ -613,21 +638,54 @@ export function usePromptActions({
           const recoveredId = resumed?.session_id
 
           if (recoveredId) {
+            if (stopContextDrifted()) {
+              releaseBusy()
+
+              return
+            }
+
+            // Recovery legitimately rotates the runtime ID. Re-pin the drift
+            // baseline before publishing that ID so only a subsequent user
+            // selection is treated as foreign context.
+            expectedRuntimeSessionId = recoveredId
+            setActiveSessionId(recoveredId)
             activeSessionIdRef.current = recoveredId
             await requestGateway('session.interrupt', { session_id: recoveredId })
+
+            if (stopContextDrifted()) {
+              return
+            }
+
             releaseBusy()
 
             return
           }
         } catch (resumeErr) {
+          if (stopContextDrifted()) {
+            return
+          }
+
           stopError = resumeErr
         }
+      }
+
+      if (stopContextDrifted()) {
+        return
       }
 
       releaseBusy()
       notifyError(stopError, copy.stopFailed)
     }
-  }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
+  }, [
+    activeSessionIdRef,
+    busyRef,
+    copy.stopFailed,
+    getRouteToken,
+    getSelectionGeneration,
+    requestGateway,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  ])
 
   // The desktop steering action is an immediate correction: the core cancels
   // model generation and rebuilds the live turn with displayed reasoning and
@@ -641,6 +699,15 @@ export function usePromptActions({
       if (!text || !sessionId) {
         return false
       }
+
+      const invocationStoredSessionId = selectedStoredSessionIdRef.current
+      const invocationRouteToken = getRouteToken()
+      const invocationSelectionGeneration = getSelectionGeneration()
+
+      const redirectContextDrifted = (): boolean =>
+        selectedStoredSessionIdRef.current !== invocationStoredSessionId ||
+        getRouteToken() !== invocationRouteToken ||
+        getSelectionGeneration() !== invocationSelectionGeneration
 
       // Accepted whether the live turn was redirected in place or queued for
       // the next turn (the build window, before the agent is wired) — either
@@ -702,19 +769,20 @@ export function usePromptActions({
         // A stale runtime id after reconnect 404s ("session not found"): resume
         // the stored session and retry once, mirroring stopPrompt so a
         // correction right after a reconnect isn't lost to the race.
-        if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+        if (isSessionNotFoundError(err) && invocationStoredSessionId && !redirectContextDrifted()) {
           try {
-            const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
+            const resumeProfile = await resolveSessionProfile(invocationStoredSessionId)
 
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current,
+              session_id: invocationStoredSessionId,
               source: 'desktop',
               ...(resumeProfile ? { profile: resumeProfile } : {})
             })
 
             const recoveredId = resumed?.session_id
 
-            if (recoveredId) {
+            if (recoveredId && !redirectContextDrifted()) {
+              setActiveSessionId(recoveredId)
               activeSessionIdRef.current = recoveredId
 
               return await send(recoveredId)
@@ -732,6 +800,8 @@ export function usePromptActions({
       activeSessionId,
       activeSessionIdRef,
       appendSessionTextMessage,
+      getRouteToken,
+      getSelectionGeneration,
       requestGateway,
       selectedStoredSessionIdRef,
       updateSessionState

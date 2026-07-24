@@ -20,7 +20,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { setActiveSessionId, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -46,6 +46,7 @@ interface SubmitPromptDeps {
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
+  getSelectionGeneration: () => number
   requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -91,6 +92,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
+    getSelectionGeneration,
     requestGateway,
     resumeStoredSession,
     selectedStoredSessionIdRef,
@@ -192,6 +194,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         : (selectedStoredSessionId ?? routedStoredSessionId)
 
       let startingRouteToken = getRouteToken()
+      let startingSelectionGeneration = getSelectionGeneration()
 
       // Reason string (or null) for why the session context genuinely drifted
       // under this in-flight submit. sessionContextDrift ignores the churn a
@@ -205,13 +208,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // pipeline's own re-home) is never counted as drift.
       const sessionDriftReason = (): string | null =>
         targetStartedInCurrentView
-          ? sessionContextDrift({
-              startRouteToken: startingRouteToken,
-              nowRouteToken: getRouteToken(),
-              startSelectedStoredId: startingStoredSessionId,
-              nowSelectedStoredId: selectedStoredSessionIdRef.current,
-              submitTargetStoredId: startingStoredSessionId
-            })
+          ? getSelectionGeneration() !== startingSelectionGeneration
+            ? 'selection generation changed'
+            : sessionContextDrift({
+                startRouteToken: startingRouteToken,
+                nowRouteToken: getRouteToken(),
+                startSelectedStoredId: startingStoredSessionId,
+                nowSelectedStoredId: selectedStoredSessionIdRef.current,
+                submitTargetStoredId: startingStoredSessionId
+              })
           : null
 
       const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionDriftReason()
@@ -407,6 +412,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             sessionId = resumed.session_id
 
             if (targetIsCurrentView()) {
+              setActiveSessionId(sessionId)
               activeSessionIdRef.current = sessionId
             }
           }
@@ -486,9 +492,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // pipeline; the closures (seedOptimistic et al) see the new value.
         startingStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
+        startingSelectionGeneration = getSelectionGeneration()
 
         seedOptimistic(sessionId)
       }
+
+      // Capture the final runtime id after every resume/create branch. The
+      // mutable `sessionId` cannot stay narrowed inside retry callbacks.
+      const submitSessionId = sessionId
 
       try {
         const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
@@ -523,9 +534,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         try {
           await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            requestGateway('prompt.submit', submitParams(submitSessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
+          // A profile/session switch can finish while prompt.submit is in
+          // flight. Its 4007 belongs to the abandoned context; never try to
+          // resume that old durable id through the newly active gateway.
+          const failedSubmitDrift = sessionDriftReason()
+
+          if (failedSubmitDrift) {
+            console.warn('[submit-drift-abort]', failedSubmitDrift, { phase: 'failed-submit' })
+
+            return abortForSessionSwitch(sessionId)
+          }
+
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
           if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && recoverStoredSessionId) {
@@ -534,13 +556,30 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumeProfile = await resolveSessionProfile(recoverStoredSessionId)
+            let resumed: { session_id: string } | undefined
 
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
-              source: 'desktop',
-              ...(resumeProfile ? { profile: resumeProfile } : {})
-            })
+            try {
+              const resumeProfile = await resolveSessionProfile(recoverStoredSessionId)
+
+              resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                session_id: recoverStoredSessionId,
+                source: 'desktop',
+                ...(resumeProfile ? { profile: resumeProfile } : {})
+              })
+            } catch (resumeErr) {
+              // The switch may have happened after the pre-resume guard while
+              // this RPC was awaiting its response. Treat that as a silent
+              // cancellation; otherwise preserve the original error behavior.
+              const failedResumeDrift = sessionDriftReason()
+
+              if (failedResumeDrift) {
+                console.warn('[submit-drift-abort]', failedResumeDrift, { phase: 'failed-resume-retry' })
+
+                return abortForSessionSwitch(sessionId)
+              }
+
+              throw resumeErr
+            }
 
             const resumeRetryDrift = sessionDriftReason()
 
@@ -553,13 +592,52 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
+              // From this point onward the recovered runtime owns the optimistic
+              // turn. Rebind all success/error cleanup before retrying so a
+              // failed recovered submit cannot strand busy state or attach its
+              // error to the stale runtime session.
+              const staleSessionId = sessionId
+              sessionId = recoveredId
+
               if (targetIsCurrentView()) {
+                setActiveSessionId(recoveredId)
                 activeSessionIdRef.current = recoveredId
               }
 
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(recoveredId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              )
+              // The optimistic turn was seeded under the stale runtime id.
+              // Re-seed it under the recovered id before retrying, then remove
+              // the stale copy so a later error/stream cannot strand duplicate
+              // busy state in the old session cache.
+              if (staleSessionId !== recoveredId) {
+                seedOptimistic(recoveredId)
+                dropOptimistic(staleSessionId)
+              }
+
+              // A recovered submit may itself sit in the bounded session-busy
+              // retry loop. Revalidate the pinned route before every attempt:
+              // the user can switch chats during the retry delay, and their
+              // text must never land in the conversation they just left.
+              const recoveryContextDrift = new Error('submit recovery context changed')
+
+              try {
+                await withSessionBusyRetry(() => {
+                  if (sessionDriftReason()) {
+                    throw recoveryContextDrift
+                  }
+
+                  return requestGateway(
+                    'prompt.submit',
+                    submitParams(recoveredId),
+                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                  )
+                })
+              } catch (retryErr) {
+                if (retryErr === recoveryContextDrift) {
+                  return abortForSessionSwitch(sessionId)
+                }
+
+                throw retryErr
+              }
             } else {
               submitErr = firstErr
             }
@@ -582,6 +660,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
+        // A failure can arrive after a recovered prompt.submit was already
+        // dispatched and the user selected another conversation. Remove the
+        // abandoned optimistic turn from its own cached session, but never add
+        // an error or clear foreground state in the newly selected session.
+        if (sessionDriftReason()) {
+          return abortForSessionSwitch(sessionId)
+        }
+
         releaseBusy()
 
         // A queued drain that raced a not-yet-settled turn gets a transient
@@ -636,6 +722,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       getRoutedStoredSessionId,
       getRuntimeIdForStoredSession,
       getRouteToken,
+      getSelectionGeneration,
       requestGateway,
       resumeStoredSession,
       scope,

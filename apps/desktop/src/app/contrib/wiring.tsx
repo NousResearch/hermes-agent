@@ -32,7 +32,7 @@ import { $billingSettingsRequest } from '@/store/billing-block'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profileScope, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -44,6 +44,7 @@ import {
   $messagingSessions,
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
+  $selectedSessionGeneration,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -65,6 +66,7 @@ import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
+import { useFreshSessionRequests } from '../hooks/use-fresh-session-requests'
 import { useKeybinds } from '../hooks/use-keybinds'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
@@ -166,8 +168,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   routedSessionIdRef.current = routedSessionId
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
   const routeTokenRef = useRef(routeToken)
-  routeTokenRef.current = routeToken
+  const selectionGenerationRef = useRef(0)
+
+  if (routeTokenRef.current !== routeToken) {
+    routeTokenRef.current = routeToken
+    selectionGenerationRef.current += 1
+  }
+
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
+
+  const getSelectionGeneration = useCallback(
+    () => selectionGenerationRef.current + $selectedSessionGeneration.get(),
+    []
+  )
 
   const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
 
@@ -445,18 +458,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   // A profile switch/create drops to a fresh new-session draft so the
-  // previously open session doesn't bleed across contexts. Skip initial value.
-  const freshSessionRequest = useStore($freshSessionRequest)
-  const lastFreshRef = useRef(freshSessionRequest)
-
-  useEffect(() => {
-    if (freshSessionRequest === lastFreshRef.current) {
-      return
-    }
-
-    lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
-  }, [freshSessionRequest, startFreshSessionDraft])
+  // previously open session doesn't bleed across contexts. This listener is
+  // deliberately synchronous: selectProfile requests the reset immediately
+  // before it can repoint the active gateway to another profile.
+  useFreshSessionRequests(startFreshSessionDraft)
 
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill (both are nanostores — the blanket
@@ -548,6 +553,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
+    getSelectionGeneration,
     handleSkinCommand,
     openMemoryGraph: openStarmap,
     refreshSessions,

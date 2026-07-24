@@ -8,12 +8,14 @@ import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
+  $activeSessionId,
   $busy,
   $connection,
   $currentUsage,
   $messages,
   $sessions,
   $turnStartedAt,
+  setActiveSessionId,
   setCurrentUsage,
   setMessages,
   setSessions
@@ -87,6 +89,7 @@ function Harness({
   getRoutedStoredSessionId,
   getRuntimeIdForStoredSession,
   getRouteToken,
+  getSelectionGeneration,
   onUpdateState,
   onReady,
   onSeedState,
@@ -105,6 +108,7 @@ function Harness({
   getRoutedStoredSessionId?: () => null | string
   getRuntimeIdForStoredSession?: (storedSessionId: string) => null | string
   getRouteToken?: () => string
+  getSelectionGeneration?: () => number
   onUpdateState?: (
     sessionId: string,
     storedSessionId: null | string | undefined,
@@ -150,6 +154,7 @@ function Harness({
     getRoutedStoredSessionId: getRoutedStoredSessionId ?? (() => null),
     getRuntimeIdForStoredSession: getRuntimeIdForStoredSession ?? (() => null),
     getRouteToken: getRouteToken ?? (() => 'token'),
+    getSelectionGeneration: getSelectionGeneration ?? (() => 0),
     handleSkinCommand: () => '',
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
@@ -1399,12 +1404,104 @@ describe('usePromptActions redirectPrompt', () => {
     )
     await waitFor(() => expect(handle).not.toBeNull())
 
+    setActiveSessionId(RUNTIME_SESSION_ID)
+
     expect(await handle!.redirectPrompt('reconnect nudge')).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID, text: 'reconnect nudge' })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'reconnect nudge' })
     expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
+  })
+
+  it('does not resume or redirect into a session selected while the first redirect is in flight', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-session-a' }
+    let routeToken = 'profile-a/session-a'
+    let selectionGeneration = 0
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'session.redirect') {
+        selectedStoredSessionIdRef.current = 'stored-session-b'
+        routeToken = 'profile-b/session-b'
+        selectionGeneration += 1
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'rt-recovered-unused' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        getRouteToken={() => routeToken}
+        getSelectionGeneration={() => selectionGeneration}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-session-a"
+      />
+    )
+
+    expect(await handle!.redirectPrompt('stay with session A')).toBe(false)
+    expect(calls).toEqual(['session.redirect'])
+  })
+
+  it('does not retry redirect when selection changes while session.resume is in flight', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-session-a' }
+    let selectionGeneration = 0
+    let releaseResume: ((value: { session_id: string }) => void) | null = null
+
+    const resumePending = new Promise<{ session_id: string }>(resolve => {
+      releaseResume = resolve
+    })
+
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'session.redirect') {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        return (await resumePending) as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        getSelectionGeneration={() => selectionGeneration}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-session-a"
+      />
+    )
+
+    const redirect = handle!.redirectPrompt('stay with session A')
+
+    await waitFor(() => expect(calls).toEqual(['session.redirect', 'session.resume']))
+    selectedStoredSessionIdRef.current = 'stored-session-b'
+    selectionGeneration += 1
+    releaseResume!({ session_id: 'rt-recovered-a' })
+
+    expect(await redirect).toBe(false)
+    expect(calls).toEqual(['session.redirect', 'session.resume'])
+    expect(handle!.activeSessionIdRef.current).toBe(RUNTIME_SESSION_ID)
   })
 })
 
@@ -1834,6 +1931,296 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+
+    // The atom must be updated alongside the ref so subsequent
+    // submits don't re-use the stale runtime id.
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
+  })
+
+  it('cleans up the recovered session when the retried submit fails', async () => {
+    const updates: { sessionId: string; state: Record<string, unknown> }[] = []
+    const busyRef: MutableRefObject<boolean> = { current: false }
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        throw new Error('recovered submit failed')
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onUpdateState={(sessionId, _storedSessionId, state) => updates.push({ sessionId, state })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message whose recovered retry fails')).toBe(false)
+    expect(submitAttempts).toBe(2)
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
+    expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
+    expect(busyRef.current).toBe(false)
+
+    const finalUpdate = updates.at(-1)
+
+    expect(finalUpdate?.sessionId).toBe(RECOVERED_SESSION_ID)
+    expect(finalUpdate?.state.busy).toBe(false)
+    expect(finalUpdate?.state.awaitingResponse).toBe(false)
+    expect(finalUpdate?.state.messages).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: 'assistant', error: 'recovered submit failed' })])
+    )
+    expect(
+      updates.some(
+        update =>
+          update.sessionId === RUNTIME_SESSION_ID &&
+          update.state.busy === false &&
+          Array.isArray(update.state.messages) &&
+          !update.state.messages.some(
+            (message: { id?: unknown }) => typeof message.id === 'string' && message.id.startsWith('user-')
+          )
+      )
+    ).toBe(true)
+  })
+
+  it('cleans recovered optimistic state without surfacing an error after the user switches during retry', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const switchedStoredId = 'stored-user-selected-b'
+    const switchedRuntimeId = 'rt-user-selected-b'
+    const updates: { sessionId: string; state: Record<string, unknown> }[] = []
+    let selectionGeneration = 0
+    let submitAttempts = 0
+    let rejectRecoveredSubmit!: (reason?: unknown) => void
+
+    const recoveredSubmitPending = new Promise<never>((_resolve, reject) => {
+      rejectRecoveredSubmit = reject
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return await recoveredSubmitPending
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        getSelectionGeneration={() => selectionGeneration}
+        onReady={h => (handle = h)}
+        onUpdateState={(sessionId, _storedSessionId, state) => updates.push({ sessionId, state })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const submitPending = handle!.submitText('recovered submit fails after I switch')
+    await waitFor(() => expect(submitAttempts).toBe(2))
+
+    selectedStoredSessionIdRef.current = switchedStoredId
+    activeSessionIdRef.current = switchedRuntimeId
+    setActiveSessionId(switchedRuntimeId)
+    selectionGeneration += 1
+    clearNotifications()
+    rejectRecoveredSubmit(new Error('recovered submit failed after switch'))
+
+    expect(await submitPending).toBe(false)
+    expect(activeSessionIdRef.current).toBe(switchedRuntimeId)
+    expect($activeSessionId.get()).toBe(switchedRuntimeId)
+    expect(
+      updates.some(update =>
+        Array.isArray(update.state.messages)
+          ? update.state.messages.some(
+              (message: { error?: unknown }) => message.error === 'recovered submit failed after switch'
+            )
+          : false
+      )
+    ).toBe(false)
+    expect($notifications.get()).toEqual([])
+  })
+
+  it('abandons a recovered submit when the user switches sessions during a session-busy retry delay', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const switchedStoredId = 'stored-user-selected-b'
+    const switchedRuntimeId = 'rt-user-selected-b'
+    let routeToken = 'route-a'
+    let submitAttempts = 0
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        if (submitAttempts === 2) {
+          setTimeout(() => {
+            selectedStoredSessionIdRef.current = switchedStoredId
+            activeSessionIdRef.current = switchedRuntimeId
+            routeToken = 'route-b'
+            setActiveSessionId(switchedRuntimeId)
+          }, 10)
+
+          throw new Error('4009: session busy')
+        }
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('do not send after I switch')).toBe(false)
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(submitAttempts).toBe(2)
+    expect(activeSessionIdRef.current).toBe(switchedRuntimeId)
+    expect($activeSessionId.get()).toBe(switchedRuntimeId)
+  })
+
+  it('abandons a recovered submit when the user switches away and back during a session-busy retry delay', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    let selectionGeneration = 0
+    let submitAttempts = 0
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        if (submitAttempts === 2) {
+          setTimeout(() => {
+            // A → B → A leaves all identity values equal to their starting
+            // values. Only the monotonic generation proves a switch happened.
+            selectionGeneration += 2
+          }, 10)
+
+          throw new Error('4009: session busy')
+        }
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        getSelectionGeneration={() => selectionGeneration}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('do not send after I switch away and back')).toBe(false)
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(submitAttempts).toBe(2)
+  })
+
+  it('does not resume the old session when a profile switch finishes during prompt.submit', async () => {
+    const calls: string[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    let routeToken = 'profile-a/session-a'
+    let selectionGeneration = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'prompt.submit') {
+        // Mirrors startFreshSessionDraft's synchronous identity teardown while
+        // the gateway request is in flight, before its rejection is observed.
+        selectedStoredSessionIdRef.current = null
+        routeToken = 'profile-b/new'
+        selectionGeneration += 1
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        getRouteToken={() => routeToken}
+        getSelectionGeneration={() => selectionGeneration}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message already leaving profile A')).toBe(false)
+    expect(calls).toEqual(['prompt.submit'])
   })
 
   // #67603 (second symptom): a recovery resume must re-register on the session's
@@ -1986,6 +2373,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const busyRef: MutableRefObject<boolean> = { current: true }
     let interruptAttempts = 0
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -2011,6 +2399,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let handle: HarnessHandle | null = null
     await actRender(
       <Harness
+        busyRef={busyRef}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
@@ -2019,12 +2408,141 @@ describe('usePromptActions sleep/wake session recovery', () => {
     )
     await waitFor(() => expect(handle).not.toBeNull())
 
+    $busy.set(true)
     await handle!.cancelRun()
 
     expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
+
+    // The $activeSessionId atom must be synced after interrupt recovery so
+    // subsequent prompt.submit calls don't re-use the stale runtime id.
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
+    expect(busyRef.current).toBe(false)
+    expect($busy.get()).toBe(false)
+  })
+
+  it('abandons interrupt recovery when the user switches sessions while resume is pending', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const switchedStoredId = 'stored-user-selected-b'
+    const switchedRuntimeId = 'rt-user-selected-b'
+    let selectionGeneration = 0
+    let resolveResume!: (value: { session_id: string }) => void
+
+    const resumePending = new Promise<{ session_id: string }>(resolve => {
+      resolveResume = resolve
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.interrupt') {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        return (await resumePending) as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        getSelectionGeneration={() => selectionGeneration}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const cancelPending = handle!.cancelRun()
+    await waitFor(() => expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume']))
+
+    selectedStoredSessionIdRef.current = switchedStoredId
+    activeSessionIdRef.current = switchedRuntimeId
+    setActiveSessionId(switchedRuntimeId)
+    selectionGeneration += 1
+    resolveResume({ session_id: RECOVERED_SESSION_ID })
+    await cancelPending
+
+    expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume'])
+    expect(activeSessionIdRef.current).toBe(switchedRuntimeId)
+    expect($activeSessionId.get()).toBe(switchedRuntimeId)
+  })
+
+  it('does not clear the new session busy state or notify when recovered interrupt fails after a switch', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const busyRef: MutableRefObject<boolean> = { current: true }
+    const switchedStoredId = 'stored-user-selected-b'
+    const switchedRuntimeId = 'rt-user-selected-b'
+    let interruptAttempts = 0
+    let selectionGeneration = 0
+    let rejectRecoveredInterrupt!: (reason?: unknown) => void
+
+    const recoveredInterruptPending = new Promise<never>((_resolve, reject) => {
+      rejectRecoveredInterrupt = reject
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.interrupt') {
+        interruptAttempts += 1
+
+        if (interruptAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return await recoveredInterruptPending
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        busyRef={busyRef}
+        getSelectionGeneration={() => selectionGeneration}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const cancelPending = handle!.cancelRun()
+    await waitFor(() => expect(interruptAttempts).toBe(2))
+
+    selectedStoredSessionIdRef.current = switchedStoredId
+    activeSessionIdRef.current = switchedRuntimeId
+    setActiveSessionId(switchedRuntimeId)
+    selectionGeneration += 1
+    busyRef.current = true
+    $busy.set(true)
+    clearNotifications()
+    rejectRecoveredInterrupt(new Error('recovered interrupt failed after switch'))
+    await cancelPending
+
+    expect(activeSessionIdRef.current).toBe(switchedRuntimeId)
+    expect($activeSessionId.get()).toBe(switchedRuntimeId)
+    expect(busyRef.current).toBe(true)
+    expect($busy.get()).toBe(true)
+    expect($notifications.get()).toEqual([])
   })
 
   it('clears the active and cached turn clocks when stopping a turn', async () => {
@@ -2193,6 +2711,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
       />
     )
 
+    setActiveSessionId('stale-runtime-id')
     const ok = await handle!.submitText('follow-up in the selected chat')
 
     expect(ok).toBe(true)
@@ -2200,6 +2719,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['session.resume', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[1]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
   })
 
   it('never replaces a selected stored session when its direct runtime resume fails', async () => {

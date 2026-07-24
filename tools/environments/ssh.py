@@ -286,6 +286,19 @@ class SSHEnvironment(BaseEnvironment):
                 tar_proc.wait()
                 ssh_proc.wait()
                 raise RuntimeError("SSH bulk upload timed out")
+            except Exception:
+                # Any other failure (e.g. EINTR from a signal, or a dropped
+                # control socket) must still reap both children, or a
+                # long-lived gateway accumulates a zombie tar/ssh pair per
+                # failed sync. Mirror the timeout cleanup above.
+                for proc in (tar_proc, ssh_proc):
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                tar_proc.wait()
+                ssh_proc.wait()
+                raise
 
             if tar_proc.returncode != 0:
                 raise RuntimeError(

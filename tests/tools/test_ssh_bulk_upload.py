@@ -453,6 +453,43 @@ class TestSSHBulkUpload:
         mock_tar.kill.assert_called_once()
         mock_ssh.kill.assert_called_once()
 
+    def test_communicate_error_kills_both_processes(self, mock_env, tmp_path):
+        """A non-timeout error during communicate must still reap both procs.
+
+        Only subprocess.TimeoutExpired was handled, so a different failure mid
+        communicate (e.g. an OSError from a dropped control socket, or EINTR
+        from a signal) propagated without killing tar/ssh — leaking a zombie
+        pair per failed sync on a long-lived gateway.
+        """
+        f1 = tmp_path / "t.txt"
+        f1.write_text("t")
+        files = [(str(f1), "/home/testuser/.hermes/skills/t.txt")]
+
+        mock_tar = MagicMock()
+        mock_tar.stdout = MagicMock()
+        mock_tar.returncode = None
+        mock_tar.poll.return_value = None
+
+        mock_ssh = MagicMock()
+        mock_ssh.communicate.side_effect = OSError("Socket is not connected")
+        mock_ssh.returncode = None
+
+        def make_proc(cmd, **kwargs):
+            if cmd[0] == "tar":
+                return mock_tar
+            return mock_ssh
+
+        with patch.object(subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0)), \
+             patch.object(subprocess, "Popen", side_effect=make_proc):
+            with pytest.raises(OSError, match="Socket is not connected"):
+                mock_env._ssh_bulk_upload(files)
+
+        mock_tar.kill.assert_called_once()
+        mock_ssh.kill.assert_called_once()
+        mock_tar.wait.assert_called_once()
+        mock_ssh.wait.assert_called_once()
+
 
 class TestSSHBulkUploadWiring:
     """Verify bulk_upload_fn is wired into FileSyncManager."""

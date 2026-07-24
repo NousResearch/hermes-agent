@@ -12,7 +12,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Database,
   MessageSquare,
   Search,
   Trash2,
@@ -378,6 +377,92 @@ function MessageList({
   );
 }
 
+function ResumeInChatButton({
+  sessionId,
+}: {
+  sessionId: string;
+}) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+
+  return (
+    <Button
+      ghost
+      size="icon"
+      className="text-muted-foreground hover:text-success"
+      aria-label={t.sessions.resumeInChat}
+      title={t.sessions.resumeInChat}
+      onClick={(e) => {
+        e.stopPropagation();
+        navigate(`/chat?resume=${encodeURIComponent(sessionId)}`);
+      }}
+    >
+      <Play />
+    </Button>
+  );
+}
+
+function SessionActionButtons({
+  session,
+  onDelete,
+  onExport,
+  onRenameClick,
+  resumeInChatEnabled,
+}: SessionActionButtonsProps) {
+  const { t } = useI18n();
+
+  return (
+    <>
+      <Badge tone="outline" className="text-xs">
+        {session.source ?? "local"}
+      </Badge>
+
+      {resumeInChatEnabled && <ResumeInChatButton sessionId={session.id} />}
+
+      <Button
+        ghost
+        size="icon"
+        className="text-muted-foreground hover:text-foreground"
+        aria-label="Rename session"
+        title="Rename session"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRenameClick();
+        }}
+      >
+        <Pencil />
+      </Button>
+
+      <Button
+        ghost
+        size="icon"
+        className="text-muted-foreground hover:text-foreground"
+        aria-label="Export session"
+        title="Export session JSON"
+        onClick={(e) => {
+          e.stopPropagation();
+          onExport(session.id);
+        }}
+      >
+        <Download />
+      </Button>
+
+      <Button
+        ghost
+        destructive
+        size="icon"
+        aria-label={t.sessions.deleteSession}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <Trash2 />
+      </Button>
+    </>
+  );
+}
+
 function SessionRow({
   session,
   snippet,
@@ -397,7 +482,6 @@ function SessionRow({
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
   const { t } = useI18n();
-  const navigate = useNavigate();
 
   useEffect(() => {
     if (!isExpanded || messages !== null) return;
@@ -436,74 +520,21 @@ function SessionRow({
     }
   };
 
+  const beginRename = () => {
+    setRenameValue(
+      session.title && session.title !== "Untitled" ? session.title : "",
+    );
+    setRenaming(true);
+  };
+
   const actionButtons = (
-    <>
-      <Badge tone="outline" className="text-xs">
-        {session.source ?? "local"}
-      </Badge>
-
-      {resumeInChatEnabled && (
-        <Button
-          ghost
-          size="icon"
-          className="text-muted-foreground hover:text-success"
-          aria-label={t.sessions.resumeInChat}
-          title={t.sessions.resumeInChat}
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
-          }}
-        >
-          <Play />
-        </Button>
-      )}
-
-      <Button
-        ghost
-        size="icon"
-        className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
-        onClick={(e) => {
-          e.stopPropagation();
-          setRenameValue(
-            session.title && session.title !== "Untitled"
-              ? session.title
-              : "",
-          );
-          setRenaming(true);
-        }}
-      >
-        <Pencil />
-      </Button>
-
-      <Button
-        ghost
-        size="icon"
-        className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
-        onClick={(e) => {
-          e.stopPropagation();
-          onExport(session.id);
-        }}
-      >
-        <Download />
-      </Button>
-
-      <Button
-        ghost
-        destructive
-        size="icon"
-        aria-label={t.sessions.deleteSession}
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <Trash2 />
-      </Button>
-    </>
+    <SessionActionButtons
+      session={session}
+      onDelete={onDelete}
+      onExport={onExport}
+      onRenameClick={beginRename}
+      resumeInChatEnabled={resumeInChatEnabled}
+    />
   );
 
   // Selected rows get a stronger left-edge accent + tinted background so the
@@ -666,6 +697,115 @@ function SessionRow({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function RecentSessionCard({
+  session,
+  onDelete,
+  onExport,
+  onRename,
+  resumeInChatEnabled,
+}: RecentSessionCardProps) {
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(session.title ?? "");
+  const [renameSaving, setRenameSaving] = useState(false);
+  const { t } = useI18n();
+  const hasTitle = session.title && session.title !== "Untitled";
+
+  const beginRename = () => {
+    setRenameValue(hasTitle ? session.title ?? "" : "");
+    setRenaming(true);
+  };
+
+  const submitRename = async () => {
+    const value = renameValue.trim();
+    if (!value || value === session.title) {
+      setRenaming(false);
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      await onRename(session.id, value);
+      setRenaming(false);
+    } finally {
+      setRenameSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {renaming ? (
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submitRename();
+                else if (e.key === "Escape") setRenaming(false);
+              }}
+              placeholder="Session title"
+              className="h-7 min-w-0 flex-1 py-0 text-sm"
+              disabled={renameSaving}
+            />
+            <Button
+              ghost
+              size="icon"
+              className="text-muted-foreground hover:text-success"
+              aria-label="Save title"
+              title="Save title"
+              disabled={renameSaving}
+              onClick={() => void submitRename()}
+            >
+              {renameSaving ? <Spinner className="text-sm" /> : <Check />}
+            </Button>
+            <Button
+              ghost
+              size="icon"
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Cancel rename"
+              title="Cancel rename"
+              disabled={renameSaving}
+              onClick={() => setRenaming(false)}
+            >
+              <X />
+            </Button>
+          </div>
+        ) : (
+          <span
+            className={`font-mondwest normal-case min-w-0 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+          >
+            {hasTitle ? session.title : t.common.untitled}
+          </span>
+        )}
+
+        <span className="min-w-0 break-words text-xs text-muted-foreground">
+          <span className="font-mono-ui">
+            {(session.model ?? t.common.unknown).split("/").pop()}
+          </span>{" "}
+          · {session.message_count} {t.common.msgs} ·{" "}
+          {timeAgo(session.last_active)}
+        </span>
+
+        {session.preview && (
+          <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
+            {session.preview}
+          </p>
+        )}
+      </div>
+
+      <div className="flex shrink-0 flex-wrap items-center gap-2 self-start sm:self-center">
+        <SessionActionButtons
+          session={session}
+          onDelete={onDelete}
+          onExport={onExport}
+          onRenameClick={beginRename}
+          resumeInChatEnabled={resumeInChatEnabled}
+        />
+      </div>
     </div>
   );
 }
@@ -999,6 +1139,7 @@ export default function SessionsPage() {
         try {
           await api.deleteSession(id);
           setSessions((prev) => prev.filter((s) => s.id !== id));
+          setOverviewSessions((prev) => prev.filter((s) => s.id !== id));
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
           // Drop the deleted ID from any active bulk-select set — it
@@ -1235,7 +1376,8 @@ export default function SessionsPage() {
   }, [pruneDays, showToast, loadSessions, loadStats]);
 
   const pendingSession = sessionDelete.pendingId
-    ? sessions.find((s) => s.id === sessionDelete.pendingId)
+    ? sessions.find((s) => s.id === sessionDelete.pendingId) ??
+      overviewSessions.find((s) => s.id === sessionDelete.pendingId)
     : null;
 
   // Build snippet map from search results (session_id → snippet)
@@ -1747,38 +1889,14 @@ export default function SessionsPage() {
 
               <CardContent className="grid min-w-0 gap-3">
                 {recentSessions.map((s) => (
-                  <div
+                  <RecentSessionCard
                     key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
-                        {s.title ?? t.common.untitled}
-                      </span>
-
-                      <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        <span className="font-mono-ui">
-                          {(s.model ?? t.common.unknown).split("/").pop()}
-                        </span>{" "}
-                        · {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
-                      </span>
-
-                      {s.preview && (
-                        <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
-                          {s.preview}
-                        </p>
-                      )}
-                    </div>
-
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
-                    >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ?? "local"}
-                    </Badge>
-                  </div>
+                    session={s}
+                    onDelete={() => sessionDelete.requestDelete(s.id)}
+                    onExport={handleExport}
+                    onRename={handleRename}
+                    resumeInChatEnabled={resumeInChatEnabled}
+                  />
                 ))}
               </CardContent>
             </Card>
@@ -1803,6 +1921,22 @@ interface SessionRowProps {
   searchQuery?: string;
   session: SessionInfo;
   snippet?: string;
+}
+
+interface RecentSessionCardProps {
+  onDelete: () => void;
+  onExport: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void>;
+  resumeInChatEnabled: boolean;
+  session: SessionInfo;
+}
+
+interface SessionActionButtonsProps {
+  onDelete: () => void;
+  onExport: (id: string) => void;
+  onRenameClick: () => void;
+  resumeInChatEnabled: boolean;
+  session: SessionInfo;
 }
 
 interface SessionsPaginationProps {

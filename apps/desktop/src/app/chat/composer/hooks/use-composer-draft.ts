@@ -1,5 +1,5 @@
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -20,7 +20,7 @@ import {
   onComposerInsertRequest
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
-import { composerPlainText, placeCaretEnd, renderComposerContents } from '../rich-editor'
+import { composerPlainText, placeCaretEnd, REF_RE, renderComposerContents } from '../rich-editor'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -189,6 +189,21 @@ export function useComposerDraft({
     stashSessionDraft(scope, text, attachments)
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
+    // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
+    // state got restored into the composer (session switch, queue-edit
+    // restore, history browse) without logging any raw content. REF_RE has the
+    // global flag — testing against a throwaway clone avoids mutating the
+    // shared instance's lastIndex, which would otherwise corrupt this check on
+    // the next call.
+    if (attachments.length > 0 || new RegExp(REF_RE.source, REF_RE.flags).test(text)) {
+      console.debug('[composer-rehydrate]', {
+        attachmentCount: attachments.length,
+        attachmentKinds: attachments.map(a => a.kind),
+        hasTextRefs: new RegExp(REF_RE.source, REF_RE.flags).test(text),
+        scope: activeQueueSessionKeyRef.current
+      })
+    }
+
     attachmentScope.$attachments.set(cloneAttachments(attachments))
     paintDraft(text, false)
   }
@@ -318,7 +333,16 @@ export function useComposerDraft({
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores
   // on enter. Keyed writes are idempotent, so no skip-sentinel.
-  useEffect(() => {
+  //
+  // MUST be a layout effect, not a passive one: it swaps attachmentScope's
+  // module-level $attachments atom, and a passive effect fires only after the
+  // browser paints the new session's view — leaving a window where the DOM
+  // already shows session B while $attachments (and therefore ChatBar's
+  // `attachments` prop) still holds session A's chips. A submit fired in that
+  // window (e.g. a fast session switch immediately followed by Enter) would
+  // ship A's attachments into B's turn (#59305). useLayoutEffect closes the
+  // window by running before paint.
+  useLayoutEffect(() => {
     // A pending debounce timer from the outgoing session is now stale — its
     // scope was correct when scheduled, but the authoritative stash below
     // (and the cleanup on the way out) already covers that text. Letting it

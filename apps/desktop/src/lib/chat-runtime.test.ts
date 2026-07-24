@@ -4,6 +4,7 @@ import type { ComposerAttachment } from '@/store/composer'
 
 import {
   attachmentDisplayText,
+  attachmentId,
   coerceThinkingText,
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -148,5 +149,32 @@ describe('parseSlashCommand', () => {
 
   it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
     expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
+  })
+})
+
+describe('attachmentId', () => {
+  it('normalizes a trailing slash on a url so a re-attach dedupes (#59305 P2)', () => {
+    expect(attachmentId('url', 'https://example.com/a')).toBe(attachmentId('url', 'https://example.com/a/'))
+  })
+
+  it('falls back to the trimmed raw value for a malformed url instead of throwing', () => {
+    expect(() => attachmentId('url', 'not a url')).not.toThrow()
+    expect(attachmentId('url', '  not a url  ')).toBe(attachmentId('url', 'not a url'))
+  })
+
+  it('normalizes backslash path separators so a Windows and posix path dedupe', () => {
+    expect(attachmentId('file', 'a\\b.ts')).toBe(attachmentId('file', 'a/b.ts'))
+  })
+
+  it('normalizes a trailing slash on a folder path', () => {
+    expect(attachmentId('folder', 'src/app/')).toBe(attachmentId('folder', 'src/app'))
+  })
+
+  it('does not collapse a bare root path to an empty id', () => {
+    expect(attachmentId('folder', '/')).toBe('folder:/')
+  })
+
+  it('keeps distinct urls distinct', () => {
+    expect(attachmentId('url', 'https://example.com/a')).not.toBe(attachmentId('url', 'https://example.com/b'))
   })
 })

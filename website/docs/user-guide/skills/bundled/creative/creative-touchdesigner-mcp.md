@@ -21,7 +21,7 @@ Control TouchDesigner via twozero MCP.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `TouchDesigner`, `MCP`, `twozero`, `creative-coding`, `real-time-visuals`, `generative-art`, `audio-reactive`, `VJ`, `installation`, `GLSL` |
-| Related skills | `native-mcp`, [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), `hermes-video` |
+| Related skills | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video) |
 
 ## Reference: full SKILL.md
 

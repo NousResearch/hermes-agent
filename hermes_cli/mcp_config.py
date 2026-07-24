@@ -719,7 +719,12 @@ def cmd_mcp_list(args=None):
 # ─── hermes mcp test ──────────────────────────────────────────────────────────
 
 def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+    """Test connection to an MCP server.
+
+    Exit codes:
+      0 — connection succeeded and at least one tool was discovered
+      1 — connection failed, server not found, or zero tools discovered
+    """
     name = args.name
     servers = _get_mcp_servers()
 
@@ -728,7 +733,7 @@ def cmd_mcp_test(args):
         available = list(servers.keys())
         if available:
             _info(f"Available: {', '.join(available)}")
-        return
+        return 1
 
     cfg = servers[name]
     print()
@@ -767,7 +772,11 @@ def cmd_mcp_test(args):
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
         _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
-        return
+        return 1
+
+    if not tools:
+        _error("Connected but server reported no tools.")
+        return 1
 
     _success(f"Connected ({elapsed_ms:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
@@ -1084,7 +1093,16 @@ def mcp_command(args):
 
     handler = handlers.get(action)
     if handler:
-        handler(args)
+        result = handler(args)
+        # Propagate explicit exit codes from handlers so the CLI surface
+        # matches what callers (CI, orchestrators, watchdogs) need to react
+        # to. Handlers returning None (the historical contract for
+        # success-or-soft-warning) keep the legacy rc=0 default; integer
+        # returns are honored as-is. Non-int truthy returns fall back to
+        # rc=0 to avoid breaking call sites that haven't been audited yet.
+        if isinstance(result, int):
+            return result
+        return 0
     else:
         # No subcommand — drop the user into the catalog picker. This is the
         # "try enabling and it flows you into setup" UX matching `hermes plugin`.

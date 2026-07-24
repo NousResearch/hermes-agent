@@ -6496,6 +6496,40 @@ _EMPTY_MODEL_INFO: dict = {
 }
 
 
+def _resolve_custom_provider_model_context_length(cfg: dict, *, model_name: str, base_url: str) -> int:
+    """Return custom_providers per-model context_length override, if any."""
+    if not model_name or not base_url:
+        return 0
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+
+        custom_providers = get_compatible_custom_providers(cfg)
+    except Exception:
+        custom_providers = cfg.get("custom_providers")
+        if not isinstance(custom_providers, list):
+            custom_providers = []
+
+    normalized_base_url = str(base_url or "").rstrip("/")
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("base_url") or "").rstrip("/") != normalized_base_url:
+            continue
+        models = entry.get("models", {})
+        if not isinstance(models, dict):
+            break
+        model_cfg = models.get(model_name, {})
+        if not isinstance(model_cfg, dict):
+            break
+        ctx = model_cfg.get("context_length")
+        try:
+            return int(ctx) if ctx is not None and int(ctx) > 0 else 0
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 @app.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Return resolved model metadata for the currently configured model.
@@ -6540,6 +6574,12 @@ def get_model_info(profile: Optional[str] = None):
         config_ctx_int = 0
         if isinstance(config_ctx, int) and config_ctx > 0:
             config_ctx_int = config_ctx
+        elif provider:
+            config_ctx_int = _resolve_custom_provider_model_context_length(
+                cfg,
+                model_name=model_name,
+                base_url=base_url,
+            )
 
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx

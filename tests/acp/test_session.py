@@ -130,6 +130,48 @@ class TestCreateSession:
 
 
 class TestWslCwdTranslation:
+    def test_make_agent_forwards_credential_pool_from_runtime(self, monkeypatch):
+        """ACP must wire the runtime credential pool like gateway/CLI.
+
+        Without the pool, long-lived ACP sessions cannot refresh stale
+        xAI OAuth tokens (403 bad-credentials) while Telegram keeps working.
+        """
+        captured = {}
+        fake_pool = object()
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                session_cwd=None,
+                _print_fn=None,
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "xai-oauth", "default": "grok-4.5"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, **kwargs: {
+                "provider": "xai-oauth",
+                "api_mode": "codex_responses",
+                "base_url": "https://api.x.ai/v1",
+                "api_key": "stale-token",
+                "command": None,
+                "args": [],
+                "credential_pool": fake_pool,
+            },
+        )
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            agent = SessionManager(db=None)._make_agent(
+                session_id="sess-pool",
+                cwd="/tmp/work",
+            )
+
+        assert captured.get("credential_pool") is fake_pool
+        assert captured.get("provider") == "xai-oauth"
+
     def test_translate_acp_cwd_converts_windows_drive_path_when_wsl(self, monkeypatch):
         monkeypatch.setattr("hermes_constants._wsl_detected", True)
 

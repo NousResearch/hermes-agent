@@ -968,9 +968,13 @@ def _classify_by_status(
                 should_rotate_credential=True,
                 should_fallback=True,
             )
+        # Generic 403 auth (incl. xAI stale OAuth ``bad-credentials``) must
+        # rotate/refresh like 401 so long-lived ACP/gateway sessions recover.
+        # Billing shapes above already returned; do not set rotate for those.
         return result_fn(
             FailoverReason.auth,
             retryable=False,
+            should_rotate_credential=True,
             should_fallback=True,
         )
 

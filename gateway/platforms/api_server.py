@@ -293,25 +293,40 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
     }
 
 
-def _request_agent_overrides(body: Any, *, virtual_model: Optional[str] = None) -> Dict[str, Any]:
+def _request_agent_overrides(
+    body: Any,
+    *,
+    virtual_model: Optional[str] = None,
+    allow_bare_model: bool = True,
+) -> Dict[str, Any]:
     """Extract per-request model/provider/options for _run_agent.
 
     ``/v1/models`` advertises a stable virtual model (usually ``hermes-agent``)
     for OpenAI-compatible clients.  Treat that alias as "use the gateway
     default"; real model picker selections from the browser extension send the
     raw provider model id plus a provider slug and should override this turn.
+
+    ``allow_bare_model`` controls whether a ``model`` value WITHOUT an
+    accompanying ``provider`` is honored.  Generic OpenAI clients routinely
+    hardcode model names ("gpt-4o", ...), and existing deployments rely on
+    those falling back to the gateway default on the OpenAI-compatible
+    surfaces — so those handlers pass the opt-in
+    ``direct_model_requests`` config value here, while Hermes-native
+    endpoints (session chat, /v1/runs) always allow it.  A request that
+    sends an explicit ``provider`` is unambiguously Hermes-aware and is
+    always honored.
     """
     if not isinstance(body, dict):
         return {}
 
     overrides: Dict[str, Any] = {}
-    model = _clean_request_string(body.get("model"))
-    if model and model != virtual_model:
-        overrides["requested_model"] = model
-
     provider = _clean_request_string(body.get("provider"))
     if provider:
         overrides["requested_provider"] = provider
+
+    model = _clean_request_string(body.get("model"))
+    if model and model != virtual_model and (provider or allow_bare_model):
+        overrides["requested_model"] = model
 
     model_options = body.get("model_options")
     if isinstance(model_options, dict):
@@ -1187,6 +1202,18 @@ class APIServerAdapter(BasePlatformAdapter):
         #       base_url: "https://…"    # optional — per-route base URL override
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
+        )
+        # direct_model_requests: opt-in passthrough for a bare ``model`` value
+        # (no ``provider``) on the OpenAI-compatible surfaces
+        # (/v1/chat/completions, /v1/responses).  Off by default: generic
+        # OpenAI clients routinely hardcode model names ("gpt-4o", ...), and
+        # existing deployments rely on those falling back to the gateway
+        # default rather than switching the executing model.  Requests that
+        # send an explicit ``provider`` — and the Hermes-native session-chat
+        # and /v1/runs endpoints — are always honored regardless of this flag.
+        # (Idea credit: PR #22825 by @mssteuer.)
+        self._direct_model_requests: bool = _coerce_request_bool(
+            extra.get("direct_model_requests"), default=False
         )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -2144,7 +2171,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_key or "",
                 )
         else:
-            effective_model = route_model or request_model or model
+            if route is not None:
+                # The request's ``model`` field selected this route, so its
+                # value is the route ALIAS — never usable as a model name.
+                # A route with no ``model`` key keeps the global default
+                # (pre-existing model_routes behavior).
+                effective_model = route_model or model
+            else:
+                effective_model = request_model or model
             current_provider = _clean_request_string(runtime_kwargs.get("provider"))
             effective_provider = request_provider or route_provider or current_provider
             provider_runtime = None
@@ -2939,12 +2973,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history=history,
                     ephemeral_system_prompt=system_prompt,
                     session_id=session_id,
-                stream_delta_callback=_delta,
-                tool_progress_callback=_tool_progress,
-                gateway_session_key=gateway_session_key,
-                route=route,
-                **agent_overrides,
-            )
+                    stream_delta_callback=_delta,
+                    tool_progress_callback=_tool_progress,
+                    gateway_session_key=gateway_session_key,
+                    route=route,
+                    **agent_overrides,
+                )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
@@ -3144,7 +3178,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # configured model_routes alias, this request's agent is created
         # with that route's model/provider instead of the global default.
         route = self._resolve_route(model_name)
-        agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
+        agent_overrides = _request_agent_overrides(
+            body,
+            virtual_model=self._model_name,
+            allow_bare_model=self._direct_model_requests,
+        )
         selection_error = self._request_route_conflict_error(
             session_id=session_id,
             gateway_session_key=gateway_session_key,
@@ -4279,7 +4317,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
         route = self._resolve_route(body.get("model"))
-        agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
+        agent_overrides = _request_agent_overrides(
+            body,
+            virtual_model=self._model_name,
+            allow_bare_model=self._direct_model_requests,
+        )
         selection_error = self._request_route_conflict_error(
             session_id=session_id,
             gateway_session_key=gateway_session_key,

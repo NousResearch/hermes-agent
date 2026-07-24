@@ -3684,6 +3684,27 @@ class TestMCPServerTaskSamplingIntegration:
         assert "sampling_callback" in kwargs
         assert "sampling_capabilities" in kwargs
 
+    def test_make_session_kwargs_includes_hermes_client_info(self):
+        """MCPServerTask._make_session_kwargs includes client_info with hermes-agent."""
+        from tools.mcp_tool import MCPServerTask, Implementation
+        server = MCPServerTask("identity_test")
+        kwargs = server._make_session_kwargs()
+        if Implementation is not None:
+            assert "client_info" in kwargs
+            assert kwargs["client_info"].name == "hermes-agent"
+
+    def test_make_session_kwargs_when_mcp_unavailable_has_no_name_error(self, monkeypatch):
+        """MCPServerTask._make_session_kwargs does not raise NameError when Implementation is None."""
+        import tools.mcp_tool as mcp_tool_mod
+        from tools.mcp_tool import MCPServerTask
+
+        monkeypatch.setattr(mcp_tool_mod, "Implementation", None)
+        server = MCPServerTask("no_mcp_test")
+        kwargs = server._make_session_kwargs()
+        assert "client_info" not in kwargs
+
+
+
 
 # ---------------------------------------------------------------------------
 # Discovery failed_count tracking

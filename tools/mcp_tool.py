@@ -204,14 +204,23 @@ _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_ELICITATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+Implementation = None
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
-# HTTP transport path even on older-but-supported SDK versions.
+try:
+    from hermes_cli import __version__ as _HERMES_VERSION
+except ImportError:
+    _HERMES_VERSION = "0.0.0"
+
 LATEST_PROTOCOL_VERSION = "2025-03-26"
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     _MCP_AVAILABLE = True
+    try:
+        from mcp.types import Implementation
+    except ImportError:
+        Implementation = None
     try:
         from mcp.client.streamable_http import streamablehttp_client
         _MCP_HTTP_AVAILABLE = True
@@ -2028,6 +2037,22 @@ class MCPServerTask:
                 )
         return _on_log
 
+    def _make_session_kwargs(self) -> dict:
+        """Build session kwargs for ``ClientSession``, including client identity and callbacks."""
+        sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
+        if self._elicitation:
+            sampling_kwargs.update(self._elicitation.session_kwargs())
+        if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
+            sampling_kwargs["message_handler"] = self._make_message_handler()
+        if _MCP_LOGGING_CALLBACK_SUPPORTED:
+            sampling_kwargs["logging_callback"] = self._make_logging_callback()
+        if Implementation is not None:
+            sampling_kwargs["client_info"] = Implementation(
+                name="hermes-agent",
+                version=_HERMES_VERSION,
+            )
+        return sampling_kwargs
+
     def _make_message_handler(self):
         """Build a ``message_handler`` callback for ``ClientSession``.
 
@@ -2413,13 +2438,7 @@ class MCPServerTask:
             env=safe_env if safe_env else None,
         )
 
-        sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
-        if self._elicitation:
-            sampling_kwargs.update(self._elicitation.session_kwargs())
-        if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
-            sampling_kwargs["message_handler"] = self._make_message_handler()
-        if _MCP_LOGGING_CALLBACK_SUPPORTED:
-            sampling_kwargs["logging_callback"] = self._make_logging_callback()
+        sampling_kwargs = self._make_session_kwargs()
 
         # Reap any orphaned subprocesses from prior failed connection
         # attempts before spawning a new one.  Without this, each retry in
@@ -2757,13 +2776,7 @@ class MCPServerTask:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
                 raise
 
-        sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
-        if self._elicitation:
-            sampling_kwargs.update(self._elicitation.session_kwargs())
-        if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
-            sampling_kwargs["message_handler"] = self._make_message_handler()
-        if _MCP_LOGGING_CALLBACK_SUPPORTED:
-            sampling_kwargs["logging_callback"] = self._make_logging_callback()
+        sampling_kwargs = self._make_session_kwargs()
 
         # SSE transport (for MCP servers that implement the SSE transport protocol
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the

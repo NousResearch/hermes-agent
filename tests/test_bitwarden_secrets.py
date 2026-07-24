@@ -94,7 +94,11 @@ def test_platform_asset_name(system, machine, libc_text, expected):
 def _make_fake_zip(binary_bytes: bytes) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("bws", binary_bytes)
+        # Mirror the real release archive: the Windows zip
+        # (bws-x86_64-pc-windows-msvc-*.zip) ships bws.exe, while every
+        # other platform ships a bare bws. Use the same platform switch
+        # install_bws() uses so the mock member matches what it looks for.
+        zf.writestr(bw._platform_binary_name(), binary_bytes)
     return buf.getvalue()
 
 
@@ -693,9 +697,12 @@ def test_disk_cache_written_after_first_fetch(monkeypatch, tmp_path):
 
     cache_path = bw._disk_cache_path(home)
     assert cache_path.exists()
-    # Mode must be 0600 — disk cache contains plaintext secret values
+    # Mode must be 0600 -- the disk cache holds plaintext secret values.
+    # POSIX-only: on Windows os.chmod only toggles the read-only bit, so a
+    # writable file always reports 0o666 and an exact 0o600 check cannot hold.
     mode = os.stat(cache_path).st_mode & 0o777
-    assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
+    if os.name != "nt":
+        assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
 
     # File contents: key (fingerprint not raw token), secrets dict, fetched_at
     payload_disk = json.loads(cache_path.read_text())

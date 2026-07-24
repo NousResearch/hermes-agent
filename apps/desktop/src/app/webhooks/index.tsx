@@ -532,14 +532,14 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                 </Field>
                 <div className="grid gap-1.5">
                   <span className="text-xs font-medium text-muted-foreground">{w.fieldDeliverOnly}</span>
-                  <label className="flex min-h-9 items-start gap-2 pt-1.5 text-sm text-muted-foreground">
+                  <label className="flex items-start gap-2 text-sm text-muted-foreground">
                     <input
                       checked={deliverOnly}
-                      className="mt-0.5"
+                      className="mt-0.5 shrink-0"
                       onChange={e => setDeliverOnly(e.target.checked)}
                       type="checkbox"
                     />
-                    {w.fieldDeliverOnlyHint}
+                    <span className="leading-snug">{w.fieldDeliverOnlyHint}</span>
                   </label>
                 </div>
               </div>

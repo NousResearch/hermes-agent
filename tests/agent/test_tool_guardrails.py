@@ -228,6 +228,33 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert blocked.code == "idempotent_no_progress_block"
 
 
+def test_skill_discovery_tools_are_idempotent_for_no_progress_guardrail():
+    cases = [
+        ("skills_list", {"query": "git"}, '[{"name":"git"}]'),
+        ("skill_view", {"name": "git"}, "# Git Skill\nUse git carefully."),
+    ]
+
+    for tool_name, args, result in cases:
+        controller = ToolCallGuardrailController(
+            ToolCallGuardrailConfig(
+                hard_stop_enabled=True,
+                no_progress_warn_after=2,
+                no_progress_block_after=2,
+            )
+        )
+
+        assert controller.before_call(tool_name, args).action == "allow"
+        assert controller.after_call(tool_name, args, result, failed=False).action == "allow"
+        assert controller.before_call(tool_name, args).action == "allow"
+        warn = controller.after_call(tool_name, args, result, failed=False)
+        assert warn.action == "warn"
+        assert warn.code == "idempotent_no_progress_warning"
+
+        blocked = controller.before_call(tool_name, args)
+        assert blocked.action == "block"
+        assert blocked.code == "idempotent_no_progress_block"
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

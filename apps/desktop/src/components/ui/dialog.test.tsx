@@ -1,9 +1,50 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Dialog, DialogContent, DialogTitle, preventCloseButtonAutoFocus } from './dialog'
+import { Dialog, DialogContent, DialogTitle, isInteractionFromPopper, preventCloseButtonAutoFocus } from './dialog'
 
 afterEach(cleanup)
+
+describe('isInteractionFromPopper (dropdown-in-dialog guard)', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('is true when the interaction target is inside a Radix popper wrapper', () => {
+    const wrapper = document.createElement('div')
+    wrapper.setAttribute('data-radix-popper-content-wrapper', '')
+    const item = document.createElement('div')
+    wrapper.appendChild(item)
+    document.body.appendChild(wrapper)
+
+    const event = new Event('pointerdown')
+    Object.defineProperty(event, 'target', { value: item })
+
+    expect(isInteractionFromPopper(event)).toBe(true)
+  })
+
+  it('is true when a popper is open anywhere, even if the target is elsewhere (focus/re-dispatch case)', () => {
+    const wrapper = document.createElement('div')
+    wrapper.setAttribute('data-radix-popper-content-wrapper', '')
+    document.body.appendChild(wrapper)
+
+    const elsewhere = document.createElement('div')
+    document.body.appendChild(elsewhere)
+    const event = new Event('focusin')
+    Object.defineProperty(event, 'target', { value: elsewhere })
+
+    expect(isInteractionFromPopper(event)).toBe(true)
+  })
+
+  it('is false for a genuine outside interaction with no popper open', () => {
+    const elsewhere = document.createElement('div')
+    document.body.appendChild(elsewhere)
+    const event = new Event('pointerdown')
+    Object.defineProperty(event, 'target', { value: elsewhere })
+
+    expect(isInteractionFromPopper(event)).toBe(false)
+  })
+})
 
 describe('DialogContent close button', () => {
   it('closes the dialog when clicked', () => {

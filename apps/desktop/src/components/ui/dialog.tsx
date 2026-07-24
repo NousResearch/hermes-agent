@@ -60,16 +60,26 @@ export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
-// Radix portals Select / Dropdown / Popover content OUTSIDE the dialog (into a
-// `[data-radix-popper-content-wrapper]`). Dismissing that popover fires a
-// pointerdown the Dialog's DismissableLayer reads as an outside-interaction and
-// closes the whole dialog. Guard: if an outside-interaction originates from a
-// popper wrapper, it's a dropdown dismiss inside our own dialog — swallow it so
-// only the dropdown closes. A genuine click elsewhere still closes the dialog.
-function isInteractionFromPopper(event: Event): boolean {
+// Radix Select/Popover/Dropdown content is portalled OUTSIDE the dialog. Two
+// ways their dismissal wrongly closes the parent dialog:
+//   1. The dismiss pointerdown lands on the portalled popper content, and Radix
+//      re-dispatches it so the Dialog's DismissableLayer sees an outside-click.
+//   2. Closing the popover moves focus, which the Dialog reads as focusOutside.
+// Radix mounts a `[data-radix-popper-content-wrapper]` only while such a popover
+// is open. So: if the interaction target is inside that wrapper, OR one is open
+// anywhere in the document at event time, this outside-interaction is the
+// popover's dismissal — swallow it. A genuine backdrop click with no popover
+// open still closes the dialog normally.
+const POPPER_WRAPPER = '[data-radix-popper-content-wrapper]'
+
+export function isInteractionFromPopper(event: Event): boolean {
   const target = event.target
 
-  return target instanceof Element && target.closest('[data-radix-popper-content-wrapper]') !== null
+  if (target instanceof Element && target.closest(POPPER_WRAPPER)) {
+    return true
+  }
+
+  return document.querySelector(POPPER_WRAPPER) !== null
 }
 
 function DialogContent({
@@ -81,6 +91,7 @@ function DialogContent({
   bannerTone = 'error',
   onOpenAutoFocus,
   onInteractOutside,
+  onFocusOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -98,9 +109,9 @@ function DialogContent({
 
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
-  // Compose the popper guard with any caller-supplied onInteractOutside: run the
-  // guard first (it may preventDefault to keep the dialog open), then defer to
-  // the caller for anything it didn't already handle.
+  // Compose the popper guard with any caller-supplied onInteractOutside: when the
+  // outside-interaction belongs to a portalled dropdown/popover, swallow it so
+  // only the dropdown closes; otherwise defer to the caller.
   const handleInteractOutside = (event: Parameters<NonNullable<typeof onInteractOutside>>[0]) => {
     if (isInteractionFromPopper(event.detail.originalEvent)) {
       event.preventDefault()
@@ -109,6 +120,21 @@ function DialogContent({
     }
 
     onInteractOutside?.(event)
+  }
+
+  // Closing a portalled Select/Popover moves focus, which the Dialog otherwise
+  // reads as focusOutside and closes on — the root cause of "clicking away from
+  // an open dropdown closes the whole dialog." Swallow focus-outside that comes
+  // from (or happens while) a popper is open; pointerdown-outside + Escape
+  // remain the real dismiss paths.
+  const handleFocusOutside = (event: Parameters<NonNullable<typeof onFocusOutside>>[0]) => {
+    if (isInteractionFromPopper(event.detail.originalEvent)) {
+      event.preventDefault()
+
+      return
+    }
+
+    onFocusOutside?.(event)
   }
 
   // No default here — Radix's normal autofocus (first focusable element, often
@@ -154,6 +180,7 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
+          onFocusOutside={handleFocusOutside}
           onInteractOutside={handleInteractOutside}
           onOpenAutoFocus={onOpenAutoFocus}
           {...props}
@@ -193,6 +220,7 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
+        onFocusOutside={handleFocusOutside}
         onInteractOutside={handleInteractOutside}
         onOpenAutoFocus={onOpenAutoFocus}
         {...props}

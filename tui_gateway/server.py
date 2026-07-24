@@ -4746,6 +4746,9 @@ def _agent_cbs(sid: str) -> dict:
             {"question": q, "choices": c},
             timeout=_clarify_timeout_seconds(),
         ),
+        "clarify_form_callback": lambda questions: _block(
+            "clarify_form.request", sid, {"questions": questions}
+        ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
         "read_terminal_callback": lambda start=None, count=None: _block(
@@ -12190,6 +12193,11 @@ def _(rid, params: dict) -> dict:
     # reconnect during the wait drops tool.complete. A late answer must resolve
     # gracefully instead of hitting the raw 4009 "no pending answer request".
     return _respond(rid, params, "answer", allow_expired=True)
+
+
+@method("clarify_form.respond")
+def _(rid, params: dict) -> dict:
+    return _respond(rid, params, "answers")
 
 
 @method("terminal.read.respond")

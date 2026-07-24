@@ -214,10 +214,10 @@ class TestShouldAllowInstall:
 
     def test_dangerous_agent_created_asks(self):
         """Agent-created skills with dangerous verdict return None (ask for confirmation)
-        when the scan runs. The caller (_security_scan_skill) surfaces this as an error
-        to the agent, who can retry without the flagged content.
+        when the scan runs. The caller (_security_scan_skill) surfaces this as a
+        generic error (no findings leaked) and rolls the write back.
 
-        This gate only runs when skills.guard_agent_created is enabled (off by default)."""
+        This gate runs by default (skills.guard_agent_created)."""
         f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
         allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
         assert allowed is None

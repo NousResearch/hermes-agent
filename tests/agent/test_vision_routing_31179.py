@@ -60,13 +60,36 @@ def _write_config(home: str, text: str) -> None:
         fp.write(text)
 
 
+_RELOADED_MODULE_PREFIXES = ("agent.auxiliary_client", "agent.image_routing",
+                             "tools.vision_tools", "tools.browser_tool",
+                             "hermes_cli.config")
+
+
 def _fresh_modules():
     """Drop cached hermes modules so each test reloads against current env."""
     for mod in list(sys.modules.keys()):
-        if mod.startswith(("agent.auxiliary_client", "agent.image_routing",
-                           "tools.vision_tools", "tools.browser_tool",
-                           "hermes_cli.config")):
+        if mod.startswith(_RELOADED_MODULE_PREFIXES):
             del sys.modules[mod]
+
+
+@pytest.fixture(autouse=True)
+def _restore_module_identities():
+    """Put the original module objects back after each test.
+
+    ``_fresh_modules`` swaps new module objects into ``sys.modules``. Other
+    test files bind names from these modules at collection time but patch
+    them via string targets (``patch("agent.image_routing...")``), which
+    resolve through ``sys.modules`` — leaving the identities swapped makes
+    those patches land on a different module object than the one under
+    test, failing order-dependently.
+    """
+    saved = {name: mod for name, mod in sys.modules.items()
+             if name.startswith(_RELOADED_MODULE_PREFIXES)}
+    yield
+    for name in list(sys.modules.keys()):
+        if name.startswith(_RELOADED_MODULE_PREFIXES):
+            del sys.modules[name]
+    sys.modules.update(saved)
 
 
 # ---------------------------------------------------------------------------

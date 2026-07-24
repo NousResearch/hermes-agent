@@ -193,6 +193,45 @@ class TestShouldExclude:
 # ---------------------------------------------------------------------------
 
 class TestBackup:
+    def test_cmd_backup_exits_nonzero_when_full_backup_is_incomplete(
+        self, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.main import cmd_backup
+
+        monkeypatch.setattr(backup_mod, "run_backup", lambda _args: False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_backup(Namespace(output=None, quick=False))
+
+        assert exc_info.value.code == 1
+
+    def test_cmd_backup_keeps_successful_full_backup_at_zero(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.main import cmd_backup
+
+        monkeypatch.setattr(backup_mod, "run_backup", lambda _args: True)
+
+        cmd_backup(Namespace(output=None, quick=False))
+
+    def test_cmd_backup_keeps_quick_backup_behavior(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.main import cmd_backup
+
+        called = []
+        monkeypatch.setattr(
+            backup_mod, "run_quick_backup", lambda _args: called.append("quick")
+        )
+        monkeypatch.setattr(
+            backup_mod,
+            "run_backup",
+            lambda _args: pytest.fail("full backup should not run"),
+        )
+
+        cmd_backup(Namespace(output=None, quick=True))
+
+        assert called == ["quick"]
+
     def test_creates_zip(self, tmp_path, monkeypatch):
         """Backup creates a valid zip containing expected files."""
         hermes_home = tmp_path / ".hermes"
@@ -207,8 +246,9 @@ class TestBackup:
         args = Namespace(output=str(out_zip))
 
         from hermes_cli.backup import run_backup
-        run_backup(args)
+        result = run_backup(args)
 
+        assert result is True
         assert out_zip.exists()
         with zipfile.ZipFile(out_zip, "r") as zf:
             names = zf.namelist()
@@ -273,9 +313,11 @@ class TestBackup:
         monkeypatch.setattr(backup_mod.sqlite3, "connect", connect_with_failed_backup)
         out_zip = tmp_path / "backup.zip"
         try:
-            backup_mod.run_backup(Namespace(output=str(out_zip)))
+            result = backup_mod.run_backup(Namespace(output=str(out_zip)))
         finally:
             writer.close()
+
+        assert result is False
 
         with zipfile.ZipFile(out_zip) as zf:
             assert "config.yaml" in zf.namelist()
@@ -1092,8 +1134,9 @@ class TestBackupEdgeCases:
         args = Namespace(output=str(tmp_path / "out.zip"))
 
         from hermes_cli.backup import run_backup
-        run_backup(args)
+        result = run_backup(args)
 
+        assert result is True
         # No zip should be created
         assert not (tmp_path / "out.zip").exists()
 

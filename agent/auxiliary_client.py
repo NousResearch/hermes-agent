@@ -5363,7 +5363,16 @@ def resolve_provider_client(
         # Anthropic-wire endpoints (Kimi Coding Plan api.kimi.com/coding,
         # /anthropic-suffixed gateways) so named providers like kimi-coding
         # land on the right transport without needing per-provider branches.
-        client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
+        # Pass ``base_url`` (post-override) rather than ``raw_base_url`` so
+        # the Anthropic-detect heuristic respects the user's explicit
+        # endpoint. Otherwise a user who routes the ``minimax`` provider
+        # through their own OpenAI-compatible gateway (e.g.
+        # api.minimax.chat/v1) gets falsely detected as Anthropic-wire
+        # and wrapped in AnthropicAuxiliaryClient → 401 invalid_api_key
+        # (their key is not valid on the registry's hardcoded
+        # api.minimax.io/anthropic). Same trap for any provider with a
+        # hardcoded /anthropic inference URL.
+        client = _wrap_if_needed(client, final_model, base_url, api_key)
 
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

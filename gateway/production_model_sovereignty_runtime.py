@@ -554,6 +554,7 @@ def overlay_production_gateway_config(
     canonical = target.setdefault("canonical_brain", {})
     if not isinstance(canonical, dict):
         raise ProductionContractError("production_config_canonical_brain_invalid")
+    canonical.pop("legacy_direct_helper_compat", None)
     canonical["writer_boundary"] = {"enabled": True}
     canonical["discord_edge"] = {"enabled": True}
     canonical["tools_enabled"] = True
@@ -780,6 +781,7 @@ def validate_production_gateway_config(raw: Mapping[str, Any]) -> None:
         or canonical.get("writer_boundary") != {"enabled": True}
         or canonical.get("discord_edge") != {"enabled": True}
         or canonical.get("tools_enabled") is not True
+        or "legacy_direct_helper_compat" in canonical
     ):
         raise ProductionContractError("production_writer_boundary_not_exact")
     if raw.get("plugins") != {"enabled": [], "disabled": []}:

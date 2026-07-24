@@ -199,7 +199,10 @@ def _source_mapping() -> dict:
             "api_key": "",
             "max_iterations": 90,
         },
-        "canonical_brain": {"retention_days": 365},
+        "canonical_brain": {
+            "retention_days": 365,
+            "legacy_direct_helper_compat": {"enabled": True},
+        },
         "plugins": {},
         "hooks": {},
         "hooks_auto_accept": False,
@@ -481,6 +484,7 @@ def test_producer_preserves_unrelated_config_and_seals_target() -> None:
     assert effective["agent"]["verification_ledger_enabled"] is False
     assert effective["compression"]["abort_on_summary_failure"] is True
     assert effective["tools"]["tool_search"] == {"enabled": "off"}
+    assert "legacy_direct_helper_compat" not in effective["canonical_brain"]
     assert effective["auxiliary"]["compression"]["provider"] == "openai-codex"
     assert effective["auxiliary"]["compression"]["model"] == "gpt-5.6-sol"
     assert effective["context"] == {"engine": "compressor"}
@@ -534,6 +538,21 @@ def test_producer_preserves_unrelated_config_and_seals_target() -> None:
     }
     assert effective["goals"] == {"max_turns": 0}
     assert "discord" not in effective["platforms"]
+
+
+def test_validator_rejects_legacy_direct_helper_compatibility() -> None:
+    effective = runtime.load_strict_production_config(
+        _contract().config_bytes
+    )
+    effective["canonical_brain"]["legacy_direct_helper_compat"] = {
+        "enabled": True
+    }
+
+    with pytest.raises(
+        runtime.ProductionContractError,
+        match="production_writer_boundary_not_exact",
+    ):
+        runtime.validate_production_gateway_config(effective)
 
 
 def test_production_thread_transcripts_are_isolated_per_exact_author() -> None:

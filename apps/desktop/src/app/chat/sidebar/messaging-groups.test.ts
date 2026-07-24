@@ -90,6 +90,7 @@ describe('buildMessagingGroups', () => {
       thread_id: 'topic',
       updated_at: 0
     }
+
     const groups = buildMessagingGroups({
       projects: [project(bound)],
       projectProfile: 'default',

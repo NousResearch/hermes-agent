@@ -1,0 +1,5 @@
+name: openai-compatible
+version: 1.0.0
+description: "OpenAI-compatible image generation backend for custom gateways such as Bifrost. Saves generated images to $HERMES_HOME/cache/images/."
+author: NousResearch
+kind: backend

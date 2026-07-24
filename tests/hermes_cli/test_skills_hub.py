@@ -471,6 +471,27 @@ def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
     return install_calls
 
 
+def test_do_install_prints_scan_report_as_plain_text(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+
+    installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
+    report = 'finding matched "[/private/repo/skills/example]"'
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: report)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_install(
+        "https://example.com/SKILL.md",
+        console=console,
+        skip_confirm=True,
+        name_override="example",
+    )
+
+    assert installs == [{"name": "example", "category": ""}]
+    assert report in sink.getvalue()
+
+
 def test_url_install_uses_name_override_on_non_interactive_surface(monkeypatch, tmp_path, hub_env):
     installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
 
@@ -780,4 +801,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

@@ -6550,6 +6550,7 @@ class TestNousCredentialRefresh:
         agent.api_mode = "chat_completions"
 
         closed = {"value": False}
+        retired = {"value": False}
         rebuilt = {"kwargs": None}
         captured = {}
 
@@ -6575,12 +6576,28 @@ class TestNousCredentialRefresh:
             "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
         )
 
-        agent.client = _ExistingClient()
+        existing = _ExistingClient()
+        agent.client = existing
+
+        _orig_retire = agent._retire_shared_openai_client
+
+        def _spy_retire(client, *, reason):
+            if client is existing:
+                retired["value"] = True
+            return _orig_retire(client, reason=reason)
+
+        monkeypatch.setattr(agent, "_retire_shared_openai_client", _spy_retire)
+
         with patch("run_agent.OpenAI", side_effect=_fake_openai):
             ok = agent._try_refresh_nous_client_credentials(force=True)
 
         assert ok is True
-        assert closed["value"] is True
+        # #70773: the replaced shared client is RETIRED (sockets shutdown,
+        # FD release deferred to GC), never hard-closed from the refreshing
+        # thread — close() releasing pool FDs cross-thread was the
+        # TLS-FD→SQLite corruption vector.
+        assert retired["value"] is True
+        assert closed["value"] is False
         assert captured["force_refresh"] is True
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (

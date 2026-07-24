@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
+    _parse_dt,
     fetch_account_usage,
     render_account_usage_lines,
 )
@@ -49,6 +50,12 @@ class _RoutingClient:
         return _Response(self._payloads[url])
 
 
+def test_parse_dt_rejects_non_finite_numeric_timestamps():
+    assert _parse_dt(float("nan")) is None
+    assert _parse_dt(float("inf")) is None
+    assert _parse_dt(float("-inf")) is None
+
+
 def test_fetch_account_usage_codex(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_codex_runtime_credentials",
@@ -93,6 +100,41 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_ignores_non_finite_reset(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 15,
+                        "reset_at": float("nan"),
+                    },
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.windows[0].used_percent == 15.0
+    assert snapshot.windows[0].reset_at is None
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

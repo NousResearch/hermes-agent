@@ -261,6 +261,33 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     assert "Cron watchdog" in final_response  # alert header
 
 
+def test_no_agent_timeout_summary_preserves_script_failure(hermes_env):
+    """A script transport timeout must not be mislabeled as an LLM provider failure."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    result = _summarize_cron_failure_for_delivery(
+        {"name": "bedroom-climate", "no_agent": True},
+        "Script exited with code 1\nstdout:\npower=False failed: Opening handshake has timed out",
+    )
+
+    assert "Opening handshake has timed out" in result
+    assert "provider timeout" not in result
+    assert "Fallback chain" not in result
+
+
+def test_agent_timeout_summary_still_reports_provider_timeout(hermes_env):
+    """The compact provider wording remains correct for LLM-driven jobs."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    result = _summarize_cron_failure_for_delivery(
+        {"name": "research", "no_agent": False},
+        "ReadTimeout: model request timed out",
+    )
+
+    assert "provider timeout" in result
+    assert "Fallback chain" in result
+
+
 def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
     """no_agent jobs must NOT import/construct the AIAgent."""
     from cron.jobs import create_job

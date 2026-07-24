@@ -98,6 +98,19 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # Script-only jobs never invoke an LLM provider. Preserve their actual
+    # local/script error instead of classifying any "timeout" substring as a
+    # provider/fallback-chain failure.
+    if job.get("no_agent"):
+        cleaned = re.sub(
+            r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*",
+            "", text[:2000],
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) > 180:
+            cleaned = cleaned[:177].rstrip() + "..."
+        return f"⚠️ Cron '{job_name}' failed: {cleaned}"
+
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
         reason = "rate limit"

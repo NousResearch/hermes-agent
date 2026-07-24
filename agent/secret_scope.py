@@ -110,6 +110,7 @@ _GLOBAL_ENV_PREFIXES = (
     "HERMES_KANBAN_",
     "HERMES_TELEGRAM_",   # tuning knobs (batch delays, fallback toggles) — NOT the token
     "TERMINAL_",          # terminal/sandbox backend settings
+    "API_SERVER_",        # platform-enablement (Docker compose environment:) — NOT a secret (#69379)
 )
 
 

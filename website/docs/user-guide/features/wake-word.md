@@ -33,6 +33,7 @@ It is **off by default** — nothing listens until you turn it on.
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
 | **openWakeWord** (default) | Free | None | Local ONNX models. Ships a bundled **"hey hermes"** model (default); also supports `hey_jarvis`, `alexa`, `hey_mycroft`, … and custom models |
+| **sherpa** | Free | None | **Open vocabulary** — detects ANY typed phrase with zero training. Small English model auto-downloads on first use (~13 MB) |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
 By default the phrase is **"hey hermes"** — a model for it ships with Hermes, so
@@ -106,14 +107,29 @@ command records.
 ## Using a different phrase
 
 "Hey Hermes" works out of the box — the bundled openWakeWord model
-(`model: hey_hermes`) is the default. To wake on something else, either name a
-built-in openWakeWord model or supply your own:
+(`model: hey_hermes`) is the default. To wake on something else, the easiest
+path is the open-vocabulary engine:
 
-### Option A — openWakeWord (free)
+### Option A — sherpa (any phrase, zero training)
+
+Type the phrase you want; it's tokenized at runtime — "hey coder",
+"computer", "wake up neo", anything:
+
+```yaml
+wake_word:
+  enabled: true
+  provider: sherpa
+  phrase: "hey coder"        # detection key — just type your phrase
+```
+
+The small English KWS model (~13 MB) downloads once on first use. Each
+profile can set its own phrase — "hey \<profile\>" for every profile you run.
+
+### Option B — openWakeWord (free, trained model)
 
 Name a built-in model (`hey_jarvis`, `alexa`, `hey_mycroft`, …), or train a
-custom model (≈75–90 min on a free/Colab GPU), drop the `.onnx` file somewhere,
-and reference it:
+custom model (≈75–90 min on a free/Colab GPU) for maximum robustness, drop
+the `.onnx` file somewhere, and reference it:
 
 ```yaml
 wake_word:
@@ -135,7 +151,7 @@ syllables with an uncommon word ("hermes" qualifies) beat common words like
 "hello" or "stop".
 :::
 
-### Option B — Porcupine (custom keyword in seconds)
+### Option C — Porcupine (custom keyword in seconds)
 
 Create a "Hey Hermes" keyword in the [Picovoice Console](https://console.picovoice.ai/),
 download the `.ppn`, and:

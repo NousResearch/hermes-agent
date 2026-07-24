@@ -6,12 +6,16 @@ desktop GUI (one of them owns it, gated by ``wake_surface_enabled``): say the
 wake word, Hermes opens a fresh session and captures voice via the existing
 pipeline, then answers.
 
-Two engines, both fully on-device (no audio leaves the machine for detection):
+Three engines, all fully on-device (no audio leaves the machine for detection):
 
 * **openwakeword** (default, free, no API key) — loads an ONNX model. Defaults
   to the bundled "hey hermes" model (``tools/wakewords/``) so the wake word
   works out of the box; or point ``wake_word.openwakeword.model`` at a built-in
   name (``hey_jarvis``, ``alexa``, …) or a custom ``.onnx`` for another phrase.
+* **sherpa** (free, no API key, open vocabulary) — sherpa-onnx keyword
+  spotting. Detects ANY typed phrase with no training: set
+  ``wake_word.phrase`` and the phrase is tokenized at runtime against a small
+  streaming zipformer model (~13 MB English model, one-time download).
 * **porcupine** (premium) — Picovoice's engine. Needs ``PORCUPINE_ACCESS_KEY``;
   supports built-in keywords and custom ``.ppn`` files from the Picovoice
   Console.
@@ -224,6 +228,139 @@ class _OpenWakeWordEngine(_Engine):
         self.reset()
 
 
+# sherpa-onnx open-vocabulary KWS model: a small streaming zipformer
+# transducer. English (GigaSpeech); one-time download, cached under
+# HERMES_HOME. Keywords are typed phrases tokenized at RUNTIME — no
+# training step, unlike openWakeWord/Porcupine custom models.
+_SHERPA_KWS_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/"
+    "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
+)
+_SHERPA_KWS_MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+
+
+def _sherpa_model_root() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "wakewords"
+
+
+def _ensure_sherpa_model(root: Optional[Path] = None) -> Path:
+    """Download + unpack the sherpa KWS model once; return its directory."""
+    root = root or _sherpa_model_root()
+    target = root / _SHERPA_KWS_MODEL_DIR
+    if (target / "tokens.txt").exists():
+        return target
+    import tarfile
+    import urllib.request
+
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / f"{_SHERPA_KWS_MODEL_DIR}.tar.bz2"
+    logger.info("wake word: downloading sherpa KWS model (one-time, ~13 MB)")
+    urllib.request.urlretrieve(_SHERPA_KWS_MODEL_URL, archive)  # noqa: S310
+    with tarfile.open(archive, "r:bz2") as tf:
+        tf.extractall(root, filter="data")
+    archive.unlink(missing_ok=True)
+    if not (target / "tokens.txt").exists():
+        raise RuntimeError(f"sherpa KWS model unpack failed: {target}")
+    return target
+
+
+class _SherpaKwsEngine(_Engine):
+    """sherpa-onnx open-vocabulary keyword spotting — any typed phrase, zero training.
+
+    The configured ``wake_word.phrase`` is BPE-tokenized at runtime against the
+    model's vocabulary, so "hey hermes", "hey coder", or any other phrase works
+    immediately. Here ``phrase`` is DETECTION config, not a cosmetic label.
+    """
+
+    # sherpa's streaming zipformer consumes arbitrary chunk sizes; 1280
+    # samples (80 ms) matches the shared capture path.
+    frame_length = 1280
+
+    def __init__(self, cfg: Dict[str, Any]):
+        from tools import lazy_deps
+
+        lazy_deps.ensure("wake.sherpa", prompt=False)
+
+        import sherpa_onnx
+        from sherpa_onnx import text2token
+
+        sub = cfg.get("sherpa") if isinstance(cfg.get("sherpa"), dict) else {}
+        model_dir = str(sub.get("model_dir") or "").strip()
+        d = Path(model_dir) if model_dir else _ensure_sherpa_model()
+        if not (d / "tokens.txt").exists():
+            raise RuntimeError(f"sherpa KWS model not found at {d}")
+
+        phrase = str(_get(cfg, "phrase") or "hey hermes").strip()
+        # Runtime tokenization of the arbitrary phrase — the open-vocab core.
+        # sherpa keyword entries reject spaces in the @display-name; underscore it.
+        tokens = text2token(
+            [phrase.upper()],
+            tokens=str(d / "tokens.txt"),
+            tokens_type="bpe",
+            bpe_model=str(d / "bpe.model"),
+        )
+        import tempfile
+
+        kw = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="hermes-kws-", delete=False
+        )
+        display = phrase.upper().replace(" ", "_")
+        kw.write(" ".join(tokens[0]) + f" @{display}\n")
+        kw.close()
+        self._keywords_file = kw.name
+
+        # Map the shared 0..1 sensitivity onto sherpa's keywords_threshold
+        # (posterior probability; its default is 0.25).
+        threshold = 0.1 + 0.5 * _sensitivity(cfg)
+
+        def _model_file(pattern: str) -> str:
+            hits = sorted(d.glob(pattern))
+            if not hits:
+                raise RuntimeError(f"sherpa KWS model file missing: {d}/{pattern}")
+            return str(hits[0])
+
+        self._spotter = sherpa_onnx.KeywordSpotter(
+            tokens=str(d / "tokens.txt"),
+            encoder=_model_file("encoder-*[!8].onnx"),
+            decoder=_model_file("decoder-*[!8].onnx"),
+            joiner=_model_file("joiner-*[!8].onnx"),
+            keywords_file=self._keywords_file,
+            keywords_threshold=threshold,
+            num_threads=1,
+        )
+        self._stream = self._spotter.create_stream()
+
+    def process(self, frame) -> bool:
+        import numpy as np
+
+        samples = np.asarray(frame, dtype=np.float32) / 32768.0
+        self._stream.accept_waveform(SAMPLE_RATE, samples)
+        fired = False
+        while self._spotter.is_ready(self._stream):
+            self._spotter.decode_stream(self._stream)
+            if self._spotter.get_result(self._stream):
+                fired = True
+                # Reset decoder state so one utterance can't fire repeatedly.
+                self._spotter.reset_stream(self._stream)
+        return fired
+
+    def reset(self) -> None:
+        # Fresh stream drops all buffered audio/decoder state (pause → resume
+        # must not re-fire on stale audio).
+        try:
+            self._stream = self._spotter.create_stream()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        try:
+            os.unlink(self._keywords_file)
+        except OSError:
+            pass
+
+
 class _PorcupineEngine(_Engine):
     """Picovoice Porcupine — premium, on-device, needs an access key."""
 
@@ -269,6 +406,8 @@ def _build_engine(cfg: Dict[str, Any]) -> _Engine:
     provider = _provider(cfg)
     if provider == "porcupine":
         return _PorcupineEngine(cfg)
+    if provider in ("sherpa", "sherpa-onnx", "kws", "open"):
+        return _SherpaKwsEngine(cfg)
     if provider in ("openwakeword", "oww", "local"):
         return _OpenWakeWordEngine(cfg)
     raise ValueError(f"Unknown wake_word provider: {provider!r}")
@@ -284,7 +423,12 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     provider = _provider(cfg)
     from tools import lazy_deps
 
-    feature = "wake.porcupine" if provider == "porcupine" else "wake.openwakeword"
+    if provider == "porcupine":
+        feature = "wake.porcupine"
+    elif provider in ("sherpa", "sherpa-onnx", "kws", "open"):
+        feature = "wake.sherpa"
+    else:
+        feature = "wake.openwakeword"
     deps_ok = lazy_deps.is_available(feature)
     audio_ok = _audio_available()
     key_ok = True

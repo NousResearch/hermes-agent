@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
     azure_foundry_model_api_mode,
+    coerce_copilot_reasoning_effort,
     copilot_model_api_mode,
     fetch_github_model_catalog,
     curated_models_for_provider,
@@ -343,6 +344,33 @@ class TestFetchApiModels:
 
 
 class TestGithubReasoningEfforts:
+    def test_coercion_uses_latest_wire_alias_and_nearest_supported_tier(self):
+        gpt56 = github_model_reasoning_efforts("gpt-5.6-sol")
+        gpt55 = github_model_reasoning_efforts("gpt-5.5")
+        gpt5_mini = github_model_reasoning_efforts("gpt-5-mini")
+
+        assert coerce_copilot_reasoning_effort("ultra", gpt56) == "max"
+        assert coerce_copilot_reasoning_effort("max", gpt55) == "xhigh"
+        assert coerce_copilot_reasoning_effort("xhigh", gpt5_mini) == "high"
+        assert coerce_copilot_reasoning_effort("minimal", gpt5_mini) == "low"
+
+    def test_versioned_gpt5_fallback_preserves_extended_efforts(self):
+        """Fallbacks expose each generation's strongest advertised tier."""
+        gpt53 = set(github_model_reasoning_efforts("gpt-5.3-codex"))
+        gpt55 = set(github_model_reasoning_efforts("gpt-5.5"))
+        gpt56 = set(github_model_reasoning_efforts("gpt-5.6-sol"))
+
+        assert "xhigh" in gpt53
+        assert "max" not in gpt53
+        assert "xhigh" in gpt55
+        assert "max" not in gpt55
+        assert {"xhigh", "max"}.issubset(gpt56)
+
+    def test_versioned_gpt5_fallback_does_not_overstate_older_models(self):
+        """New GPT-5.6 levels must not leak onto models that reject them."""
+        assert "max" not in github_model_reasoning_efforts("gpt-5.5")
+        assert "xhigh" not in github_model_reasoning_efforts("gpt-5-mini")
+
     def test_gpt5_supports_minimal_to_high(self):
         catalog = [{
             "id": "gpt-5.4",

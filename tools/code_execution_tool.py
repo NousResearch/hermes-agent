@@ -57,8 +57,11 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = True
 
-# The 7 tools allowed inside the sandbox. The intersection of this list
+# The 6 tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
+# terminal is excluded — execute_code runs arbitrary Python; giving it a
+# terminal() call inside that Python lets the model bypass the dangerous-
+# command approval gate (see #30882, #33057).
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search",
     "web_extract",
@@ -66,7 +69,6 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "write_file",
     "search_files",
     "patch",
-    "terminal",
 ])
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
@@ -1919,7 +1921,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools
     )
 
-    # Build example import list from enabled tools
+    # Build example import list from enabled tools (prefer web_search + terminal
+    # when available; fall back to first two alphabetically).
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
     if not import_examples:
         import_examples = sorted(enabled_sandbox_tools)[:2]
@@ -1929,17 +1932,25 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         import_str = "..."
 
     # Mode-specific CWD guidance. Project mode is the default and matches
-    # terminal()'s filesystem/interpreter; strict mode retains the isolated
+    # terminal's filesystem/interpreter; strict mode retains the isolated
     # temp-dir staging and hermes-agent's own python.
     if mode == "strict":
         cwd_note = (
             "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            "(os.path.expanduser('~/.hermes/.env')) or read_file() for user files."
         )
     else:
         cwd_note = (
             "Scripts run in the session's working directory with the active venv's python, "
-            "so project deps (pandas, etc.) and relative paths work like in terminal()."
+            "so project deps (pandas, etc.) and relative paths work like in the terminal tool."
+        )
+
+    # Terminal-specific notes — only included when terminal is available in the
+    # sandbox (it is excluded by default; see SANDBOX_ALLOWED_TOOLS comment).
+    terminal_notes = ""
+    if "terminal" in enabled_sandbox_tools:
+        terminal_notes = (
+            "terminal() is foreground-only (no background or pty).\n\n"
         )
 
     description = (
@@ -1953,13 +1964,13 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "or the task requires interactive user input.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        f"Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
+        f"{terminal_notes}"
         f"{cwd_note}\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"
-        "  json_parse(text: str) — json.loads with strict=False; use for terminal() output with control chars\n"
+        "  json_parse(text: str) — json.loads with strict=False; use for output with control chars\n"
         "  shell_quote(s: str) — shlex.quote(); use when interpolating dynamic strings into shell commands\n"
         "  retry(fn, max_attempts=3, delay=2) — retry with exponential backoff for transient failures"
     )

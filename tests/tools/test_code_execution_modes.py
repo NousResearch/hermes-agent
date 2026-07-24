@@ -423,13 +423,13 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
         """Regression: hermes_tools still importable from non-tmpdir CWD.
 
         This is the PYTHONPATH fix — without it, switching to session CWD
-        breaks `from hermes_tools import terminal`.
+        breaks `from hermes_tools import web_search`.
         """
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             code = (
-                "from hermes_tools import terminal\n"
-                "r = terminal('echo x')\n"
+                "from hermes_tools import web_search\n"
+                "r = web_search(query='test')\n"
                 "print(r.get('output', 'MISSING'))\n"
             )
             result = self._run(code, mode="project", extra_env={"TERMINAL_CWD": td})
@@ -439,8 +439,8 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
     def test_strict_mode_can_still_import_hermes_tools(self):
         """Regression: strict mode's tmpdir CWD still works for imports."""
         code = (
-            "from hermes_tools import terminal\n"
-            "r = terminal('echo x')\n"
+            "from hermes_tools import web_search\n"
+            "r = web_search(query='test')\n"
             "print(r.get('output', 'MISSING'))\n"
         )
         result = self._run(code, mode="strict")

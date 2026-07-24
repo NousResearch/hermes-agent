@@ -79,6 +79,38 @@ class TestSandboxRequirements(unittest.TestCase):
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["properties"])
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["required"])
 
+    def test_terminal_not_in_sandbox_allowed_tools(self):
+        """terminal must be excluded from SANDBOX_ALLOWED_TOOLS.
+
+        execute_code runs arbitrary Python; a terminal() call inside that
+        Python lets the model bypass the dangerous-command approval gate.
+        """
+        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS
+        self.assertNotIn("terminal", SANDBOX_ALLOWED_TOOLS)
+
+    def test_schema_omits_terminal_prose_when_excluded(self):
+        """Schema description must not mention terminal() when it is not in
+        the enabled sandbox tools."""
+        from tools.code_execution_tool import build_execute_code_schema
+        schema = build_execute_code_schema(
+            enabled_sandbox_tools={"web_search", "read_file"},
+            mode="project",
+        )
+        desc = schema["description"]
+        self.assertNotIn("terminal() is foreground-only", desc)
+        self.assertNotIn("terminal()", desc)
+
+    def test_schema_includes_terminal_prose_when_enabled(self):
+        """Schema description should include terminal notes when terminal is
+        in the enabled sandbox tools (even though it's excluded by default)."""
+        from tools.code_execution_tool import build_execute_code_schema
+        schema = build_execute_code_schema(
+            enabled_sandbox_tools={"web_search", "terminal"},
+            mode="project",
+        )
+        desc = schema["description"]
+        self.assertIn("terminal() is foreground-only", desc)
+
 
 class TestHermesToolsGeneration(unittest.TestCase):
     def test_generates_all_allowed_tools(self):
@@ -86,11 +118,30 @@ class TestHermesToolsGeneration(unittest.TestCase):
         for tool in SANDBOX_ALLOWED_TOOLS:
             self.assertIn(f"def {tool}(", src)
 
-    def test_generates_subset(self):
-        src = generate_hermes_tools_module(["terminal", "web_search"])
-        self.assertIn("def terminal(", src)
+    def test_terminal_excluded_from_sandbox_stubs(self):
+        """terminal must not generate a stub even when explicitly requested.
+
+        terminal is excluded from SANDBOX_ALLOWED_TOOLS (see #30882, #33057)
+        because execute_code runs arbitrary Python — a terminal() call inside
+        that Python lets the model bypass the dangerous-command approval gate.
+        Regression: generate_hermes_tools_module(['terminal']) used to produce
+        ``def terminal(`` before the allowlist change.
+        """
+        src = generate_hermes_tools_module(["terminal"])
+        self.assertNotIn("def terminal(", src)
+
+    def test_non_terminal_tools_generate_stubs(self):
+        """Non-terminal sandbox tools still generate stubs."""
+        src = generate_hermes_tools_module(["web_search", "read_file"])
         self.assertIn("def web_search(", src)
-        self.assertNotIn("def read_file(", src)
+        self.assertIn("def read_file(", src)
+        self.assertNotIn("def terminal(", src)
+
+    def test_generates_subset(self):
+        src = generate_hermes_tools_module(["web_search", "read_file"])
+        self.assertIn("def web_search(", src)
+        self.assertIn("def read_file(", src)
+        self.assertNotIn("def terminal(", src)
 
     def test_empty_list_generates_nothing(self):
         src = generate_hermes_tools_module([])
@@ -98,12 +149,13 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def _call(", src)  # infrastructure still present
 
     def test_non_allowed_tools_ignored(self):
-        src = generate_hermes_tools_module(["vision_analyze", "terminal"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["vision_analyze", "web_search"])
+        self.assertIn("def web_search(", src)
         self.assertNotIn("def vision_analyze(", src)
+        self.assertNotIn("def terminal(", src)
 
     def test_rpc_infrastructure_present(self):
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["web_search"])
         self.assertIn("HERMES_RPC_SOCKET", src)
         self.assertIn("AF_UNIX", src)
         self.assertIn("def _connect(", src)
@@ -111,14 +163,14 @@ class TestHermesToolsGeneration(unittest.TestCase):
 
     def test_convenience_helpers_present(self):
         """Verify json_parse, shell_quote, and retry helpers are generated."""
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["web_search"])
         self.assertIn("def json_parse(", src)
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
         self.assertIn("import json, os, socket, shlex, threading, time", src)
 
     def test_file_transport_uses_tempfile_fallback_for_rpc_dir(self):
-        src = generate_hermes_tools_module(["terminal"], transport="file")
+        src = generate_hermes_tools_module(["web_search"], transport="file")
         self.assertIn("import json, os, shlex, tempfile, threading, time", src)
         self.assertIn("os.path.join(tempfile.gettempdir(), \"hermes_rpc\")", src)
         self.assertNotIn('os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")', src)
@@ -127,7 +179,7 @@ class TestHermesToolsGeneration(unittest.TestCase):
         """Regression: UDS _call() must hold a lock across send+recv so that
         concurrent tool calls from multiple threads don't interleave on the
         shared socket and receive each other's responses."""
-        src = generate_hermes_tools_module(["terminal"], transport="uds")
+        src = generate_hermes_tools_module(["web_search"], transport="uds")
         self.assertIn("_call_lock = threading.Lock()", src)
         self.assertIn("with _call_lock:", src)
 
@@ -135,7 +187,7 @@ class TestHermesToolsGeneration(unittest.TestCase):
         """Regression: file transport _call() must allocate `_seq` under a
         lock, otherwise concurrent threads can pick the same seq and clobber
         each other's request files."""
-        src = generate_hermes_tools_module(["terminal"], transport="file")
+        src = generate_hermes_tools_module(["web_search"], transport="file")
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
 
@@ -262,24 +314,24 @@ class TestExecuteCode(unittest.TestCase):
         self.assertIn("hermes_constants.py", result["output"])
 
     def test_single_tool_call(self):
-        """Script calls terminal and prints the result."""
+        """Script calls web_search and prints the result."""
         code = """
-from hermes_tools import terminal
-result = terminal("echo hello")
-print(result.get("output", ""))
+from hermes_tools import web_search
+result = web_search(query="hello")
+print(result.get("results", [{}])[0].get("title", ""))
 """
         result = self._run(code)
         self.assertEqual(result["status"], "success")
-        self.assertIn("mock output for: echo hello", result["output"])
+        self.assertIn("Example", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
 
     def test_multi_tool_chain(self):
         """Script calls multiple tools sequentially."""
         code = """
-from hermes_tools import terminal, read_file
-r1 = terminal("ls")
-r2 = read_file("test.py")
-print(f"terminal: {r1['output'][:20]}")
+from hermes_tools import web_search, read_file
+r1 = web_search(query="test")
+r2 = read_file(path="test.py")
+print(f"search: {r1['results'][0]['title']}")
 print(f"file lines: {r2['total_lines']}")
 """
         result = self._run(code)
@@ -314,13 +366,13 @@ print(f"file lines: {r2['total_lines']}")
         code = '''
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from hermes_tools import terminal
+from hermes_tools import web_search
 
 N = 10
 
 def call(i):
-    r = terminal(f"echo TAG-{i}")
-    return i, r.get("output", "")
+    r = web_search(query=f"TAG-{i}")
+    return i, r.get("results", [{}])[0].get("title", "")
 
 with ThreadPoolExecutor(max_workers=N) as ex:
     results = list(ex.map(call, range(N)))
@@ -362,7 +414,7 @@ from hermes_tools import terminal
 result = terminal("echo hi")
 print(result)
 """
-        # Only enable web_search -- terminal should be excluded
+        # Only enable web_search -- terminal is excluded from SANDBOX_ALLOWED_TOOLS
         result = self._run(code, enabled_tools=["web_search"])
         # terminal won't be in hermes_tools.py, so import fails
         self.assertEqual(result["status"], "error")
@@ -850,7 +902,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_none_enabled_tools_uses_all(self):
         """When enabled_tools is None, all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search, read_file\n"
+            "from hermes_tools import web_search, read_file\n"
             "print('all imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -864,7 +916,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_empty_enabled_tools_uses_all(self):
         """When enabled_tools is [] (empty), all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search\n"
+            "from hermes_tools import web_search, read_file\n"
             "print('imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -879,7 +931,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
         code = (
-            "from hermes_tools import terminal\n"
+            "from hermes_tools import web_search\n"
             "print('fallback ok')\n"
         )
         with patch("model_tools.handle_function_call",

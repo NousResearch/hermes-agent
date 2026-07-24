@@ -337,6 +337,7 @@ def _is_cron_silence_response(text: str) -> bool:
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_job_futures: dict[str, concurrent.futures.Future] = {}
 _running_lock = threading.Lock()
 
 # Job IDs the gateway shutdown path force-killed the tool subprocess of
@@ -366,6 +367,36 @@ def get_running_job_ids() -> "frozenset[str]":
     """
     with _running_lock:
         return frozenset(_running_job_ids)
+
+
+def _running_guard_orphan_reason_locked(job_id: str) -> Optional[str]:
+    """Return why ``job_id``'s running guard is provably stale, if it is.
+
+    Caller must hold ``_running_lock``. The running set and future registry are
+    both in-memory structures owned by this scheduler process. If a job ID is in
+    the set but has no tracked executor future, or its tracked future is already
+    done/cancelled, no live worker in this process can still be responsible for
+    releasing that guard. Clearing it lets the next tick recover instead of
+    logging "already running — skipping" forever after fd-exhaustion or other
+    pre-cleanup bookkeeping failures (MAX-1354).
+    """
+    future = _running_job_futures.get(job_id)
+    if future is None:
+        return "no tracked executor future"
+    if future.cancelled():
+        return "tracked executor future was cancelled"
+    if future.done():
+        return "tracked executor future is already done"
+    return None
+
+
+def _release_running_guard_locked(job_id: str) -> None:
+    """Drop in-memory running bookkeeping for ``job_id``.
+
+    Caller must hold ``_running_lock``.
+    """
+    _running_job_ids.discard(job_id)
+    _running_job_futures.pop(job_id, None)
 
 
 def mark_running_jobs_interrupted(reason: str) -> list:
@@ -539,6 +570,8 @@ def _shutdown_parallel_pool() -> None:
     if _sequential_pool is not None:
         _sequential_pool.shutdown(wait=True, cancel_futures=False)
         _sequential_pool = None
+    with _running_lock:
+        _running_job_futures.clear()
 
 
 atexit.register(_shutdown_parallel_pool)
@@ -4101,8 +4134,17 @@ def tick(
                 return None
             with _running_lock:
                 if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
+                    orphan_reason = _running_guard_orphan_reason_locked(job_id)
+                    if orphan_reason:
+                        logger.warning(
+                            "Job '%s' had stale running guard (%s) — clearing before dispatch",
+                            job.get("name", job_id),
+                            orphan_reason,
+                        )
+                        _release_running_guard_locked(job_id)
+                    else:
+                        logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                        return None
                 _running_job_ids.add(job_id)
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
@@ -4116,7 +4158,7 @@ def tick(
                 execution = create_execution(job_id, source="builtin")
             except Exception as claim_err:
                 with _running_lock:
-                    _running_job_ids.discard(job_id)
+                    _release_running_guard_locked(job_id)
                 logger.error(
                     "Job '%s' not dispatched — failed to create execution claim: %s",
                     job.get("name", job_id),
@@ -4131,13 +4173,21 @@ def tick(
                     return ctx.run(_process_job, j)
                 finally:
                     with _running_lock:
-                        _running_job_ids.discard(j["id"])
+                        _release_running_guard_locked(j["id"])
 
             try:
-                return pool.submit(_run_and_release)
+                future = pool.submit(_run_and_release)
+                with _running_lock:
+                    # Extremely fast test jobs can complete before submit()
+                    # returns. In that case the finally block has already
+                    # released the guard, so do not reintroduce a stale future
+                    # entry after the fact.
+                    if job_id in _running_job_ids:
+                        _running_job_futures[job_id] = future
+                return future
             except Exception as submit_err:
                 with _running_lock:
-                    _running_job_ids.discard(job_id)
+                    _release_running_guard_locked(job_id)
                 finish_execution(
                     execution["id"],
                     success=False,

@@ -274,3 +274,39 @@ class TestDispatchGuardReleasedAfterHang:
         finally:
             sched._running_job_ids.discard("emfile-claim")
             sched._shutdown_parallel_pool()
+
+    def test_orphaned_running_guard_without_future_is_reconciled(self):
+        """A stale running-set member with no executor future must self-heal.
+
+        During the MAX-1354 fd-exhaustion incident, later ticks saw only
+        ``already running — skipping`` even though the matching no-agent script
+        process was gone. If the in-memory running guard contains a job ID but
+        the scheduler has no live future for it, the guard is provably orphaned
+        in the current process and must be cleared before deciding to skip.
+        """
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+        sched._running_job_ids.add("orphaned-no-future")
+
+        job = {
+            "id": "orphaned-no-future",
+            "name": "orphaned-no-future",
+            "prompt": "hello",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        try:
+            with patch.object(sched, "get_due_jobs", return_value=[job]), \
+                 patch.object(sched, "advance_next_run"), \
+                 patch.object(sched, "create_execution", return_value={"id": "exec-1"}), \
+                 patch.object(sched, "run_one_job", return_value=True):
+                assert sched.tick(verbose=False) == 1
+        finally:
+            sched._running_job_ids.discard("orphaned-no-future")
+            sched._shutdown_parallel_pool()

@@ -809,6 +809,7 @@ def _decode_canonical_json(
 def load_fixed_unit_inputs(
     path: Path = FIXED_UNIT_INPUTS_PATH,
     *,
+    revision: str | None = None,
     expected_uid: int = 0,
     expected_gid: int = 0,
 ) -> Mapping[str, Any]:
@@ -826,7 +827,8 @@ def load_fixed_unit_inputs(
             payload,
             newline=True,
             code="cutover_unit_inputs_staging_invalid",
-        )
+        ),
+        revision=revision,
     )
 
 

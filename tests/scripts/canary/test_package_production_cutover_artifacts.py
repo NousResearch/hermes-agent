@@ -1257,6 +1257,7 @@ def test_clean_host_bootstraps_owner_approved_inputs_before_package_and_freeze(
     )
     inputs = package.load_fixed_unit_inputs(
         inputs_path,
+        revision=REVISION,
         expected_uid=inputs_path.stat().st_uid,
         expected_gid=inputs_path.stat().st_gid,
     )
@@ -1265,6 +1266,16 @@ def test_clean_host_bootstraps_owner_approved_inputs_before_package_and_freeze(
     assert inputs["authority_approval_sha256"] == approval["approval_sha256"]
     assert stat.S_IMODE(inputs_path.stat().st_mode) == 0o444
     assert not (staged / "freeze-plan.json").exists()
+    with pytest.raises(
+        package.PackagingError,
+        match="cutover_packaging_unit_inputs_invalid",
+    ):
+        package.load_fixed_unit_inputs(
+            inputs_path,
+            revision="f" * 40,
+            expected_uid=inputs_path.stat().st_uid,
+            expected_gid=inputs_path.stat().st_gid,
+        )
 
     release = _release(tmp_path / "release")
     manifest = package.build_release_artifacts(

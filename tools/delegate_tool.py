@@ -202,6 +202,38 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
+def send_to_subagent(subagent_id: str, text: str) -> bool:
+    """Deliver a steering message into a single running subagent.
+
+    Mirrors ``interrupt_subagent``: looks the child up in the live registry
+    and calls ``AIAgent.steer(text)`` on it.  ``steer`` queues the text onto
+    the child's pending-steer slot, which the child drains at its next
+    iteration boundary and appends as a clean user turn — never spliced
+    between a tool-result and an assistant message, so prompt-cache and role
+    alternation stay intact.  Returns True when a matching live subagent
+    accepted the message; False for a dead/unknown id or empty text.
+
+    Trust model matches ``interrupt_subagent``: possession of the subagent_id
+    is authority.  The live registry carries no session key, so there is no
+    per-session ownership check here (same posture as interrupt).
+    """
+    if not text or not text.strip():
+        return False
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record:
+        return False
+    agent = record.get("agent")
+    steer = getattr(agent, "steer", None)
+    if not callable(steer):
+        return False
+    try:
+        return bool(steer(text))
+    except Exception as exc:
+        logger.debug("send_to_subagent(%s) failed: %s", subagent_id, exc)
+        return False
+
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 

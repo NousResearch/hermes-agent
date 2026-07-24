@@ -528,8 +528,32 @@ export interface DelegationPauseResponse {
   paused?: boolean
 }
 
+// One async-delegation record as projected by `delegation.async_list`.
+// Mirrors tools/async_delegation.py list_async_delegations() (interrupt_fn
+// stripped server-side).
+export interface AsyncDelegationRecord {
+  completed_at?: null | number
+  delegation_id: string
+  depth?: number
+  dispatched_at?: number
+  goal?: string
+  model?: null | string
+  role?: string
+  status?: string
+}
+
+export interface DelegationAsyncListResponse {
+  delegations?: AsyncDelegationRecord[]
+  running?: number
+}
+
 export interface SubagentInterruptResponse {
   found?: boolean
+  subagent_id?: string
+}
+
+export interface SubagentSendResponse {
+  delivered?: boolean
   subagent_id?: string
 }
 

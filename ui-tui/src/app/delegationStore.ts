@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { DelegationStatusResponse } from '../gatewayTypes.js'
+import type { AsyncDelegationRecord, DelegationAsyncListResponse, DelegationStatusResponse } from '../gatewayTypes.js'
 
 export interface DelegationState {
   // Last known caps from `delegation.status` RPC.  null until fetched.
@@ -75,3 +75,19 @@ export const applyDelegationStatus = (r: DelegationStatusResponse | null | undef
 
   patchDelegationState(patch)
 }
+
+// ── Async-delegation snapshot (docked agents panel) ───────────────────
+//
+// Background delegations projected by the `delegation.async_list` RPC.
+// Read-only mirror of the daemon-side registry; the panel merges these
+// (background/done rows) with the live in-turn subagents from the turn
+// store (running rows with live tool + elapsed).
+
+export const $asyncDelegations = atom<AsyncDelegationRecord[]>([])
+
+/** Replace the async-delegation snapshot from a raw RPC response. */
+export const applyAsyncList = (r: DelegationAsyncListResponse | null | undefined) => {
+  $asyncDelegations.set(Array.isArray(r?.delegations) ? r!.delegations : [])
+}
+
+export const resetAsyncDelegations = () => $asyncDelegations.set([])

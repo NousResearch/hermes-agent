@@ -14,6 +14,7 @@ import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { statusGlyph } from '../lib/subagentGlyph.js'
 import {
   buildSubagentTree,
   descendantIds,
@@ -88,16 +89,6 @@ const FILTER_PREDICATES: Record<FilterMode, (n: SubagentNode) => boolean> = {
     n.item.status === 'timeout'
 }
 
-const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string }> = {
-  running: { color: t => t.color.accent, glyph: '●' },
-  queued: { color: t => t.color.muted, glyph: '○' },
-  completed: { color: t => t.color.statusGood, glyph: '✓' },
-  interrupted: { color: t => t.color.warn, glyph: '■' },
-  failed: { color: t => t.color.error, glyph: '✗' },
-  timeout: { color: t => t.color.warn, glyph: '⌛' },
-  error: { color: t => t.color.error, glyph: '⚠' }
-}
-
 // Heatmap palette — cold → hot, resolved against the active theme.
 const heatPalette = (t: Theme) => [t.color.border, t.color.accent, t.color.primary, t.color.warn, t.color.error]
 
@@ -122,12 +113,7 @@ const indentFor = (depth: number): string => '  '.repeat(Math.max(0, depth))
 const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
-const statusGlyph = (item: SubagentProgress, t: Theme) => {
-  // Defensive fallback for cross-version snapshots with unknown statuses.
-  const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
-
-  return { color: g.color(t), glyph: g.glyph }
-}
+const statusGlyphFor = (item: SubagentProgress, t: Theme) => statusGlyph(item.status, t)
 
 const prepareRows = (tree: SubagentNode[], sort: SortMode, filter: FilterMode): SubagentNode[] =>
   tree.length === 0 ? [] : flattenTree([...tree].sort(SORT_COMPARATORS[sort])).filter(FILTER_PREDICATES[filter])
@@ -236,7 +222,7 @@ function GanttStrip({
 
       {shown.map(({ endAt, idx, node, startAt }) => {
         const active = idx === cursor
-        const { color } = statusGlyph(node.item, t)
+        const { color } = statusGlyphFor(node.item, t)
         const accent = active ? t.color.accent : t.color.muted
 
         const elSec = displayElapsedSeconds(node.item, now)
@@ -318,7 +304,7 @@ function Field({ name, t, value }: { name: string; t: Theme; value: ReactNode })
 
 function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) {
   const { aggregate: agg, item } = node
-  const { color, glyph } = statusGlyph(item, t)
+  const { color, glyph } = statusGlyphFor(item, t)
 
   const inputTokens = item.inputTokens ?? 0
   const outputTokens = item.outputTokens ?? 0
@@ -453,7 +439,7 @@ function ListRow({
   t: Theme
   width: number
 }) {
-  const { color, glyph } = statusGlyph(node.item, t)
+  const { color, glyph } = statusGlyphFor(node.item, t)
   const palette = heatPalette(t)
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
@@ -519,7 +505,7 @@ function DiffPane({
         {topLevelSubagents(snapshot.subagents)
           .slice(0, 8)
           .map(s => {
-            const { color, glyph } = statusGlyph(s, t)
+            const { color, glyph } = statusGlyphFor(s, t)
 
             return (
               <Text color={t.color.muted} key={s.id} wrap="truncate-end">

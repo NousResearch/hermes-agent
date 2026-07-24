@@ -3,8 +3,9 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
+import type { SessionSteerResponse, ShellExecResponse, SubagentSendResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { parseSteerCommand, resolveSteerTargetId } from '../lib/subagentSteer.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
@@ -12,6 +13,7 @@ import type { Msg } from '../types.js'
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
+import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
@@ -236,6 +238,29 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return shellExec(full.slice(1).trim())
       }
 
+      // Steer a running subagent: `@<id> text` routes to subagent.send instead
+      // of the main turn — but ONLY when the token resolves to a live subagent
+      // id, so an ordinary prompt like "@john ping me" falls through to a
+      // normal send untouched.
+      const steerCmd = parseSteerCommand(full)
+
+      if (steerCmd) {
+        const sid = resolveSteerTargetId(steerCmd.token, getTurnState().subagents)
+
+        if (sid) {
+          composerActions.pushHistory(toHistory)
+          composerActions.clearIn()
+          gw.request<SubagentSendResponse>('subagent.send', { subagent_id: sid, text: steerCmd.body })
+            .then(raw => {
+              const r = asRpcResult<SubagentSendResponse>(raw)
+              sys(r?.delivered ? `delivered → @${steerCmd.token}` : `@${steerCmd.token} already finished`)
+            })
+            .catch(() => sys(`steer failed — @${steerCmd.token} unreachable`))
+
+          return
+        }
+      }
+
       const live = getUiState()
 
       if (!live.sid) {
@@ -294,12 +319,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
       composerActions,
       composerRefs,
       composerState.pasteSnips,
+      gw,
       handleBusyInput,
       interpolate,
       send,
       sendQueued,
       shellExec,
-      slashRef
+      slashRef,
+      sys
     ]
   )
 

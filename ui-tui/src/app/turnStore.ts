@@ -6,6 +6,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 
 const buildTurnState = (): TurnState => ({
   activity: [],
+  agentsCollapsed: false,
   outcome: '',
   reasoning: '',
   reasoningActive: false,
@@ -40,6 +41,9 @@ export const patchTurnState = (next: Partial<TurnState> | ((state: TurnState) =>
 
 export const toggleTodoCollapsed = () => patchTurnState(state => ({ ...state, todoCollapsed: !state.todoCollapsed }))
 
+export const toggleAgentsCollapsed = () =>
+  patchTurnState(state => ({ ...state, agentsCollapsed: !state.agentsCollapsed }))
+
 export const archiveDoneTodos = () => archiveTodosAtTurnEnd()
 
 export const archiveTodosAtTurnEnd = () => {
@@ -68,6 +72,7 @@ export const resetTurnState = () => $turnState.set(buildTurnState())
 
 export interface TurnState {
   activity: ActivityItem[]
+  agentsCollapsed: boolean
   outcome: string
   reasoning: string
   reasoningActive: boolean

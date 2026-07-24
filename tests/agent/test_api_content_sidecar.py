@@ -889,6 +889,53 @@ class TestMaxIterationsSummaryReplay:
         assert messages[0]["content"] == "q1"
         assert messages[0]["api_content"] == "q1\n\nPLUGIN-CTX"
 
+    def test_summary_request_drops_codex_only_assistant_prefill(self):
+        from run_agent import AIAgent
+        from agent.chat_completion_helpers import handle_max_iterations
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="http://127.0.0.1:1/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.prefill_messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_message_items": [{"type": "message"}],
+            }
+        ]
+        captured = {}
+
+        class _Completions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return "RAW-RESPONSE"
+
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=_Completions())
+        )
+        transport = types.SimpleNamespace(
+            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY")
+        )
+
+        messages = [{"role": "user", "content": "investigate"}]
+        with patch.object(
+            agent, "_ensure_primary_openai_client", return_value=client
+        ), patch.object(agent, "_get_transport", return_value=transport):
+            out = handle_max_iterations(agent, messages, 5)
+
+        assert out == "SUMMARY"
+        assert not any(
+            message.get("role") == "assistant"
+            and not str(message.get("content") or "").strip()
+            and not message.get("tool_calls")
+            and not message.get("reasoning_content")
+            for message in captured["messages"]
+        )
+
 
 class TestSessionRowExistsBeforePreflightCompaction:
     """Moving the crash persist after prefetch/pre_llm_call (one write with

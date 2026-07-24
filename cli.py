@@ -16127,6 +16127,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    output_format: str = "text",
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
 ):
@@ -16216,6 +16217,14 @@ def main(
     
     # Handle query shorthand
     query = query or q
+
+    # ``hermes chat`` normalizes this before it reaches here. Keep the direct
+    # Fire entry point equally safe: structured output is a single-query,
+    # non-interactive protocol, not an alternative interactive renderer.
+    if output_format == "stream-json":
+        if not query:
+            raise ValueError("--format stream-json requires -q/--query")
+        quiet = True
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
@@ -16441,6 +16450,8 @@ def main(
             if quiet:
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
+                # When output_format is "stream-json", emit JSONL events instead.
+                use_stream_json = output_format == "stream-json"
                 cli.tool_progress_mode = "off"
                 if cli._ensure_runtime_credentials():
                     effective_query: Any = query
@@ -16511,11 +16522,24 @@ def main(
                     ):
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
-                        # Suppress streaming display callbacks so stdout stays
-                        # machine-readable (no styled "Hermes" box, no tool-gen
-                        # status lines).  The response is printed once below.
-                        cli.agent.stream_delta_callback = None
-                        cli.agent.tool_gen_callback = None
+                        emitter = None
+                        if use_stream_json:
+                            # stream-json: wire callbacks to JSONL emitter.
+                            from stream_json import StreamJsonEmitter
+
+                            emitter = StreamJsonEmitter(
+                                model=cli.agent.model or "",
+                                session_id=cli.session_id or "",
+                            )
+                            cli.agent.stream_delta_callback = emitter.on_text_delta
+                            cli.agent.tool_gen_callback = emitter.on_tool_gen_start
+                            cli.agent.tool_progress_callback = emitter.on_tool_progress
+                        else:
+                            # Suppress streaming display callbacks so stdout stays
+                            # machine-readable (no styled "Hermes" box, no tool-gen
+                            # status lines).  The response is printed once below.
+                            cli.agent.stream_delta_callback = None
+                            cli.agent.tool_gen_callback = None
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,
@@ -16523,6 +16547,15 @@ def main(
                             )
                         except KeyboardInterrupt:
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                            if use_stream_json:
+                                assert emitter is not None
+                                sys.exit(
+                                    emitter.emit_result(
+                                        {"failed": True, "error": "Interrupted"},
+                                        session_id=cli.session_id or "",
+                                        exit_code=130,
+                                    )
+                                )
                             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                             sys.exit(130)
                         # Sync session_id if mid-run compression created a
@@ -16539,15 +16572,16 @@ def main(
                         # (e.g. invalid model slug → provider 4xx). Mirrors the
                         # interactive CLI path. Write to stderr so piped stdout
                         # stays clean for automation wrappers.
-                        if (
-                            not response
-                            and isinstance(result, dict)
-                            and result.get("error")
-                            and (result.get("failed") or result.get("partial"))
-                        ):
-                            print(f"Error: {result['error']}", file=sys.stderr)
-                        elif response:
-                            print(response)
+                        if not use_stream_json:
+                            if (
+                                not response
+                                and isinstance(result, dict)
+                                and result.get("error")
+                                and (result.get("failed") or result.get("partial"))
+                            ):
+                                print(f"Error: {result['error']}", file=sys.stderr)
+                            elif response:
+                                print(response)
 
                         # Kanban goal-loop mode: a worker spawned for a
                         # goal_mode card keeps working in THIS session until an
@@ -16562,8 +16596,9 @@ def main(
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
 
-                        # Session ID goes to stderr so piped stdout is clean.
-                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                        if not use_stream_json:
+                            # Session ID goes to stderr so piped stdout is clean.
+                            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
                         # Ensure proper exit code for automation wrappers.
                         #
@@ -16590,6 +16625,15 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+                        if use_stream_json:
+                            assert emitter is not None
+                            sys.exit(
+                                emitter.emit_result(
+                                    result,
+                                    session_id=cli.session_id or "",
+                                    exit_code=_exit_code,
+                                )
+                            )
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

@@ -1436,14 +1436,28 @@ def _build_child_agent(
     if child_pool is not None:
         child._credential_pool = child_pool
 
-    # Register child for interrupt propagation
+    # Register child for interrupt propagation.
+    # _active_children_lock is always initialised in AIAgent.__init__; the
+    # getattr fallback only fires for test stubs that bypass __init__.  We
+    # must NOT create a fresh Lock() here per-call: two concurrent workers
+    # could each create a distinct lock object and then mutate the list
+    # simultaneously (TOCTOU).  Instead we rely on the invariant that any
+    # object that carries _active_children also carries a single, stable
+    # _active_children_lock set at construction time.
     if hasattr(parent_agent, "_active_children"):
         lock = getattr(parent_agent, "_active_children_lock", None)
-        if lock:
+        if lock is not None:
             with lock:
                 parent_agent._active_children.append(child)
         else:
-            parent_agent._active_children.append(child)
+            # Stub/test object without a lock — skip registration rather than
+            # silently racing.  Interrupt propagation will not work for this
+            # agent, which is acceptable for non-production stubs.
+            logger.debug(
+                "_active_children_lock missing on parent agent %r; "
+                "skipping child registration for interrupt propagation",
+                type(parent_agent).__name__,
+            )
 
     # Announce the spawn immediately — the child may sit in a queue
     # for seconds if max_concurrent_children is saturated, so the TUI
@@ -2384,15 +2398,22 @@ def _run_single_child(
 
         # Remove child from active tracking
 
-        # Unregister child from interrupt propagation
+        # Unregister child from interrupt propagation.
+        # Same invariant as the append path above: do not create a new Lock
+        # on the fly.  If the lock is absent the child was never registered,
+        # so there is nothing to remove.
         if hasattr(parent_agent, "_active_children"):
             try:
                 lock = getattr(parent_agent, "_active_children_lock", None)
-                if lock:
+                if lock is not None:
                     with lock:
                         parent_agent._active_children.remove(child)
                 else:
-                    parent_agent._active_children.remove(child)
+                    logger.debug(
+                        "_active_children_lock missing on parent agent %r; "
+                        "child was never registered, skipping remove",
+                        type(parent_agent).__name__,
+                    )
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 

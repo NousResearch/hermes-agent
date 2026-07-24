@@ -7,6 +7,25 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
+
+    <!-- Progressive Web App: installable to the home screen on iOS Safari,
+         Android Chrome, and desktop. The manifest drives Android/desktop
+         install; the apple-* meta tags drive iOS "Add to Home Screen"
+         standalone launch (iOS Safari does not read the web manifest's
+         display/name fields). theme-color matches the dashboard's default
+         LENS_0 background (#041c1c) so the status bar / title bar blends in. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#041c1c" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="Hermes" />
+    <meta name="application-name" content="Hermes" />
+
     <title>Hermes Agent - Dashboard</title>
   </head>
   <body>

@@ -612,7 +612,7 @@ export default function App() {
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
+              className="min-h-0 w-full flex-1 touch-pan-y overflow-y-auto overflow-x-hidden overscroll-y-contain border-t border-current/10 py-2 [-webkit-overflow-scrolling:touch]"
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">

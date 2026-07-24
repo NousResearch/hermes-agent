@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.metadata
 import importlib.util
 import inspect
@@ -41,6 +42,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +52,9 @@ from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
+
+_DEFAULT_HOOK_TIMEOUT_SECONDS = 2.0
+_HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -214,6 +219,24 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_blocked",
 }
 
+_HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+    "post_tool_call",
+    "transform_terminal_output",
+    "transform_tool_result",
+    "transform_llm_output",
+    "pre_llm_call",
+    "post_llm_call",
+    "pre_api_request",
+    "post_api_request",
+    "api_request_error",
+    "pre_verify",
+    "on_session_start",
+    "on_session_end",
+}
+
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+_HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
+
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
@@ -268,6 +291,28 @@ def _get_enabled_plugins() -> Optional[set]:
         return set(enabled)
     except Exception:
         return None
+
+
+def _get_hook_timeout_seconds() -> float:
+    """Return the per-callback lifecycle hook deadline in seconds.
+
+    The value is configurable as ``plugins.hook_timeout_seconds`` and defaults
+    to a small fail-open deadline so hot-path lifecycle hooks cannot wedge a
+    user turn indefinitely.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        raw_value = cfg_get(
+            config,
+            "plugins",
+            "hook_timeout_seconds",
+            default=_DEFAULT_HOOK_TIMEOUT_SECONDS,
+        )
+        value = float(raw_value)
+        return value if value > 0 else _DEFAULT_HOOK_TIMEOUT_SECONDS
+    except Exception:
+        return _DEFAULT_HOOK_TIMEOUT_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -1271,6 +1316,11 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        self._hook_timeout_seconds = _get_hook_timeout_seconds()
+        self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        self._hook_running_callbacks: Dict[tuple, object] = {}
+        self._hook_timeout_lock = threading.Lock()
 
     # -----------------------------------------------------------------------
     # Public
@@ -1912,16 +1962,84 @@ class PluginManager:
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
+        use_timeout = (
+            hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS
+            or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        )
         for cb in callbacks:
+            callback_name = getattr(cb, "__name__", repr(cb))
+            callback_key = (hook_name, id(cb))
+            now = time.monotonic()
             try:
-                ret = cb(**kwargs)
+                if use_timeout:
+                    token = object()
+                    with self._hook_timeout_lock:
+                        suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
+                        running = callback_key in self._hook_running_callbacks
+                        if (suppressed_until is not None and suppressed_until > now) or running:
+                            logger.warning(
+                                "Hook '%s' callback %s skipped after previous timeout or while still running",
+                                hook_name,
+                                callback_name,
+                            )
+                            if hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS:
+                                results.append({
+                                    "action": "block",
+                                    "message": "pre_tool_call plugin callback timed out or is still running",
+                                })
+                            continue
+                        if suppressed_until is not None:
+                            self._hook_timeout_suppressed_until.pop(callback_key, None)
+                        self._hook_running_callbacks[callback_key] = token
+                    context = contextvars.copy_context()
+                    done = threading.Event()
+                    result_holder: Dict[str, Any] = {}
+
+                    def run_callback() -> None:
+                        try:
+                            result_holder["result"] = context.run(cb, **kwargs)
+                        except Exception as exc:
+                            result_holder["exception"] = exc
+                        finally:
+                            with self._hook_timeout_lock:
+                                if self._hook_running_callbacks.get(callback_key) is token:
+                                    self._hook_running_callbacks.pop(callback_key, None)
+                            done.set()
+
+                    threading.Thread(
+                        target=run_callback,
+                        name="hermes-plugin-hook",
+                        daemon=True,
+                    ).start()
+                    if not done.wait(self._hook_timeout_seconds):
+                        with self._hook_timeout_lock:
+                            self._hook_timeout_suppressed_until[callback_key] = (
+                                time.monotonic() + self._hook_timeout_suppression_seconds
+                            )
+                        logger.warning(
+                            "Hook '%s' callback %s timed out after %.2fs",
+                            hook_name,
+                            callback_name,
+                            self._hook_timeout_seconds,
+                        )
+                        if hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS:
+                            results.append({
+                                "action": "block",
+                                "message": "pre_tool_call plugin callback timed out or is still running",
+                            })
+                        continue
+                    if "exception" in result_holder:
+                        raise result_holder["exception"]
+                    ret = result_holder.get("result")
+                else:
+                    ret = cb(**kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
                     hook_name,
-                    getattr(cb, "__name__", repr(cb)),
+                    callback_name,
                     exc,
                 )
         return results

@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -2177,7 +2176,16 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Supported interpreters (chosen by file extension):
 
-    * ``.sh`` / ``.bash`` — run with ``/bin/bash``
+    * ``.sh`` / ``.bash`` — run with bash resolved via
+      ``tools.environments.local._find_bash`` — the same resolver used by the
+      native terminal path, so cron never diverges from Hermes's supported
+      Windows bash discovery (``HERMES_GIT_BASH_PATH``, PortableGit under
+      ``%LOCALAPPDATA%\\hermes\\git``, ``ProgramFiles\\Git``, LocalAppData
+      Git installs, ``usr/bin`` fallbacks, and WSL-stub rejection).  Earlier
+      revisions of this code path used a parallel ``shutil.which("bash")``
+      lookup that resolved to the WSL launcher stub when WSL was enabled with
+      no distributions installed — see ``_find_bash`` in
+      ``tools/environments/local.py`` for the full chain and the regression.
     * anything else — run with the current Python interpreter
       (``sys.executable``), preserving the original behaviour for
       Python-based pre-check and data-collection scripts.
@@ -2231,17 +2239,21 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
-        if _bash is None:
+        # Delegate to the shared bash resolver used by the native terminal
+        # path (tools.environments.local._find_bash) — same WSL-stub rejection,
+        # PortableGit probes, and Git for Windows well-known-path lookup the
+        # rest of Hermes relies on.  A parallel ``shutil.which("bash")`` here
+        # would re-introduce the WSL launcher stub bug (it resolves to
+        # ``C:\Windows\System32\bash.exe`` when WSL is enabled with no
+        # distributions installed and Git for Windows' default PATH option
+        # adds ``Git\cmd`` but not ``Git\bin``).
+        from tools.environments.local import _find_bash
+
+        try:
+            _bash = _find_bash()
+        except RuntimeError:
             return False, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
         )

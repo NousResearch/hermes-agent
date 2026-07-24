@@ -234,10 +234,18 @@ class WebhookRouteProcessor:
 
         suffix = path.suffix.lower()
         if suffix in {".sh", ".bash"}:
-            bash = shutil.which("bash") or (
-                "/bin/bash" if os.path.isfile("/bin/bash") else None
-            )
-            if bash is None:
+            # Delegate to the shared bash resolver used by the native
+            # terminal path (tools.environments.local._find_bash) — same as
+            # cron/scheduler.py::_run_job_script.  Avoids the WSL launcher
+            # stub resolution bug where ``shutil.which("bash")`` returns
+            # ``C:\Windows\System32\bash.exe`` when WSL is enabled with no
+            # distributions installed and Git for Windows is installed with
+            # its default PATH option (adds ``Git\cmd``, not ``Git\bin``),
+            # which would silently fail every ``.sh`` webhook route script.
+            from tools.environments.local import _find_bash
+            try:
+                bash = _find_bash()
+            except RuntimeError:
                 logger.warning("[webhook] script ignored webhook: bash not found")
                 return False, None
             argv = [bash, str(path)]

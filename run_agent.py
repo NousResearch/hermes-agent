@@ -2070,6 +2070,24 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                if role == "assistant" and content:
+                    try:
+                        from hermes_cli.plugins import has_hook, invoke_hook
+                        if has_hook("transform_persisted_assistant"):
+                            results = invoke_hook(
+                                "transform_persisted_assistant",
+                                content=content,
+                                session_id=self.session_id,
+                                tool_calls=tool_calls_data,
+                                finish_reason=msg.get("finish_reason"),
+                                model=self.model,
+                            )
+                            for r in results:
+                                if isinstance(r, str):
+                                    content = r
+                                    break
+                    except Exception as e:
+                        logger.debug("transform_persisted_assistant hook error: %s", e)
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,

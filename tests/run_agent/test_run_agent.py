@@ -8645,3 +8645,85 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestTransformPersistedAssistantHook(TestRunConversation):
+    """Tests for the transform_persisted_assistant hook."""
+
+    def test_transform_persisted_assistant_hook_mutates_content(self, agent):
+        """The hook can transform assistant content before DB persistence."""
+        self._setup_agent(agent)
+        resp = _mock_response(content="Phone: <__PII_PHONE_000001__>", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        hook_received = {}
+
+        def _hook(name, **kwargs):
+            if name == "transform_persisted_assistant":
+                hook_received.update(kwargs)
+                return "Phone: 13912345678"
+            return []
+
+        persisted_contents = []
+        original_append = None
+
+        class FakeDB:
+            def append_message(self, **kwargs):
+                persisted_contents.append(kwargs.get("content"))
+
+        fake_db = FakeDB()
+
+        with (
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "transform_persisted_assistant",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(agent, "_session_db", fake_db),
+            patch.object(agent, "_session_db_created", True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent._last_flushed_db_idx = 0
+            result = agent.run_conversation("tell me my phone")
+
+        assert result["final_response"] == "Phone: <__PII_PHONE_000001__>"
+        assert hook_received.get("content") == "Phone: <__PII_PHONE_000001__>"
+        assert hook_received.get("session_id") == agent.session_id
+        assert hook_received.get("finish_reason") == "stop"
+        assert any("13912345678" in (c or "") for c in persisted_contents)
+
+    def test_transform_persisted_assistant_hook_none_keeps_original(self, agent):
+        """Returning None from hook keeps original content."""
+        self._setup_agent(agent)
+        resp = _mock_response(content="unchanged content", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        def _hook(name, **kwargs):
+            if name == "transform_persisted_assistant":
+                return None
+            return []
+
+        persisted_contents = []
+
+        class FakeDB:
+            def append_message(self, **kwargs):
+                persisted_contents.append(kwargs.get("content"))
+
+        with (
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "transform_persisted_assistant",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(agent, "_session_db", FakeDB()),
+            patch.object(agent, "_session_db_created", True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent._last_flushed_db_idx = 0
+            result = agent.run_conversation("hello")
+
+        assert any("unchanged content" in (c or "") for c in persisted_contents)

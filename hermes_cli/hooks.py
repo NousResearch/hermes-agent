@@ -191,6 +191,13 @@ _DEFAULT_PAYLOADS = {
         "child_status": "completed",
         "duration_ms": 1234,
     },
+    "transform_persisted_assistant": {
+        "content": "Your phone number is <__PII_PHONE_000001__>.",
+        "session_id": "test-session",
+        "tool_calls": None,
+        "finish_reason": "stop",
+        "model": "claude-sonnet-4-6",
+    },
 }
 
 

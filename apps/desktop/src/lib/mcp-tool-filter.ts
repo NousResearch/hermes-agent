@@ -28,22 +28,33 @@ export function readToolsFilter(server: ServerConfig | null | undefined): McpToo
 export function isToolEnabled(server: ServerConfig | null | undefined, name: string): boolean {
   const { exclude, include } = readToolsFilter(server)
 
-  return include?.length ? include.includes(name) : !exclude?.includes(name)
+  // Explicit `include` (including []) is a whitelist: empty blocks all tools.
+  // Missing/undefined include falls back to exclude denylist or "all on".
+  // Mirrors tools/mcp_tool.py `_normalize_name_filter` / `_should_register`.
+  if (include !== undefined) {
+    return include.includes(name)
+  }
+
+  return !exclude?.includes(name)
 }
 
-// Toggle one tool, preserving the config's mode (include if present, else an
-// exclude denylist). Empty lists — and an emptied `tools` — are dropped.
+// Toggle one tool, preserving the config's mode (include if key was present,
+// even when empty, else an exclude denylist).
+// Empty exclude is dropped; empty include is retained (`include: []` = block all).
 export function toggleToolInServer(server: ServerConfig, name: string): ServerConfig {
   const { exclude, include } = readToolsFilter(server)
-  const key = include?.length ? 'include' : 'exclude'
+  const key = include !== undefined ? 'include' : 'exclude'
   const current = (key === 'include' ? include : exclude) ?? []
   const names = current.includes(name) ? current.filter(n => n !== name) : [...current, name]
   const tools = { ...toolsObject(server) }
 
-  if (names.length) {
-    tools[key] = names
+  if (key === 'include') {
+    // Keep empty include so reconfiguration / registration treat it as block-all.
+    tools.include = names
+  } else if (names.length) {
+    tools.exclude = names
   } else {
-    delete tools[key]
+    delete tools.exclude
   }
 
   const next = { ...server }

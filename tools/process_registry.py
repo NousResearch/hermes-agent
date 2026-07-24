@@ -2040,6 +2040,21 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
+def _render_partial_output_tail(tail: list) -> list:
+    """Render a bounded partial_output_tail into human-readable lines.
+
+    Each entry is ``{tool, preview, is_error}`` produced by
+    ``_extract_output_tail`` in delegate_tool.py.  Returns a list of
+    formatted strings ready to join into the parent block.
+    """
+    out = ["Partial output (redacted):"]
+    for entry in tail:
+        tool_name = entry.get("tool", "tool")
+        preview = entry.get("preview", "")
+        out.append(f"  [{tool_name}] {preview}")
+    return out
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 
@@ -2128,6 +2143,9 @@ def _format_async_delegation(evt: dict) -> str:
                     + (f": {r_error}" if r_error else "")
                     + ")"
                 )
+            r_tail = r.get("partial_output_tail")
+            if r_tail:
+                lines.extend(_render_partial_output_tail(r_tail))
             r_live = r.get("live_transcript")
             if r_live:
                 lines.append(
@@ -2176,6 +2194,9 @@ def _format_async_delegation(evt: dict) -> str:
         if summary:
             lines.append("Partial output:")
             lines.append(summary)
+    partial_tail = evt.get("partial_output_tail")
+    if partial_tail:
+        lines.extend(_render_partial_output_tail(partial_tail))
     return "\n".join(lines)
 
 

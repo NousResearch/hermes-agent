@@ -851,6 +851,43 @@ class TestDelegateObservability(unittest.TestCase):
         for entry in tail:
             self.assertNotIn("'type'", entry["preview"])
 
+    def test_output_tail_preserves_plain_output_and_redacts_secrets(self):
+        secret = "sk-" + ("s" * 30)
+        result = {
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t1", "function": {"name": "terminal", "arguments": "{}"}},
+                    {"id": "t2", "function": {"name": "terminal", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "t1", "content": "focused test passed"},
+                {"role": "tool", "tool_call_id": "t2", "content": f"token={secret}"},
+            ]
+        }
+
+        tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+
+        self.assertEqual(tail[0]["preview"], "focused test passed")
+        self.assertEqual(tail[1]["preview"], "token=***")
+        self.assertNotIn(secret, str(tail))
+
+    def test_output_tail_redaction_error_drops_entire_tail(self):
+        result = {
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t1", "function": {"name": "terminal", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "t1", "content": "sensitive output"},
+            ]
+        }
+
+        with patch(
+            "agent.redact.redact_sensitive_text",
+            side_effect=RuntimeError("redactor unavailable"),
+        ):
+            tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+
+        self.assertEqual(tail, [])
+
     def test_tool_trace_detects_error(self):
         """Tool results containing 'error' should be marked as error status."""
         parent = _make_mock_parent(depth=0)
@@ -3255,6 +3292,311 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestFormatAsyncDelegationPartialTail(unittest.TestCase):
+    """Regression tests for partial_output_tail rendering in _format_async_delegation.
+
+    When a timed-out subagent has produced tool output before the timeout,
+    the completion event carries a ``partial_output_tail`` list of
+    ``{tool, preview, is_error}`` dicts.  ``_format_async_delegation`` must
+    render these into the re-injection block so the parent agent sees what
+    the child accomplished before it was killed.
+    """
+
+    def _batch_evt(self, results, goals=None):
+        """Build a minimal batch async_delegation event."""
+        return {
+            "type": "async_delegation",
+            "delegation_id": "test-batch-001",
+            "is_batch": True,
+            "goals": goals or [f"Goal {i}" for i in range(len(results))],
+            "results": results,
+            "dispatched_at": 1700000000,
+            "completed_at": 1700000060,
+        }
+
+    def _single_evt(self, **overrides):
+        """Build a minimal single-task async_delegation event."""
+        base = {
+            "type": "async_delegation",
+            "delegation_id": "test-single-001",
+            "goal": "Research something",
+            "status": "timeout",
+            "error": "Subagent timed out after 120s",
+            "api_calls": 3,
+            "duration_seconds": 120.5,
+            "dispatched_at": 1700000000,
+            "completed_at": 1700000120,
+        }
+        base.update(overrides)
+        return base
+
+    def test_batch_timeout_renders_partial_output_tail(self):
+        """A timed-out batch result with partial_output_tail must render it."""
+        from tools.process_registry import _format_async_delegation
+
+        tail = [
+            {"tool": "terminal", "preview": "Build succeeded", "is_error": False},
+            {"tool": "web_search", "preview": "Found 3 results", "is_error": False},
+        ]
+        results = [
+            {
+                "task_index": 0,
+                "status": "timeout",
+                "summary": None,
+                "error": "Subagent timed out",
+                "api_calls": 2,
+                "duration_seconds": 120,
+                "partial_output_tail": tail,
+            },
+        ]
+        out = _format_async_delegation(self._batch_evt(results))
+
+        assert "Partial output (redacted):" in out
+        assert "[terminal] Build succeeded" in out
+        assert "[web_search] Found 3 results" in out
+
+    def test_batch_success_without_tail_omits_tail_section(self):
+        """A successful batch result must not contain partial_output_tail text."""
+        from tools.process_registry import _format_async_delegation
+
+        results = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "All done",
+                "api_calls": 3,
+                "duration_seconds": 10,
+            },
+        ]
+        out = _format_async_delegation(self._batch_evt(results))
+
+        assert "Partial output (redacted):" not in out
+
+    def test_batch_timeout_without_tail_omits_tail_section(self):
+        """A timed-out result with no partial_output_tail must not render it."""
+        from tools.process_registry import _format_async_delegation
+
+        results = [
+            {
+                "task_index": 0,
+                "status": "timeout",
+                "summary": None,
+                "error": "Timed out",
+                "api_calls": 0,
+                "duration_seconds": 120,
+            },
+        ]
+        out = _format_async_delegation(self._batch_evt(results))
+
+        assert "Partial output (redacted):" not in out
+
+    def test_batch_mixed_statuses_render_tail_only_for_timed_out(self):
+        """Only the timed-out task should get tail rendering, not the completed one."""
+        from tools.process_registry import _format_async_delegation
+
+        tail = [{"tool": "terminal", "preview": "partial work", "is_error": False}]
+        results = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Task A done",
+                "api_calls": 2,
+                "duration_seconds": 5,
+            },
+            {
+                "task_index": 1,
+                "status": "timeout",
+                "summary": None,
+                "error": "Timed out",
+                "api_calls": 1,
+                "duration_seconds": 120,
+                "partial_output_tail": tail,
+            },
+        ]
+        out = _format_async_delegation(self._batch_evt(results))
+
+        # Completed task should not have tail
+        assert "Task A done" in out
+        # Timed-out task should have tail
+        assert "[terminal] partial work" in out
+
+    def test_single_timeout_renders_partial_output_tail(self):
+        """A single-task timeout with partial_output_tail must render it."""
+        from tools.process_registry import _format_async_delegation
+
+        tail = [
+            {"tool": "terminal", "preview": "npm install done", "is_error": False},
+            {"tool": "terminal", "preview": "Error: build failed", "is_error": True},
+        ]
+        evt = self._single_evt(partial_output_tail=tail)
+        out = _format_async_delegation(evt)
+
+        assert "Partial output (redacted):" in out
+        assert "[terminal] npm install done" in out
+        assert "[terminal] Error: build failed" in out
+
+    def test_single_success_without_tail_omits_tail_section(self):
+        """A successful single-task event must not render partial_output_tail."""
+        from tools.process_registry import _format_async_delegation
+
+        evt = self._single_evt(
+            status="completed",
+            summary="All done",
+            error=None,
+        )
+        out = _format_async_delegation(evt)
+
+        assert "Partial output (redacted):" not in out
+
+    def test_single_timeout_without_tail_omits_tail_section(self):
+        """A timed-out single task with no partial_output_tail must not render it."""
+        from tools.process_registry import _format_async_delegation
+
+        evt = self._single_evt(partial_output_tail=None)
+        out = _format_async_delegation(evt)
+
+        assert "Partial output (redacted):" not in out
+
+    def test_single_error_with_tail_renders_tail(self):
+        """An errored single-task event with partial_output_tail must also render it."""
+        from tools.process_registry import _format_async_delegation
+
+        tail = [{"tool": "web_search", "preview": "query results", "is_error": False}]
+        evt = self._single_evt(
+            status="error",
+            error="RuntimeError: connection lost",
+            partial_output_tail=tail,
+        )
+        out = _format_async_delegation(evt)
+
+        assert "[web_search] query results" in out
+
+    def test_batch_empty_tail_list_omits_tail_section(self):
+        """An empty partial_output_tail list should not render the section."""
+        from tools.process_registry import _format_async_delegation
+
+        results = [
+            {
+                "task_index": 0,
+                "status": "timeout",
+                "summary": None,
+                "error": "Timed out",
+                "api_calls": 0,
+                "duration_seconds": 120,
+                "partial_output_tail": [],
+            },
+        ]
+        out = _format_async_delegation(self._batch_evt(results))
+
+        assert "Partial output (redacted):" not in out
+
+    def test_render_partial_output_tail_helper_format(self):
+        """The _render_partial_output_tail helper produces correct format."""
+        from tools.process_registry import _render_partial_output_tail
+
+        tail = [
+            {"tool": "terminal", "preview": "output line 1", "is_error": False},
+            {"tool": "web_search", "preview": "result", "is_error": False},
+        ]
+        lines = _render_partial_output_tail(tail)
+
+        assert lines[0] == "Partial output (redacted):"
+        assert lines[1] == "  [terminal] output line 1"
+        assert lines[2] == "  [web_search] result"
+
+    def test_batch_tail_preserves_existing_success_rendering(self):
+        """Successful results still show their summary, not a tail section."""
+        from tools.process_registry import _format_async_delegation
+
+        results = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Research complete",
+                "api_calls": 5,
+                "duration_seconds": 30,
+            },
+        ]
+        out = _format_async_delegation(self._batch_evt(results))
+
+        assert "Research complete" in out
+        assert "Partial output (redacted):" not in out
+
+    def test_batch_tail_preserves_existing_interrupted_rendering(self):
+        """Interrupted results still show their partial output, plus tail if present."""
+        from tools.process_registry import _format_async_delegation
+
+        tail = [{"tool": "terminal", "preview": "interrupted work", "is_error": False}]
+        results = [
+            {
+                "task_index": 0,
+                "status": "interrupted",
+                "summary": "some output",
+                "error": "User interrupted",
+                "api_calls": 2,
+                "duration_seconds": 10,
+                "partial_output_tail": tail,
+            },
+        ]
+        out = _format_async_delegation(self._batch_evt(results))
+
+        # The existing "Partial output:" section is preserved
+        assert "Partial output:" in out
+        assert "some output" in out
+        # And the tail is also rendered
+        assert "Partial output (redacted):" in out
+        assert "[terminal] interrupted work" in out
+
+    # ------------------------------------------------------------------
+    # End-to-end regression through format_process_notification()
+    # ------------------------------------------------------------------
+
+    def test_format_process_notification_timeout_with_tail(self):
+        """Single-task timeout event routed through format_process_notification()
+        must render partial_output_tail as 'Partial output (redacted)'."""
+        from tools.process_registry import format_process_notification
+
+        tail = [
+            {"tool": "terminal", "preview": "Build succeeded", "is_error": False},
+            {"tool": "web_search", "preview": "Found 3 results", "is_error": False},
+        ]
+        evt = self._single_evt(partial_output_tail=tail)
+        out = format_process_notification(evt)
+
+        assert out is not None
+        assert "Partial output (redacted):" in out
+        assert "[terminal] Build succeeded" in out
+        assert "[web_search] Found 3 results" in out
+
+    def test_format_process_notification_batch_timeout_with_tail(self):
+        """Batch timeout event routed through format_process_notification()
+        must render partial_output_tail as 'Partial output (redacted)'."""
+        from tools.process_registry import format_process_notification
+
+        tail = [
+            {"tool": "terminal", "preview": "npm install done", "is_error": False},
+            {"tool": "terminal", "preview": "Error: build failed", "is_error": True},
+        ]
+        results = [
+            {
+                "task_index": 0,
+                "status": "timeout",
+                "summary": None,
+                "error": "Subagent timed out",
+                "api_calls": 2,
+                "duration_seconds": 120,
+                "partial_output_tail": tail,
+            },
+        ]
+        evt = self._batch_evt(results)
+        out = format_process_notification(evt)
+
+        assert out is not None
+        assert "Partial output (redacted):" in out
+        assert "[terminal] npm install done" in out
+        assert "[terminal] Error: build failed" in out
 
 
 if __name__ == "__main__":

@@ -260,10 +260,23 @@ def _extract_output_tail(
         content = _stringify_tool_content(msg.get("content") or "")
         is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
+        # Redact the complete tool output before truncating it. Truncating first
+        # could split a credential at the boundary and leave an unrecognisable
+        # (therefore unredacted) secret fragment in the preview.
+        try:
+            from agent.redact import redact_sensitive_text
+
+            safe_content = redact_sensitive_text(content, force=True)
+        except Exception:
+            logger.warning(
+                "Failed to redact delegated tool output; dropping output tail",
+                exc_info=True,
+            )
+            return []
         # Preserve line structure so the overlay's wrapped scroll region can
         # show real output rather than a whitespace-collapsed blob. We still
         # cap the payload size to keep events bounded.
-        preview = content[:max_chars]
+        preview = safe_content[:max_chars]
         tail.append({"tool": tool_name, "preview": preview, "is_error": is_error})
 
     tail.reverse()  # restore chronological order for display
@@ -2064,19 +2077,52 @@ def _run_single_child(
                         diagnostic_path,
                     )
 
+            # A timed-out child may already have completed useful tool calls.
+            # Snapshot its live in-memory transcript, then reuse the normal
+            # bounded/redacted overlay extractor. Never expose this evidence for
+            # ordinary exceptions: those retain the existing error schema.
+            partial_output_tail: List[Dict[str, Any]] = []
+            if is_timeout:
+                try:
+                    session_messages = getattr(child, "_session_messages", None)
+                    if isinstance(session_messages, list):
+                        partial_output_tail = [
+                            item
+                            for item in _extract_output_tail(
+                                {"messages": list(session_messages)},
+                                max_entries=8,
+                                max_chars=600,
+                            )
+                            if isinstance(item, dict)
+                            and isinstance(item.get("preview"), str)
+                            and item["preview"].strip()
+                        ]
+                except Exception:
+                    # This path is handling an existing timeout and must never
+                    # turn observability damage into a new error or expose an
+                    # unredacted transcript. Preserve the legacy timeout schema.
+                    logger.warning(
+                        "Failed to extract redacted delegated timeout output; "
+                        "dropping output tail",
+                        exc_info=True,
+                    )
+                    partial_output_tail = []
+
             if child_progress_cb:
                 try:
-                    child_progress_cb(
-                        "subagent.complete",
-                        preview=(
+                    complete_kwargs: Dict[str, Any] = {
+                        "preview": (
                             f"Timed out after {duration}s"
                             if is_timeout
                             else str(_timeout_exc)
                         ),
-                        status="timeout" if is_timeout else "error",
-                        duration_seconds=duration,
-                        summary="",
-                    )
+                        "status": "timeout" if is_timeout else "error",
+                        "duration_seconds": duration,
+                        "summary": "",
+                    }
+                    if partial_output_tail:
+                        complete_kwargs["output_tail"] = partial_output_tail
+                    child_progress_cb("subagent.complete", **complete_kwargs)
                 except Exception:
                     pass
 
@@ -2099,7 +2145,7 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
+            entry: Dict[str, Any] = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
@@ -2110,6 +2156,10 @@ def _run_single_child(
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
+            if partial_output_tail:
+                entry["partial"] = True
+                entry["partial_output_tail"] = partial_output_tail
+            return entry
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.

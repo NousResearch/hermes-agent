@@ -32,6 +32,8 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
 
+import { splitFilePathTokens } from '@/components/chat/file-card'
+
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
@@ -398,6 +400,32 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
+function renderParagraphChildren(children: React.ReactNode): React.ReactNode {
+  if (typeof children === 'string') {
+    return splitFilePathTokens(children)
+  }
+
+  if (Array.isArray(children)) {
+    const parts: React.ReactNode[] = []
+
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i]
+
+      if (typeof child === 'string') {
+        for (const part of splitFilePathTokens(child)) {
+          parts.push(part)
+        }
+      } else {
+        parts.push(child)
+      }
+    }
+
+    return parts
+  }
+
+  return children
+}
+
 function MarkdownTextSurface({ containerClassName, containerProps, defer }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
@@ -422,11 +450,13 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: ({ className, ...props }: ComponentProps<'p'>) => (
+        p: ({ children, className, ...props }: ComponentProps<'p'>) => (
           // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
           // must out-specify Tailwind Typography's `prose` margins — so no
           // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
+          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+            {renderParagraphChildren(children)}
+          </p>
         ),
         a: MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`

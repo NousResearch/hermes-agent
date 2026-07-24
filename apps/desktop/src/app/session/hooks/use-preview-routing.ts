@@ -9,6 +9,7 @@ import {
   beginPreviewServerRestart,
   completePreviewServerRestart,
   getSessionPreviewRecord,
+  openPreviewUrl,
   progressPreviewServerRestart,
   requestPreviewReload,
   setCurrentSessionPreviewTarget,
@@ -138,6 +139,12 @@ export function usePreviewRouting({
 
         if (typeof task_id === 'string' && task_id) {
           progressPreviewServerRestart(task_id, typeof text === 'string' ? text : '')
+        }
+      } else if (event.type === 'preview.open') {
+        const { url, label } = asRecord(event.payload)
+
+        if (typeof url === 'string' && url) {
+          openPreviewUrl(url, typeof label === 'string' ? label : url)
         }
       }
 

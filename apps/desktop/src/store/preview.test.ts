@@ -14,6 +14,7 @@ import {
   closeActiveRightRailTab,
   dismissPreviewTarget,
   getSessionPreviewRecord,
+  openPreviewUrl,
   type PreviewTarget,
   progressPreviewServerRestart,
   setCurrentSessionPreviewTarget
@@ -134,5 +135,78 @@ describe('preview store', () => {
     expect($filePreviewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
+  })
+
+  describe('openPreviewUrl', () => {
+    it('opens a URL in the live preview pane', () => {
+      openPreviewUrl('https://example.com', 'Example')
+
+      expect($previewTarget.get()).toEqual({
+        kind: 'url',
+        label: 'Example',
+        source: 'inline-open',
+        url: 'https://example.com'
+      })
+      expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+      expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
+    })
+
+    it('uses the URL as label when no label is provided', () => {
+      openPreviewUrl('https://example.com/page')
+
+      expect($previewTarget.get()?.label).toBe('https://example.com/page')
+      expect($previewTarget.get()?.url).toBe('https://example.com/page')
+    })
+
+    it('accepts http URLs', () => {
+      openPreviewUrl('http://localhost:5173')
+
+      expect($previewTarget.get()).toEqual({
+        kind: 'url',
+        label: 'http://localhost:5173',
+        source: 'inline-open',
+        url: 'http://localhost:5173'
+      })
+    })
+
+    it('accepts blob: URLs', () => {
+      openPreviewUrl('blob:https://example.com/uuid')
+
+      expect($previewTarget.get()?.url).toBe('blob:https://example.com/uuid')
+    })
+
+    it('accepts devtools: URLs', () => {
+      openPreviewUrl('devtools://devtools/bundled/inspector.html')
+
+      expect($previewTarget.get()?.url).toBe('devtools://devtools/bundled/inspector.html')
+    })
+
+    it('blocks javascript: protocol URLs', () => {
+      const prev = $previewTarget.get()
+      openPreviewUrl('javascript:alert(1)')
+
+      expect($previewTarget.get()).toBe(prev)
+    })
+
+    it('blocks data: protocol URLs', () => {
+      const prev = $previewTarget.get()
+      openPreviewUrl('data:text/html,<script>alert(1)</script>')
+
+      expect($previewTarget.get()).toBe(prev)
+    })
+
+    it('blocks file: protocol URLs', () => {
+      const prev = $previewTarget.get()
+      openPreviewUrl('file:///etc/passwd')
+
+      expect($previewTarget.get()).toBe(prev)
+    })
+
+    it('blocks empty URLs', () => {
+      const prev = $previewTarget.get()
+      openPreviewUrl('')
+
+      expect($previewTarget.get()).toBe(prev)
+    })
   })
 })

@@ -610,3 +610,16 @@ export function failPreviewServerRestart(taskId: string, message: string) {
     status: 'error'
   })
 }
+
+/** Open a URL in the built-in preview panel. L1 (Monitor icon click) and L2 (Agent RPC) both use this. */
+export function openPreviewUrl(url: string, label?: string): void {
+  if (!/^(https?:|blob:|devtools:)/i.test(url)) return
+  const target: PreviewTarget = {
+    kind: 'url',
+    label: label || url,
+    // inline-open: not in PreviewRecordSource, bypasses isPreviewRecord validation
+    source: 'inline-open',
+    url
+  }
+  setPreviewTarget(target)
+}

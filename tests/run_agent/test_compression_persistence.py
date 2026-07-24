@@ -322,6 +322,52 @@ class TestFlushAfterCompression:
             )
             db.close()
 
+    def test_rotation_child_session_inherits_parent_profile_name(self):
+        """The rotation child must stay on the parent's owning profile.
+
+        The rotate path used to create the child row with no profile_name, so
+        a compressed non-default-profile conversation migrated to the launch/
+        default profile in unified session lists (the cross-profile
+        session-jump bug). Exercises the real rotation against a real
+        SessionDB: explicit stamp at the create site + the parent-backfill
+        COALESCE in _insert_session_row.
+        """
+        from agent.conversation_compression import compress_context
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            parent_sid = "20260701_152840_parent"
+            db.create_session(
+                parent_sid, "gateway", model="test/model",
+                profile_name="ai-engineer",
+            )
+
+            agent = self._make_agent(db)
+            agent.session_id = parent_sid
+            agent.compression_in_place = False
+            agent._ensure_db_session()
+
+            messages = [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"message {i}",
+                    "_db_persisted": True,
+                }
+                for i in range(12)
+            ]
+
+            with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+                compress_context(
+                    agent, messages, approx_tokens=100_000, system_message="sys"
+                )
+
+            assert agent.session_id != parent_sid
+            child = db.get_session(agent.session_id)
+            assert child is not None
+            assert child["profile_name"] == "ai-engineer"
+            db.close()
+
 
 # ---------------------------------------------------------------------------
 # Part 2: Gateway-side — history_offset after session split

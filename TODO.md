@@ -57,26 +57,26 @@ changes.
 
 ## Milestone 4 — Gateway and integrations
 
-- [ ] Verify gateway configuration and lifecycle behavior with test-scoped
+- [x] Verify gateway configuration and lifecycle behavior with test-scoped
       state.
-- [ ] Run platform-independent gateway tests.
-- [ ] Verify cron, plugin, MCP, and messaging adapter contracts.
-- [ ] Keep credential-dependent integrations disabled unless explicitly
+- [x] Run platform-independent gateway tests.
+- [x] Verify cron, plugin, MCP, and messaging adapter contracts.
+- [x] Keep credential-dependent integrations disabled unless explicitly
       configured by the user.
 
 ## Milestone 5 — Packaging, security, and operations
 
-- [ ] Verify Python packaging, console scripts, Docker assets, and install
+- [x] Verify Python packaging, console scripts, Docker assets, and install
       documentation.
-- [ ] Run dependency and secret scans available without external account setup.
-- [ ] Review network listeners, command approval boundaries, and safe defaults.
+- [x] Run dependency and secret scans available without external account setup.
+- [x] Review network listeners, command approval boundaries, and safe defaults.
 - [ ] Verify clean-start and upgrade paths using only repository-local fixtures.
 
 ## Milestone 6 — Completion
 
 - [ ] Run the complete repository verification matrix.
 - [ ] Reconcile documentation with observed behavior.
-- [ ] Produce a concise operator guide for this machine.
+- [x] Produce a concise operator guide for this machine.
 - [ ] Confirm the worktree is intentional and all changes are committed.
 - [ ] Record remaining items that truly require credentials, external services,
       hardware, or user decisions.
@@ -128,3 +128,14 @@ changes.
   contexts (below Hermes 64K minimum); gemma3:12b reports 131K but Ollama says
   it does not support tools; llama3.1:8b reports 131K and accepts requests/tools
   but returned a serialized tool schema instead of the requested response.
+- 2026-07-24: Gateway, cron, plugin, MCP, and messaging contracts passed in the
+  complete Python suite. `hermes-acp --check` passed. Credential-gated adapters
+  remained disabled under isolated diagnostics.
+- 2026-07-24: Packaging/operations: Docker Compose configuration and console
+  entry points passed. Wheel/sdist refusal is an intentional upstream policy;
+  supported distribution is installer, Docker, or Nix with editable installs
+  for development.
+- 2026-07-24: Security: upgraded vulnerable Node and Python dependencies. npm
+  audit reports zero vulnerabilities. Hermes OSV reports zero high/critical
+  findings; setuptools 81 retains one moderate macOS-only finding because the
+  fixed 83.x line conflicts with the documented Torch `<82` constraint.

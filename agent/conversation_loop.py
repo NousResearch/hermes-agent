@@ -739,6 +739,20 @@ def _apply_context_engine_selection(
     if engine is None or not hasattr(engine, "select_context"):
         return api_messages
 
+    # Skip the no-op base implementation so non-implementing engines —
+    # including the built-in ContextCompressor — pay nothing per request:
+    # no history copies below, no call. ``hasattr`` alone is not enough,
+    # because the ABC defines a default ``select_context`` that every engine
+    # inherits. Mirrors the base-method short-circuit in
+    # ``_notify_context_engine_turn_complete``. Lazy import avoids any import
+    # cycle with agent.context_engine.
+    try:
+        from agent.context_engine import ContextEngine as _CE
+        if getattr(engine.select_context, "__func__", None) is _CE.select_context:
+            return api_messages
+    except Exception:
+        pass
+
     session_label = getattr(agent, "session_id", None) or "-"
     # Pass shallow copies of the reference-only inputs so an engine that
     # mutates them in place cannot alter persisted transcript state. Only

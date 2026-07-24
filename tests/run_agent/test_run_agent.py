@@ -3871,14 +3871,15 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
-    def test_api_failure_returns_error(self, agent):
+    def test_api_failure_returns_safe_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
         result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
         assert "error" in result.lower()
-        assert "API down" in result
+        assert "work completed before the limit remains" in result.lower()
+        assert "API down" not in result
 
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"

@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "Предупреждение: {warning}"
     saved_global:           "Сохранено в config.yaml (`--global`)"
     session_only_hint:      "_(только для этого сеанса — добавьте `--global`, чтобы сохранить)_"
+    persist_failed_hint:    "не удалось сохранить переопределение сессии - следующее сообщение может вернуться к значению по умолчанию из конфига; проверьте логи gateway или используйте `--global`"
     current_label:          "Текущая: `{model}` на {provider}"
     current_tag:            " (текущая)"
     more_models_suffix:     " (+ещё {count})"

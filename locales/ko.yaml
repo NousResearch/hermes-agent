@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "경고: {warning}"
     saved_global:           "config.yaml에 저장됨 (`--global`)"
     session_only_hint:      "_(세션 한정 — 영구 저장하려면 `--global`을 추가하세요)_"
+    persist_failed_hint:    "세션 오버라이드를 유지하지 못했습니다 - 다음 메시지가 설정 기본값으로 돌아갈 수 있습니다. gateway 로그를 확인하거나 `--global`을 사용하세요"
     current_label:          "현재: `{model}` ({provider})"
     current_tag:            " (현재)"
     more_models_suffix:     " (+{count}개 더 있음)"

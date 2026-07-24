@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "Avviso: {warning}"
     saved_global:           "Salvato in config.yaml (`--global`)"
     session_only_hint:      "_(solo per questa sessione — aggiungi `--global` per renderlo permanente)_"
+    persist_failed_hint:    "impossibile persistere l'override di sessione - il messaggio successivo potrebbe tornare al default della config; controlla i log del gateway o usa `--global`"
     current_label:          "Attuale: `{model}` su {provider}"
     current_tag:            " (attuale)"
     more_models_suffix:     " (+{count} altri)"

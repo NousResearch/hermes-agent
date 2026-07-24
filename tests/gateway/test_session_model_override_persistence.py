@@ -232,3 +232,101 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_set_model_override_missing_entry_raises(store_factory):
+    """Missing routing entry must not silently no-op (#66107)."""
+    store = store_factory()
+    with pytest.raises(KeyError, match="no session entry"):
+        store.set_model_override("agent:main:telegram:dm:missing", OVERRIDE)
+
+
+@pytest.mark.asyncio
+async def test_persist_helper_creates_entry_before_write(store_factory, tmp_path):
+    """Slash /model can run before get_or_create; helper must create then write."""
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore
+
+    store = store_factory()
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_model_overrides = {}
+    runner._session_db = None
+
+    source = _make_source()
+    session_key = store._generate_session_key(source)
+    assert store.get_model_override(session_key) is None
+
+    override = {
+        "model": "gpt-5o",
+        "provider": "openai",
+        "api_key": "sk-live",
+        "base_url": "https://api.openai.example/v1",
+        "api_mode": "responses",
+    }
+    ok = await runner._persist_session_model_override(
+        source=source,
+        session_key=session_key,
+        override=override,
+        new_model="gpt-5o",
+    )
+    assert ok is True
+    assert store.get_model_override(session_key) == {
+        "model": "gpt-5o",
+        "provider": "openai",
+        "base_url": "https://api.openai.example/v1",
+    }
+
+    # Simulated agent-cache eviction / restart: fresh runner rehydrates.
+    runner2 = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={
+            "api_key": "sk-fresh",
+            "api_mode": "responses",
+            "base_url": "https://api.openai.example/v1",
+            "provider": "openai",
+        },
+    ):
+        runner2._rehydrate_session_model_override(session_key)
+    assert runner2._session_model_overrides[session_key]["model"] == "gpt-5o"
+
+
+@pytest.mark.asyncio
+async def test_persist_helper_returns_false_and_warns_on_write_failure(
+    store_factory, caplog
+):
+    """Write failures must surface at WARNING, not debug-only (#66107)."""
+    import logging
+
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore
+
+    store = store_factory()
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_model_overrides = {}
+    runner._session_db = None
+
+    source = _make_source()
+    session_key = store._generate_session_key(source)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("simulated routing write failure")
+
+    with patch.object(store, "set_model_override", side_effect=_boom):
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            ok = await runner._persist_session_model_override(
+                source=source,
+                session_key=session_key,
+                override={"model": "gpt-5o", "provider": "openai"},
+                new_model="gpt-5o",
+            )
+
+    assert ok is False
+    assert any(
+        "Failed to persist session model override" in r.message for r in caplog.records
+    )
+    assert all(r.levelno >= logging.WARNING for r in caplog.records if "persist" in r.message.lower())

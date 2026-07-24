@@ -43,6 +43,7 @@ gateway:
     warning_prefix:         "Rabhadh: {warning}"
     saved_global:           "Sábháilte i config.yaml (`--global`)"
     session_only_hint:      "_(seisiún amháin — cuir `--global` leis chun é a choinneáil)_"
+    persist_failed_hint:    "níorbh fhéidir an forshcrios seisiúin a bhuanú - d'fhéadfadh an chéad teachtaireacht eile filleadh ar réamhshocrú an chumraíocht; seiceáil logaí an geata nó úsáid `--global`"
     current_label:          "Reatha: `{model}` ar {provider}"
     current_tag:            " (reatha)"
     more_models_suffix:     " (+{count} eile)"

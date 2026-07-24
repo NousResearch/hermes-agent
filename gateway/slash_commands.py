@@ -103,6 +103,74 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
+    async def _persist_session_model_override(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        override: dict,
+        new_model: str,
+    ) -> bool:
+        """Write-through a session-only ``/model`` override to the session store.
+
+        Ensures the routing entry exists first (slash commands can run before
+        the normal message-path ``get_or_create_session``), then persists and
+        verifies the non-secret override.  Failures are logged at WARNING —
+        never debug-only — and reported to the caller so the switch
+        confirmation can warn the user (#66107).
+
+        Returns True on success.  When neither ``session_store`` nor an
+        installed ``_async_session_store`` facade is attached (bare test
+        fixtures), returns True and skips disk write-through.  Fixtures that
+        mock ``_async_session_store`` still exercise the write path.
+        """
+        if (
+            getattr(self, "session_store", None) is None
+            and getattr(self, "_async_session_store", None) is None
+        ):
+            return True
+        try:
+            sess_entry = await self.async_session_store.get_or_create_session(source)
+            # Prefer the store's key so write-through and rehydrate agree even
+            # if the command-derived key drifted (e.g. topic recovery).
+            persist_key = getattr(sess_entry, "session_key", None) or session_key
+            if persist_key != session_key:
+                logger.warning(
+                    "Session key mismatch during model override persist: "
+                    "command_key=%s store_key=%s — writing under store_key "
+                    "and mirroring in-memory override",
+                    session_key,
+                    persist_key,
+                )
+                self._session_model_overrides[persist_key] = dict(override)
+            if getattr(sess_entry, "was_auto_reset", False):
+                sess_entry.was_auto_reset = False
+            sess_db = getattr(self, "_session_db", None)
+            if sess_db is not None:
+                try:
+                    await sess_db.update_session_model(
+                        sess_entry.session_id, new_model
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to persist model switch to session DB: %s", exc
+                    )
+            await self.async_session_store.set_model_override(persist_key, override)
+            persisted = await self.async_session_store.get_model_override(persist_key)
+            expected_model = (override or {}).get("model")
+            if not persisted or persisted.get("model") != expected_model:
+                raise RuntimeError(
+                    f"model override write did not stick for session={persist_key}"
+                )
+            return True
+        except Exception:
+            logger.warning(
+                "Failed to persist session model override for session=%s",
+                session_key,
+                exc_info=True,
+            )
+            return False
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
@@ -1568,6 +1636,7 @@ class GatewaySlashCommandsMixin:
                     # Captures self + locals needed for the switch logic.
                     _self = self
                     _session_key = session_key
+                    _normalized_source = source
                     _cur_model = current_model
                     _cur_provider = current_provider
                     _cur_base_url = current_base_url
@@ -1655,19 +1724,18 @@ class GatewaySlashCommandsMixin:
 
                         # Persist the new model to the session DB so the
                         # dashboard shows the updated model (#34850).
-                        _sess_db = getattr(_self, "_session_db", None)
-                        if _sess_db is not None:
-                            try:
-                                _sess_entry = await _self.async_session_store.get_or_create_session(
-                                    event.source
-                                )
-                                await _sess_db.update_session_model(
-                                    _sess_entry.session_id, result.new_model
-                                )
-                            except Exception as exc:
-                                logger.debug(
-                                    "Failed to persist model switch to DB: %s", exc
-                                )
+                        # Write-through also requires a routing entry — slash
+                        # commands can run before the normal message-path
+                        # get_or_create_session, and a missing entry used to
+                        # silently no-op inside set_model_override (#66107).
+                        _override = {
+                            "model": result.new_model,
+                            "provider": result.target_provider,
+                            "api_key": result.api_key,
+                            "base_url": result.base_url,
+                            "api_mode": result.api_mode,
+                        }
+                        _self._session_model_overrides[_session_key] = _override
 
                         # Store model note + session override.  Use display
                         # form (strips opaque Palantir prefix) for the user-
@@ -1683,27 +1751,13 @@ class GatewaySlashCommandsMixin:
                             f"via {result.provider_label or result.target_provider}. "
                             f"Adjust your self-identification accordingly.]"
                         )
-                        _self._session_model_overrides[_session_key] = {
-                            "model": result.new_model,
-                            "provider": result.target_provider,
-                            "api_key": result.api_key,
-                            "base_url": result.base_url,
-                            "api_mode": result.api_mode,
-                        }
 
-                        # Write-through the non-secret parts to the session
-                        # store so the picked model survives a gateway restart
-                        # (api_key is never persisted).
-                        try:
-                            await _self.async_session_store.set_model_override(
-                                _session_key,
-                                _self._session_model_overrides[_session_key],
-                            )
-                        except Exception:
-                            logger.debug(
-                                "Failed to persist session model override",
-                                exc_info=True,
-                            )
+                        _persist_ok = await _self._persist_session_model_override(
+                            source=_normalized_source,
+                            session_key=_session_key,
+                            override=_override,
+                            new_model=result.new_model,
+                        )
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -1814,6 +1868,13 @@ class GatewaySlashCommandsMixin:
                             lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
                         if result.warning_message:
                             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+                        if not _persist_ok:
+                            lines.append(
+                                t(
+                                    "gateway.model.warning_prefix",
+                                    warning=t("gateway.model.persist_failed_hint"),
+                                )
+                            )
                         if persist_global:
                             lines.append(t("gateway.model.saved_global"))
                         else:
@@ -1957,24 +2018,18 @@ class GatewaySlashCommandsMixin:
                         ),
                     )
 
-            # Persist the new model to the session DB so the dashboard
-            # shows the updated model (#34850).
-            _sess_db = getattr(self, "_session_db", None)
-            if _sess_db is not None:
-                try:
-                    _sess_entry = await self.async_session_store.get_or_create_session(source)
-                    # If this session was auto-reset, consume the flag so the
-                    # next regular message's cleanup does not wipe the model
-                    # override just stored below (Closes #48031).
-                    if getattr(_sess_entry, "was_auto_reset", False):
-                        _sess_entry.was_auto_reset = False
-                    await _sess_db.update_session_model(
-                        _sess_entry.session_id, result.new_model
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to persist model switch to DB: %s", exc
-                    )
+            # Persist session model + routing write-through. Ensure the routing
+            # entry exists first — /model can run before the normal message-path
+            # get_or_create_session, and a missing entry previously no-op'd
+            # inside set_model_override so the switch silently reverted (#66107).
+            _override = {
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "api_key": result.api_key,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+            }
+            self._session_model_overrides[session_key] = _override
 
             # Store a note to prepend to the next user message so the model
             # knows about the switch (avoids system messages mid-history).
@@ -1990,14 +2045,6 @@ class GatewaySlashCommandsMixin:
                 f"Adjust your self-identification accordingly.]"
             )
 
-            # Store session override so next agent creation uses the new model
-            self._session_model_overrides[session_key] = {
-                "model": result.new_model,
-                "provider": result.target_provider,
-                "api_key": result.api_key,
-                "base_url": result.base_url,
-                "api_mode": result.api_mode,
-            }
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):
                     self._pending_one_turn_model_restores = {}
@@ -2019,16 +2066,19 @@ class GatewaySlashCommandsMixin:
             # the in-memory dict to. (#29923 review defect: the original
             # implementation wrote through, so a crash before the restore
             # rehydrated the once-model permanently.)
+            #
+            # Ensure the routing entry exists first — /model can run before the
+            # normal message-path get_or_create_session, and a missing entry
+            # previously no-op'd inside set_model_override so the switch
+            # silently reverted (#66107).
+            persist_ok = True
             if not one_turn:
-                try:
-                    await self.async_session_store.set_model_override(
-                        session_key,
-                        self._session_model_overrides[session_key],
-                    )
-                except Exception:
-                    logger.debug(
-                        "Failed to persist session model override", exc_info=True
-                    )
+                persist_ok = await self._persist_session_model_override(
+                    source=source,
+                    session_key=session_key,
+                    override=_override,
+                    new_model=result.new_model,
+                )
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.
@@ -2146,6 +2196,14 @@ class GatewaySlashCommandsMixin:
 
             if result.warning_message:
                 lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+
+            if not persist_ok:
+                lines.append(
+                    t(
+                        "gateway.model.warning_prefix",
+                        warning=t("gateway.model.persist_failed_hint"),
+                    )
+                )
 
             if persist_global:
                 lines.append(t("gateway.model.saved_global"))

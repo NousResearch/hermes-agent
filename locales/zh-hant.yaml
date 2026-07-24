@@ -39,6 +39,7 @@ gateway:
     warning_prefix:         "警告：{warning}"
     saved_global:           "已儲存到 config.yaml（`--global`）"
     session_only_hint:      "_（僅本次工作階段有效 — 加上 `--global` 可永久儲存）_"
+    persist_failed_hint:    "無法持久化工作階段覆寫 — 下一則訊息可能會還原為設定預設值；請檢查 gateway 日誌或改用 `--global`"
     current_label:          "目前：`{model}`（{provider}）"
     current_tag:            "（目前）"
     more_models_suffix:     "（還有 {count} 個）"

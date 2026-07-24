@@ -1043,7 +1043,14 @@ def _prepare_deferred_agent_startup() -> None:
         from agent.shell_hooks import register_from_config
         from hermes_cli.config import load_config
 
-        register_from_config(load_config(), accept_hooks=_accept_hooks)
+        _hooks_cfg = load_config()
+        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
+
+        from agent.outbound_webhooks import (
+            register_from_config as register_outbound_webhooks,
+        )
+
+        register_outbound_webhooks(_hooks_cfg)
     except Exception:
         logger.debug(
             "shell-hook registration failed at deferred CLI startup",

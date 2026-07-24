@@ -318,8 +318,9 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     for event_name, entries in hooks_cfg.items():
         # Reserved sub-keys that aren't event names — skip silently. These
         # are config sub-sections nested under `hooks:` for related
-        # functionality (e.g. output-spill budgets).
-        if event_name in ("output_spill",):
+        # functionality (e.g. output-spill budgets, outbound webhooks —
+        # the latter parsed by agent/outbound_webhooks.py).
+        if event_name in ("output_spill", "outbound"):
             continue
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(

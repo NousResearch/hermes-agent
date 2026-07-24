@@ -611,6 +611,33 @@ Use it like:
 Look up the last 10 failed payments and summarize common failure reasons.
 ```
 
+### Exa search with advanced filtering
+
+```yaml
+mcp_servers:
+  exa:
+    command: "npx"
+    args: ["-y", "exa-mcp-server"]
+    env:
+      EXA_API_KEY: "***"
+    tools:
+      include: [web_search_exa, web_search_advanced_exa, web_fetch_exa]
+```
+
+Use it like:
+
+```text
+Search for recent AI research papers about reasoning models and summarize the top results.
+```
+
+The Exa MCP server exposes three tools:
+
+| Tool | Default | Description |
+|------|---------|-------------|
+| `web_search_exa` | enabled | Web search with category filtering |
+| `web_search_advanced_exa` | off | Advanced search with domain, date, text filters, summaries, and highlights |
+| `web_fetch_exa` | enabled | Fetch full page content from a URL |
+
 ### Filesystem server for a single project root
 
 ```yaml

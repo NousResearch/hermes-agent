@@ -283,12 +283,31 @@ def _strip_reasoning_tags(text: str) -> str:
             cleaned,
             flags=re.IGNORECASE,
         )
-    # Tool-call XML blocks (openclaw/openclaw#67318).
+    # Tool-call XML blocks (openclaw/openclaw#67318). Logged (not silently
+    # dropped): a model emitting its tool call as text instead of the
+    # structured tool_calls field means the call never executed, but the
+    # model's surrounding narration often still claims success -- e.g.
+    # #56461, where a local Ollama model told the user it saved a memory
+    # and nothing was ever written. Without this log line that failure is
+    # undiagnosable. Must stay in sync with the matching log added to
+    # agent.agent_runtime_helpers.strip_think_blocks.
+    def _log_stripped_pseudo_tool_call(tag_name):
+        def _sub(match):
+            logger.warning(
+                "Stripped a <%s> block the model emitted as plain text "
+                "instead of a structured tool call -- the call never "
+                "executed, but any surrounding narration claiming success "
+                "is untouched: %r",
+                tag_name, match.group(0)[:300],
+            )
+            return ""
+        return _sub
+
     for tc_tag in ("tool_call", "tool_calls", "tool_result",
                    "function_call", "function_calls"):
         cleaned = re.sub(
             rf"<{tc_tag}\b[^>]*>.*?</{tc_tag}>\s*",
-            "",
+            _log_stripped_pseudo_tool_call(tc_tag),
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
         )
@@ -297,7 +316,7 @@ def _strip_reasoning_tags(text: str) -> str:
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
         r'<function\b[^>]*\bname\s*=[^>]*>'
         r'(?:(?:(?!</function>).)*)</function>\s*',
-        '',
+        _log_stripped_pseudo_tool_call("function"),
         cleaned,
         flags=re.DOTALL | re.IGNORECASE,
     )
@@ -7024,7 +7043,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-        
+
         if not tools:
             print("(;_;) No tools available")
             return

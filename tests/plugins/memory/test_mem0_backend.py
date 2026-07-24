@@ -231,6 +231,163 @@ class TestOSSBackend:
         assert "api_base" not in captured["embedder"]["config"]
         assert raw == before
 
+    # ── regression: custom_instructions forwarding (PR #54739) ──────────
+
+    def test_constructor_forwards_custom_instructions(self, monkeypatch):
+        """When custom_instructions is present in oss_config, it must be
+        passed through to Memory.from_config()."""
+        import sys
+        import types
+
+        captured_config: dict = {}
+
+        class StubMemory:
+            @staticmethod
+            def from_config(config):
+                captured_config.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = StubMemory
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+
+        # Inject a KNOWN_DIMS stub so the dims lookup doesn't fail.
+        stub_providers = types.ModuleType("plugins.memory.mem0._oss_providers")
+        stub_providers.KNOWN_DIMS = {"nomic-embed-text": 768}  # type: ignore[attr-defined]
+        monkeypatch.setitem(
+            sys.modules, "plugins.memory.mem0._oss_providers", stub_providers
+        )
+
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "nomic-embed-text"},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+            "custom_instructions": "Remember: the user prefers pasta.",
+        }
+
+        OSSBackend(raw)
+
+        assert (
+            captured_config.get("custom_instructions")
+            == "Remember: the user prefers pasta."
+        )
+
+    def test_constructor_omits_custom_instructions_when_absent(self, monkeypatch):
+        """When custom_instructions is NOT in oss_config, the key must be
+        absent from the config passed to Memory.from_config()."""
+        import sys
+        import types
+
+        captured_config: dict = {}
+
+        class StubMemory:
+            @staticmethod
+            def from_config(config):
+                captured_config.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = StubMemory
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+
+        stub_providers = types.ModuleType("plugins.memory.mem0._oss_providers")
+        stub_providers.KNOWN_DIMS = {"nomic-embed-text": 768}  # type: ignore[attr-defined]
+        monkeypatch.setitem(
+            sys.modules, "plugins.memory.mem0._oss_providers", stub_providers
+        )
+
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "nomic-embed-text"},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+
+        OSSBackend(raw)
+
+        assert "custom_instructions" not in captured_config
+
+    def test_constructor_omits_custom_instructions_when_none(self, monkeypatch):
+        """custom_instructions=None must be treated as absent — not forwarded."""
+        import sys
+        import types
+
+        captured_config: dict = {}
+
+        class StubMemory:
+            @staticmethod
+            def from_config(config):
+                captured_config.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = StubMemory
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+
+        stub_providers = types.ModuleType("plugins.memory.mem0._oss_providers")
+        stub_providers.KNOWN_DIMS = {"nomic-embed-text": 768}  # type: ignore[attr-defined]
+        monkeypatch.setitem(
+            sys.modules, "plugins.memory.mem0._oss_providers", stub_providers
+        )
+
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "nomic-embed-text"},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+            "custom_instructions": None,
+        }
+
+        OSSBackend(raw)
+
+        assert "custom_instructions" not in captured_config
+
+    def test_constructor_omits_custom_instructions_when_empty_string(
+        self, monkeypatch
+    ):
+        """custom_instructions='' must be treated as absent — not forwarded."""
+        import sys
+        import types
+
+        captured_config: dict = {}
+
+        class StubMemory:
+            @staticmethod
+            def from_config(config):
+                captured_config.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = StubMemory
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+
+        stub_providers = types.ModuleType("plugins.memory.mem0._oss_providers")
+        stub_providers.KNOWN_DIMS = {"nomic-embed-text": 768}  # type: ignore[attr-defined]
+        monkeypatch.setitem(
+            sys.modules, "plugins.memory.mem0._oss_providers", stub_providers
+        )
+
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "nomic-embed-text"},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+            "custom_instructions": "",
+        }
+
+        OSSBackend(raw)
+
+        assert "custom_instructions" not in captured_config
+
 
 httpx = pytest.importorskip("httpx")
 

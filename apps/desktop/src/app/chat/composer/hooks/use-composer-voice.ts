@@ -100,13 +100,14 @@ export function useComposerVoice({
 
   const submitVoiceTurn = async (text: string) => {
     if (busy) {
-      return
+      return false
     }
 
     triggerHaptic('submit')
     resetBrowseState(sessionId)
     clearDraft()
-    await onSubmit(text)
+
+    return await onSubmit(text)
   }
 
   const conversation = useVoiceConversation({

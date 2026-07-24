@@ -17169,6 +17169,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _session_cwd = self._session_cwd_for_source(context.source)
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -17179,8 +17180,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=_session_cwd,
             async_delivery=_async_delivery,
         )
+
+    def _session_cwd_for_source(self, source: SessionSource) -> str:
+        """Resolve the logical cwd for one multiplexed profile session.
+
+        Gateway startup bridges only the active profile's ``terminal.cwd`` to
+        process-global ``TERMINAL_CWD``. A multiplexed secondary profile must
+        therefore bind its own cwd through the existing session ContextVar;
+        otherwise it silently inherits the gateway launch directory (or the
+        active profile's cwd).
+
+        Single-profile gateways deliberately return an empty override so their
+        existing process-level cwd behavior remains unchanged.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return ""
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        try:
+            with _profile_runtime_scope(profile_home):
+                profile_config = _load_gateway_runtime_config()
+        except Exception:
+            logger.warning(
+                "Failed to resolve terminal cwd for profile %s; using gateway cwd",
+                getattr(source, "profile", "") or "default",
+                exc_info=True,
+            )
+            return ""
+
+        terminal_config = profile_config.get("terminal") or {}
+        if not isinstance(terminal_config, dict):
+            terminal_config = {}
+        configured_cwd = str(
+            terminal_config.get("cwd", profile_config.get("cwd", "")) or ""
+        ).strip()
+        terminal_backend = str(
+            terminal_config.get(
+                "env_type",
+                terminal_config.get(
+                    "backend",
+                    profile_config.get("env_type", profile_config.get("backend", "local")),
+                ),
+            )
+            or "local"
+        ).strip()
+        if terminal_backend.lower() != "local":
+            return ""
+
+        from gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
+
+        resolved = resolve_placeholder_terminal_cwd(
+            configured_cwd=configured_cwd,
+            terminal_backend=terminal_backend,
+            messaging_cwd=None,
+            docker_mount_cwd_to_workspace=False,
+            home_fallback=str(Path.home()),
+        )
+        if not resolved:
+            return ""
+        return str(Path(resolved).expanduser())
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

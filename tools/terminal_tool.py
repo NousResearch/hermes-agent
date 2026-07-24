@@ -2183,7 +2183,26 @@ def terminal_tool(
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+        # Resolve the durable gateway/topic key before cwd selection. ``task_id``
+        # is an execution identifier and may differ from the conversation key
+        # that owns persistent ``cd`` state.
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
+        session_cwd = get_session_cwd(session_key)
+        if not overrides.get("cwd") and not session_cwd and env_type == "local":
+            # Multiplexed gateways bind each routed profile's cwd through a
+            # ContextVar because process-global TERMINAL_CWD belongs to the
+            # primary profile. Seed lazily on the first terminal call so
+            # shared local environments cannot leak another session's cwd,
+            # while sessions that never use terminal create no registry state.
+            from agent.runtime_cwd import get_session_cwd_override
+
+            context_cwd = get_session_cwd_override()
+            if context_cwd:
+                record_session_cwd(session_key, context_cwd)
+                session_cwd = context_cwd
+        cwd = overrides.get("cwd") or session_cwd or config["cwd"]
         # A per-task cwd override (registered by the gateway/TUI for workspace
         # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
         # config["cwd"] was already sanitized for container backends in
@@ -2449,10 +2468,6 @@ def terminal_tool(
         # contextvar doesn't cross tool-worker threads, so fall back to the raw
         # task_id (which IS the session_key for the top-level agent) — a
         # stable, thread-safe anchor.
-        from tools.approval import get_current_session_key
-
-        session_key = get_current_session_key(default="") or (task_id or "")
-
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.

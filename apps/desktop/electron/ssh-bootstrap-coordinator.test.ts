@@ -190,3 +190,39 @@ test('a generation started during cancelAndWait cannot run before the drain comp
   assert.equal(await next, 'new')
   assert.deepEqual(events, ['old-start', 'new-start'])
 })
+
+test('cancelAndWait keeps new bootstraps blocked through caller cleanup', async () => {
+  const coordinator = createBootstrapCoordinator()
+  const oldGate = deferred()
+  const cleanupGate = deferred()
+  const events: string[] = []
+
+  const old = coordinator.start('scope', 'old', async lease => {
+    events.push('old-start')
+    await oldGate.promise
+    lease.assertCurrent()
+  })
+
+  await Promise.resolve()
+
+  const drain = coordinator.cancelAndWait('scope', async () => {
+    events.push('cleanup-start')
+    await cleanupGate.promise
+    events.push('cleanup-end')
+  })
+
+  const next = coordinator.start('scope', 'new', async () => {
+    events.push('new-start')
+
+    return 'new'
+  })
+
+  oldGate.resolve()
+  await assert.rejects(old, (error: any) => error.kind === 'superseded')
+  await Promise.resolve()
+  assert.deepEqual(events, ['old-start', 'cleanup-start'])
+  cleanupGate.resolve()
+  await drain
+  assert.equal(await next, 'new')
+  assert.deepEqual(events, ['old-start', 'cleanup-start', 'cleanup-end', 'new-start'])
+})

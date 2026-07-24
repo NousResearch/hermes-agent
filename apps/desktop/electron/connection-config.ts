@@ -187,6 +187,22 @@ function connectionScopeKey(profile) {
   return String(profile ?? '').trim() || null
 }
 
+/**
+ * Recover the exact SSH owner scope embedded by bootstrapSshConnection.
+ *
+ * The empty string is a real, load-bearing value: it owns the app-global SSH
+ * tunnel. Treating it like a missing profile and substituting the active
+ * profile leaves that global tunnel alive after a failed liveness probe, so
+ * every reconnect reuses the same wedged SSH master.
+ */
+function sshReconnectScope(connection) {
+  if (connection?.remoteKind !== 'ssh' || typeof connection.sshScope !== 'string') {
+    return null
+  }
+
+  return connection.sshScope
+}
+
 // Coerce a remote auth mode to one of the two supported values ('token' default).
 function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
@@ -509,5 +525,6 @@ export {
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
+  sshReconnectScope,
   tokenPreview
 }

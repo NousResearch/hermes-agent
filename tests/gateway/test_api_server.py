@@ -2675,6 +2675,39 @@ class TestResponsesStreaming:
                 assert " world" in body
 
     @pytest.mark.asyncio
+    async def test_stream_extracts_structured_final_when_provider_emits_no_deltas(
+        self, adapter
+    ):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {
+                        "final_response": {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "structured fallback"}
+                            ],
+                        },
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "structured fallback" in body
+        assert "'type': 'message'" not in body
+        assert "response.completed" in body
+
+    @pytest.mark.asyncio
     async def test_stream_string_false_returns_json_response(self, adapter):
         """Quoted false must not route Responses API requests into SSE mode."""
         mock_result = {

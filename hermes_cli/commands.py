@@ -863,6 +863,14 @@ def _collect_gateway_skill_entries(
             skill_path = info.get("skill_md_path", "")
             if not skill_path:
                 continue
+            # Normalize symlinks on BOTH sides: _allowed_prefixes / _hub_dir
+            # are built from SKILLS_DIR.resolve() (symlinks followed), but
+            # get_skill_commands() stores skill_md_path unresolved. When the
+            # profile skills dir is a symlink (e.g. ~/.hermes/profiles/<p>/
+            # skills -> vault), the raw startswith() check fails for every
+            # skill and the whole tier is silently dropped from the menu
+            # while /skill-name dispatch still works (extends #8110).
+            skill_path = os.path.realpath(skill_path)
             if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
                 continue
             if skill_path.startswith(_hub_dir):

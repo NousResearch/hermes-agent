@@ -361,6 +361,42 @@ class TestLoadConfigParseFailure:
             assert capsys.readouterr().err == ""
 
 
+    def test_check_then_add_runs_under_config_lock(self, tmp_path):
+        """The check-then-add on _CONFIG_PARSE_WARNED must run under _CONFIG_LOCK.
+
+        Deterministic single-thread test: a TrackingLock spy records whether
+        the lock was acquired before the membership check. Without the
+        with _CONFIG_LOCK: guard the spy never fires and the assertion fails.
+        """
+        from unittest.mock import patch
+        from hermes_cli import config as cfg_mod
+
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        acquired = []
+
+        class TrackingLock:
+            def __enter__(self):
+                acquired.append(True)
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("\tbroken:\n")
+        exc = ValueError("mapping values are not allowed here")
+
+        with patch.object(cfg_mod, "_CONFIG_LOCK", TrackingLock()), \
+                patch.object(cfg_mod, "_backup_corrupt_config", return_value=None):
+            cfg_mod._warn_config_parse_failure(config_path, exc)
+
+        assert acquired, (
+            "_CONFIG_LOCK was never acquired in _warn_config_parse_failure "
+            "— check-then-add on _CONFIG_PARSE_WARNED is not thread-safe"
+        )
+
+
 class TestEmptyConfigSections:
     """Empty section keys (``terminal:`` with no value) parse as YAML None
     and must not replace the default dict for that section (#58277)."""

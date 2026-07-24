@@ -1221,6 +1221,11 @@ DEFAULT_CONFIG = {
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
+        # Preferred font family (or CSS stack) for the desktop app's embedded
+        # xterm.js terminals, e.g. "MesloLGS NF" for Powerlevel10k glyphs.
+        # Desktop appends its bundled JetBrains Mono stack as a safe fallback;
+        # empty keeps that bundled default.
+        "font_family": "",
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in

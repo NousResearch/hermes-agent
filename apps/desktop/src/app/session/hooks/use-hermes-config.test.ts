@@ -2,6 +2,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
 import {
@@ -44,6 +45,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setCurrentFastMode(false)
     setCurrentModelSource('')
     setCurrentReasoningEffort('')
+    setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
   })
 
@@ -127,5 +129,41 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('low')
     expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('loads the profile terminal font for already-mounted terminal surfaces', async () => {
+    mockConfig({ terminal: { font_family: 'MesloLGS NF' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($terminalFontFamily.get()).toBe('MesloLGS NF')
+  })
+
+  it('does not let an older profile response restore its terminal font', async () => {
+    const profileB = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    const profileC = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(profileB.promise).mockReturnValueOnce(profileC.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    let refreshB!: Promise<void>
+    let refreshC!: Promise<void>
+    act(() => {
+      refreshB = result.current.refreshHermesConfig(true)
+      refreshC = result.current.refreshHermesConfig(true)
+    })
+
+    profileC.resolve({ terminal: { font_family: 'Hack Nerd Font' } })
+    await act(async () => {
+      await refreshC
+    })
+    profileB.resolve({ terminal: { font_family: 'MesloLGS NF' } })
+    await act(async () => {
+      await refreshB
+    })
+
+    expect($terminalFontFamily.get()).toBe('Hack Nerd Font')
   })
 })

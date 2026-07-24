@@ -2883,6 +2883,35 @@ class TestSilentDelivery:
         assert response.split("hf_", 1)[1] not in delivered
         assert "[redacted credential]" in delivered
 
+    def test_delivery_exception_redacts_credential_from_error_log(self, caplog):
+        """Adapter exceptions must be redacted before scheduler logging."""
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "response", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", side_effect=RuntimeError(credential)), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                tick(verbose=False)
+
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
+
+    def test_processing_exception_redacts_credential_from_error_log(self, caplog):
+        """Unexpected run processing exceptions must be redacted before logging."""
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "response", None)), \
+             patch("cron.scheduler.save_job_output", side_effect=RuntimeError(credential)), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                tick(verbose=False)
+
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
+
     def test_silent_with_note_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \

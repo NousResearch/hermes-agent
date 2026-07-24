@@ -3929,8 +3929,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                 except Exception as de:
-                    delivery_error = str(de)
-                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+                    delivery_error = redact_credential_text(str(de))
+                    logger.error("Delivery failed for job %s: %s", job["id"], delivery_error)
         finally:
             # Tear down the deferred agent(s) now that save + delivery have run
             # (or raised). Must happen on every path so cron agents never leak
@@ -3951,10 +3951,11 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         return True
 
     except Exception as e:
-        logger.error("Error processing job %s: %s", job['id'], e)
+        error = redact_credential_text(str(e))
+        logger.error("Error processing job %s: %s", job["id"], error)
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], False, str(e))
-        finish_execution(execution_id, success=False, error=str(e))
+            mark_job_run(job["id"], False, error)
+        finish_execution(execution_id, success=False, error=error)
         return False
 
 

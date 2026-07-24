@@ -82,6 +82,13 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     docsUrl: 'https://aistudio.google.com/app/apikey',
     priority: 4
   },
+  {
+    prefix: 'GOOGLE_VERTEX_',
+    name: 'Google Vertex AI',
+    description: 'Vertex AI (Gemini via GCP; API key or OAuth2/ADC)',
+    docsUrl: 'https://console.cloud.google.com/apis/credentials',
+    priority: 4
+  },
   { prefix: 'GEMINI_', name: 'Gemini', priority: 4 },
   {
     prefix: 'DEEPSEEK_',

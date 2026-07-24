@@ -1976,6 +1976,31 @@ class MCPServerTask:
         self._recycled_reason = reason
         self.session = None
 
+    @staticmethod
+    def _cancel_task_if_loop_open(task: asyncio.Task) -> bool:
+        """Cancel a task unless its owning loop is already closed.
+
+        Coroutine finalization can run after the MCP loop has been closed.
+        Calling Task.cancel() in that state schedules onto the dead loop and
+        raises RuntimeError("Event loop is closed"), which is only shutdown
+        noise for these lifecycle waiters.
+        """
+        if task.done():
+            return False
+        try:
+            loop = task.get_loop()
+        except RuntimeError:
+            return False
+        if loop.is_closed():
+            return False
+        try:
+            task.cancel()
+            return True
+        except RuntimeError as exc:
+            if "Event loop is closed" in str(exc):
+                return False
+            raise
+
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
     async def _refresh_tools_task(self):
@@ -2293,8 +2318,7 @@ class MCPServerTask:
                     self._mark_session_proven()
         finally:
             for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
+                if self._cancel_task_if_loop_open(t):
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
@@ -2337,8 +2361,7 @@ class MCPServerTask:
             )
         finally:
             for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
+                if self._cancel_task_if_loop_open(t):
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
@@ -3415,8 +3438,8 @@ class MCPServerTask:
             # owner to reap it (#59349). Propagate the cancellation so the
             # transport context managers unwind and their finally blocks
             # release the child process / FDs.
-            if self._task and not self._task.done():
-                self._task.cancel()
+            if self._task:
+                self._cancel_task_if_loop_open(self._task)
             raise
         if self._error:
             raise self._error
@@ -3438,14 +3461,14 @@ class MCPServerTask:
                     "MCP server '%s' shutdown timed out, cancelling task",
                     self.name,
                 )
-                self._task.cancel()
-                try:
-                    await self._task
-                except asyncio.CancelledError:
-                    pass
+                if self._cancel_task_if_loop_open(self._task):
+                    try:
+                        await self._task
+                    except asyncio.CancelledError:
+                        pass
         if self._pending_refresh_tasks:
             for task in list(self._pending_refresh_tasks):
-                task.cancel()
+                self._cancel_task_if_loop_open(task)
             await asyncio.gather(*self._pending_refresh_tasks, return_exceptions=True)
             self._pending_refresh_tasks.clear()
         self._deregister_tools()
@@ -3478,8 +3501,7 @@ class MCPServerTask:
             )
         finally:
             for task in (shutdown_task, reconnect_task):
-                if not task.done():
-                    task.cancel()
+                if self._cancel_task_if_loop_open(task):
                     try:
                         await task
                     except (asyncio.CancelledError, Exception):

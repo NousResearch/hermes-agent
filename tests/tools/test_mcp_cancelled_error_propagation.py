@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+import pytest
+
 
 
 async def _hanging_run(self, cfg):
@@ -28,6 +30,47 @@ async def _hanging_run(self, cfg):
 
 
 class TestCancelledErrorPropagation:
+    def test_cancel_task_if_loop_open_skips_closed_owning_loop(self):
+        """Closed-loop cleanup must not call ``Task.cancel()``.
+
+        ``Task.cancel()`` schedules cancellation with ``loop.call_soon()``; if
+        coroutine finalization runs after the MCP loop is closed, that raises
+        ``RuntimeError("Event loop is closed")``. The helper should detect the
+        closed owning loop and return False without raising.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(asyncio.sleep(3600))
+        task._log_destroy_pending = False
+
+        try:
+            loop.close()
+
+            assert task.done() is False
+            assert task.get_loop().is_closed() is True
+            assert MCPServerTask._cancel_task_if_loop_open(task) is False
+        finally:
+            task.get_coro().close()
+
+    def test_cancel_task_if_loop_open_preserves_live_loop_cancellation(self):
+        """Open-loop tasks should still receive ordinary cancellation."""
+        from tools.mcp_tool import MCPServerTask
+
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(asyncio.sleep(3600))
+        task._log_destroy_pending = False
+
+        try:
+            assert MCPServerTask._cancel_task_if_loop_open(task) is True
+            with pytest.raises(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            assert task.cancelled() is True
+        finally:
+            if not task.done():
+                task.get_coro().close()
+            loop.close()
+
     def test_cancelled_error_is_not_swallowed_by_except_exception(self):
         """CancelledError raised inside the transport call must re-raise
         so the reconnect loop terminates cleanly on cancel — not stay wedged."""

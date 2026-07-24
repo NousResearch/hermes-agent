@@ -1,6 +1,7 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import httpx
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -123,6 +124,119 @@ class TestSignalConnectCleanup:
         mock_release.assert_called_once_with("signal-phone", "+15551234567")
         assert adapter.client is None
         assert adapter._platform_lock_identity is None
+
+
+class TestSignalHealthCheckEndpoint:
+    """Regression coverage for #69310: signal-cli-rest-api's real health
+    endpoint is ``/v1/health`` and it returns 204 No Content on success —
+    not the old (nonexistent) ``/api/v1/check`` requiring 200."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [200, 204])
+    async def test_connect_treats_200_and_204_as_healthy(self, monkeypatch, status_code):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=status_code))
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"), \
+             patch.object(adapter, "_sse_listener", return_value=None), \
+             patch.object(adapter, "_health_monitor", return_value=None):
+            result = await adapter.connect()
+
+        assert result is True
+        mock_client.get.assert_awaited_once_with(
+            "http://localhost:8080/v1/health", timeout=10.0
+        )
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [404, 500])
+    async def test_connect_fails_on_unhealthy_status(self, monkeypatch, status_code):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=status_code))
+        mock_client.aclose = AsyncMock()
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"):
+            result = await adapter.connect()
+
+        assert result is False
+        mock_client.get.assert_awaited_once_with(
+            "http://localhost:8080/v1/health", timeout=10.0
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_request_raises(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        mock_client.aclose = AsyncMock()
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"):
+            # Must not raise — the exception is caught and connect() returns False.
+            result = await adapter.connect()
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_health_monitor_does_not_reconnect_on_204(self, monkeypatch):
+        """A 204 from the periodic health check must NOT trigger a forced
+        reconnect — only refresh the last-activity timestamp."""
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        adapter.client.get = AsyncMock(return_value=MagicMock(status_code=204))
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time() - 200  # stale, past threshold
+
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                adapter._running = False
+
+        with patch("gateway.platforms.signal.asyncio.sleep", fake_sleep), \
+             patch.object(adapter, "_force_reconnect") as mock_reconnect:
+            await adapter._health_monitor()
+
+        adapter.client.get.assert_awaited_once_with(
+            "http://localhost:8080/v1/health", timeout=10.0
+        )
+        mock_reconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_health_monitor_forces_reconnect_on_unhealthy_status(self, monkeypatch):
+        import time as time_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        adapter.client.get = AsyncMock(return_value=MagicMock(status_code=500))
+        adapter._running = True
+        adapter._last_sse_activity = time_module.time() - 200
+
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                adapter._running = False
+
+        with patch("gateway.platforms.signal.asyncio.sleep", fake_sleep), \
+             patch.object(adapter, "_force_reconnect") as mock_reconnect:
+            await adapter._health_monitor()
+
+        mock_reconnect.assert_called_once()
 
 
 class TestSignalHelpers:

@@ -141,6 +141,16 @@ def test_gated_static_asset_path_is_public(gated_app):
     assert r.status_code == 404
 
 
+def test_dashboard_plugins_path_is_public(gated_app):
+    """``/dashboard-plugins/*`` is allowlisted so the SPA loads plugin
+    JS/CSS via ``<script src>`` / ``<link href>`` pre-login.
+    """
+    r = gated_app.get("/dashboard-plugins/_nonexistent_plugin_/manifest.json")
+    # 404 not 401/302 — proves middleware let the request through to the
+    # plugin-static-asset handler, which then 404'd because no such plugin.
+    assert r.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------

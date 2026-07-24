@@ -58,6 +58,7 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/auth/providers",
     "/api/mcp/oauth/callback/",
     "/assets/",
+    "/dashboard-plugins/",
     "/favicon.ico",
     "/ds-assets/",
     "/fonts/",

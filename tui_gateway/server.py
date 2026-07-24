@@ -2375,13 +2375,27 @@ def _set_session_context(
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
+        # Derive the live conversation id so terminal/execute_code subprocesses
+        # can read HERMES_SESSION_ID. Without this, set_session_vars leaves the
+        # session-id contextvar as "" (explicitly empty), and the subprocess-env
+        # bridge treats that as authoritative — NOT falling back to os.environ —
+        # so every command in a dashboard/TUI/web session saw an empty
+        # HERMES_SESSION_ID even though agent_init set it via
+        # set_current_session_id(). Prefer the agent's durable session_id, then
+        # fall back to the session_key (matching the id derivation used at
+        # session-finalize), so an identified session is never left blank.
+        session_id = session_key
         with _sessions_lock:
             for sess in list(_sessions.values()):
                 if sess.get("session_key") == session_key:
                     source = _session_source(sess)
+                    session_id = (
+                        getattr(sess.get("agent"), "session_id", None) or session_key
+                    )
                     break
         return set_session_vars(
             session_key=session_key,
+            session_id=session_id,
             source=source,
             cwd=resolved,
             ui_session_id=ui_session_id,

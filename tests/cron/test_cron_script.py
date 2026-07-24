@@ -814,6 +814,38 @@ class TestCronjobToolScript:
         assert result["job"]["script"] == "monitor.py"
         assert result["job"]["interpreter"] == "~/venvs/reporting/bin/python3"
 
+    def test_cronjob_positional_task_id_not_shifted_by_interpreter(self, cron_env, monkeypatch):
+        """``interpreter`` must not break positional callers of ``cronjob()``.
+
+        The legacy signature ended in ``no_agent, attach_to_session, task_id``.
+        A positional caller passing a trailing ``task_id`` would otherwise bind
+        it onto ``interpreter`` (and leave ``task_id`` as None), which on a
+        create/update could store the task id as an interpreter path and break
+        the script run. ``interpreter`` is appended AFTER ``task_id`` so the
+        old positional slots keep their meaning.
+        """
+        import inspect
+        from tools.cronjob_tools import cronjob
+
+        params = list(inspect.signature(cronjob).parameters)
+        assert params.index("interpreter") > params.index("task_id")
+
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        # Simulate a legacy positional call: fill slots up to and including
+        # task_id (index 20). interpreter (now index 21) stays default.
+        # If interpreter wrongly preceded task_id, "legacy-task-id" would be
+        # stored as the interpreter and the job would carry a bogus field.
+        positional = [None] * (params.index("task_id") + 1)
+        positional[0] = "create"            # action
+        positional[2] = "Monitor things"    # prompt
+        positional[3] = "every 1h"          # schedule
+        positional[14] = "monitor.py"       # script
+        positional[params.index("task_id")] = "legacy-task-id"
+        result = json.loads(cronjob(*positional))
+        assert result["success"] is True
+        # No interpreter was supplied; the task id must not leak into the job.
+        assert "interpreter" not in result["job"]
+
     def test_update_interpreter(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob

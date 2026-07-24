@@ -5885,12 +5885,12 @@ class BasePlatformAdapter(ABC):
         len_fn: Optional["Callable[[str], int]"] = None,
     ) -> List[str]:
         """
-        Split a long message into chunks, preserving code block boundaries.
+        Split a long message into chunks, preserving Markdown structure.
 
-        When a split falls inside a triple-backtick code block, the fence is
-        closed at the end of the current chunk and reopened (with the original
-        language tag) at the start of the next chunk.  Multi-chunk responses
-        receive indicators like ``(1/3)``.
+        Preserves code block fences, inline code spans, math block fences
+        (``$$...$$``), table boundaries, and ordered list continuity across
+        chunk splits.  Multi-chunk responses receive indicators like
+        ``(1/3)``.
 
         Args:
             content: The full message content
@@ -5909,17 +5909,35 @@ class BasePlatformAdapter(ABC):
 
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
+        MATH_FENCE_CLOSE = "\n$$"
 
         chunks: List[str] = []
         remaining = content
         # When the previous chunk ended mid-code-block, this holds the
         # language tag (possibly "") so we can reopen the fence.
         carry_lang: Optional[str] = None
+        # When the previous chunk ended mid-math-block ($$...$$), this
+        # is True so we reopen the math fence.
+        carry_math: bool = False
+        # When the previous chunk ended mid-table, this holds the
+        # header row + separator so the next chunk starts as a
+        # valid table.
+        carry_table_header: Optional[str] = None
 
         while remaining:
             # If we're continuing a code block from the previous chunk,
             # prepend a new opening fence with the same language tag.
-            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+            # Math blocks take precedence (can't nest code inside math).
+            if carry_math:
+                prefix = "$$\n"
+            elif carry_lang is not None:
+                prefix = f"```{carry_lang}\n"
+            else:
+                prefix = ""
+            # If we're continuing a table, prepend the header + separator
+            # so the continuation chunk is a valid table.
+            if carry_table_header is not None:
+                prefix = carry_table_header + "\n" + prefix
 
             # How much body text we can fit after accounting for the prefix,
             # a potential closing fence, and the chunk indicator.
@@ -5951,6 +5969,15 @@ class BasePlatformAdapter(ABC):
                                 _final_lang = _tag.split()[0] if _tag else ""
                     if _final_in_code:
                         final_chunk += FENCE_CLOSE
+                # Same check for math blocks ($$...$$).  Code and math
+                # are mutually exclusive, so an else-if is sufficient.
+                elif carry_math:
+                    _final_in_math = True  # prefix already opened `$$\n`
+                    for _line in remaining.split("\n"):
+                        if _line.strip() == "$$":
+                            _final_in_math = not _final_in_math
+                    if _final_in_math:
+                        final_chunk += MATH_FENCE_CLOSE
                 chunks.append(final_chunk)
                 break
 
@@ -6011,18 +6038,43 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
 
+            # Prefer splitting before a Markdown table rather than inside one.
+            # Table rows start with `|`. If the next line after split_at starts
+            # with `|`, walk back to the blank line before the table.
+            _rest_stripped = remaining[split_at:].lstrip()
+            if _rest_stripped.startswith("|") and "|" in _rest_stripped[1:30]:
+                _before = remaining[:split_at]
+                _tbl_boundary = _before.rfind("\n\n")
+                if _tbl_boundary > max(10, _cp_limit // 3):
+                    split_at = _tbl_boundary + 1
+
+            # Prefer splitting before an ordered list so numbering is intact.
+            _rest_ls = remaining[split_at:].lstrip()
+            if _rest_ls[:1].isdigit() and (". " in _rest_ls[:5] or ") " in _rest_ls[:5]):
+                _before = remaining[:split_at]
+                _prev_nl = _before.rfind("\n")
+                if _prev_nl > 0:
+                    _prev_line = _before[_prev_nl + 1:].strip()
+                    if _prev_line[:1].isdigit() and (". " in _prev_line[:5] or ") " in _prev_line[:5]):
+                        _list_boundary = _before.rfind("\n\n")
+                        if _list_boundary > max(10, _cp_limit // 3):
+                            split_at = _list_boundary + 1
+
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
 
             full_chunk = prefix + chunk_body
 
             # Walk only the chunk_body (not the prefix we prepended) to
-            # determine whether we end inside an open code block.
+            # determine whether we end inside an open code block or math block.
             in_code = carry_lang is not None
             lang = carry_lang or ""
+            in_math = carry_math
             for line in chunk_body.split("\n"):
                 stripped = line.strip()
-                if stripped.startswith("```"):
+                if stripped == "$$" and not in_code:
+                    in_math = not in_math
+                elif stripped.startswith("```") and not in_math:
                     if in_code:
                         in_code = False
                         lang = ""
@@ -6031,12 +6083,40 @@ class BasePlatformAdapter(ABC):
                         tag = stripped[3:].strip()
                         lang = tag.split()[0] if tag else ""
 
-            if in_code:
-                # Close the orphaned fence so the chunk is valid on its own
+            if in_math:
+                # Close the orphaned math fence so the chunk is valid
+                full_chunk += MATH_FENCE_CLOSE
+                carry_math = True
+                carry_lang = None
+            elif in_code:
+                # Close the orphaned code fence so the chunk is valid
                 full_chunk += FENCE_CLOSE
                 carry_lang = lang
+                carry_math = False
             else:
                 carry_lang = None
+                carry_math = False
+
+            # Detect if the chunk ends inside a table and extract the
+            # header row + separator for the next chunk to reconstruct.
+            if remaining and not (carry_math or carry_lang is not None):
+                _next_stripped = remaining.lstrip()
+                if _next_stripped.startswith("|") and "|" in _next_stripped[1:30]:
+                    if carry_table_header is None:
+                        # Find the last separator line in chunk_body
+                        _chunk_lines = chunk_body.split("\n")
+                        _last_sep = -1
+                        for _li, _line in enumerate(_chunk_lines):
+                            _s = _line.strip()
+                            if _s.startswith("|---") and _s.endswith("|") and "|" in _s[4:]:
+                                _last_sep = _li
+                        if _last_sep > 0:
+                            _hdr = _chunk_lines[_last_sep - 1].strip()
+                            _sep = _chunk_lines[_last_sep].strip()
+                            if _hdr.startswith("|") and _sep.startswith("|"):
+                                carry_table_header = _hdr + "\n" + _sep
+                else:
+                    carry_table_header = None
 
             chunks.append(full_chunk)
 

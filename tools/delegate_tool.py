@@ -666,6 +666,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    max_iterations: int = 50,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -700,7 +701,25 @@ def _build_child_system_prompt(
         "Keep your final summary tight: lead with outcomes, prefer bullet "
         "points over paragraphs, and don't replay your whole process. Your "
         "response is returned to the parent agent as a summary, and overlong "
-        "summaries crowd out the parent's context window."
+        "summaries crowd out the parent's context window.",
+    )
+    parts.append(
+        f"\n## Iteration Budget\n"
+        f"Your execution is capped at {max_iterations} tool-calling iterations.\n"
+        f"\n"
+        f"**One iteration = one model round-trip.** All tool calls you issue "
+        f"in a single response execute concurrently and count as ONE iteration. "
+        f"Batch independent calls (reads, searches, web fetches) together in "
+        f"the same response to maximize what you accomplish per iteration.\n"
+        f"\n"
+        f"For bulk fan-out — many tool calls whose results you'll process "
+        f"programmatically — use `execute_code` with `from hermes_tools import "
+        f"terminal, read_file, ...` to drive multiple operations inside a single "
+        f"iteration.\n"
+        f"\n"
+        f"Keep an eye on your remaining budget. When it runs low, wrap up your "
+        f"findings and provide your final summary — don't start new investigations "
+        f"you won't have room to finish.",
     )
     if role == "orchestrator":
         child_note = (
@@ -1195,6 +1214,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        max_iterations=max_iterations,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)

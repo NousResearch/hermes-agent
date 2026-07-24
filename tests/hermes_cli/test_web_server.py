@@ -1556,6 +1556,26 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
         assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
 
+    def test_desktop_terminal_font_round_trip_preserves_terminal_config(self):
+        """The Appearance picker persists a font without replacing sibling settings."""
+        from hermes_cli.config import load_config
+
+        web_config = self.client.get("/api/config").json()
+        terminal_before = dict(web_config.get("terminal", {}))
+        web_config.setdefault("terminal", {})["font_family"] = "MesloLGS NF"
+
+        response = self.client.put("/api/config", json={"config": web_config})
+
+        assert response.status_code == 200
+        persisted = load_config()["terminal"]
+        assert persisted["font_family"] == "MesloLGS NF"
+        for key, value in terminal_before.items():
+            if key != "font_family":
+                assert persisted[key] == value
+
+        reloaded = self.client.get("/api/config").json()
+        assert reloaded["terminal"]["font_family"] == "MesloLGS NF"
+
 
 # ---------------------------------------------------------------------------
 # New feature endpoint tests

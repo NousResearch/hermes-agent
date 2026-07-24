@@ -13,6 +13,8 @@ import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import { isMacPlatform, resolveSurfaceColor, terminalTheme } from './selection'
+import { prepareTerminalFontFamily } from './terminal-font'
+import { useTerminalFontController } from './use-terminal-font'
 
 // Read-only terminal for an agent background process: a write-only xterm (no PTY,
 // no input) fed live by the backend output stream, keyed by process id. Shares
@@ -23,6 +25,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
   const fitRef = useRef<(() => void) | null>(null)
+  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
 
   const surfaceTheme = () => {
     const ansi = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
@@ -43,13 +46,20 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       return
     }
 
+    let disposed = false
+    let observer: ResizeObserver | null = null
+
+    let unregister = () => {}
+
+    let unregisterReader = () => {}
+
     const term = new Terminal({
       allowProposedApi: true,
       allowTransparency: false,
       convertEol: true,
       cursorBlink: false,
       disableStdin: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      fontFamily: latestFontFamilyRef.current,
       fontSize: 11,
       fontWeight: 'normal',
       fontWeightBold: 'bold',
@@ -66,8 +76,6 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
-    term.open(host)
-    termRef.current = term
 
     // Read-only mirror, but the output is exactly what people want to copy.
     // No paste path: this terminal has no PTY to paste into.
@@ -103,31 +111,56 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       }
     }
 
-    try {
-      const webgl = new WebglAddon()
-      webgl.onContextLoss(() => {
-        webgl.dispose()
-        webglRef.current = null
-      })
-      term.loadAddon(webgl)
-      webglRef.current = webgl
-    } catch {
-      // No WebGL — xterm falls back to the DOM renderer.
+    const mount = () => {
+      if (disposed || !host.isConnected) {
+        return
+      }
+
+      term.open(host)
+      termRef.current = term
+      mountedRef.current = true
+
+      try {
+        const webgl = new WebglAddon()
+        webgl.onContextLoss(() => {
+          webgl.dispose()
+          webglRef.current = null
+        })
+        term.loadAddon(webgl)
+        webglRef.current = webgl
+      } catch {
+        // No WebGL — xterm falls back to the DOM renderer.
+      }
+
+      fitRef.current?.()
+      observer = new ResizeObserver(() => fitRef.current?.())
+      observer.observe(host)
+
+      // Stream live output straight into the terminal (replays backlog on attach).
+      unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
+      unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
     }
 
-    fitRef.current()
-    const observer = new ResizeObserver(() => fitRef.current?.())
-    observer.observe(host)
+    void prepareTerminalFontFamily(
+      () => latestFontFamilyRef.current,
+      () => !disposed && host.isConnected
+    ).then(fontFamily => {
+      if (!fontFamily) {
+        return
+      }
 
-    // Stream live output straight into the terminal (replays backlog on attach).
-    const unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
-    const unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
+      term.options.fontFamily = fontFamily
+      mount()
+    })
 
     return () => {
+      disposed = true
+      mountedRef.current = false
       unregister()
       unregisterReader()
       selectionDisposable.dispose()
-      observer.disconnect()
+      observer?.disconnect()
+      fitRef.current = null
       term.dispose()
       termRef.current = null
       webglRef.current = null

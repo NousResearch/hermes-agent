@@ -250,4 +250,6 @@ class OpenAIStreamer(StreamingTTSProvider):
             ) as response:
                 yield from response.iter_bytes()
         finally:
-            client.close()
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()

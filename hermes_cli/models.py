@@ -2018,9 +2018,27 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
 
 
 def _get_custom_base_url() -> str:
-    """Get the custom endpoint base_url from config.yaml."""
+    """Get the custom endpoint base_url from config.yaml.
+
+    Checks model.base_url first (legacy), then falls back to the first
+    custom_providers entry if available.
+    """
     model_cfg = _get_model_config_dict()
-    return str(model_cfg.get("base_url", "")).strip()
+    base_url = str(model_cfg.get("base_url", "")).strip()
+    if base_url:
+        return base_url
+
+    # Fall back to custom_providers list
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        config = load_config_readonly()
+        custom_providers = get_compatible_custom_providers(config)
+        if custom_providers:
+            return str(custom_providers[0].get("base_url", "")).strip()
+    except Exception:
+        pass
+
+    return ""
 
 
 def _get_model_config_dict() -> dict[str, Any]:
@@ -2725,10 +2743,39 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 or os.getenv("OPENAI_API_KEY", "")
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
+            # Fall back to custom_providers list for API key
+            if not api_key:
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+                    config = load_config_readonly()
+                    custom_providers = get_compatible_custom_providers(config)
+                    if custom_providers:
+                        api_key = str(custom_providers[0].get("api_key", "") or "").strip()
+                except Exception:
+                    pass
             api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
             live = fetch_api_models(api_key, base_url, api_mode=api_mode)
             if live:
                 return live
+    # Check if this is a named custom provider from config.yaml
+    # (e.g., liteLLM, vLLM, etc.) — query their /v1/models endpoint
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        config = load_config_readonly()
+        custom_providers = get_compatible_custom_providers(config)
+        for cp in custom_providers:
+            cp_name = (cp.get("name") or "").strip().lower()
+            if cp_name == normalized:
+                base_url = (cp.get("base_url") or "").strip()
+                api_key = (cp.get("api_key") or "").strip()
+                if base_url:
+                    api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
+                    live = fetch_api_models(api_key, base_url, api_mode=api_mode)
+                    if live:
+                        return live
+                break
+    except Exception:
+        pass
     # Bedrock uses live discovery keyed by the resolved AWS region so that
     # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
     # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge

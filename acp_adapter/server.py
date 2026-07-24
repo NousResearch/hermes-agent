@@ -588,6 +588,12 @@ class HermesACPAgent(acp.Agent):
         """Return the ACP model selector payload for editors like Zed."""
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+        # For custom providers, use the original requested_provider name
+        # (e.g., "litellm") for encoding so model switches can re-resolve
+        # to the correct custom_providers entry.
+        encode_provider = (
+            getattr(state.agent, "requested_provider", None) or provider
+        )
 
         try:
             from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
@@ -601,7 +607,7 @@ class HermesACPAgent(acp.Agent):
                 rendered_model = str(model_id or "").strip()
                 if not rendered_model:
                     continue
-                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
+                choice_id = self._encode_model_choice(encode_provider, rendered_model)
                 if choice_id in seen_ids:
                     continue
                 desc_parts = [f"Provider: {provider_name}"]
@@ -618,7 +624,7 @@ class HermesACPAgent(acp.Agent):
                 )
                 seen_ids.add(choice_id)
 
-            current_model_id = self._encode_model_choice(normalized_provider, model)
+            current_model_id = self._encode_model_choice(encode_provider, model)
             if current_model_id and current_model_id not in seen_ids:
                 available_models.insert(
                     0,
@@ -640,7 +646,7 @@ class HermesACPAgent(acp.Agent):
         if not model:
             return None
 
-        fallback_choice = self._encode_model_choice(provider, model)
+        fallback_choice = self._encode_model_choice(encode_provider, model)
         return SessionModelState(
             available_models=[ModelInfo(model_id=fallback_choice, name=model)],
             current_model_id=fallback_choice,
@@ -656,6 +662,16 @@ class HermesACPAgent(acp.Agent):
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
             target_provider, new_model = parse_model_input(new_model, current_provider)
+            # parse_model_input only splits on colon for _KNOWN_PROVIDER_NAMES.
+            # Custom provider names (e.g., "litellm") aren't in that set, so
+            # "litellm:model" is returned as the full model name.  Detect this
+            # by checking if the result still has a colon prefix matching the
+            # current_provider and split it manually.
+            if target_provider == current_provider and ":" in new_model:
+                prefix = new_model.split(":", 1)[0].strip().lower()
+                remainder = new_model.split(":", 1)[1].strip()
+                if prefix == current_provider and remainder:
+                    new_model = remainder
             if target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
@@ -2141,12 +2157,18 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.get_session(session_id)
         if state:
             current_provider = getattr(state.agent, "provider", None)
+            # For custom providers, use the original requested_provider name
+            # (e.g., "litellm") instead of the canonicalized "custom" so that
+            # resolve_runtime_provider can re-find the custom_providers entry.
+            effective_provider = (
+                getattr(state.agent, "requested_provider", None) or current_provider
+            )
             requested_provider, resolved_model = self._resolve_model_selection(
                 model_id,
-                current_provider or "openrouter",
+                effective_provider or "openrouter",
             )
             state.model = resolved_model
-            provider_changed = bool(current_provider and requested_provider != current_provider)
+            provider_changed = bool(effective_provider and requested_provider != effective_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
             state.agent = self.session_manager._make_agent(

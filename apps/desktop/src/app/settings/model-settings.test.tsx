@@ -28,7 +28,7 @@ const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelInfo: () => getGlobalModelInfo(),
+  getGlobalModelInfo: (opts?: unknown) => getGlobalModelInfo(opts),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
   getMoaModels: () => getMoaModels(),
@@ -50,6 +50,16 @@ vi.mock('@/store/onboarding', () => ({
 vi.mock('../hooks/use-on-profile-switch', () => ({
   useOnProfileSwitch: (handler: () => void) => {
     profileSwitchHandler = handler
+  }
+}))
+
+vi.mock('@/app/hooks/use-config-record', () => ({
+  invalidateHermesConfig: vi.fn(),
+  setHermesConfigCache: vi.fn(),
+  useHermesConfigRecord: () => {
+    getHermesConfigRecord()
+
+    return { data: { agent: { reasoning_effort: 'medium', service_tier: 'normal' } } }
   }
 }))
 
@@ -250,6 +260,41 @@ describe('ModelSettings', () => {
 
     expect(await screen.findByText('Vision')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+  })
+
+  it('keeps config-backed settings usable when live model metadata times out', async () => {
+    getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(screen.getByText('Model metadata request timed out')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Apply' }).hasAttribute('disabled')).toBe(false)
+
+    const provider = (await screen.findAllByRole('combobox'))[0]
+    fireEvent.click(provider)
+    expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
+  })
+
+  it('renders recovered settings before a delayed model-options request settles', async () => {
+    let resolveOptions!: (value: { providers: never[] }) => void
+    getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
+    getGlobalModelOptions.mockReturnValueOnce(
+      new Promise<{ providers: never[] }>(resolve => {
+        resolveOptions = resolve
+      })
+    )
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(screen.getByText('Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Set to main' }).length).toBeGreaterThan(0)
+    expect(getGlobalModelInfo).toHaveBeenCalledWith({ timeoutMs: 5_000 })
+
+    await act(async () => {
+      resolveOptions({ providers: [] })
+    })
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {

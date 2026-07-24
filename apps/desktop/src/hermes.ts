@@ -599,11 +599,11 @@ export function renameSession(
   })
 }
 
-export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
+export function getGlobalModelInfo(opts?: { timeoutMs?: number }): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
     ...profileScoped(),
     path: '/api/model/info',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: opts?.timeoutMs ?? STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

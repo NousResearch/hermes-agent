@@ -1219,6 +1219,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        # Peer adapters registry: Platform -> BasePlatformAdapter instance.
+        # Set by GatewayRunner at startup; used by /api/weixin/send.
+        self._peer_adapters: Dict[str, Any] = {}
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -1769,6 +1772,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
+            ("POST", "/api/weixin/send", self._handle_weixin_send),
         ]
         if _CRON_AVAILABLE:
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated
@@ -4863,6 +4867,112 @@ class APIServerAdapter(BasePlatformAdapter):
 
             return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
 
+    # ------------------------------------------------------------------
+    # Weixin send proxy
+    # ------------------------------------------------------------------
+
+    async def _handle_weixin_send(self, request: "web.Request") -> "web.Response":
+        """POST /api/weixin/send - send a WeChat message via the gateway's
+        WeixinAdapter, avoiding the duplicate-session (ret=-2) problem.
+
+        Body: {"chat_id": "...", "message": "..."}
+        Returns: {"success": true/false, "message_id": "...", "error": "..."}
+        """
+        caller = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP", "")
+            or request.remote
+            or "unknown"
+        )
+
+        auth_err = self._check_auth(request)
+        if auth_err:
+            logger.info(
+                "[weixin-send-audit] ts=%s caller=%s result=auth_failed",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+            )
+            return auth_err
+
+        if request.content_type != "application/json":
+            return web.json_response(
+                {"success": False, "error": "Content-Type must be application/json"},
+                status=415,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"success": False, "error": "invalid JSON body"},
+                status=400,
+            )
+
+        chat_id = (body.get("chat_id") or "").strip()
+        message = (body.get("message") or "").strip()
+
+        if not chat_id or not message:
+            return web.json_response(
+                {"success": False, "error": "chat_id and message are required"},
+                status=400,
+            )
+        if not (chat_id.endswith("@im.wechat") or chat_id.endswith("@chatroom")):
+            return web.json_response(
+                {"success": False, "error": "chat_id must end with @im.wechat or @chatroom"},
+                status=400,
+            )
+        if len(message) > 4096:
+            return web.json_response(
+                {"success": False, "error": "message too long (max 4096 chars)"},
+                status=400,
+            )
+
+        from gateway.config import Platform as _Plat
+        weixin_adapter = self._peer_adapters.get(_Plat.WEIXIN)
+        if weixin_adapter is None:
+            logger.info(
+                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=adapter_unavailable",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+                chat_id, len(message),
+            )
+            return web.json_response(
+                {"success": False, "error": "weixin adapter not connected"},
+                status=503,
+            )
+
+        try:
+            result = await weixin_adapter.send(chat_id=chat_id, content=message)
+            logger.info(
+                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=%s msg_id=%s error=%s",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+                chat_id, len(message),
+                "ok" if result.success else "send_failed",
+                result.message_id or "",
+                result.error or "",
+            )
+            resp: Dict[str, Any] = {"success": result.success}
+            if result.message_id:
+                resp["message_id"] = result.message_id
+            if result.error:
+                resp["error"] = result.error
+            status = 200 if result.success else 502
+            return web.json_response(resp, status=status)
+        except Exception as exc:
+            error_str = str(exc)
+            logger.info(
+                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=exception error=%s",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+                chat_id, len(message), error_str,
+            )
+            logger.exception("weixin send failed for %s", chat_id)
+            if "ret=-2" in error_str or "session" in error_str.lower():
+                return web.json_response(
+                    {"success": False, "error": error_str},
+                    status=503,
+                )
+            return web.json_response(
+                {"success": False, "error": error_str},
+                status=500,
+            )
 
     # ------------------------------------------------------------------
     # Output extraction helper

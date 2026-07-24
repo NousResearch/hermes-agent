@@ -548,15 +548,19 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
     """Run a command-provider shell command with process-tree timeout cleanup.
 
     Mirrors ``tools.tts_tool._run_command_tts``.
+    Child env is scrubbed of Hermes secrets (salvage of #56332) while still
+    propagating delegated-child lineage markers when applicable.
     """
     from agent.delegation_context import delegated_child_subprocess_env
+    from tools.environments.local import hermes_subprocess_env
 
+    scrubbed = hermes_subprocess_env(inherit_credentials=False)
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
-        "env": delegated_child_subprocess_env(),
+        "env": delegated_child_subprocess_env(scrubbed),
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -1254,12 +1258,36 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 model=shlex.quote(normalized_model),
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
+            # Scrub Hermes secrets from the child env (sibling path to #56332 /
+            # _run_command_stt — this local-whisper path previously inherited
+            # the full process environment).
+            from tools.environments.local import hermes_subprocess_env
+
+            child_env = hermes_subprocess_env(inherit_credentials=False)
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                subprocess.run(
+                    command,
+                    shell=True,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    stdin=subprocess.DEVNULL,
+                    env=child_env,
+                    creationflags=windows_hide_flags(),
+                )
             else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            
+                subprocess.run(
+                    shlex.split(command),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    stdin=subprocess.DEVNULL,
+                    env=child_env,
+                    creationflags=windows_hide_flags(),
+                )
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

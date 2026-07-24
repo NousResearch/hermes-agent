@@ -983,6 +983,67 @@ fix(security): prevent shell injection in sudo password piping
 test(tools): add unit tests for file_operations
 ```
 
+### Fork-PR workflow approval gate (external contributors)
+
+The `NousResearch/hermes-agent` repository is configured with GitHub's
+**"Require approval for first-time contributors"** Actions permission (Settings →
+Actions → General → **"Fork pull request workflows"**). This means every
+`pull_request` event from a forked repository is queued, but the workflow runs
+won't execute until a maintainer clicks **"Approve and run"** on the PR's
+"Workflow runs need approval" banner.
+
+**Why this exists:** it limits the CI-minutes and secret-leak surface that
+untrusted forks can trigger on a high-traffic repo. The trade-off is that
+every external PR is silent in `action_required` limbo until a maintainer
+clicks through. **You will not get an email, a bot comment, or a status
+update** — the runs just sit there.
+
+**How to recognize it on your PR:**
+```bash
+SHA=$(gh pr view <N> --repo NousResearch/hermes-agent --json headRefOid -q .headRefOid)
+gh api "repos/NousResearch/hermes-agent/commits/$SHA/check-suites" | jq '
+  .check_suites[] | {
+    id, app: .app.slug, status, conclusion,
+    runs: .latest_check_runs_count, created: .created_at
+  }'
+```
+Smoking gun: 7+ suites for the same SHA, all `app=github-actions` (NOT a
+third-party App), all `conclusion=action_required`, all
+`latest_check_runs_count=0`, all stamped within the same second.
+
+**Force-push resets the gate.** Every push creates a new head SHA, which means
+a fresh "Approve" click from a maintainer. A force-push that only changes a
+docstring or a comment costs you: (1) the prior review approval, and (2) the
+prior workflow approval. Both have to be re-armed.
+
+**How to navigate it:**
+
+1. **Land the diff in a single commit.** Don't pile on a comment-only
+   follow-up commit on top of an approved one. If a reviewer asks for a
+   small change, fold it into the same commit (`git commit --amend`) or
+   open a separate PR. The "One logical change per PR" rule above
+   applies to commits, not just PRs.
+2. **Use the salvage branch prefix** (`salvage/<issue#>-<short-desc>`) when
+   fixing an existing open issue, and put `(salvage #<issue>)` in the PR
+   title. This is the established pattern for outside contributors and
+   reduces review latency from days to hours.
+3. **If your PR has been silent for 12+ hours with no review and no
+   maintainer comment**, post a one-line nudge with the diagnostic
+   output above. Tag the relevant `@<maintainer>` if the PR is small
+   enough to be reviewed quickly. Avoid framing it as "help, I'm
+   stuck" — the maintainer already knows the gate exists; you're just
+   reminding them your PR is in the queue.
+4. **Don't open duplicate PRs to "reset" the gate.** Resetting your
+   branch to the last approved SHA re-arms both the review state and
+   the workflow-approval gate, which is the same effect as a maintainer
+   click — but only if there's a prior approval to restore. Use this
+   trick, not new PRs.
+
+**For the curious:** the maintainer team runs review batches roughly every
+8 hours rather than continuously. PRs opened in the gaps wait for the
+next batch window. There is no public schedule; if timing matters,
+coordinate in the [Nous Research Discord](https://discord.gg/NousResearch)
+before opening the PR.
 ---
 
 ## Reporting Issues

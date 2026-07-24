@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shlex
+import threading
 from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
@@ -829,6 +830,99 @@ def _extract_literal_prefix(pattern: str) -> str:
     return pattern
 
 
+def _has_top_level_alternation(pattern: str) -> bool:
+    """True if ``pattern`` contains a ``|`` outside any group or class.
+
+    A top-level alternation defeats the literal-prefix guarantee:
+    ``_extract_literal_prefix`` stops at ``|``, so for ``ab|.*`` it
+    returns ``ab`` even though the ``.*`` branch is not bound by that
+    prefix and matches anything. Grouped alternation after the prefix
+    (``ab(?:x|y)``) keeps the guarantee and stays allowed.
+    """
+    depth = 0
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def _has_nested_unbounded_repeat(pattern: str) -> bool:
+    """True if an unbounded quantifier applies to a group containing one.
+
+    ``(a+)+``, ``(?:x*)*``, ``(a{2,})+`` — the canonical catastrophic-
+    backtracking (ReDoS) shape. Registered patterns run against every log
+    line, tool output, and transcript chunk, so a pathological pattern from
+    a buggy plugin would stall the host process, not just the plugin.
+
+    Detects structural nesting only; ambiguity between overlapping
+    alternation branches (``(a|aa)+``) is not statically detected and
+    remains the plugin author's responsibility.
+    """
+
+    def _unbounded_quantifier_follows(j: int) -> bool:
+        # Is pattern[j:] an unbounded quantifier (* + {m,}) for the atom
+        # that just ended at j?
+        if j >= len(pattern):
+            return False
+        if pattern[j] in "*+":
+            return True
+        if pattern[j] == "{":
+            k = pattern.find("}", j)
+            body = pattern[j + 1:k] if k != -1 else ""
+            # {m,} is open-ended; {m} and {m,n} are bounded.
+            return body[:-1].isdigit() and body.endswith(",")
+        return False
+
+    # Stack of flags: does the group at this depth contain an unbounded
+    # repeat? Index 0 is the top level.
+    contains_unbounded = [False]
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+        elif ch == "(":
+            contains_unbounded.append(False)
+        elif ch == ")":
+            inner = contains_unbounded.pop() if len(contains_unbounded) > 1 else False
+            if inner and _unbounded_quantifier_follows(i + 1):
+                return True
+            contains_unbounded[-1] = contains_unbounded[-1] or inner
+        elif _unbounded_quantifier_follows(i):
+            contains_unbounded[-1] = True
+            if ch == "{":
+                i = pattern.find("}", i)  # skip the {m,} body
+        i += 1
+    return False
+
+
 _PREFIX_SUBSTRINGS = tuple(
     _extract_literal_prefix(p) for p in _PREFIX_PATTERNS
 )
@@ -840,6 +934,141 @@ def _has_known_prefix_substring(text: str) -> bool:
     Used as a cheap pre-check before invoking the expensive ``_PREFIX_RE``.
     """
     return any(p in text for p in _PREFIX_SUBSTRINGS)
+
+
+# ---------------------------------------------------------------------------
+# Plugin-registered redaction patterns
+# ---------------------------------------------------------------------------
+#
+# Every new vendor token format has historically required a core PR appending
+# to ``_PREFIX_PATTERNS`` above (fw_, retaindb_, hsk-, mem0_, brv_, ...).
+# This registry lets plugins add their provider's format instead. It is
+# ADDITIVE-ONLY by design: a plugin can extend what gets masked but has no
+# API to remove or weaken a built-in pattern, so a plugin can only ever
+# over-redact, never expose. The operator's global opt-out
+# (``security.redact_secrets: false`` / HERMES_REDACT_SECRETS) applies to
+# plugin patterns exactly as it does to built-ins.
+
+# Keyed by registration source (e.g. "plugin:my-plugin") so the plugin
+# lifecycle/ownership-ledger work (#64229) has a clean seam to drop ONE
+# plugin's patterns on unload. There is deliberately no public removal
+# API — additive-only stands; unload is a host-owned lifecycle concern.
+_PLUGIN_PREFIX_PATTERNS: dict = {}
+_registry_lock = threading.Lock()
+
+
+def _plugin_patterns() -> list:
+    """All plugin-registered patterns in registration order."""
+    return [p for patterns in _PLUGIN_PREFIX_PATTERNS.values() for p in patterns]
+
+
+def _rebuild_prefix_matcher() -> None:
+    """Recompile the prefix alternation and pre-screen substrings.
+
+    ``redact_sensitive_text`` and ``_mask_token_nonreusable`` look these
+    globals up at call time, so swapping the module attributes (atomic
+    under the GIL) propagates immediately to every caller.
+    """
+    global _PREFIX_RE, _PREFIX_SUBSTRINGS
+    combined = _PREFIX_PATTERNS + _plugin_patterns()
+    _PREFIX_RE = re.compile(
+        r"(?<![A-Za-z0-9_-])(" + "|".join(combined) + r")(?![A-Za-z0-9_-])"
+    )
+    _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
+
+
+def register_redaction_patterns(patterns, source: str = "plugin") -> int:
+    """Additively register credential-token regexes with the redaction engine.
+
+    Each accepted pattern joins the vendor-prefix alternation used by
+    ``redact_sensitive_text`` (same masking, same head/tail rules, same
+    non-reusable sentinel on ``file_read``) — everywhere built-in patterns
+    apply: logs, terminal output, transport errors, transcripts.
+
+    Per-pattern validation (invalid entries are warned and skipped, never
+    raised — a broken plugin must not break startup):
+
+    * must be a non-empty string that compiles as a regex;
+    * must not contain a top-level alternation (``ab|.*`` would escape
+      the literal-prefix guarantee below through its unprefixed branch;
+      grouped alternation after the prefix, ``ab(?:x|y)``, is allowed);
+    * must not nest unbounded quantifiers (``(a+)+``-style patterns can
+      backtrack catastrophically, and registered patterns run against
+      every log line and tool output — see
+      ``_has_nested_unbounded_repeat``);
+    * must start with at least 2 literal characters (the pre-screen
+      substring gate in ``_has_known_prefix_substring`` needs a literal
+      anchor; it also structurally rules out redact-everything patterns
+      like ``.*``);
+    * duplicates of built-in or already-registered patterns are skipped.
+
+    Args:
+        patterns: iterable of regex strings (e.g. ``[r"nvapi-[A-Za-z0-9_-]{20,}"]``).
+        source: attribution label for log lines (e.g. ``"plugin:my-plugin"``).
+
+    Returns:
+        The number of patterns actually accepted.
+    """
+    accepted = []
+    for pattern in patterns or []:
+        if not isinstance(pattern, str) or not pattern.strip():
+            logger.warning("%s: skipping empty/non-string redaction pattern", source)
+            continue
+        pattern = pattern.strip()
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            logger.warning(
+                "%s: skipping invalid redaction pattern %r (%s)",
+                source, pattern, exc,
+            )
+            continue
+        if _has_top_level_alternation(pattern):
+            logger.warning(
+                "%s: skipping redaction pattern %r — top-level alternation "
+                "escapes the literal-prefix guarantee (in 'ab|.*' the "
+                "prefix binds only the first branch); wrap alternation in "
+                "a group after the prefix, e.g. 'ab(?:x|y)'",
+                source, pattern,
+            )
+            continue
+        if _has_nested_unbounded_repeat(pattern):
+            logger.warning(
+                "%s: skipping redaction pattern %r — nested unbounded "
+                "quantifiers (e.g. '(a+)+') can backtrack catastrophically, "
+                "and registered patterns run on every log line and tool "
+                "output",
+                source, pattern,
+            )
+            continue
+        if len(_extract_literal_prefix(pattern)) < 2:
+            logger.warning(
+                "%s: skipping redaction pattern %r — must start with at "
+                "least 2 literal characters (needed for the pre-screen "
+                "substring gate)",
+                source, pattern,
+            )
+            continue
+        if pattern in _PREFIX_PATTERNS or pattern in _plugin_patterns() or pattern in accepted:
+            logger.debug("%s: redaction pattern %r already registered", source, pattern)
+            continue
+        accepted.append(pattern)
+
+    if accepted:
+        with _registry_lock:
+            _PLUGIN_PREFIX_PATTERNS.setdefault(source, []).extend(accepted)
+            _rebuild_prefix_matcher()
+        logger.info(
+            "%s: registered %d redaction pattern(s)", source, len(accepted)
+        )
+    return len(accepted)
+
+
+def _reset_plugin_redaction_patterns() -> None:
+    """Drop all plugin-registered patterns (tests/teardown only)."""
+    with _registry_lock:
+        _PLUGIN_PREFIX_PATTERNS.clear()
+        _rebuild_prefix_matcher()
 
 
 _HTTP_METHOD_SUBSTRINGS = (

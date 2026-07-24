@@ -2,7 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef } from 'react'
 
-import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
+import { composerFill, composerInputSurface, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
@@ -976,11 +976,7 @@ export function ChatBar({
             >
               <div
                 aria-hidden
-                className={cn(
-                  'pointer-events-none absolute inset-0 -z-10 rounded-[inherit]',
-                  composerFill,
-                  composerSurfaceGlass
-                )}
+                className={cn('pointer-events-none absolute inset-0 -z-10 rounded-[inherit]', composerInputSurface)}
               />
               <CodingStatusRow
                 onBranchOff={handleBranchOff}

@@ -84,4 +84,16 @@ describe('WslgWindowControls', () => {
     expect(event.defaultPrevented).toBe(true)
     expect(windowControls.toggleMaximize).toHaveBeenCalledOnce()
   })
+
+  it('pins an explicit pixel height instead of the contextually-zeroed titlebar var', () => {
+    desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
+
+    renderControls()
+
+    // The contrib shell zeroes --titlebar-height for content subtrees; the
+    // cluster must set its own height in px so the buttons don't collapse.
+    const cluster = screen.getByLabelText('Window controls')
+    expect(cluster.style.height).toMatch(/^\d+px$/)
+    expect(cluster.className).not.toContain('h-(--titlebar-height)')
+  })
 })

@@ -37,6 +37,9 @@ export interface WslgGpuMarker {
   version?: string
   /** This launch is a post-update GPU re-probe after a prior fallback. */
   reprobe?: boolean
+  /** GPU crashes observed so far while `probing`. Persisted each crash so a
+   *  force-quit mid crash-loop still carries progress into the next launch. */
+  crashes?: number
 }
 
 export function wslgGpuMarkerPath(userDataDir: string): string {
@@ -63,6 +66,12 @@ export function parseWslgGpuMarker(raw: unknown): WslgGpuMarker | null {
 
   if (record.reprobe === true) {
     marker.reprobe = true
+  }
+
+  const crashes = Number(record.crashes)
+
+  if (Number.isInteger(crashes) && crashes > 0) {
+    marker.crashes = crashes
   }
 
   return marker
@@ -129,17 +138,20 @@ export interface WslgGpuLaunchDecision {
  * the vGPU AND what the marker becomes for crash detection on the next launch.
  *
  * - No marker / clean `ok` → probe the GPU (`probing`).
- * - `probing` left behind → last launch crashed before it could mark `ok`, but
- *   a single `probing` is tolerated (could be a manual kill / power loss);
- *   the runtime crash counter is what actually trips the sticky fallback.
+ * - `probing` left behind → the last launch crashed before it could mark `ok`.
+ *   Its persisted `crashes` count carries forward: if it already reached the
+ *   threshold, engage the sticky fallback now (a force-quit mid crash-loop still
+ *   self-heals on the next launch); otherwise probe again, seeding the runtime
+ *   counter with the carried crashes so two half-loops still add up.
  * - `fallback` is sticky within one app version. A version change re-probes the
  *   GPU once (`reprobe`) so a fixed host returns to acceleration; if that
  *   re-probe launch also crashes, the runtime counter re-arms the fallback.
  */
 export function decideWslgGpuLaunch(
-  options: { marker?: WslgGpuMarker | null; appVersion?: string } = {}
+  options: { marker?: WslgGpuMarker | null; appVersion?: string; threshold?: number } = {}
 ): WslgGpuLaunchDecision {
   const appVersion = String(options.appVersion || '')
+  const threshold = options.threshold ?? GPU_CRASHES_BEFORE_FALLBACK
   const marker = options.marker ?? null
 
   if (marker?.state === 'fallback') {
@@ -155,9 +167,37 @@ export function decideWslgGpuLaunch(
     }
   }
 
-  // No marker, a clean `ok`, or a prior `probing` — try the GPU. Runtime crash
-  // detection (see gpuCrashEngagesFallback) trips the sticky fallback.
-  return { enableGpu: true, reason: null, nextMarker: { state: 'probing' } }
+  // A prior probing session that carried enough crashes across a force-quit →
+  // engage the fallback now instead of re-entering the crash loop.
+  const carriedCrashes = marker?.state === 'probing' ? (marker.crashes ?? 0) : 0
+
+  if (carriedCrashes >= threshold) {
+    return { enableGpu: false, reason: 'carried-crash-loop', nextMarker: wslgGpuFallbackMarker(appVersion) }
+  }
+
+  // No marker, a clean `ok`, or a probing marker under the threshold — try the
+  // GPU, seeding the counter with any carried crashes. Runtime crash detection
+  // (see gpuCrashEngagesFallback) trips the sticky fallback.
+  return {
+    enableGpu: true,
+    reason: null,
+    nextMarker: carriedCrashes > 0 ? { state: 'probing', crashes: carriedCrashes } : { state: 'probing' }
+  }
+}
+
+/**
+ * Persist an incremented crash count on the `probing` marker so progress toward
+ * the fallback survives a force-quit mid crash-loop. Returns the marker to write.
+ */
+export function recordGpuCrash(previousCrashes: number, appVersion?: string): WslgGpuMarker {
+  const crashes = (Number.isFinite(previousCrashes) ? previousCrashes : 0) + 1
+  const marker: WslgGpuMarker = { state: 'probing', crashes }
+
+  if (appVersion) {
+    marker.version = appVersion
+  }
+
+  return marker
 }
 
 /**

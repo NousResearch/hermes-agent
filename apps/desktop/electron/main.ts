@@ -211,6 +211,7 @@ import {
   gpuCrashEngagesFallback,
   isGpuChildCrash,
   readWslgGpuMarker,
+  recordGpuCrash,
   writeWslgGpuMarker,
   wslgGpuMarkerAfterSuccessfulBoot
 } from './wslg-gpu-fallback'
@@ -271,11 +272,16 @@ let wslgGpuCrashCount = 0
 
 if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   const wslgUserData = app.getPath('userData')
+  const priorGpuMarker = readWslgGpuMarker(wslgUserData)
 
   const gpuDecision = decideWslgGpuLaunch({
-    marker: readWslgGpuMarker(wslgUserData),
+    marker: priorGpuMarker,
     appVersion: app.getVersion()
   })
+
+  // Seed the runtime counter with crashes carried from a prior probing session
+  // so two half crash-loops (each ending in a force-quit) still add up.
+  wslgGpuCrashCount = priorGpuMarker?.state === 'probing' ? (priorGpuMarker.crashes ?? 0) : 0
 
   writeWslgGpuMarker(wslgUserData, gpuDecision.nextMarker)
 
@@ -409,6 +415,11 @@ if (IS_WSL && !wslgGpuFallbackActive) {
     }
 
     wslgGpuCrashCount += 1
+
+    // Persist progress every crash so a force-quit mid crash-loop still carries
+    // toward the fallback on the next launch (recordGpuCrash writes a probing
+    // marker with the running count).
+    writeWslgGpuMarker(app.getPath('userData'), recordGpuCrash(wslgGpuCrashCount - 1, app.getVersion()))
 
     const fallback = gpuCrashEngagesFallback({
       crashCount: wslgGpuCrashCount,

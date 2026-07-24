@@ -9,6 +9,7 @@ import {
   isGpuChildCrash,
   parseWslgGpuMarker,
   readWslgGpuMarker,
+  recordGpuCrash,
   writeWslgGpuMarker,
   wslgGpuFallbackMarker,
   wslgGpuMarkerAfterSuccessfulBoot,
@@ -111,6 +112,35 @@ describe('decideWslgGpuLaunch', () => {
 
     assert.equal(d.enableGpu, false)
     assert.equal(d.nextMarker.version, '1.0.0')
+  })
+
+  test('probing marker under threshold → probe again, carrying crash count', () => {
+    const d = decideWslgGpuLaunch({ marker: { state: 'probing', crashes: 1 }, appVersion: '1.0.0' })
+
+    assert.equal(d.enableGpu, true)
+    assert.deepEqual(d.nextMarker, { state: 'probing', crashes: 1 })
+  })
+
+  test('probing marker at/over threshold (carried across force-quit) → disable now', () => {
+    const d = decideWslgGpuLaunch({
+      marker: { state: 'probing', crashes: GPU_CRASHES_BEFORE_FALLBACK },
+      appVersion: '1.0.0'
+    })
+
+    assert.equal(d.enableGpu, false)
+    assert.equal(d.reason, 'carried-crash-loop')
+    assert.deepEqual(d.nextMarker, { state: 'fallback', version: '1.0.0' })
+  })
+})
+
+describe('recordGpuCrash', () => {
+  test('increments the crash count on a probing marker', () => {
+    assert.deepEqual(recordGpuCrash(0), { state: 'probing', crashes: 1 })
+    assert.deepEqual(recordGpuCrash(2, '1.0.0'), { state: 'probing', crashes: 3, version: '1.0.0' })
+  })
+
+  test('treats a non-finite previous count as zero', () => {
+    assert.deepEqual(recordGpuCrash(NaN), { state: 'probing', crashes: 1 })
   })
 })
 

@@ -46,8 +46,8 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
+import { clearSessionSubagents, pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
@@ -433,7 +433,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        clearSessionSubagents(sessionId)
+        pruneFinishedSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)

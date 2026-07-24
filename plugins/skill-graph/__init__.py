@@ -58,8 +58,8 @@ CREATE TABLE IF NOT EXISTS skill_nodes (
     description TEXT DEFAULT '',
     tags        TEXT DEFAULT '[]',      -- JSON array
     scenes      TEXT DEFAULT '[]',      -- JSON array, from metadata.hermes.scenes
-    auto_tagged INTEGER DEFAULT 0,      -- 1 if tags/scenes were LLM-generated
-    auto_tagged_at TEXT DEFAULT NULL,    -- timestamp of last successful auto-tag
+    enriched INTEGER DEFAULT 0,      -- 1 if tags/scenes were LLM-generated
+    enriched_at TEXT DEFAULT NULL,    -- timestamp of last successful enrichment
     file_path   TEXT DEFAULT '',
     content_hash TEXT DEFAULT '',
     last_parsed REAL DEFAULT 0
@@ -193,7 +193,7 @@ def _get_read_only_source_dirs() -> set[Path]:
     """Return the set of source_dirs marked ``:read-only``.
 
     Skills under these dirs should never have their SKILL.md modified
-    by automated processes (LLM auto-tag, etc.).
+    by automated processes (LLM enrichment, etc.).
     """
     ro_dirs: set[Path] = set()
     try:
@@ -553,24 +553,24 @@ def _upsert_skill(conn: sqlite3.Connection, name: str, path: Path, now: float) -
         )
 
 
-    # Auto-tag detection: mark skills missing tags or scenes
-    if _needs_auto_tag(info):
+    # Enrichment detection: mark skills missing tags or scenes
+    if _needs_enrichment(info):
         conn.execute(
-            "UPDATE skill_nodes SET auto_tagged = 0 WHERE name = ?",
+            "UPDATE skill_nodes SET enriched = 0 WHERE name = ?",
             (name,),
         )
     else:
         conn.execute(
-            "UPDATE skill_nodes SET auto_tagged = 1 WHERE name = ?",
+            "UPDATE skill_nodes SET enriched = 1 WHERE name = ?",
             (name,),
         )
 
     return info
 
 
-# ── LLM Auto-Tag ────────────────────────────────────────────────────────────
+# ── LLM Enrichment ───────────────────────────────────────────────────────────
 
-# Scene vocabulary — fixed set of valid scene values for LLM auto-tagging
+# Scene vocabulary — fixed set of valid scene values for LLM enrichment
 SCENE_VOCABULARY = [
     "coding",       # Writing/fixing/reviewing code, PRs, git operations
     "writing",      # Composing text — papers, articles, docs, fiction
@@ -583,13 +583,13 @@ SCENE_VOCABULARY = [
 ]
 
 
-def _needs_auto_tag(info: dict[str, Any]) -> bool:
-    """Check if a skill needs LLM auto-tagging (missing tags or scenes)."""
+def _needs_enrichment(info: dict[str, Any]) -> bool:
+    """Check if a skill needs LLM enrichment (missing tags or scenes)."""
     return not info.get("tags") or not info.get("scenes")
 
 
-def _build_autotag_prompt(skill_name: str, content: str) -> str:
-    """Build the LLM prompt for auto-tagging a skill."""
+def _build_enrichment_prompt(skill_name: str, content: str) -> str:
+    """Build the LLM prompt for enriching a skill."""
     scene_desc = "\n".join(
         f"  - {s}: {SCENE_VOCABULARY_DESC.get(s, '')}"
         for s in SCENE_VOCABULARY
@@ -632,8 +632,8 @@ SCENE_VOCABULARY_DESC = {
 }
 
 
-def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
-    """Call the configured LLM provider for auto-tagging.
+def _call_llm_for_enrichment(prompt: str) -> dict[str, Any] | None:
+    """Call the configured LLM provider for enrichment.
 
     Uses the same provider/model as the current agent session.
     Returns parsed JSON response or None on failure.
@@ -645,8 +645,8 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
 
         config = load_config()
         sg_config = config.get("skills", {}).get("config", {}).get("skill-graph", {})
-        auto_tag_cfg = sg_config.get("auto_tag", {}) if isinstance(sg_config, dict) else {}
-        preferred_provider = auto_tag_cfg.get("provider", "")
+        enrichment_cfg = sg_config.get("enrichment", {}) if isinstance(sg_config, dict) else {}
+        preferred_provider = enrichment_cfg.get("provider", "")
 
         def _resolve_provider(pid: str) -> tuple[str, str] | None:
             """Return (api_key, base_url) for a provider, or None."""
@@ -672,7 +672,7 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
                 api_key, base_url = resolved
             else:
                 logger.warning(
-                    "skill-graph: auto-tag skipped — preferred provider '%s' has no API key configured",
+                    "skill-graph: enrichment skipped — preferred provider '%s' has no API key configured",
                     preferred_provider,
                 )
                 return None
@@ -688,20 +688,19 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
                     break
 
         if not provider_name:
-            logger.warning("skill-graph: auto-tag skipped — no provider with API key configured")
+            logger.warning("skill-graph: enrichment skipped — no provider with API key configured")
             return None
 
-        # Resolve model: config model.default > hardcoded fallback
+        # Resolve model: enrichment uses a fast non-reasoning model
         try:
             config = load_config()
-            model_cfg = config.get("model", {})
-            model_name = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
+            sg_config2 = config.get("skills", {}).get("config", {}).get("skill-graph", {})
+            enrichment_cfg2 = sg_config2.get("enrichment", {}) if isinstance(sg_config2, dict) else {}
+            model_name = enrichment_cfg2.get("model", "deepseek-v4-flash")
         except Exception:
-            model_name = ""
-        if not model_name:
-            model_name = "deepseek-chat"
+            model_name = "deepseek-v4-flash"
 
-        logger.debug("skill-graph: auto-tag using provider=%s model=%s",
+        logger.debug("skill-graph: enrichment using provider=%s model=%s",
                      provider_name, model_name)
 
         # Normalise base_url: strip /v1 suffix if present (we add it below)
@@ -717,7 +716,7 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-            "max_tokens": 512,
+            "max_tokens": 2048,
         }
 
         import time as _time
@@ -734,13 +733,9 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
                 data = resp.json()
                 text = (data.get("choices", [{}])[0]
                         .get("message", {}).get("content", "")).strip()
-                # deepseek-v4-pro puts output in reasoning_content
-                if not text:
-                    text = (data.get("choices", [{}])[0]
-                            .get("message", {}).get("reasoning_content", "")).strip()
                 if not text:
                     logger.warning(
-                        "skill-graph: auto-tag empty response (attempt %d/3). "
+                        "skill-graph: enrichment empty response (attempt %d/3). "
                         "provider=%s model=%s status=%d body=%.200s",
                         _attempt + 1, provider_name, model_name,
                         resp.status_code, resp.text)
@@ -764,16 +759,17 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
                 return result
 
             except (requests.RequestException, json.JSONDecodeError) as e:
+                _resp_text = resp.text[:500] if 'resp' in dir() else '(no response)'
                 logger.warning(
-                    "skill-graph: auto-tag LLM call failed (attempt %d/3): %s",
-                    _attempt + 1, e)
+                    "skill-graph: enrichment LLM call failed (attempt %d/3): %s | body=%.500s",
+                    _attempt + 1, e, _resp_text)
                 if _attempt < 2:
                     _time.sleep(2 * (_attempt + 1))
 
         return None
 
     except Exception as e:
-        logger.warning("skill-graph: auto-tag LLM call failed: %s", e)
+        logger.warning("skill-graph: enrichment LLM call failed: %s", e)
         return None
 
 
@@ -819,8 +815,8 @@ def _patch_skill_frontmatter(skill_path: str, tags: list[str], scenes: list[str]
         return False
 
 
-def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
-    """Run LLM auto-tag for a single skill. Updates DB. Writes back to SKILL.md if editable.
+def _enrich_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
+    """Run LLM enrichment for a single skill. Updates DB. Writes back to SKILL.md if editable.
 
     Returns True on success.
     """
@@ -839,8 +835,8 @@ def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
         return False
 
     # Build prompt + call LLM
-    prompt = _build_autotag_prompt(skill_name, content)
-    result = _call_llm_for_tagging(prompt)
+    prompt = _build_enrichment_prompt(skill_name, content)
+    result = _call_llm_for_enrichment(prompt)
     if result is None:
         return False
 
@@ -855,13 +851,13 @@ def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
     valid_scenes = [s for s in scenes if s in SCENE_VOCABULARY]
     if suggestions:
         logger.info(
-            "skill-graph: auto-tag suggestions for '%s': %s",
+            "skill-graph: enrichment suggestions for '%s': %s",
             skill_name, suggestions,
         )
 
     # Update DB
     conn.execute(
-        "UPDATE skill_nodes SET tags = ?, scenes = ?, auto_tagged = 1, auto_tagged_at = datetime('now') WHERE name = ?",
+        "UPDATE skill_nodes SET tags = ?, scenes = ?, enriched = 1, enriched_at = datetime('now') WHERE name = ?",
         (json.dumps(tags, ensure_ascii=False),
          json.dumps(valid_scenes, ensure_ascii=False),
          skill_name),
@@ -886,18 +882,18 @@ def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
     # Write back to SKILL.md if not read-only
     _hermes_live = str(Path.home() / ".hermes" / "hermes-agent")
     if skill_path.startswith(_hermes_live):
-        logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (live dir, DB only)",
+        logger.info("skill-graph: enriched '%s' → tags=%s scenes=%s (live dir, DB only)",
                     skill_name, tags, valid_scenes)
     elif not _is_read_only_skill(skill_path):
         wrote = _patch_skill_frontmatter(skill_path, tags, valid_scenes)
         if wrote:
-            logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (wrote SKILL.md)",
+            logger.info("skill-graph: enriched '%s' → tags=%s scenes=%s (wrote SKILL.md)",
                         skill_name, tags, valid_scenes)
         else:
-            logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (SKILL.md write failed)",
+            logger.info("skill-graph: enriched '%s' → tags=%s scenes=%s (SKILL.md write failed)",
                         skill_name, tags, valid_scenes)
     else:
-        logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (read-only, DB only)",
+        logger.info("skill-graph: enriched '%s' → tags=%s scenes=%s (read-only, DB only)",
                     skill_name, tags, valid_scenes)
 
     conn.commit()
@@ -905,19 +901,19 @@ def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
 
 
 
-def _auto_tag_pending_skills(conn: sqlite3.Connection, limit: int = 10,
+def _enrich_pending_skills(conn: sqlite3.Connection, limit: int = 10,
                              force: bool = False) -> int:
-    """Process pending auto-tag skills. Returns count of successfully tagged.
+    """Process pending enrichment skills. Returns count of successfully tagged.
 
-    If ``force`` is False, skips skills auto-tagged within the last 5 minutes
+    If ``force`` is False, skips skills enriched within the last 5 minutes
     (cooldown to avoid rapid re-runs after rebuild).
     """
     if force:
-        where = "auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
+        where = "enriched = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
     else:
-        where = ("auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0) "
-                 "AND (auto_tagged_at IS NULL "
-                 "OR auto_tagged_at < datetime('now', '-5 minutes'))")
+        where = ("enriched = 0 AND (is_deleted IS NULL OR is_deleted = 0) "
+                 "AND (enriched_at IS NULL "
+                 "OR enriched_at < datetime('now', '-5 minutes'))")
     rows = conn.execute(
         f"SELECT name FROM skill_nodes WHERE {where} LIMIT ?",
         (limit,),
@@ -925,17 +921,17 @@ def _auto_tag_pending_skills(conn: sqlite3.Connection, limit: int = 10,
 
     total = len(rows)
     if total > 10:
-        logger.info("skill-graph: %d skills need auto-tagging — this may take a while, please wait...", total)
+        logger.info("skill-graph: %d skills need enrichment — this may take a while, please wait...", total)
 
-    logger.info("skill-graph: auto-tagging %d pending skills", total)
+    logger.info("skill-graph: enriching %d pending skills", total)
     count = 0
     for i, row in enumerate(rows, 1):
-        logger.info("skill-graph: auto-tag [%d/%d] %s", i, total, row["name"])
-        if _auto_tag_skill(conn, row["name"]):
+        logger.info("skill-graph: enrich [%d/%d] %s", i, total, row["name"])
+        if _enrich_skill(conn, row["name"]):
             count += 1
         else:
-            logger.warning("skill-graph: auto-tag FAILED [%d/%d] %s", i, total, row["name"])
-    logger.info("skill-graph: auto-tag done — %d/%d succeeded", count, total)
+            logger.warning("skill-graph: enrich FAILED [%d/%d] %s", i, total, row["name"])
+    logger.info("skill-graph: enrich done — %d/%d succeeded", count, total)
     return count
 
 
@@ -971,16 +967,7 @@ def _full_rebuild(conn: sqlite3.Connection) -> int:
         _upsert_skill(conn, name, path, now)
     conn.commit()
 
-    # Auto-tag skills missing tags or scenes
-    auto_count = 0
-    pending = conn.execute(
-        "SELECT name FROM skill_nodes WHERE auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
-    ).fetchall()
-    for row in pending:
-        if _auto_tag_skill(conn, row["name"]):
-            auto_count += 1
-
-    logger.info("Skill graph rebuilt: %d skills, %d auto-tagged", len(deduped), auto_count)
+    logger.info("Skill graph rebuilt: %d skills", len(deduped))
     return len(deduped)
 
 
@@ -1037,18 +1024,9 @@ def _incremental_sync(conn: sqlite3.Connection) -> int:
 
     conn.commit()
 
-    # Auto-tag newly parsed skills missing tags or scenes
-    auto_count = 0
-    pending = conn.execute(
-        "SELECT name FROM skill_nodes WHERE auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
-    ).fetchall()
-    for row in pending:
-        if _auto_tag_skill(conn, row["name"]):
-            auto_count += 1
-
     logger.info(
-        "Skill graph synced: %d parsed, %d unchanged, %d removed, %d total, %d auto-tagged",
-        parsed_count, skipped_count, len(stale), len(deduped), auto_count,
+        "Skill graph synced: %d parsed, %d unchanged, %d removed, %d total",
+        parsed_count, skipped_count, len(stale), len(deduped),
     )
     return len(deduped)
 
@@ -1450,22 +1428,39 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE skill_term_stats ADD COLUMN last_loaded TEXT")
     except sqlite3.OperationalError:
         pass
-    # v6: auto_tagged_at for cooldown tracking
+    # v6: enriched_at for cooldown tracking
     try:
         conn.execute(
-            "ALTER TABLE skill_nodes ADD COLUMN auto_tagged_at TEXT DEFAULT NULL")
+            "ALTER TABLE skill_nodes ADD COLUMN enriched_at TEXT DEFAULT NULL")
     except sqlite3.OperationalError:
         pass
 
-    # v4: scenes + auto_tagged for LLM-powered scene/tag generation
+    # v4: scenes + enriched for LLM-powered scene/tag generation
     for col, col_type in (
         ("scenes", "TEXT DEFAULT '[]'"),
-        ("auto_tagged", "INTEGER DEFAULT 0"),
+        ("enriched", "INTEGER DEFAULT 0"),
     ):
         try:
             conn.execute(f"ALTER TABLE skill_nodes ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+
+    # v7: migrate auto_tagged → enriched (rename)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(skill_nodes)")}
+        if "auto_tagged" in cols and "enriched" in cols:
+            conn.execute(
+                "UPDATE skill_nodes SET enriched = auto_tagged "
+                "WHERE enriched = 0 AND auto_tagged = 1"
+            )
+        if "auto_tagged_at" in cols and "enriched_at" in cols:
+            conn.execute(
+                "UPDATE skill_nodes SET enriched_at = auto_tagged_at "
+                "WHERE enriched_at IS NULL AND auto_tagged_at IS NOT NULL"
+            )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # v3: soft delete + needs_organizing for lifecycle management
     for col, col_type in (
@@ -1748,28 +1743,62 @@ def _handle_slash_command(args: str) -> str | None:
             conn = _ensure_graph()
             with _graph_lock:
                 count = _full_rebuild(conn)
-            where = "auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
+            where = "enriched = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
             if not force:
-                where += (" AND (auto_tagged_at IS NULL "
-                          "OR auto_tagged_at < datetime('now', '-5 minutes'))")
+                where += (" AND (enriched_at IS NULL "
+                          "OR enriched_at < datetime('now', '-5 minutes'))")
             pending = conn.execute(
                 f"SELECT COUNT(*) FROM skill_nodes WHERE {where}"
             ).fetchone()[0]
             if pending > 0:
                 import subprocess as _sp
-                _log_file = str(Path.home() / ".hermes" / "personal" / "skill-graph" / "autotag.log")
-                Path(_log_file).parent.mkdir(parents=True, exist_ok=True)
-                _force_flag = " --force" if force else ""
+                _log_dir = Path.home() / ".hermes" / "personal" / "skill-graph"
+                _log_dir.mkdir(parents=True, exist_ok=True)
+                _log_file = str(_log_dir / "enrichment.log")
+                _lock_file = _log_dir / ".enrichment.lock"
+
+                # Prevent concurrent enrichment runs
+                if _lock_file.exists():
+                    try:
+                        _stale_pid = int(_lock_file.read_text().strip())
+                        os.kill(_stale_pid, 0)
+                        return (
+                            f"Skill graph rebuilt: {count} skills indexed. "
+                            f"{pending} skills pending enrichment — "
+                            f"background enrichment already running (pid {_stale_pid})."
+                        )
+                    except (ValueError, OSError, ProcessLookupError):
+                        pass  # stale lock — proceed
+                _script = _log_dir / "_enrich_worker.py"
+                _script.write_text(f"""\
+import importlib.util, sys, os, atexit, logging
+from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", stream=sys.stdout)
+
+_lock = "{_lock_file}"
+_lock_dir = "{_log_dir}"
+os.makedirs(_lock_dir, exist_ok=True)
+with open(_lock, 'w') as f:
+    f.write(str(os.getpid()))
+atexit.register(lambda: os.remove(_lock) if os.path.exists(_lock) else None)
+
+spec = importlib.util.spec_from_file_location(
+    'skill_graph', "{Path(__file__).resolve()}",
+    submodule_search_locations=["{Path(__file__).parent.resolve()}"],
+)
+mod = importlib.util.module_from_spec(spec)
+sys.modules['skill_graph'] = mod
+spec.loader.exec_module(mod)
+conn = mod._get_conn()
+mod._enrich_pending_skills(conn, limit={pending}, force={force})
+""")
                 _sp.Popen(
-                    [__import__("sys").executable, "-c",
-                     f"import sys; sys.path.insert(0, '{Path(__file__).parent.parent}'); "
-                     f"from plugins.skill_graph import _auto_tag_pending_skills, _get_conn; "
-                     f"conn = _get_conn(); "
-                     f"_auto_tag_pending_skills(conn, limit={pending}, force={force})"],
+                    [__import__("sys").executable, str(_script)],
                     stdout=open(_log_file, "a"), stderr=open(_log_file, "a"),
                     start_new_session=True,
                 )
-                msg = f"Skill graph rebuilt: {count} skills indexed. {pending} skills pending auto-tag — running in background."
+                msg = f"Skill graph rebuilt: {count} skills indexed. {pending} skills pending enrichment — running in background."
                 if force:
                     msg += " (forced — cooldown bypassed)"
                 return msg

@@ -13,6 +13,7 @@ import pytest
 
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_cli.proxy.adapters.codex import OpenAICodexAdapter
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
@@ -30,6 +31,10 @@ def test_registry_lists_xai():
     assert "xai" in ADAPTERS
 
 
+def test_registry_lists_openai_codex():
+    assert "openai-codex" in ADAPTERS
+
+
 def test_get_adapter_returns_instance():
     adapter = get_adapter("nous")
     assert isinstance(adapter, NousPortalAdapter)
@@ -42,10 +47,17 @@ def test_get_adapter_returns_xai_instance():
     assert isinstance(adapter, UpstreamAdapter)
 
 
+def test_get_adapter_returns_codex_instance():
+    adapter = get_adapter("openai-codex")
+    assert isinstance(adapter, OpenAICodexAdapter)
+    assert isinstance(adapter, UpstreamAdapter)
+
+
 def test_get_adapter_case_insensitive():
     assert isinstance(get_adapter("NOUS"), NousPortalAdapter)
     assert isinstance(get_adapter("  Nous  "), NousPortalAdapter)
     assert isinstance(get_adapter("XAI"), XAIGrokAdapter)
+    assert isinstance(get_adapter("OPENAI-CODEX"), OpenAICodexAdapter)
 
 
 def test_get_adapter_unknown_provider_raises():
@@ -565,6 +577,187 @@ def test_xai_adapter_retry_returns_none_for_unrelated_status(tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
+# OpenAICodexAdapter
+# ---------------------------------------------------------------------------
+
+
+def _write_codex_pool_entry(
+    hermes_home: Path,
+    *,
+    access_token: str = "codex-access-token",
+    refresh_token: str = "codex-refresh-token",
+    base_url: str = "https://chatgpt.com/backend-api/codex",
+    source: str = "device_code",
+) -> Path:
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                },
+                "last_refresh": "2026-06-29T00:00:00Z",
+            }
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "codex123",
+                    "label": "codex-test",
+                    "provider": "openai-codex",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": source,
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "base_url": base_url,
+                }
+            ]
+        },
+    }))
+    return auth_path
+
+
+def test_codex_adapter_metadata():
+    adapter = OpenAICodexAdapter()
+    assert adapter.name == "openai-codex"
+    assert adapter.display_name == "OpenAI Codex"
+    assert "/responses" in adapter.allowed_paths
+    assert "/chat/completions" in adapter.allowed_paths
+    assert "/models" in adapter.allowed_paths
+
+
+def test_codex_adapter_not_authenticated_when_no_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {},
+    }))
+    assert not OpenAICodexAdapter().is_authenticated()
+
+
+def test_codex_adapter_get_credential_uses_shared_pool_and_cloudflare_headers(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_codex_pool_entry(tmp_path, access_token="pool-access-token")
+
+    with patch(
+        "hermes_cli.proxy.adapters.codex._codex_cloudflare_headers",
+        return_value={"originator": "codex_cli_rs", "ChatGPT-Account-ID": "acct-test"},
+    ) as mock_headers:
+        cred = OpenAICodexAdapter().get_credential()
+
+    mock_headers.assert_called_once_with("pool-access-token")
+    assert cred.bearer == "pool-access-token"
+    assert cred.base_url == "https://chatgpt.com/backend-api/codex"
+    assert cred.extra_headers == {
+        "originator": "codex_cli_rs",
+        "ChatGPT-Account-ID": "acct-test",
+    }
+
+
+def test_codex_adapter_retry_refreshes_current_pool_entry_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_codex_pool_entry(tmp_path, access_token="old-access-token")
+
+    refresh_calls = []
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        refresh_calls.append((access_token, refresh_token))
+        return {
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token",
+            "last_refresh": "2026-06-29T01:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", fake_refresh)
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.codex._codex_cloudflare_headers",
+        lambda token: {"originator": "codex_cli_rs", "token-seen": token},
+    )
+
+    adapter = OpenAICodexAdapter()
+    failed = adapter.get_credential()
+    retry = adapter.get_retry_credential(
+        failed_credential=failed,
+        status_code=401,
+    )
+
+    assert retry is not None
+    assert retry.bearer == "new-access-token"
+    assert retry.extra_headers["token-seen"] == "new-access-token"
+    assert refresh_calls == [("old-access-token", "codex-refresh-token")]
+
+
+def test_codex_adapter_retry_skips_non_401(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_codex_pool_entry(tmp_path)
+
+    def _refresh_must_not_run(*args, **kwargs):
+        raise AssertionError("refresh_codex_oauth_pure must not run on non-401")
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _refresh_must_not_run)
+
+    adapter = OpenAICodexAdapter()
+    failed = adapter.get_credential()
+    for status in (200, 400, 403, 429, 500):
+        assert adapter.get_retry_credential(
+            failed_credential=failed,
+            status_code=status,
+        ) is None
+
+
+def test_codex_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_codex_pool_entry(tmp_path, access_token="old-access-token")
+
+    in_flight = threading.Event()
+    overlap_detected = threading.Event()
+    refresh_calls = []
+
+    def serial_refresh(access_token, refresh_token, **kwargs):
+        if in_flight.is_set():
+            overlap_detected.set()
+        in_flight.set()
+        try:
+            import time
+            time.sleep(0.05)
+            refresh_calls.append((access_token, refresh_token))
+            return {
+                "access_token": f"new-access-{len(refresh_calls)}",
+                "refresh_token": f"new-refresh-{len(refresh_calls)}",
+                "last_refresh": "2026-06-29T01:00:00Z",
+            }
+        finally:
+            in_flight.clear()
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", serial_refresh)
+
+    adapter = OpenAICodexAdapter()
+    failed = adapter.get_credential()
+    errors = []
+
+    def worker():
+        try:
+            adapter.get_retry_credential(failed_credential=failed, status_code=401)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert not overlap_detected.is_set(), "Codex refresh calls overlapped — lock is broken"
+    assert len(refresh_calls) == 3
+
+
+# ---------------------------------------------------------------------------
 # Server: path filtering + forwarding
 #
 # We run the proxy AND a fake upstream as real aiohttp servers on ephemeral
@@ -582,12 +775,14 @@ class FakeAdapter(UpstreamAdapter):
 
     def __init__(self, base_url: str, bearer: str = "test-bearer",
                  allowed=None, raise_on_credential=False,
-                 retry_bearer: str | None = None):
+                 retry_bearer: str | None = None,
+                 extra_headers: dict | None = None):
         self._base_url = base_url
         self._bearer = bearer
         self._allowed = frozenset(allowed or ["/chat/completions"])
         self._raise = raise_on_credential
         self._retry_bearer = retry_bearer
+        self._extra_headers = extra_headers or {}
         self.calls = 0
         self.retry_calls = 0
 
@@ -609,6 +804,7 @@ class FakeAdapter(UpstreamAdapter):
         return UpstreamCredential(
             bearer=self._bearer, base_url=self._base_url,
             expires_at="2099-01-01T00:00:00Z",
+            extra_headers=dict(self._extra_headers),
         )
 
     def get_retry_credential(self, *, failed_credential, status_code):
@@ -641,6 +837,8 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
             "method": request.method,
             "path": request.path,
             "auth": request.headers.get("Authorization"),
+            "originator": request.headers.get("originator"),
+            "account_id": request.headers.get("ChatGPT-Account-ID"),
             "body": body.decode("utf-8") if body else "",
         })
         return web.json_response({"echoed": True, "path": request.path})
@@ -658,7 +856,36 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
     app = web.Application()
     app.router.add_route("*", "/v1/chat/completions", echo)
     app.router.add_route("*", "/v1/embeddings", echo)
+    app.router.add_route("*", "/v1/responses", echo)
     app.router.add_route("*", "/v1/sse", sse)
+    return app
+
+
+def _build_codex_responses_upstream(captured: Dict[str, Any]) -> "web.Application":
+    async def responses(request):
+        body = await request.read()
+        captured["requests"].append({
+            "method": request.method,
+            "path": request.path,
+            "auth": request.headers.get("Authorization"),
+            "originator": request.headers.get("originator"),
+            "account_id": request.headers.get("ChatGPT-Account-ID"),
+            "body": body.decode("utf-8") if body else "",
+        })
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        for payload in [
+            {"type": "response.created", "response": {"id": "resp-test"}},
+            {"type": "response.output_text.delta", "delta": "BROKER_"},
+            {"type": "response.output_text.delta", "delta": "OK"},
+            {"type": "response.completed", "response": {"id": "resp-test", "usage": {}}},
+        ]:
+            await resp.write(f"data: {json.dumps(payload)}\n\n".encode())
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_route("*", "/v1/responses", responses)
     return app
 
 
@@ -704,6 +931,91 @@ def test_server_forwards_chat_completions():
             req = captured["requests"][0]
             assert req["auth"] == "Bearer real-portal-key"
             assert "Hermes-4-70B" in req["body"]
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_forwards_adapter_extra_headers():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="codex-access-token",
+            extra_headers={
+                "originator": "codex_cli_rs",
+                "ChatGPT-Account-ID": "acct-proxy-test",
+            },
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"model": "gpt-5.5"},
+                    headers={
+                        "Authorization": "Bearer dummy",
+                        "originator": "client-should-not-win",
+                    },
+                ) as resp:
+                    assert resp.status == 200
+
+            req = captured["requests"][0]
+            assert req["auth"] == "Bearer codex-access-token"
+            assert req["originator"] == "codex_cli_rs"
+            assert req["account_id"] == "acct-proxy-test"
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_codex_chat_completions_maps_to_responses_and_returns_chat_json():
+    class CodexFakeAdapter(FakeAdapter):
+        @property
+        def name(self):
+            return "openai-codex"
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_codex_responses_upstream(captured))
+        adapter = CodexFakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="codex-access-token",
+            allowed=["/chat/completions", "/responses"],
+            extra_headers={"originator": "codex_cli_rs"},
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={
+                        "model": "gpt-5.5",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                    headers={"Authorization": "Bearer dummy"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+
+            assert data["choices"][0]["message"]["content"] == "BROKER_OK"
+            req = captured["requests"][0]
+            assert req["path"] == "/v1/responses"
+            assert req["auth"] == "Bearer codex-access-token"
+            assert req["originator"] == "codex_cli_rs"
+            forwarded = json.loads(req["body"])
+            assert forwarded["model"] == "gpt-5.5"
+            assert forwarded["stream"] is True
+            assert forwarded["store"] is False
+            assert "messages" not in forwarded
+            assert "input" in forwarded
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()

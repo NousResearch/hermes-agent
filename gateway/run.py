@@ -20150,7 +20150,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         _cleanup_adapter = self._adapter_for_source(source) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
-            type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
+            getattr(
+                type(_cleanup_adapter),
+                "delete_message",
+                BasePlatformAdapter.delete_message,
+            )
+            is BasePlatformAdapter.delete_message
         ):
             # Adapter doesn't support deletion — silently disable.
             _cleanup_progress = False

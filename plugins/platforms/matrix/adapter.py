@@ -121,6 +121,7 @@ except ImportError:
     TrustState = _TrustStateStub  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from agent.secret_scope import get_secret
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -1439,7 +1440,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             return False
                         logger.warning("Matrix: share_keys() warning during startup: %s", exc)
 
-                    recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
+                    recovery_key = (get_secret("MATRIX_RECOVERY_KEY", "") or "").strip()
                     if recovery_key:
                         try:
                             await olm.verify_with_recovery_key(recovery_key)
@@ -1737,7 +1738,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "enabled": bool(self._encryption),
                 "deps_available": _check_e2ee_deps(),
                 "crypto_store_path": str(_CRYPTO_DB_PATH),
-                "recovery_key_configured": bool(os.getenv("MATRIX_RECOVERY_KEY", "").strip()),
+                "recovery_key_configured": bool((get_secret("MATRIX_RECOVERY_KEY", "") or "").strip()),
             },
             "policy": {
                 "allowed_user_count": len(self._allowed_user_ids),

@@ -25,6 +25,7 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
+  resolveNewSessionCwd,
   scanAndRecordRepos,
   tombstoneSessions
 } from './projects'
@@ -107,6 +108,82 @@ describe('project scope', () => {
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
     expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+  })
+})
+
+describe('resolveNewSessionCwd', () => {
+  const treeNode = (
+    over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>
+  ): SidebarProjectTree => ({
+    path: null,
+    repos: [],
+    sessionCount: 0,
+    ...over
+  })
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    $projectScope.set(ALL_PROJECTS)
+    $activeProjectId.set(null)
+    $projectTree.set([])
+  })
+
+  it('returns the view-scope project cwd when $projectScope is set', () => {
+    $projectTree.set([
+      treeNode({ id: 'p_web', label: 'Website', path: '/repos/website' }),
+      treeNode({ id: 'p_api', label: 'API', path: '/repos/api' })
+    ])
+    $projectScope.set('p_web')
+
+    expect(resolveNewSessionCwd()).toBe('/repos/website')
+  })
+
+  it('falls back to $activeProjectId when $projectScope is ALL_PROJECTS', () => {
+    $projectTree.set([
+      treeNode({ id: 'p_web', label: 'Website', path: '/repos/website' }),
+      treeNode({ id: 'p_api', label: 'API', path: '/repos/api' })
+    ])
+    $projectScope.set(ALL_PROJECTS)
+    $activeProjectId.set('p_api')
+
+    // Without the $activeProjectId fallback this returns the default workspace
+    // (detached), not the active project's root — see issue #66686.
+    expect(resolveNewSessionCwd()).toBe('/repos/api')
+  })
+
+  it('view scope takes precedence over $activeProjectId', () => {
+    $projectTree.set([
+      treeNode({ id: 'p_web', label: 'Website', path: '/repos/website' }),
+      treeNode({ id: 'p_api', label: 'API', path: '/repos/api' })
+    ])
+    $projectScope.set('p_web')
+    $activeProjectId.set('p_api')
+
+    expect(resolveNewSessionCwd()).toBe('/repos/website')
+  })
+
+  it('uses the first repo path when the project has no direct path', () => {
+    $projectTree.set([
+      treeNode({
+        id: 'p_mono',
+        label: 'Monorepo',
+        path: null,
+        repos: [{ id: 'r1', label: 'mono', path: '/repos/mono', sessionCount: 0, groups: [] }]
+      })
+    ])
+    $activeProjectId.set('p_mono')
+
+    expect(resolveNewSessionCwd()).toBe('/repos/mono')
+  })
+
+  it('falls back to default workspace when neither scope nor activeId matches a project', () => {
+    $projectTree.set([])
+    $projectScope.set(ALL_PROJECTS)
+    $activeProjectId.set('p_nonexistent')
+
+    // Returns the default workspace cwd (mocked via @/store/session)
+    const cwd = resolveNewSessionCwd()
+    expect(typeof cwd).toBe('string')
   })
 })
 

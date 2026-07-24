@@ -157,17 +157,39 @@ export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
 }
 
-// The cwd a NEW chat should start in. The "active project" is just an atom
-// ($projectScope) — so when you're inside a project, a new session (cmd-n, the
-// trunk "+") starts at that project's root (its primary repo = the default-branch
-// checkout) instead of inheriting whatever unrelated worktree the live cwd
-// drifted into. Outside a project it falls back to the plain default (detached),
-// so a bare new chat shows no branch.
+// The cwd a NEW chat should start in. The "active project" can live in two
+// places: $projectScope (view state — set when the user enters a project from
+// the sidebar overview) and $activeProjectId (durable pointer in projects.db,
+// set when a project is created/selected via the project RPC). New sessions
+// inherit whichever is set, in that order — so a user with an active project
+// they've never "entered" still lands new chats inside that project instead
+// of the default workspace. Outside both, falls back to the plain default
+// (detached), so a bare new chat shows no branch.
+// See issue #66686.
 export function resolveNewSessionCwd(): string {
+  const tree = $projectTree.get()
+
+  // 1. View scope: the project the sidebar is currently drilled into.
   const scope = $projectScope.get()
 
   if (scope !== ALL_PROJECTS) {
-    const project = $projectTree.get().find(node => node.id === scope)
+    const project = tree.find(node => node.id === scope)
+    const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+
+    if (cwd) {
+      return cwd
+    }
+  }
+
+  // 2. Durable active project (projects.db). Covers users who have an active
+  // project but never explicitly entered it from the sidebar — the common
+  // case after `project_create` / `project_switch`. Without this fallback,
+  // new sessions silently drop back to the default workspace even when the
+  // user has an active project bound to a real directory.
+  const activeId = $activeProjectId.get()
+
+  if (activeId) {
+    const project = tree.find(node => node.id === activeId)
     const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
 
     if (cwd) {

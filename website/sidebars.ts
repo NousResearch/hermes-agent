@@ -216,15 +216,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'hermes-desktop-plugins',
-                  key: 'skills-bundled-hermes-desktop-plugins',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/hermes-desktop-plugins/hermes-desktop-plugins-hermes-desktop-plugins',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'media',
                   key: 'skills-bundled-media',
                   collapsed: true,
@@ -273,7 +264,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-notion',
                     'user-guide/skills/bundled/productivity/productivity-ocr-and-documents',
                     'user-guide/skills/bundled/productivity/productivity-pdf',
-                    'user-guide/skills/bundled/productivity/productivity-petdex',
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
                     'user-guide/skills/bundled/productivity/productivity-xlsx',

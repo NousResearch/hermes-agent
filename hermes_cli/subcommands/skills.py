@@ -152,6 +152,40 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
+    skills_audit_size = skills_subparsers.add_parser(
+        "audit-size",
+        help="Show installed SKILL.md size diagnostics",
+        description=(
+            "Scan installed SKILL.md files without loading them through "
+            "skill_view. Reports large skill bodies, description lengths, "
+            "and source classification so oversized skills can be trimmed "
+            "before they consume context."
+        ),
+    )
+    skills_audit_size.add_argument(
+        "--json",
+        action="store_true",
+        help="Output JSON instead of a table",
+    )
+    skills_audit_size.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum rows to show (default: 20; use 0 for all)",
+    )
+    skills_audit_size.add_argument(
+        "--min-chars",
+        type=int,
+        default=0,
+        help="Only show skills with SKILL.md at least this many characters",
+    )
+    skills_audit_size.add_argument(
+        "--source",
+        default="all",
+        choices=["all", "hub", "builtin", "local", "external"],
+        help="Filter by source classification (default: all)",
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )

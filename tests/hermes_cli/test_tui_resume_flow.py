@@ -660,6 +660,60 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     }
 
 
+def test_main_top_level_oneshot_forwards_resume_identity(monkeypatch, main_mod):
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes",
+            "-z",
+            "continue this thread",
+            "--resume",
+            "session_exact",
+            "--pass-session-id",
+        ],
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda _cfg, accept_hooks=False: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", _raise_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured["resume"] == "session_exact"
+    assert captured["pass_session_id"] is True
+
+
 def test_exit_after_oneshot_flushes_stdio_and_calls_os_exit(
     monkeypatch, main_mod
 ):

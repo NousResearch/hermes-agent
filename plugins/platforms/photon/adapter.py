@@ -84,6 +84,8 @@ _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
+_NPM_ERROR_LOG = _SIDECAR_DIR / ".photon-npm-error.log"
+_NPM_ERROR_LOG_MAX_CHARS = 300
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
 # install of the pinned spectrum-ts tree normally takes well under a minute;
@@ -129,16 +131,59 @@ def _coerce_port(value: Any, default: int) -> int:
         return default
 
 
+def sidecar_deps_installed() -> bool:
+    """True when spectrum-ts is present under node_modules/.
+
+    Checks the dependency's own directory, not just node_modules/'s
+    existence: npm creates node_modules/ before aborting on ENOSPC, a
+    network timeout, or EACCES, so an empty/partial node_modules/ would
+    otherwise read as "installed". Shared by check_requirements(),
+    _start_sidecar(), and `hermes photon status` so all three agree on
+    what "installed" means.
+    """
+    return (_SIDECAR_DIR / "node_modules" / "spectrum-ts").exists()
+
+
 def check_requirements() -> bool:
     """Return True when both Python deps and the Node sidecar are available."""
     if not HTTPX_AVAILABLE:
+        logger.warning("photon: httpx not installed — pip install httpx")
         return False
     if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
+        logger.warning(
+            "photon: node binary '%s' not found on PATH",
+            os.getenv("PHOTON_NODE_BIN") or "node",
+        )
         return False
-    if not (_SIDECAR_DIR / "node_modules").exists():
-        # spectrum-ts not installed yet — `hermes photon setup` will
-        # install it.  check_fn still returns False so the gateway
-        # surfaces the missing-deps state in `hermes setup` / status.
+    if not sidecar_deps_installed():
+        # spectrum-ts not installed yet, or node_modules/ was partially created
+        # by an aborted npm install (ENOSPC, network timeout, EACCES).
+        # Checking spectrum-ts presence — not just node_modules/ existence —
+        # prevents a false positive where an empty/broken node_modules/ dir
+        # causes check_requirements() to return True while the sidecar crashes
+        # at runtime with an unrelated-looking missing-module error.
+        # DEBUG (not WARNING): this is the normal pre-setup state.
+        # check_fn() is called from multiple hot paths in the core
+        # (load_gateway_config, hermes status, GET /api/status polling) —
+        # WARNING here would spam logs on every probe for unconfigured photon.
+        npm_error = ""
+        try:
+            if _NPM_ERROR_LOG.exists():
+                npm_error = _NPM_ERROR_LOG.read_text(encoding="utf-8").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
+        except OSError:
+            pass
+        if npm_error:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s "
+                "(last npm error: %s) — run: hermes photon setup",
+                _SIDECAR_DIR,
+                npm_error,
+            )
+        else:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s — run: hermes photon setup",
+                _SIDECAR_DIR,
+            )
         return False
     return True
 
@@ -919,7 +964,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
     async def _start_sidecar(self) -> None:
-        if not (_SIDECAR_DIR / "node_modules").exists():
+        if not sidecar_deps_installed():
             raise RuntimeError(
                 f"Photon sidecar deps not installed. Run: "
                 f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"

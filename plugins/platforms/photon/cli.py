@@ -29,8 +29,12 @@ from pathlib import Path
 from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
+from .adapter import _NPM_ERROR_LOG_MAX_CHARS, sidecar_deps_installed
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
+# Written on npm failure so check_requirements() can surface the root cause
+# when called later (gateway start, hermes status). Cleared on success.
+_NPM_ERROR_LOG = _SIDECAR_DIR / ".photon-npm-error.log"
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +314,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # cli.py keeps zero taint flow according to CodeQL.
     photon_auth.print_credential_summary(print)
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
-    sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
+    sidecar_installed = sidecar_deps_installed()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
@@ -383,20 +387,44 @@ def _install_sidecar() -> int:
     # `npm install` when the lockfile is missing or drifted (e.g. a dev
     # checkout mid-upgrade).
     print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
+    # stdout is not captured so npm progress prints to the terminal in real
+    # time. stderr is captured so we can persist the failure reason for
+    # check_requirements() to surface after the process exits.
     proc = subprocess.run(  # noqa: S603
         [npm, "ci"],
         cwd=str(_SIDECAR_DIR),
         check=False,
+        stderr=subprocess.PIPE,
+        text=True,
     )
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
     if proc.returncode != 0:
         print(f"  npm ci failed — falling back to:  {npm} install")
         proc = subprocess.run(  # noqa: S603
             [npm, "install"],
             cwd=str(_SIDECAR_DIR),
             check=False,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+        if proc.stderr:
+            print(proc.stderr, end="", file=sys.stderr)
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
+        # Bound to the same length check_requirements() truncates to on
+        # read, so the log file never holds more than what's ever surfaced.
+        error = (proc.stderr or "").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
+        if error:
+            try:
+                _NPM_ERROR_LOG.write_text(error, encoding="utf-8")
+            except OSError:
+                pass
+    else:
+        try:
+            _NPM_ERROR_LOG.unlink()
+        except OSError:
+            pass
     return proc.returncode
 
 

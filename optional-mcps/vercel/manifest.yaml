@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: vercel
+description: Inspect Vercel projects, deployments, logs, and docs from Hermes.
+source: https://vercel.com/docs/agent-resources/vercel-mcp
+
+# Vercel ships an official remote MCP server with native OAuth over Streamable
+# HTTP. Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh — nothing to install locally. The server is read-only
+# in public beta (no accidental changes to your projects) and shows an OAuth
+# consent screen on every connection.
+transport:
+  type: http
+  url: https://mcp.vercel.com
+
+auth:
+  type: oauth
+  # Native MCP OAuth (case 1), not a third-party provider. The MCP client
+  # triggers the browser flow on the first probe / first connect.
+
+# Tool selection at install time:
+# Vercel's MCP exposes a read-only surface (projects, deployments, logs,
+# docs/search). We leave `default_enabled` unset so the install-time checklist
+# starts with everything pre-checked — users prune what they don't want.
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Vercel.
+  After auth, restart your Hermes session so the Vercel tools are loaded.
+
+  The server is read-only during Vercel's public beta. You can re-run the tool
+  checklist any time with:
+    hermes mcp configure vercel

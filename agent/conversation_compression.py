@@ -373,23 +373,6 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     return _sig is True or isinstance(_sig, str)
 
 
-def _durable_history_matches_snapshot(
-    durable: Any, snapshot: List[Dict[str, Any]]
-) -> bool:
-    """Return whether durable parent rows are the ordered snapshot prefix."""
-    if not isinstance(durable, list) or len(durable) > len(snapshot):
-        return False
-    identity_fields = (
-        "role", "content", "tool_call_id", "tool_calls", "tool_name", "api_content",
-    )
-    for stored, live in zip(durable, snapshot):
-        if not isinstance(stored, dict) or not isinstance(live, dict):
-            return False
-        if any(stored.get(key) != live.get(key) for key in identity_fields):
-            return False
-    return True
-
-
 def _adopt_live_compression_child(
     agent: Any,
     session_db: Any,
@@ -1688,16 +1671,25 @@ def compress_context(
             _lock_refresher.start()
 
         # The caller's history snapshot predates lease acquisition. Reload the
-        # durable parent after the lease is live; any row not represented as the
-        # ordered prefix means a frontend/background writer committed in that
-        # window, so publishing from this snapshot would omit a durable turn.
-        if _lock_db is not None and _lock_sid:
+        # durable parent after the lease is live; MORE durable rows than the
+        # snapshot carries means a frontend/background writer committed a turn
+        # in that window, so publishing from this snapshot would omit it.
+        # Deliberately a LENGTH check, not content equality: in-memory
+        # mutation of past turns is legal (multimodal compression, retry
+        # history replacement, think-tag stripping), and a content-equality
+        # abort would permanently wedge compression on such sessions — the
+        # #14694 failure shape.
+        # Rotation-only: in-place compaction (archive_and_compact) is
+        # non-destructive — pre-compaction rows are soft-archived (active=0,
+        # compacted=1), stay searchable and recoverable, so snapshot/durable
+        # drift cannot lose data there and must not abort compaction.
+        if not in_place and _lock_db is not None and _lock_sid:
             durable_loader = getattr(
                 type(_lock_db), "get_messages_as_conversation", None
             )
             if callable(durable_loader):
                 durable_parent = durable_loader(_lock_db, _lock_sid)
-                if not _durable_history_matches_snapshot(durable_parent, messages):
+                if isinstance(durable_parent, list) and len(durable_parent) > len(messages):
                     logger.warning(
                         "compression aborted: session=%s changed before lease "
                         "acquisition; preserving newer durable messages",

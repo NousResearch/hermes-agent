@@ -160,6 +160,7 @@ class TestSerializePayload:
         assert payload["tool_name"] == "terminal"
         assert payload["tool_input"] == {"command": "ls"}
         assert payload["session_id"] == "sess-1"
+        assert payload["parent_session_id"] is None
         assert "cwd" in payload
         # task_id / tool_call_id end up under extra
         assert payload["extra"]["task_id"] == "t-1"
@@ -178,6 +179,16 @@ class TestSerializePayload:
         )
         payload = json.loads(raw)
         assert payload["session_id"] == "p-1"
+        assert payload["parent_session_id"] == "p-1"
+
+    def test_parent_session_id_exposed_alongside_rotated_head(self):
+        raw = shell_hooks._serialize_payload(
+            "on_session_start",
+            {"session_id": "child-2", "parent_session_id": "root-1"},
+        )
+        payload = json.loads(raw)
+        assert payload["session_id"] == "child-2"
+        assert payload["parent_session_id"] == "root-1"
 
     def test_unserialisable_extras_stringified(self):
         class Weird:

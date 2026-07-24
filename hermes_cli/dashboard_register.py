@@ -32,6 +32,8 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from hermes_cli.urllib_security import open_credentialed_url
+
 
 # Docker-style name generator. Same vibe as Docker's adjective_surname, but
 # adjective_noun with a space-free underscore join so it drops cleanly into a
@@ -138,7 +140,7 @@ def _register_self_hosted_client(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         # The endpoint returns structured JSON errors ({error, error_description}).

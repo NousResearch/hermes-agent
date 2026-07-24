@@ -6,9 +6,11 @@ import base64
 import json
 import time
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import hermes_cli.nous_account as na
 from hermes_cli.nous_account import (
     NousPaidServiceAccessInfo,
     NousPortalAccountInfo,
@@ -632,3 +634,38 @@ def test_topup_url_strips_trailing_slash_and_encodes_slug():
 def test_topup_url_defaults_to_production_portal_for_none():
     url = nous_portal_topup_url(None)
     assert url == "https://portal.nousresearch.com/billing?topup=open"
+
+
+def _fake_http_ok(payload: dict):
+    cm = MagicMock()
+    cm.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+    return cm
+
+
+def test_fetch_nous_account_info_uses_open_credentialed_url_not_raw_urlopen():
+    """_fetch_nous_account_info must route through the safe wrapper.
+
+    Sibling of the security(providers)/fix(security) sweep that migrated
+    providers/base.py, hermes_cli/models.py, hermes_cli/azure_detect.py, and
+    plugins/model-providers/anthropic/__init__.py to
+    hermes_cli.urllib_security.open_credentialed_url — this call site read a
+    caller-supplied ``portal_base_url`` but was not one of them. Patching
+    ``open_credentialed_url`` on pre-fix code (where it isn't imported into
+    this module) raises AttributeError, so this test fails closed against
+    the vulnerable code and only passes once the call site is migrated.
+    """
+    with patch.object(
+        na, "open_credentialed_url", return_value=_fake_http_ok({"id": "acct-1"})
+    ) as mock_open, patch.object(
+        na.urllib.request, "urlopen"
+    ) as mock_urlopen:
+        result = na._fetch_nous_account_info(
+            "tok_abc", portal_base_url="https://portal.example.test"
+        )
+
+    assert result == {"id": "acct-1"}
+    mock_open.assert_called_once()
+    mock_urlopen.assert_not_called()
+    req = mock_open.call_args.args[0]
+    assert req.get_header("Authorization") == "Bearer tok_abc"
+    assert req.full_url == "https://portal.example.test/api/oauth/account"

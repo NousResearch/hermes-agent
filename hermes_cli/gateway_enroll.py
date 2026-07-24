@@ -39,6 +39,8 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
+from hermes_cli.urllib_security import open_credentialed_url
+
 
 def _default_gateway_id() -> str:
     """A stable-ish default gateway instance id: ``<hostname>-<pid-free slug>``.
@@ -127,7 +129,7 @@ def _post_enroll(
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         detail = ""

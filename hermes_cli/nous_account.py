@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
+from hermes_cli.urllib_security import open_credentialed_url
+
 
 NousAccountInfoSource = Literal["jwt", "account_api", "inference_key", "none", "error"]
 
@@ -571,7 +573,7 @@ def _fetch_nous_account_info(
         "Accept": "application/json",
     }
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=8) as resp:
+    with open_credentialed_url(req, timeout=8) as resp:
         payload = json.loads(resp.read().decode())
     return payload if isinstance(payload, dict) else {}
 

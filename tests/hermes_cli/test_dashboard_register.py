@@ -116,7 +116,7 @@ class TestHappyPath:
         ), patch(
             "hermes_cli.config.save_env_value", side_effect=fake_save
         ), patch.object(
-            dr.urllib.request, "urlopen", side_effect=fake_urlopen
+            dr, "open_credentialed_url", side_effect=fake_urlopen
         ):
             dr.cmd_dashboard_register(args)
         return saved
@@ -325,7 +325,7 @@ class TestCustomPortalPersistence:
         ), patch(
             "hermes_cli.config.save_env_value", side_effect=fake_save
         ), patch.object(
-            dr.urllib.request, "urlopen", return_value=_fake_http_ok(response)
+            dr, "open_credentialed_url", return_value=_fake_http_ok(response)
         ):
             # The ambient process env may carry HERMES_DASHBOARD_PORTAL_URL
             # (e.g. staging dev shells); drop it so `custom_portal_supplied`
@@ -447,7 +447,7 @@ class TestPublicUrlPersistence:
         ), patch(
             "hermes_cli.config.save_env_value", side_effect=fake_save
         ), patch.object(
-            dr.urllib.request, "urlopen", return_value=_fake_http_ok(response)
+            dr, "open_credentialed_url", return_value=_fake_http_ok(response)
         ):
             dr.os.environ.pop("HERMES_DASHBOARD_PORTAL_URL", None)
             dr.cmd_dashboard_register(args)
@@ -541,7 +541,7 @@ class TestPublicUrlPersistence:
         ), patch(
             "hermes_cli.config.save_env_value", side_effect=fake_save
         ), patch.object(
-            dr.urllib.request, "urlopen", return_value=_fake_http_ok(response)
+            dr, "open_credentialed_url", return_value=_fake_http_ok(response)
         ):
             dr.os.environ.pop("HERMES_DASHBOARD_PORTAL_URL", None)
             dr.cmd_dashboard_register(
@@ -596,7 +596,7 @@ class TestPortalErrors:
             "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
         ), patch("hermes_cli.config.is_managed", return_value=False), patch.object(
             dr, "_resolve_portal_base_url", return_value="https://portal.nousresearch.com"
-        ), patch.object(dr.urllib.request, "urlopen", side_effect=err):
+        ), patch.object(dr, "open_credentialed_url", side_effect=err):
             with pytest.raises(SystemExit) as exc:
                 dr.cmd_dashboard_register(_ns())
         return exc.value.code

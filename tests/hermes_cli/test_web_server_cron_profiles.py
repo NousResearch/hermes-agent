@@ -785,3 +785,112 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+class TestCronJobsCrossProfileDedup:
+    """Regression tests for issue #51721: GET /api/cron/jobs (profile=all)
+    aggregated jobs from every profile without deduplication -- a job copied
+    into a second profile's cron/jobs.json during profile creation showed up
+    twice. Uses real cron.jobs storage (create_job + direct jobs.json
+    manipulation for the id-less case), not a mocked/dict-projected list, so
+    these actually exercise cron.jobs._normalize_job_record()'s real "unknown"
+    sentinel behavior.
+    """
+
+    def _read_jobs_file(self, home):
+        import json
+        path = home / "cron" / "jobs.json"
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def _write_jobs_file(self, home, jobs):
+        import json
+        path = home / "cron" / "jobs.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(jobs))
+
+    def test_shared_id_default_profile_copy_wins(self, isolated_profiles):
+        """The same job id in both profiles: the default profile's copy
+        must be the one that survives, regardless of which profile's list
+        was appended first during aggregation."""
+        from hermes_cli import web_server
+
+        default_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_alpha"]
+
+        # Same id, different prompt, so we can tell which copy survived.
+        self._write_jobs_file(default_home, [{
+            "id": "shared-job-1", "name": "shared", "prompt": "DEFAULT COPY",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+        self._write_jobs_file(worker_home, [{
+            "id": "shared-job-1", "name": "shared", "prompt": "WORKER COPY",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+
+        result = web_server._list_cron_jobs_sync("all")
+        matches = [j for j in result if j.get("id") == "shared-job-1"]
+
+        assert len(matches) == 1, f"Duplicate not resolved: {matches}"
+        assert matches[0]["prompt"] == "DEFAULT COPY", (
+            "Default profile's copy must always win, got: " + str(matches[0])
+        )
+        assert matches[0]["is_default_profile"] is True
+
+    def test_unique_ids_all_kept(self, isolated_profiles):
+        from hermes_cli import web_server
+
+        default_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_alpha"]
+        self._write_jobs_file(default_home, [{
+            "id": "job-a", "name": "a", "prompt": "a",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+        self._write_jobs_file(worker_home, [{
+            "id": "job-b", "name": "b", "prompt": "b",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+
+        result = web_server._list_cron_jobs_sync("all")
+        ids = {j.get("id") for j in result}
+
+        assert ids == {"job-a", "job-b"}
+
+    def test_idless_records_from_different_profiles_both_preserved(
+        self, isolated_profiles
+    ):
+        """Regression (review of #51764): cron.jobs._normalize_job_record()
+        fills a missing id with the literal sentinel string "unknown" before
+        this data reaches the aggregation logic. Two genuinely DIFFERENT
+        id-less jobs (e.g. hand-edited or pre-id-field legacy records) from
+        different profiles both normalize to id="unknown" -- a naive
+        by-id dedup would wrongly collapse them into one. Both must survive."""
+        from hermes_cli import web_server
+
+        default_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_alpha"]
+        # No "id" field at all -- matches a hand-edited/legacy record, which
+        # _normalize_job_record's docstring explicitly says it must tolerate.
+        self._write_jobs_file(default_home, [{
+            "name": "legacy-default", "prompt": "legacy job in default",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+        self._write_jobs_file(worker_home, [{
+            "name": "legacy-worker", "prompt": "legacy job in worker",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+
+        result = web_server._list_cron_jobs_sync("all")
+        prompts = {j.get("prompt") for j in result}
+
+        assert "legacy job in default" in prompts, (
+            f"An id-less record must not be dropped or collapsed: {result}"
+        )
+        assert "legacy job in worker" in prompts, (
+            f"Both id-less records (from different profiles) must survive "
+            f"-- they must NOT collapse under the shared 'unknown' sentinel: {result}"
+        )
+        unknown_id_jobs = [j for j in result if j.get("id") == "unknown"]
+        assert len(unknown_id_jobs) == 2, (
+            f"Both id-less jobs normalize to id='unknown' but must remain "
+            f"as 2 separate entries, not deduplicated: {unknown_id_jobs}"
+        )

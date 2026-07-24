@@ -273,7 +273,12 @@ class RealtimeSpeaker:
             if not isinstance(entry, dict):
                 continue
             if "id" not in entry:
-                entry["id"] = str(uuid.uuid4())
+                # Derive a *stable* id from the line content. A fresh uuid4
+                # per read meant run_until_stopped's post-speak drop-by-id
+                # never matched (each _read_queue minted a different id), so
+                # an id-less entry — e.g. one written by the `say` producer as
+                # {"text": ..., "ts": ...} — was spoken twice before removal.
+                entry["id"] = str(uuid.uuid5(uuid.NAMESPACE_OID, line))
             out.append(entry)
         return out
 

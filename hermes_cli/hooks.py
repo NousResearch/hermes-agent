@@ -97,6 +97,15 @@ def _cmd_list(_args) -> None:
                             f"(was {mtime_at}, now {mtime_now}) — "
                             f"run `hermes hooks doctor` to re-validate"
                         )
+                    stored_hash = entry.get("script_content_hash")
+                    if stored_hash:
+                        current_hash = shell_hooks._script_content_hash(spec.command)
+                        if current_hash and current_hash != stored_hash:
+                            print(
+                                "      ⚠ script content hash mismatch — "
+                                "hook will be blocked at runtime. "
+                                "run `hermes hooks doctor` to re-validate"
+                            )
         print()
 
 
@@ -354,6 +363,19 @@ def _doctor_one(spec, shell_hooks) -> int:
                   f"then `hermes hooks revoke` + re-approve to refresh")
         elif mtime_now and mtime_at and mtime_now == mtime_at:
             print("      ✓ script unchanged since approval")
+
+    # 3b. Content hash drift (stronger than mtime — catches edits that
+    # preserve mtime, e.g. copy-overwrite)
+    if entry and entry.get("script_content_hash"):
+        stored_hash = entry["script_content_hash"]
+        current_hash = shell_hooks._script_content_hash(spec.command)
+        if current_hash and current_hash != stored_hash:
+            problems += 1
+            print("      ⚠ script content changed since approval "
+                  "(hash mismatch) — hook will be blocked at runtime. "
+                  "`hermes hooks revoke` + re-approve to refresh")
+        elif current_hash and current_hash == stored_hash:
+            print("      ✓ script content hash matches approval")
 
     # 4. Produces valid JSON for a synthetic payload — only when the entry
     # is already allowlisted.  Otherwise `hermes hooks doctor` would execute

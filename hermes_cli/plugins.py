@@ -171,6 +171,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Slack App Home view provider. Fired when a user opens the app's Home tab.
+    # Callbacks receive user_id, team_id, and the raw Slack event, and may return
+    # one complete ``views.publish`` home-view dict. The Slack adapter publishes
+    # the first valid result; no registered provider leaves the tab untouched.
+    "slack_app_home_opened",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.

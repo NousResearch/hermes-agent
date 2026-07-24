@@ -3915,7 +3915,45 @@ class TestAssistantThreadLifecycle:
         assistant_adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_app_home_non_messages_tab_is_ignored(
+    async def test_app_home_home_tab_publishes_first_plugin_view(
+        self, assistant_adapter, mock_session_store
+    ):
+        assistant_adapter._team_clients["T_TEAM"] = MagicMock()
+        assistant_adapter._team_clients["T_TEAM"].views_publish = AsyncMock()
+        event = {
+            "type": "app_home_opened",
+            "tab": "home",
+            "team": "T_TEAM",
+            "channel": "D123",
+            "user": "U_USER",
+        }
+
+        view = {
+            "type": "home",
+            "blocks": [{"type": "header", "text": {"type": "plain_text", "text": "Support"}}],
+        }
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[view, {"type": "home", "blocks": []}],
+        ) as invoke_hook:
+            await assistant_adapter._handle_app_home_opened(event)
+
+        mock_session_store.get_or_create_session.assert_not_called()
+        assistant_adapter.handle_message.assert_not_called()
+        invoke_hook.assert_called_once_with(
+            "slack_app_home_opened",
+            user_id="U_USER",
+            team_id="T_TEAM",
+            event=event,
+        )
+        assistant_adapter._team_clients["T_TEAM"].views_publish.assert_awaited_once_with(
+            user_id="U_USER",
+            view=view,
+        )
+
+    @pytest.mark.asyncio
+    async def test_app_home_home_tab_without_plugin_is_ignored(
         self, assistant_adapter, mock_session_store
     ):
         event = {
@@ -3926,7 +3964,8 @@ class TestAssistantThreadLifecycle:
             "user": "U_USER",
         }
 
-        await assistant_adapter._handle_app_home_opened(event)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            await assistant_adapter._handle_app_home_opened(event)
 
         mock_session_store.get_or_create_session.assert_not_called()
         assistant_adapter.handle_message.assert_not_called()

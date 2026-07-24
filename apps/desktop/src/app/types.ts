@@ -33,11 +33,12 @@ export interface FileAttachResponse {
   message?: string
   // Gateway-side absolute path the file was staged to.
   path?: string
-  // Workspace-relative path used to build ref_text.
+  // Path used to build ref_text; normally workspace-relative, absolute for
+  // fallback staging.
   ref_path?: string
-  // Rewritten @file: ref that resolves on the gateway (workspace-relative).
+  // Rewritten @file: ref that resolves on the gateway.
   ref_text?: string
-  // True when bytes/host file were copied into the session workspace.
+  // True when bytes/host file were copied into session attachment storage.
   uploaded?: boolean
   name?: string
 }

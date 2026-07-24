@@ -9,7 +9,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 from agent.model_metadata import estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
@@ -110,6 +110,7 @@ def preprocess_context_references(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
+    extra_allowed_file_roots: Iterable[str | Path] | None = None,
 ) -> ContextReferenceResult:
     coro = preprocess_context_references_async(
         message,
@@ -117,6 +118,7 @@ def preprocess_context_references(
         context_length=context_length,
         url_fetcher=url_fetcher,
         allowed_root=allowed_root,
+        extra_allowed_file_roots=extra_allowed_file_roots,
     )
     # Safe for both CLI (no loop) and gateway (loop already running).
     try:
@@ -137,6 +139,7 @@ async def preprocess_context_references_async(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
+    extra_allowed_file_roots: Iterable[str | Path] | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -148,6 +151,7 @@ async def preprocess_context_references_async(
     allowed_root_path = (
         Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
     )
+    extra_file_root_paths = _normalize_extra_allowed_roots(extra_allowed_file_roots)
     warnings: list[str] = []
     blocks: list[str] = []
     injected_tokens = 0
@@ -165,6 +169,7 @@ async def preprocess_context_references_async(
                 cwd_path,
                 url_fetcher=url_fetcher,
                 allowed_root=allowed_root_path,
+                extra_allowed_file_roots=extra_file_root_paths,
             )
             for ref in refs
         )
@@ -221,10 +226,15 @@ async def _expand_reference(
     *,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: Path | None = None,
+    extra_allowed_file_roots: list[Path] | None = None,
 ) -> tuple[str | None, str | None]:
     try:
         if ref.kind == "file":
-            return _expand_file_reference(ref, cwd, allowed_root=allowed_root)
+            file_roots = []
+            if allowed_root is not None:
+                file_roots.append(allowed_root)
+            file_roots.extend(extra_allowed_file_roots or [])
+            return _expand_file_reference(ref, cwd, allowed_roots=file_roots)
         if ref.kind == "folder":
             return _expand_folder_reference(ref, cwd, allowed_root=allowed_root)
         if ref.kind == "diff":
@@ -249,9 +259,9 @@ def _expand_file_reference(
     ref: ContextReference,
     cwd: Path,
     *,
-    allowed_root: Path | None = None,
+    allowed_roots: list[Path] | None = None,
 ) -> tuple[str | None, str | None]:
-    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    path = _resolve_path(cwd, ref.target, allowed_roots=allowed_roots)
     _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: file not found", None
@@ -259,8 +269,8 @@ def _expand_file_reference(
         return f"{ref.raw}: path is not a file", None
     if _is_binary_file(path):
         # A binary file can't be inlined as text, but it IS on disk (the agent's
-        # tools run where this resolves — the local cwd, or the staged copy in a
-        # remote session workspace). Returning a bare "not supported" warning
+        # tools run where this resolves — the local cwd, or the gateway's staged
+        # attachment storage). Returning a bare "not supported" warning
         # with no content was a dead end: the model saw a failure and gave up
         # (told the user the file type wasn't supported). Instead, hand it an
         # actionable block — the path, type, size, and a nudge to use its tools —
@@ -285,7 +295,11 @@ def _expand_folder_reference(
     *,
     allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
-    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    path = _resolve_path(
+        cwd,
+        ref.target,
+        allowed_roots=[allowed_root] if allowed_root is not None else None,
+    )
     _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: folder not found", None
@@ -348,17 +362,30 @@ async def _default_url_fetcher(url: str) -> str:
     return str(doc.get("content") or doc.get("raw_content") or "").strip()
 
 
-def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+def _normalize_extra_allowed_roots(
+    roots: Iterable[str | Path] | None = None,
+) -> list[Path]:
+    if roots is None:
+        return []
+    if isinstance(roots, (str, Path)):
+        return [Path(roots).expanduser().resolve()]
+    return [Path(root).expanduser().resolve() for root in roots]
+
+
+def _resolve_path(cwd: Path, target: str, *, allowed_roots: list[Path] | None = None) -> Path:
     path = Path(os.path.expanduser(target))
     if not path.is_absolute():
         path = cwd / path
     resolved = path.resolve()
-    if allowed_root is not None:
+    if allowed_roots is None:
+        return resolved
+    for allowed_root in allowed_roots:
         try:
             resolved.relative_to(allowed_root)
-        except ValueError as exc:
-            raise ValueError("path is outside the allowed workspace") from exc
-    return resolved
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError("path is outside the allowed workspace")
 
 
 def _ensure_reference_path_allowed(path: Path) -> None:

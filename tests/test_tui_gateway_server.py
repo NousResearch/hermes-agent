@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import subprocess
@@ -1932,8 +1933,10 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     assert "post-compression reply" in texts
 
 
-def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
+def test_session_resume_passes_stored_runtime_to_agent(monkeypatch, tmp_path):
     captured = {}
+    hermes_home = tmp_path / "hermes-home"
+    fallback_root = hermes_home / "desktop-attachments" / "remembered"
 
     class FakeDB:
         def get_session(self, target):
@@ -1941,7 +1944,15 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "id": target,
                 "model": "gpt-5.4",
                 "billing_provider": "openai-codex",
-                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
+                "model_config": json.dumps(
+                    {
+                        "reasoning_config": {"enabled": True, "effort": "high"},
+                        "service_tier": "priority",
+                        "base_url": "https://custom.example/v1",
+                        "api_mode": "chat_completions",
+                        "_desktop_attachment_fallback_roots": [str(fallback_root)],
+                    }
+                ),
             }
 
         def reopen_session(self, target):
@@ -1964,13 +1975,17 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         return types.SimpleNamespace(model="gpt-5.4", provider="openai-codex")
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
 
-    def fake_init_session(sid, key, agent, history, cols=80, **_kwargs):
+    def fake_init_session(sid, key, agent, history, cols=80, **kwargs):
+        captured["desktop_attachment_fallback_roots"] = kwargs.get(
+            "desktop_attachment_fallback_roots"
+        )
         server._sessions[sid] = {"agent": agent, "session_key": key}
 
     monkeypatch.setattr(server, "_init_session", fake_init_session)
@@ -1992,6 +2007,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert captured["provider_override"] == "openai-codex"
     assert captured["reasoning_config_override"] == {"enabled": True, "effort": "high"}
     assert captured["service_tier_override"] == "priority"
+    assert captured["desktop_attachment_fallback_roots"] == [str(fallback_root)]
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
@@ -6473,7 +6489,7 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert captured["session_key"] == "session-key"
 
 
-def test_prompt_submit_expands_context_refs(monkeypatch):
+def test_prompt_submit_expands_context_refs(monkeypatch, tmp_path):
     captured = {}
 
     class _Agent:
@@ -6497,20 +6513,33 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         def start(self):
             self._target()
 
-    fake_ctx = types.ModuleType("agent.context_references")
-    fake_ctx.preprocess_context_references = (
-        lambda message, **kwargs: types.SimpleNamespace(
+    def fake_preprocess_context_references(message, **kwargs):
+        captured["context_kwargs"] = kwargs
+        return types.SimpleNamespace(
             blocked=False,
             message="expanded prompt",
             warnings=[],
             references=[],
             injected_tokens=0,
         )
-    )
+
+    fake_ctx = types.ModuleType("agent.context_references")
+    fake_ctx.preprocess_context_references = fake_preprocess_context_references
     fake_meta = types.ModuleType("agent.model_metadata")
     fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    remembered_root = hermes_home / "desktop-attachments" / "remembered"
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        cwd=str(workspace),
+        profile_home=str(hermes_home),
+        desktop_attachment_fallback_roots=[str(remembered_root)],
+    )
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
@@ -6527,6 +6556,60 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     )
 
     assert captured["prompt"] == "expanded prompt"
+    context_kwargs = captured["context_kwargs"]
+    assert Path(context_kwargs["allowed_root"]).resolve() == workspace.resolve()
+    assert [
+        Path(root).resolve() for root in context_kwargs["extra_allowed_file_roots"]
+    ] == [
+        remembered_root.resolve()
+    ]
+
+
+def test_desktop_attachment_fallback_dir_is_session_scoped(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+
+    first = _session(cwd=str(workspace), session_key="session-a")
+    second = _session(cwd=str(workspace), session_key="session-b")
+
+    first_dir = server._desktop_attachment_fallback_dir(first)
+    second_dir = server._desktop_attachment_fallback_dir(second)
+    assert first_dir != second_dir
+
+
+def test_desktop_attachment_fallback_roots_persist_in_session_metadata(tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    root = hermes_home / "desktop-attachments" / "remembered"
+    calls = []
+
+    class _DB:
+        def get_session(self, session_key):
+            assert session_key == "session-key"
+            return {"model_config": '{"provider":"openai-codex"}'}
+
+        def update_session_meta(self, session_key, model_config, model):
+            calls.append((session_key, json.loads(model_config), model))
+
+    session = _session(
+        agent=types.SimpleNamespace(_session_db=_DB()),
+        profile_home=str(hermes_home),
+    )
+
+    server._remember_desktop_attachment_fallback_dir(session, root)
+
+    assert calls == [
+        (
+            "session-key",
+            {
+                "provider": "openai-codex",
+                "_desktop_attachment_fallback_roots": [str(root.resolve())],
+            },
+            None,
+        )
+    ]
 
 
 def test_image_attach_appends_local_image(monkeypatch):
@@ -6620,6 +6703,259 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         assert resp["result"]["path"] == str(stored)
         assert resp["result"]["ref_text"] == "@file:.hermes/desktop-attachments/report.txt"
         assert stored.read_text(encoding="utf-8") == "hello world"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_falls_back_to_hermes_home_when_workspace_is_read_only(monkeypatch, tmp_path):
+    """Remote gateway case: session cwd exists but cannot accept .hermes uploads."""
+    workspace = tmp_path / "readonly-workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    blocked_root = workspace / ".hermes" / "desktop-attachments"
+    original_mkdir = Path.mkdir
+
+    def fake_mkdir(self, *args, **kwargs):
+        if self == blocked_root:
+            raise PermissionError("read-only workspace")
+        return original_mkdir(self, *args, **kwargs)
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+
+        stored = Path(resp["result"]["path"])
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert stored.is_relative_to(hermes_home.resolve() / "desktop-attachments")
+        assert stored.name == "report.txt"
+        assert resp["result"]["ref_text"] == f"@file:{stored}"
+        assert stored.read_text(encoding="utf-8") == "hello world"
+        assert not blocked_root.exists()
+
+        from agent.context_references import preprocess_context_references
+
+        ctx = preprocess_context_references(
+            resp["result"]["ref_text"],
+            cwd=workspace,
+            allowed_root=workspace,
+            extra_allowed_file_roots=server._desktop_attachment_allowed_file_roots(
+                server._sessions["sid"]
+            ),
+            context_length=100_000,
+        )
+        assert ctx.blocked is False
+        assert "hello world" in ctx.message
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_fallback_ref_survives_session_key_and_cwd_change(monkeypatch, tmp_path):
+    workspace = tmp_path / "readonly-workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    blocked_root = workspace / ".hermes" / "desktop-attachments"
+    original_mkdir = Path.mkdir
+    captured = {}
+
+    def fake_mkdir(self, *args, **kwargs):
+        if self == blocked_root:
+            raise PermissionError("read-only workspace")
+        return original_mkdir(self, *args, **kwargs)
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+        provider = ""
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    import agent.model_metadata as model_metadata
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        cwd=str(workspace),
+        profile_home=str(hermes_home),
+    )
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *args, **kwargs: 100_000,
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        attach = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+        next_workspace = tmp_path / "next-workspace"
+        next_workspace.mkdir()
+        server._sessions["sid"]["session_key"] = "new-session-key"
+        server._sessions["sid"]["cwd"] = str(next_workspace)
+        server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": f'{attach["result"]["ref_text"]}\n\nsummarize',
+                },
+            }
+        )
+
+        assert "hello world" in captured["prompt"]
+        assert "outside the allowed workspace" not in captured["prompt"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_falls_back_on_read_only_filesystem_oserror(monkeypatch, tmp_path):
+    workspace = tmp_path / "readonly-workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    blocked_root = workspace / ".hermes" / "desktop-attachments"
+    original_mkdir = Path.mkdir
+
+    def fake_mkdir(self, *args, **kwargs):
+        if self == blocked_root:
+            raise OSError(errno.EROFS, "Read-only file system", str(self))
+        return original_mkdir(self, *args, **kwargs)
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8=",
+                },
+            }
+        )
+
+        stored = Path(resp["result"]["path"])
+        assert resp["result"]["attached"] is True
+        assert stored.is_relative_to(hermes_home.resolve() / "desktop-attachments")
+        assert stored.read_text(encoding="utf-8") == "hello"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_falls_back_when_workspace_attachment_write_is_denied(monkeypatch, tmp_path):
+    workspace = tmp_path / "readonly-workspace"
+    workspace.mkdir()
+    blocked_root = workspace / ".hermes" / "desktop-attachments"
+    blocked_root.mkdir(parents=True)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    original_write_bytes = Path.write_bytes
+
+    def fake_write_bytes(self, data):
+        try:
+            self.relative_to(blocked_root)
+        except ValueError:
+            return original_write_bytes(self, data)
+        raise PermissionError("workspace attachment dir is read-only")
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(Path, "write_bytes", fake_write_bytes)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8=",
+                },
+            }
+        )
+
+        stored = Path(resp["result"]["path"])
+        assert resp["result"]["attached"] is True
+        assert stored.is_relative_to(hermes_home.resolve() / "desktop-attachments")
+        assert stored.read_text(encoding="utf-8") == "hello"
+        assert not (blocked_root / "report.txt").exists()
     finally:
         server._sessions.pop("sid", None)
 

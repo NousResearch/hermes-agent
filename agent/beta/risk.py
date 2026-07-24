@@ -79,12 +79,17 @@ def classify_risk(
             return RiskLevel.LOW
         tool_name = effective_tool
 
-    if tool_name in _HIGH_TOOLS or _HIGH_ACTION.search(action):
+    # Explicitly destructive language always wins. Explicitly read-only language
+    # may lower a normally sensitive tool, while unknown operations remain
+    # conservatively classified by the tool itself.
+    if _HIGH_ACTION.search(action):
+        return RiskLevel.HIGH
+    if _READ_ONLY.search(action):
+        return RiskLevel.LOW
+    if tool_name in _HIGH_TOOLS:
         return RiskLevel.HIGH
     if tool_name in _MEDIUM_TOOLS or _MEDIUM_ACTION.search(action):
         return RiskLevel.MEDIUM
-    if _READ_ONLY.search(action):
-        return RiskLevel.LOW
     return RiskLevel.LOW
 
 

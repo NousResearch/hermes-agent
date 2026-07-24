@@ -9,6 +9,11 @@ def test_read_only_logs_are_low_risk():
     assert classify_risk("Read service logs", "terminal") == RiskLevel.LOW
 
 
+def test_terminal_destructive_and_unknown_actions_remain_high_risk():
+    assert classify_risk("Restart PostgreSQL", "terminal") == RiskLevel.HIGH
+    assert classify_risk("Run maintenance command", "terminal") == RiskLevel.HIGH
+
+
 def test_restart_is_blocked_before_delegation_without_approval():
     decision = route_request("Reinicie o PostgreSQL no servidor db-1")
     task = create_delegation_tasks("Reinicie o PostgreSQL no servidor db-1", decision)[0]

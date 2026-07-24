@@ -1214,6 +1214,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to ``blocked`` for a human. Preserved across unblock so a re-block for
     -- the SAME kind can be recognised as a loop.
     block_kind           TEXT,
+    -- Durable authority bit for canonical worker/operator blocks. Unlike
+    -- ``block_kind`` this is cleared only by repository-owned release paths.
+    -- A DB trigger rejects blocked -> ready/running updates that leave it set,
+    -- so raw bridge SQL cannot erase the visible block fields first and append
+    -- a bridge receipt afterward.
+    operator_blocked     INTEGER NOT NULL DEFAULT 0,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
     -- same truly-blocked reason after having been unblocked. When it reaches
     -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
@@ -2362,6 +2368,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # generic human blocker — same behaviour they had before the column.
         _add_column_if_missing(conn, "tasks", "block_kind", "block_kind TEXT")
 
+    if "operator_blocked" not in cols:
+        # Canonical worker/operator blocks need a durable DB-authority bit.
+        # The legacy event log is backfilled below before the guard trigger is
+        # installed, so already-blocked rows are protected on first upgrade.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "operator_blocked",
+            "operator_blocked INTEGER NOT NULL DEFAULT 0",
+        )
+
     if "block_recurrences" not in cols:
         # Unblock-loop counter. Existing rows start at 0, so the loop breaker
         # only begins counting from the first re-block after this migration.
@@ -2484,6 +2501,134 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
     _rebuild_drifted_tables(conn)
+    _install_operator_block_guard(conn)
+
+
+_OPERATOR_BLOCK_GUARD_TRIGGER = "trg_tasks_operator_block_guard"
+
+
+def _install_operator_block_guard(conn: sqlite3.Connection) -> None:
+    """Backfill and install the DB-level canonical-block transition guard.
+
+    ``kanban_bridge_state.py`` and other broker clients can execute raw SQL,
+    bypassing Python transition helpers entirely. The durable
+    ``operator_blocked`` bit is therefore enforced by SQLite itself: changing
+    a protected row to ``ready`` or ``running`` without clearing that bit in
+    the same authoritative update aborts the whole transaction before a later
+    bridge event can make the rewrite look legitimate.
+
+    Upgrade custody uses all surviving durable evidence. A classified blocked
+    row is fail-closed unless it is demonstrably owned by an active bridge
+    lifecycle or by circuit-breaker failure evidence. In particular, a latest
+    ``task_runs.outcome='blocked'`` preserves a canonical re-block when recovery
+    lost only its newest ``blocked`` event but older block/unblock history
+    survived. A failure run is considered current only when the task row still
+    carries a matching failure counter and error; a stale crash run alone is
+    ambiguous and therefore remains an operator gate.
+    """
+    task_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    if not {"status", "block_kind", "operator_blocked"} <= task_columns:
+        # Some migration-unit harnesses intentionally construct only the
+        # additive columns. Real Kanban schemas always have these base fields;
+        # skip guard installation rather than making the additive pass depend
+        # on a synthetic table being otherwise complete.
+        return
+
+    conn.execute(
+        """
+        WITH block_evidence AS (
+            SELECT
+                t.id,
+                t.block_kind,
+                t.consecutive_failures,
+                t.last_failure_error,
+                COALESCE(MAX(CASE WHEN e.kind = 'blocked' THEN e.id END), 0)
+                    AS canonical_block,
+                COALESCE(MAX(CASE WHEN e.kind = 'unblocked' THEN e.id END), 0)
+                    AS canonical_unblock,
+                COALESCE(MAX(CASE WHEN e.kind = 'bridge_blocked' THEN e.id END), 0)
+                    AS bridge_block,
+                COALESCE(MAX(CASE
+                    WHEN e.kind IN ('bridge_requeued', 'bridge_dispatched')
+                    THEN e.id END), 0) AS bridge_clear,
+                COALESCE(MAX(CASE WHEN e.kind = 'gave_up' THEN e.id END), 0)
+                    AS gave_up,
+                (
+                    SELECT r.outcome
+                      FROM task_runs r
+                     WHERE r.task_id = t.id
+                     ORDER BY r.id DESC
+                     LIMIT 1
+                ) AS latest_run_outcome,
+                (
+                    SELECT r.error
+                      FROM task_runs r
+                     WHERE r.task_id = t.id
+                     ORDER BY r.id DESC
+                     LIMIT 1
+                ) AS latest_run_error
+              FROM tasks t
+              LEFT JOIN task_events e
+                ON e.task_id = t.id
+               AND e.kind IN (
+                   'blocked', 'unblocked', 'bridge_blocked',
+                   'bridge_requeued', 'bridge_dispatched', 'gave_up'
+               )
+             WHERE t.status = 'blocked'
+               AND t.operator_blocked = 0
+             GROUP BY
+                 t.id, t.block_kind, t.consecutive_failures,
+                 t.last_failure_error
+        )
+        UPDATE tasks
+           SET operator_blocked = 1
+         WHERE id IN (
+             SELECT id
+               FROM block_evidence
+              WHERE canonical_block > canonical_unblock
+                 OR (
+                     block_kind IN ('needs_input', 'capability', 'transient')
+                     AND bridge_block <= MAX(bridge_clear, canonical_unblock)
+                     AND NOT (
+                         gave_up > MAX(
+                             canonical_block, canonical_unblock,
+                             bridge_block, bridge_clear
+                         )
+                         OR (
+                             COALESCE(consecutive_failures, 0) > 0
+                             AND last_failure_error IS NOT NULL
+                             AND latest_run_error = last_failure_error
+                             AND latest_run_outcome IN (
+                                 'gave_up', 'spawn_failed', 'crashed',
+                                 'timed_out', 'failed'
+                             )
+                         )
+                     )
+                 )
+         )
+        """
+    )
+    # Recreate rather than CREATE IF NOT EXISTS so upgrades cannot retain an
+    # older trigger body under the same stable schema-object name.
+    conn.execute(f"DROP TRIGGER IF EXISTS {_OPERATOR_BLOCK_GUARD_TRIGGER}")
+    conn.execute(
+        f"""
+        CREATE TRIGGER {_OPERATOR_BLOCK_GUARD_TRIGGER}
+        BEFORE UPDATE OF status ON tasks
+        FOR EACH ROW
+        WHEN OLD.operator_blocked = 1
+         AND NEW.operator_blocked = 1
+         AND NEW.status IN ('ready', 'running')
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'operator-blocked task requires authoritative unblock'
+            );
+        END
+        """
+    )
 
 
 # Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
@@ -3868,6 +4013,9 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       ``hermes kanban block <id>``).  This is a deliberate handoff that
       should stay blocked until an operator unblocks it.  The block tool
       emits a ``"blocked"`` event row in ``task_events``.
+      Out-of-process bridge workers use the equivalent ``"bridge_blocked"``
+      transition and clear it with ``"bridge_requeued"`` or
+      ``"bridge_dispatched"``.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
@@ -3875,24 +4023,80 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       automatically once the underlying conditions change (e.g. parents
       finish, transient infra error clears).
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
-
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Canonical and bridge lifecycles are independent: only ``unblocked``
+    clears a canonical block, while a bridge block is cleared by a later
+    bridge clear transition or by ``unblocked``.  A persisted, non-dependency
+    ``block_kind`` is a fail-closed fallback when recovery preserved the task
+    row but lost its sticky event. Because explicit unblock preserves that
+    classification for recurrence detection, a later circuit-breaker row is
+    distinguished by its latest failure-run or ``gave_up`` evidence and keeps
+    the pre-#28712 auto-recover semantics.
     """
+    task = conn.execute(
+        "SELECT status, block_kind, operator_blocked, "
+        "consecutive_failures, last_failure_error "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task and bool(task["operator_blocked"]):
+        return True
+
     row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "SELECT "
+        "MAX(CASE WHEN kind = 'blocked' THEN id END) AS canonical_block, "
+        "MAX(CASE WHEN kind = 'unblocked' THEN id END) AS canonical_unblock, "
+        "MAX(CASE WHEN kind = 'bridge_blocked' THEN id END) AS bridge_block, "
+        "MAX(CASE WHEN kind IN ('bridge_requeued', 'bridge_dispatched') "
+        "THEN id END) AS bridge_clear, "
+        "MAX(CASE WHEN kind = 'gave_up' THEN id END) AS gave_up "
+        "FROM task_events "
+        "WHERE task_id = ? AND kind IN "
+        "('blocked', 'unblocked', 'bridge_blocked', "
+        "'bridge_requeued', 'bridge_dispatched', 'gave_up')",
+        (task_id,),
+    ).fetchone()
+    canonical_block = int(row["canonical_block"] or 0)
+    canonical_unblock = int(row["canonical_unblock"] or 0)
+    bridge_block = int(row["bridge_block"] or 0)
+    bridge_clear = int(row["bridge_clear"] or 0)
+    gave_up = int(row["gave_up"] or 0)
+
+    if canonical_block > canonical_unblock:
+        return True
+    if bridge_block > max(bridge_clear, canonical_unblock):
+        return True
+
+    classified_recovery = bool(
+        task
+        and task["status"] == "blocked"
+        and task["block_kind"] in (VALID_BLOCK_KINDS - {"dependency"})
+    )
+    if not classified_recovery:
+        return False
+
+    latest_run = conn.execute(
+        "SELECT outcome, error FROM task_runs WHERE task_id = ? "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    latest_outcome = latest_run["outcome"] if latest_run else None
+    if gave_up > max(
+        canonical_block, canonical_unblock, bridge_block, bridge_clear,
+    ):
+        return False
+    if (
+        latest_outcome in {
+            "gave_up", "spawn_failed", "crashed", "timed_out", "failed",
+        }
+        and int(task["consecutive_failures"] or 0) > 0
+        and task["last_failure_error"] is not None
+        and latest_run["error"] == task["last_failure_error"]
+    ):
+        return False
+
+    # Recovery preserved a classified blocked row but no authoritative release
+    # or circuit-breaker evidence. Ambiguity is an operator gate: fail closed.
+    return True
 
 
 def recompute_ready(
@@ -4678,6 +4882,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
+                       operator_blocked = 0,
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
@@ -4695,6 +4900,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
+                       operator_blocked = 0,
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
@@ -5446,7 +5652,8 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       block_kind    = ?,
+                       operator_blocked = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -5500,7 +5707,8 @@ def block_task(
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?,
-                       block_recurrences = ?
+                       block_recurrences = ?,
+                       operator_blocked = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -5539,7 +5747,8 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           operator_blocked = 1
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                     """,
@@ -5554,7 +5763,8 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           operator_blocked = 1
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                        AND current_run_id = ?
@@ -5624,6 +5834,12 @@ def promote_task(
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
             f"'todo' or 'blocked'"
+        )
+
+    if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+        return False, (
+            f"task {task_id} is explicitly blocked; use unblock so the "
+            "canonical operator block is released atomically"
         )
 
     if not force:
@@ -5717,6 +5933,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "operator_blocked = 0, "
             "consecutive_failures = 0, last_failure_error = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
@@ -6056,7 +6273,7 @@ def decompose_triage_task(
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
-            "UPDATE tasks SET status = 'archived', "
+            "UPDATE tasks SET status = 'archived', operator_blocked = 0, "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),

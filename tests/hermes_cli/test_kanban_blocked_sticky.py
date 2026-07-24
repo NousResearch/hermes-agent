@@ -13,6 +13,7 @@ These tests pin down:
 
 * Worker / operator-initiated blocks are sticky and survive
   ``recompute_ready``.
+* Out-of-process bridge blocks obey the same sticky lifecycle.
 * Circuit-breaker blocks (``gave_up`` event, status flipped via
   ``_record_task_failure``) still auto-recover — the original intent
   of #40c1decb3 is preserved.
@@ -29,6 +30,8 @@ landed via #28754 / #28781 ahead of this fix.
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import time
 from pathlib import Path
 
@@ -64,9 +67,16 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
         assert kb.block_task(
             conn, tid,
             reason="review-required: please verify ACL change",
+            kind="needs_input",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "blocked"
+
+        promoted_ok, promote_error = kb.promote_task(
+            conn, tid, actor="test-operator", force=True,
+        )
+        assert not promoted_ok
+        assert promote_error is not None and "use unblock" in promote_error
 
         # Hammer the promotion code — exactly the dispatcher loop's
         # behaviour, just compressed in time.
@@ -74,6 +84,89 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             promoted = kb.recompute_ready(conn)
             assert promoted == 0, "worker-blocked task must not auto-promote"
             assert kb.get_task(conn, tid).status == "blocked"
+
+        # Recovery can preserve the classified blocked task row while losing
+        # the event tail. Fail closed on that durable classification instead
+        # of silently promoting the recovered task.
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id=? AND kind='blocked'", (tid,),
+        )
+        conn.commit()
+        assert kb.recompute_ready(conn) == 0
+        recovered = kb.get_task(conn, tid)
+        assert recovered is not None
+        assert recovered.status == "blocked"
+        assert kb.claim_task(conn, tid) is None
+
+
+def test_init_backfills_recovered_canonical_block_without_claiming_bridge_block(
+    kanban_home: Path,
+) -> None:
+    """Upgrade backfill protects event-loss rows but not the bridge channel."""
+    with kb.connect() as conn:
+        recovered = kb.create_task(conn, title="recovered canonical block")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', block_kind='needs_input', "
+            "operator_blocked=0 WHERE id=?",
+            (recovered,),
+        )
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id=? AND kind IN "
+            "('blocked', 'unblocked', 'bridge_blocked', "
+            "'bridge_requeued', 'bridge_dispatched')",
+            (recovered,),
+        )
+
+        bridge = kb.create_task(conn, title="bridge-owned block")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', block_kind='needs_input', "
+            "operator_blocked=0 WHERE id=?",
+            (bridge,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'bridge_blocked', NULL, ?)",
+            (bridge, int(time.time())),
+        )
+
+    # Force the additive migration/backfill pass, as an upgraded install does
+    # on its first connection after restart.
+    kb.init_db()
+    with kb.connect() as conn:
+        flags = {
+            row["id"]: row["operator_blocked"]
+            for row in conn.execute(
+                "SELECT id, operator_blocked FROM tasks WHERE id IN (?, ?)",
+                (recovered, bridge),
+            )
+        }
+        assert flags == {recovered: 1, bridge: 0}
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?",
+            (kb._OPERATOR_BLOCK_GUARD_TRIGGER,),
+        ).fetchone() is not None
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE tasks SET status='ready', block_kind=NULL WHERE id=?",
+                (recovered,),
+            )
+
+        # A bridge-owned block remains on its independent lifecycle and is not
+        # accidentally converted into a canonical operator block by backfill.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='ready', block_kind=NULL WHERE id=?",
+                (bridge,),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'bridge_requeued', NULL, ?)",
+                (bridge, int(time.time())),
+            )
+        bridge_task = kb.get_task(conn, bridge)
+        assert bridge_task is not None
+        assert bridge_task.status == "ready"
 
 
 def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Path) -> None:
@@ -97,6 +190,424 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         promoted = kb.recompute_ready(conn)
         assert promoted == 0
         assert kb.get_task(conn, child).status == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# Out-of-process bridge blocks must share the sticky lifecycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("clear_event", ["bridge_requeued", "bridge_dispatched"])
+def test_bridge_block_is_sticky_until_bridge_clear_transition(
+    kanban_home: Path,
+    clear_event: str,
+) -> None:
+    """A bridge-managed worker emits bridge-specific transition names.
+
+    Treating ``bridge_blocked`` as ordinary direct DB manipulation lets the
+    dispatcher immediately re-promote review-gated work.  A later explicit
+    bridge requeue or dispatch must clear that sticky state, just like
+    ``unblock_task`` clears a canonical worker block.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="bridge-managed review")
+        now = int(time.time())
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'bridge_blocked', NULL, ?)",
+            (tid, now),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        blocked_task = kb.get_task(conn, tid)
+        assert blocked_task is not None
+        assert blocked_task.status == "blocked"
+
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, ?, NULL, ?)",
+            (tid, clear_event, now + 1),
+        )
+        conn.commit()
+
+        # A later transient status-only block is recoverable once the bridge
+        # has explicitly cleared its prior review gate.
+        assert kb.recompute_ready(conn) == 1
+        ready_task = kb.get_task(conn, tid)
+        assert ready_task is not None
+        assert ready_task.status == "ready"
+
+        # A canonical operator unblock is also authorized to clear an older
+        # bridge block.
+        canonical_clear = kb.create_task(conn, title="bridge block, operator clear")
+        conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=?", (canonical_clear,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'bridge_blocked', NULL, ?)",
+            (canonical_clear, now + 2),
+        )
+        conn.commit()
+        assert kb.unblock_task(conn, canonical_clear)
+        assert not kb._has_sticky_block(conn, canonical_clear)
+
+        # Bridge receipts only clear the bridge channel. They must never
+        # substitute for the canonical `unblocked` event required to release
+        # an operator block.
+        canonical = kb.create_task(conn, title="canonical operator review")
+        assert kb.claim_task(conn, canonical) is not None
+        canonical_task = kb.get_task(conn, canonical)
+        assert canonical_task is not None
+        assert kb.block_task(
+            conn,
+            canonical,
+            reason="review-required: operator approval",
+            kind="needs_input",
+            expected_run_id=canonical_task.current_run_id,
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, ?, NULL, ?)",
+            (canonical, clear_event, now + 2),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        canonical_task = kb.get_task(conn, canonical)
+        assert canonical_task is not None
+        assert canonical_task.status == "blocked"
+        assert kb.claim_task(conn, canonical) is None
+
+
+def _apply_real_bridge_transition(
+    conn: sqlite3.Connection,
+    task_id: str,
+    clear_event: str,
+) -> None:
+    """Execute the live bridge's exact UPDATE-then-event transaction."""
+    now = int(time.time())
+    with kb.write_txn(conn):
+        if clear_event == "bridge_dispatched":
+            conn.execute(
+                """UPDATE tasks
+                   SET status = 'running', assignee = ?,
+                       started_at = COALESCE(started_at, ?), completed_at = NULL,
+                       workspace_path = COALESCE(?, workspace_path),
+                       branch_name = COALESCE(?, branch_name),
+                       claim_lock = ?, claim_expires = ?, worker_pid = ?,
+                       last_heartbeat_at = ?, current_run_id = NULL,
+                       block_kind = NULL, last_failure_error = NULL
+                   WHERE id = ?""",
+                (
+                    "orchestrator",
+                    now,
+                    None,
+                    None,
+                    "acp:test:external",
+                    now + 7200,
+                    None,
+                    now,
+                    task_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """UPDATE tasks
+                   SET status = ?, assignee = ?, completed_at = ?,
+                       workspace_path = COALESCE(?, workspace_path),
+                       branch_name = COALESCE(?, branch_name),
+                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL,
+                       last_heartbeat_at = ?, current_run_id = NULL,
+                       block_kind = CASE WHEN ? = 'blocked' THEN 'needs_input' ELSE NULL END,
+                       last_failure_error = COALESCE(?, last_failure_error),
+                       result = COALESCE(?, result)
+                   WHERE id = ?""",
+                (
+                    "ready",
+                    "orchestrator",
+                    None,
+                    None,
+                    None,
+                    now,
+                    "ready",
+                    None,
+                    None,
+                    task_id,
+                ),
+            )
+        conn.execute(
+            "INSERT INTO task_events(task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, NULL, ?, ?, ?)",
+            (
+                task_id,
+                clear_event,
+                json.dumps({"from": "blocked", "to": clear_event}),
+                now,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "clear_event",
+    ["bridge_requeued", "bridge_dispatched"],
+)
+def test_canonical_block_rejects_real_bridge_update_before_event(
+    kanban_home: Path,
+    clear_event: str,
+) -> None:
+    """The live bridge rewrites the task before appending its receipt.
+
+    Model that exact update+event transaction for both ready and running
+    transitions. SQLite authority must abort the rewrite atomically; checking
+    an event predicate later in ``recompute_ready`` or ``claim_task`` is too
+    late because the visible blocked state has already been erased.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title=f"canonical block vs {clear_event}")
+        claimed = kb.claim_task(conn, tid, claimer="test:worker")
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: operator approval",
+            kind="needs_input",
+            expected_run_id=claimed.current_run_id,
+        )
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="operator-blocked task requires authoritative unblock",
+        ):
+            _apply_real_bridge_transition(conn, tid, clear_event)
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        assert conn.execute(
+            "SELECT operator_blocked FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()["operator_blocked"] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events "
+            "WHERE task_id = ? AND kind = ?",
+            (tid, clear_event),
+        ).fetchone()["n"] == 0
+        assert kb.claim_task(conn, tid, claimer="test:claim") is None
+
+
+@pytest.mark.parametrize(
+    "clear_event",
+    ["bridge_requeued", "bridge_dispatched"],
+)
+def test_init_backfills_recovered_reblock_with_missing_latest_event(
+    kanban_home: Path,
+    clear_event: str,
+) -> None:
+    """A surviving blocked run must preserve a recovered canonical re-block."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title=f"recovered reblock vs {clear_event}")
+        first = kb.claim_task(conn, tid, claimer="test:first")
+        assert first is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: first operator gate",
+            kind="needs_input",
+            expected_run_id=first.current_run_id,
+        )
+        assert kb.unblock_task(conn, tid)
+
+        second = kb.claim_task(conn, tid, claimer="test:second")
+        assert second is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="capability gate after recovery",
+            kind="capability",
+            expected_run_id=second.current_run_id,
+        )
+        latest_run = conn.execute(
+            "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert latest_run is not None and latest_run["outcome"] == "blocked"
+
+        # Model an upgrade from a recovered DB: the new authority column starts
+        # at its additive default, and only the newest canonical block event was
+        # lost. Older blocked -> unblocked history still survives, which must not
+        # outweigh the current classified row plus its latest blocked run.
+        conn.execute(
+            "DELETE FROM task_events WHERE id = ("
+            "SELECT MAX(id) FROM task_events WHERE task_id=? AND kind='blocked')",
+            (tid,),
+        )
+        conn.execute("UPDATE tasks SET operator_blocked=0 WHERE id=?", (tid,))
+        conn.execute(f"DROP TRIGGER IF EXISTS {kb._OPERATOR_BLOCK_GUARD_TRIGGER}")
+        conn.commit()
+        lifecycle = [
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? "
+                "AND kind IN ('blocked', 'unblocked') ORDER BY id",
+                (tid,),
+            )
+        ]
+        assert lifecycle == ["blocked", "unblocked"]
+
+    kb.init_db()
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT status, block_kind, operator_blocked FROM tasks WHERE id=?",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        assert (row["status"], row["block_kind"], row["operator_blocked"]) == (
+            "blocked", "capability", 1,
+        )
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="operator-blocked task requires authoritative unblock",
+        ):
+            _apply_real_bridge_transition(conn, tid, clear_event)
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id=? AND kind=?",
+            (tid, clear_event),
+        ).fetchone()["n"] == 0
+        assert kb.claim_task(conn, tid, claimer="test:claim") is None
+
+
+@pytest.mark.parametrize(
+    "clear_event",
+    ["bridge_requeued", "bridge_dispatched"],
+)
+def test_init_fail_closes_replayed_block_over_stale_crash_run(
+    kanban_home: Path,
+    clear_event: str,
+) -> None:
+    """A stale crash run cannot erase a later status-replay operator gate.
+
+    This is the selected-recovery shape of incident task ``t_fb8f9f0f``:
+    replay restored ``blocked``/``needs_input`` with no current failure fields,
+    while an older pre-recovery run remained ``crashed``. The run alone is not
+    current circuit-breaker evidence, so ambiguous recovery must fail closed.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title=f"replayed gate vs {clear_event}")
+        claimed = kb.claim_task(conn, tid, claimer="test:pre-recovery")
+        assert claimed is not None
+        with kb.write_txn(conn):
+            assert kb._end_run(
+                conn,
+                tid,
+                outcome="crashed",
+                status="crashed",
+                error="older pre-recovery crash",
+            ) is not None
+            conn.execute(
+                """UPDATE tasks
+                      SET status = 'blocked', block_kind = 'needs_input',
+                          operator_blocked = 0, consecutive_failures = 0,
+                          last_failure_error = NULL, claim_lock = NULL,
+                          claim_expires = NULL, worker_pid = NULL
+                    WHERE id = ?""",
+                (tid,),
+            )
+            conn.execute(
+                "DELETE FROM task_events WHERE task_id=? AND kind IN "
+                "('blocked', 'unblocked', 'bridge_blocked', "
+                "'bridge_requeued', 'bridge_dispatched', 'gave_up')",
+                (tid,),
+            )
+        conn.execute(f"DROP TRIGGER IF EXISTS {kb._OPERATOR_BLOCK_GUARD_TRIGGER}")
+        conn.commit()
+        row = conn.execute(
+            "SELECT status, block_kind, consecutive_failures, last_failure_error "
+            "FROM tasks WHERE id=?",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        assert (
+            row["status"], row["block_kind"], row["consecutive_failures"],
+            row["last_failure_error"],
+        ) == ("blocked", "needs_input", 0, None)
+        assert conn.execute(
+            "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()["outcome"] == "crashed"
+
+    kb.init_db()
+    with kb.connect() as conn:
+        assert conn.execute(
+            "SELECT operator_blocked FROM tasks WHERE id=?", (tid,),
+        ).fetchone()["operator_blocked"] == 1
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="operator-blocked task requires authoritative unblock",
+        ):
+            _apply_real_bridge_transition(conn, tid, clear_event)
+        assert kb.recompute_ready(conn) == 0
+        assert kb.claim_task(conn, tid, claimer="test:claim") is None
+
+
+def test_init_does_not_claim_stale_block_kind_after_circuit_breaker(
+    kanban_home: Path,
+) -> None:
+    """Known failure-run evidence keeps circuit-breaker recovery automatic."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="operator unblock then circuit breaker")
+        first = kb.claim_task(conn, tid, claimer="test:first")
+        assert first is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: prior operator gate",
+            kind="needs_input",
+            expected_run_id=first.current_run_id,
+        )
+        assert kb.unblock_task(conn, tid)
+
+        second = kb.claim_task(conn, tid, claimer="test:second")
+        assert second is not None
+        assert kb._record_task_failure(
+            conn,
+            tid,
+            "transient spawn failure",
+            outcome="spawn_failed",
+            failure_limit=1,
+            release_claim=True,
+            end_run=True,
+        )
+        row = conn.execute(
+            "SELECT status, block_kind, operator_blocked FROM tasks WHERE id=?",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        assert (row["status"], row["block_kind"], row["operator_blocked"]) == (
+            "blocked", "needs_input", 0,
+        )
+        assert conn.execute(
+            "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()["outcome"] == "gave_up"
+        # Prove current task-row failure state plus the failure run is enough to
+        # retain automatic circuit-breaker recovery even if its gave_up event
+        # was lost from the recovered event tail.
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,),
+        )
+        conn.commit()
+
+    kb.init_db()
+    with kb.connect() as conn:
+        assert conn.execute(
+            "SELECT operator_blocked FROM tasks WHERE id=?", (tid,),
+        ).fetchone()["operator_blocked"] == 0
+        assert kb.recompute_ready(conn, failure_limit=2) == 1
+        recovered = kb.get_task(conn, tid)
+        assert recovered is not None
+        assert recovered.status == "ready"
 
 
 # ---------------------------------------------------------------------------

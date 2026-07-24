@@ -4333,7 +4333,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
-        self._voice_tts_queue: queue.Queue[str] = queue.Queue()
+        self._voice_tts_queue: "queue.Queue[str]" = queue.Queue()
         self._voice_tts_worker_lock = threading.Lock()
         self._voice_tts_worker = None
         self._voice_tts_generation = 0
@@ -11442,12 +11442,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _drain_voice_tts_queue(self) -> None:
         """Discard all pending items without playing them."""
-        while not self._voice_tts_queue.empty():
+        while True:
             try:
                 self._voice_tts_queue.get_nowait()
-                self._voice_tts_queue.task_done()
             except queue.Empty:
                 break
+            self._voice_tts_queue.task_done()
 
     def _voice_tts_worker_loop(self, generation: int) -> None:
         """Drain queued responses in order on a single playback worker."""
@@ -13708,7 +13708,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False  # Whether to auto-restart after agent responds
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
-        self._voice_tts_queue: queue.Queue[str] = queue.Queue()
+        self._voice_tts_queue: "queue.Queue[str]" = queue.Queue()
         self._voice_tts_worker_lock = threading.Lock()
         self._voice_tts_worker = None
         self._voice_tts_generation = 0

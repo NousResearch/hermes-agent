@@ -805,6 +805,56 @@ class TestAgentCacheBoundedGrowth:
         assert commit_calls == []       # no premature extraction
         assert old_agent in release_calls  # still released
 
+    def test_soft_eviction_releases_clients_and_memory_provider_only(self):
+        """Soft cache eviction closes memory transports without full tool teardown.
+
+        Cached agents can be rebuilt later with the same session/task id, so
+        soft eviction must preserve terminal/browser/background-process state
+        by avoiding the hard _cleanup_agent_resources path.  But memory
+        providers such as MemOS own keepalive threads and stdio bridge child
+        processes; leaving them alive leaks one bridge per cache eviction.
+        """
+        runner = self._bounded_runner()
+        cleanup_calls: list = []
+        runner._cleanup_agent_resources = lambda agent: cleanup_calls.append(agent)
+
+        agent = self._fake_agent()
+        transcript = [{"role": "user", "content": "hello"}]
+        agent._session_messages = transcript
+        agent.release_clients = MagicMock()
+        agent.shutdown_memory_provider = MagicMock()
+
+        runner._release_evicted_agent_soft(agent)
+
+        agent.release_clients.assert_called_once_with()
+        agent.shutdown_memory_provider.assert_called_once_with(transcript, finalize_session=False)
+        assert cleanup_calls == []
+        assert agent._session_messages == []
+
+    def test_soft_eviction_shuts_down_memory_provider_without_release_clients(self):
+        """shutdown_memory_provider() must not be gated on release_clients existing.
+
+        Regression test: the shutdown call was previously guarded by
+        ``hasattr(agent, "release_clients") and hasattr(agent, "shutdown_memory_provider")``,
+        so a stub/agent exposing only shutdown_memory_provider would silently
+        skip memory-provider cleanup on soft eviction.
+        """
+        runner = self._bounded_runner()
+        cleanup_calls: list = []
+        runner._cleanup_agent_resources = lambda agent: cleanup_calls.append(agent)
+
+        agent = MagicMock(spec=["shutdown_memory_provider", "_session_messages"])
+        agent._session_messages = None
+
+        runner._release_evicted_agent_soft(agent)
+
+        agent.shutdown_memory_provider.assert_called_once_with(finalize_session=False)
+        # release_clients is absent, so the second cleanup step falls back to
+        # the "older agent instance" hard-teardown path — unrelated to this
+        # fix, but asserted here so the test doesn't rely on that fallback
+        # also happening to call shutdown_memory_provider.
+        assert cleanup_calls == [agent]
+
     def test_idle_ttl_sweep_evicts_stale_agents(self, monkeypatch):
         """_sweep_idle_cached_agents removes agents idle past the TTL."""
         from gateway import run as gw_run

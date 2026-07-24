@@ -1187,6 +1187,35 @@ class TestShutdownRace:
         provider.shutdown()
         assert provider._shutting_down.is_set()
 
+    def test_shutdown_unregisters_atexit_hook(self, provider, monkeypatch):
+        """Explicit shutdown() must unregister the atexit hook so this
+        already-torn-down instance isn't kept reachable from atexit's
+        internal registry until process exit — e.g. a gateway soft-evicting
+        this provider's owning agent would otherwise retain every evicted
+        instance for the life of the process."""
+        import atexit
+
+        # _register_atexit() only fires lazily, on the first real retain
+        # (see _ensure_writer()/_register_atexit() in sync_turn), not at
+        # initialize() time — exercise that path first.
+        provider.sync_turn("a", "b")
+        assert provider._atexit_registered is True
+        unregister_calls = []
+        monkeypatch.setattr(atexit, "unregister", lambda fn: unregister_calls.append(fn))
+
+        provider.shutdown()
+
+        assert unregister_calls == [provider._atexit_shutdown]
+        assert provider._atexit_registered is False
+
+    def test_shutdown_unregister_is_a_safe_no_op_when_never_registered(self, provider):
+        """atexit.unregister() on a callback that was never registered is a
+        documented no-op — shutdown() must not raise even when
+        _register_atexit() never ran for this instance."""
+        provider._atexit_registered = False
+        provider.shutdown()  # must not raise
+        assert provider._atexit_registered is False
+
 
 # ---------------------------------------------------------------------------
 # on_session_switch — flush + prefetch reset behavior

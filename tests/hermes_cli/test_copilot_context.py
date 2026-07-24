@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.models import get_copilot_model_context
+from hermes_cli.models import get_copilot_model_context, get_copilot_reasoning_efforts
 
 
 # Sample catalog items mimicking the Copilot /models API response
@@ -49,14 +49,22 @@ _SAMPLE_CATALOG = [
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
-    """Reset module-level cache before each test."""
+    """Reset module-level caches before each test."""
     import hermes_cli.models as mod
 
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
+    mod._copilot_context_failed_time = 0.0
+    mod._copilot_reasoning_catalog_cache = {}
+    mod._copilot_reasoning_catalog_cache_time = {}
+    mod._copilot_reasoning_catalog_failed_time = {}
     yield
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
+    mod._copilot_context_failed_time = 0.0
+    mod._copilot_reasoning_catalog_cache = {}
+    mod._copilot_reasoning_catalog_cache_time = {}
+    mod._copilot_reasoning_catalog_failed_time = {}
 
 
 class TestGetCopilotModelContext:
@@ -102,6 +110,27 @@ class TestGetCopilotModelContext:
     def test_returns_none_when_catalog_unavailable(self, mock_fetch):
         assert get_copilot_model_context("gpt-4.1") is None
 
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_failed_fetch_does_not_tight_loop_refetch(self, mock_fetch):
+        # Sibling of the reasoning-efforts negative-cache fix: a failing catalog
+        # fetch leaves the (empty, falsy) positive cache untouched, so without a
+        # negative cache every lookup would re-attempt the slow HTTP fetch.
+        for _ in range(5):
+            assert get_copilot_model_context("gpt-4.1") is None
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_negative_cache_expires_then_retries(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        get_copilot_model_context("gpt-4.1")
+        assert mock_fetch.call_count == 1
+        get_copilot_model_context("gpt-4.1")
+        assert mock_fetch.call_count == 1  # still backing off
+        mod._copilot_context_failed_time = time.time() - 120
+        get_copilot_model_context("gpt-4.1")
+        assert mock_fetch.call_count == 2
+
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=[])
     def test_returns_none_for_empty_catalog(self, mock_fetch):
         assert get_copilot_model_context("gpt-4.1") is None
@@ -132,3 +161,194 @@ class TestModelMetadataCopilotIntegration:
         ctx = get_model_context_length("gpt-4.1", provider="copilot")
         assert isinstance(ctx, int)
         assert ctx > 0
+
+
+# Catalog whose entries advertise reasoning_effort under capabilities.supports,
+# the shape the live Copilot /models API returns for opus/sonnet. This is the
+# data the bare github_model_reasoning_efforts(model) call never sees (it has no
+# catalog), which is why Claude resolved to [] before get_copilot_reasoning_efforts.
+_REASONING_CATALOG = [
+    {
+        "id": "claude-opus-4.8",
+        "capabilities": {
+            "type": "chat",
+            "supports": {"reasoning_effort": ["low", "medium", "high", "max"]},
+        },
+    },
+    {
+        "id": "claude-sonnet-4.6",
+        "capabilities": {
+            "type": "chat",
+            "supports": {"reasoning_effort": ["low", "medium", "high"]},
+        },
+    },
+    {
+        "id": "gpt-4.1",
+        "capabilities": {"type": "chat", "supports": {}},
+    },
+]
+
+
+class TestGetCopilotReasoningEfforts:
+    """Tests for get_copilot_reasoning_efforts(): the cached catalog wrapper."""
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_REASONING_CATALOG)
+    def test_claude_resolves_efforts_from_catalog(self, mock_fetch):
+        # The bug: without the catalog, Claude returned []. With the catalog
+        # supplied by this wrapper, the advertised levels come through.
+        assert get_copilot_reasoning_efforts("claude-opus-4.8") == [
+            "low",
+            "medium",
+            "high",
+            "max",
+        ]
+        assert get_copilot_reasoning_efforts("claude-sonnet-4.6") == [
+            "low",
+            "medium",
+            "high",
+        ]
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_REASONING_CATALOG)
+    def test_bare_resolver_returns_empty_for_claude_without_catalog(self, mock_fetch):
+        # Regression guard documenting the underlying bug: the bare resolver with
+        # no catalog falls through to the static table and yields [] for Claude.
+        from hermes_cli.models import github_model_reasoning_efforts
+
+        assert github_model_reasoning_efforts("claude-opus-4.8") == []
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_REASONING_CATALOG)
+    def test_caches_catalog_across_calls(self, mock_fetch):
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        get_copilot_reasoning_efforts("claude-sonnet-4.6")
+        get_copilot_reasoning_efforts("gpt-4.1")
+        # One fetch despite three lookups, no per-turn HTTP hit.
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_REASONING_CATALOG)
+    def test_catalog_cache_expires(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 1
+
+        mod._copilot_reasoning_catalog_cache_time["__no_api_key__"] = time.time() - 7200
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 2
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_degrades_gracefully_without_catalog(self, mock_fetch):
+        # No catalog available: must not raise. Claude has no static entry, so
+        # it resolves to []; a static-table model still resolves from the table.
+        assert get_copilot_reasoning_efforts("claude-opus-4.8") == []
+        efforts = get_copilot_reasoning_efforts("gpt-5.4")
+        assert isinstance(efforts, list)
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_failed_fetch_does_not_tight_loop_refetch(self, mock_fetch):
+        # Regression for the Copilot review note: when the catalog fetch fails
+        # (offline / auth), repeated calls within the negative-cache window must
+        # NOT re-attempt the slow HTTP fetch. The reasoning gates call this
+        # several times per turn, so one outage must collapse to one attempt.
+        for _ in range(5):
+            assert get_copilot_reasoning_efforts("claude-opus-4.8") == []
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_negative_cache_expires_then_retries(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 1
+        # Still backing off: no new fetch.
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 1
+        # Expire the negative window: a retry is allowed.
+        mod._copilot_reasoning_catalog_failed_time["__no_api_key__"] = time.time() - 120
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 2
+
+    @patch("hermes_cli.models.fetch_github_model_catalog")
+    def test_recovery_after_failed_fetch_clears_backoff(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        # First fetch fails → backoff armed.
+        mock_fetch.return_value = None
+        assert get_copilot_reasoning_efforts("claude-opus-4.8") == []
+        assert mock_fetch.call_count == 1
+        # After the window expires the catalog comes back; a successful fetch
+        # must clear the negative-cache timestamp so later lookups serve from the
+        # positive cache without re-fetching.
+        mod._copilot_reasoning_catalog_failed_time["__no_api_key__"] = time.time() - 120
+        mock_fetch.return_value = _REASONING_CATALOG
+        assert get_copilot_reasoning_efforts("claude-opus-4.8") == [
+            "low",
+            "medium",
+            "high",
+            "max",
+        ]
+        assert mock_fetch.call_count == 2
+        assert mod._copilot_reasoning_catalog_failed_time.get("__no_api_key__") in (None, 0.0)
+        # Subsequent lookups are served from the fresh positive cache.
+        get_copilot_reasoning_efforts("claude-sonnet-4.6")
+        assert mock_fetch.call_count == 2
+
+
+class TestGetCopilotReasoningEffortsMultiAccount:
+    """Regression for the multi-credential cache-leak fix (teknium1 review, PR #51953).
+
+    ``fetch_github_model_catalog(api_key=...)`` returns an ACCOUNT-SPECIFIC
+    catalog. Before the fix, the cache was a single unkeyed module global, so
+    a second Copilot credential inherited the first account's reasoning
+    capability list for the full TTL instead of fetching its own.
+    """
+
+    @patch("hermes_cli.models.fetch_github_model_catalog")
+    def test_different_api_keys_get_different_cached_reasoning_lists(self, mock_fetch):
+        account_a_catalog = [
+            {
+                "id": "claude-opus-4.8",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "medium", "high", "max"]},
+                },
+            },
+        ]
+        account_b_catalog = [
+            {
+                "id": "claude-opus-4.8",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low"]},
+                },
+            },
+        ]
+
+        def _fake_fetch(api_key=None, **kwargs):
+            if api_key == "token-account-a":
+                return account_a_catalog
+            if api_key == "token-account-b":
+                return account_b_catalog
+            return None
+
+        mock_fetch.side_effect = _fake_fetch
+
+        result_a = get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-a")
+        result_b = get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-b")
+
+        # The core bug: account B must NOT inherit account A's cached catalog.
+        assert result_a == ["low", "medium", "high", "max"]
+        assert result_b == ["low"]
+        assert result_a != result_b
+        # Each credential triggered its own fetch — no cross-account cache hit.
+        assert mock_fetch.call_count == 2
+
+        # Re-querying either account within the TTL is served from its own
+        # cache entry, not the other account's, and does not re-fetch.
+        assert get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-a") == [
+            "low",
+            "medium",
+            "high",
+            "max",
+        ]
+        assert get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-b") == ["low"]
+        assert mock_fetch.call_count == 2

@@ -727,6 +727,154 @@ class TestKeyHandlerNeverBlocks:
 
 
 # ============================================================================
+# Runtime test: disarming continuous voice via the record-key handler (#67569)
+# ============================================================================
+#
+# ``handle_voice_record`` is a *closure* defined inline in the CLI prompt
+# setup and registered with ``@kb.add(_voice_key)``, so it is not reachable
+# as a ``HermesCLI`` method and cannot be imported.  These tests parse
+# cli.py, lift the real ``handle_voice_record`` FunctionDef, drop its
+# decorator, and ``exec`` the *actual* handler body against a real CLI
+# instance built via ``_make_voice_cli``.  This executes the genuine code
+# path — not a re-implementation and not a source/AST check — so the
+# assertions fail if the locked ``_voice_continuous = False`` assignments
+# added in #67569 are reverted.
+
+
+_HVR_SOURCE_CACHE = None
+
+
+def _handle_voice_record_source():
+    """Return the unparsed source of the real ``handle_voice_record`` closure."""
+    global _HVR_SOURCE_CACHE
+    if _HVR_SOURCE_CACHE is None:
+        with open("cli.py") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "handle_voice_record":
+                node.decorator_list = []  # strip @kb.add(...) -> bare def
+                _HVR_SOURCE_CACHE = ast.unparse(node)
+                break
+        else:
+            raise RuntimeError("handle_voice_record not found in cli.py")
+    return _HVR_SOURCE_CACHE
+
+
+def _run_handle_voice_record(cli_ref, event, **namespace_overrides):
+    """Execute the REAL ``handle_voice_record`` body from cli.py.
+
+    The handler closes over ``cli_ref`` (the CLI instance) and the
+    prompt_toolkit ``event``.  We seed an exec namespace from ``cli``'s
+    module globals so runtime names (``threading``, ``_cprint``, ...) resolve,
+    bind ``cli_ref`` to the supplied instance, then invoke the extracted
+    function.  ``namespace_overrides`` lets callers stub names such as
+    ``threading`` for the no-guard happy path.
+    """
+    import cli as cli_mod
+
+    ns = dict(vars(cli_mod))
+    ns["cli_ref"] = cli_ref
+    ns.update(namespace_overrides)
+    exec(_handle_voice_record_source(), ns)
+    ns["handle_voice_record"](event)
+
+
+class TestDisarmContinuousOnHotkeyRuntime:
+    """#67569: pressing the record key (Ctrl+B / configured ``voice.record_key``)
+    while the agent is running or a previous take is still being transcribed
+    must DISARM continuous mode (clear ``_voice_continuous``) instead of being
+    a silent no-op -- otherwise the loop auto-restarts after the turn and the
+    only exit is ``/voice off`` (#67545).
+
+    Runtime tests: they execute the real ``handle_voice_record`` closure
+    extracted from cli.py against a real CLI instance, asserting the flag is
+    cleared and a new recording is never started.
+    """
+
+    def test_disarms_when_agent_running(self):
+        """Hotkey while ``_agent_running`` is True clears continuous mode and
+        does not start a new recording."""
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=False,
+            _voice_continuous=True,
+            _agent_running=True,
+        )
+        cli._voice_start_recording = MagicMock()
+        event = MagicMock()
+
+        _run_handle_voice_record(cli, event)
+
+        assert cli._voice_continuous is False, (
+            "record-key during an agent run must disarm continuous mode"
+        )
+        cli._voice_start_recording.assert_not_called()
+        assert cli._voice_recording is False
+
+    def test_disarms_when_voice_processing(self):
+        """Hotkey while ``_voice_processing`` is True clears continuous mode
+        and does not start a new recording (avoids blocking on
+        AudioRecorder._lock held by the in-flight stop/transcribe)."""
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=False,
+            _voice_continuous=True,
+            _agent_running=False,
+            _voice_processing=True,
+        )
+        cli._clarify_state = None
+        cli._sudo_state = None
+        cli._approval_state = None
+        cli._slash_confirm_state = None
+        cli._voice_start_recording = MagicMock()
+        event = MagicMock()
+
+        _run_handle_voice_record(cli, event)
+
+        assert cli._voice_continuous is False, (
+            "record-key during voice processing must disarm continuous mode"
+        )
+        cli._voice_start_recording.assert_not_called()
+        assert cli._voice_recording is False
+
+    def test_does_not_disarm_when_no_guard_active(self):
+        """Negative control: with no guard active the hotkey STARTS a take and
+        leaves continuous armed -- proving the two cases above disarm because
+        of the guard branches, not because the handler is a no-op."""
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=False,
+            _voice_continuous=True,
+            _agent_running=False,
+            _voice_processing=False,
+        )
+        cli._clarify_state = None
+        cli._sudo_state = None
+        cli._approval_state = None
+        cli._slash_confirm_state = None
+        cli._voice_start_recording = MagicMock()
+        event = MagicMock()
+
+        class _SyncThread:
+            """Run the daemon-thread target inline so _voice_start_recording
+            is invoked synchronously without spawning a real thread."""
+
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+
+            def start(self):
+                if self.target is not None:
+                    self.target()
+
+        _run_handle_voice_record(
+            cli, event, threading=SimpleNamespace(Thread=_SyncThread)
+        )
+
+        cli._voice_start_recording.assert_called_once()
+        assert cli._voice_continuous is True
+
+
+# ============================================================================
 # Real behavior tests — CLI voice methods via _make_voice_cli()
 # ============================================================================
 

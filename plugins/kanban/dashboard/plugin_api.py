@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -372,6 +373,605 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Selected-task summary tree helpers
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_KEYS: dict[str, str] = {
+    "workspace_path": "workspace",
+    "diff_path": "diff",
+    "output_path": "output",
+    "file_path": "file",
+    "folder_path": "folder",
+    "artifact_path": "artifact",
+    "artifact_paths": "artifact",
+    "document_path": "document",
+    "created_files": "created_file",
+    "changed_files": "changed_file",
+    "saved_files": "saved_file",
+}
+_IMPORTANT_COMMENT_TERMS = (
+    "review-required", "handoff", "artifact", "output", "saved",
+    "created", "changed_files", "diff_path", "blocked", "decision",
+)
+_SUMMARY_TREE_MAX_DEPTH = 50
+_SUMMARY_TREE_MAX_NODES = 500
+
+
+def _walk_descendant_graph(
+    conn: sqlite3.Connection,
+    root_id: str,
+    *,
+    max_depth: int = _SUMMARY_TREE_MAX_DEPTH,
+    max_nodes: int = _SUMMARY_TREE_MAX_NODES,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, int], bool]:
+    """Return breadth-first descendant order and parent→child edges."""
+    order: list[str] = [root_id]
+    depths: dict[str, int] = {root_id: 0}
+    edges: list[dict[str, Any]] = []
+    queue: list[str] = [root_id]
+    expanded: set[str] = set()
+    truncated = False
+
+    while queue:
+        parent_id = queue.pop(0)
+        if parent_id in expanded:
+            continue
+        expanded.add(parent_id)
+        parent_depth = depths.get(parent_id, 0)
+        if parent_depth >= max_depth:
+            if conn.execute("SELECT 1 FROM task_links WHERE parent_id = ? LIMIT 1", (parent_id,)).fetchone():
+                truncated = True
+            continue
+        rows = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
+            (parent_id,),
+        ).fetchall()
+        for row in rows:
+            child_id = row["child_id"]
+            child_depth = parent_depth + 1
+            edges.append({
+                "parent_id": parent_id,
+                "child_id": child_id,
+                "relation": "blocks",
+                "depth": child_depth,
+            })
+            if child_id not in depths:
+                if len(order) >= max_nodes:
+                    truncated = True
+                    continue
+                depths[child_id] = child_depth
+                order.append(child_id)
+                queue.append(child_id)
+    return order, edges, depths, truncated
+
+
+def _rows_by_task_id(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, sqlite3.Row]:
+    if not task_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(task_ids))
+    return {
+        row["id"]: row
+        for row in conn.execute(
+            f"SELECT * FROM tasks WHERE id IN ({placeholders})",
+            tuple(task_ids),
+        ).fetchall()
+    }
+
+
+def _links_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    # Two queries so the bind count stays at N: interpolating the id list
+    # twice into one statement hits 1000 variables at the traversal cap
+    # (_SUMMARY_TREE_MAX_NODES), over the 999 default
+    # SQLITE_MAX_VARIABLE_NUMBER on SQLite < 3.32.
+    parents = {tid: [] for tid in task_ids}
+    children = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return parents, children
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"SELECT parent_id, child_id FROM task_links WHERE child_id IN ({placeholders}) ORDER BY parent_id, child_id",
+        tuple(task_ids),
+    ).fetchall():
+        parents[row["child_id"]].append(row["parent_id"])
+    for row in conn.execute(
+        f"SELECT parent_id, child_id FROM task_links WHERE parent_id IN ({placeholders}) ORDER BY parent_id, child_id",
+        tuple(task_ids),
+    ).fetchall():
+        children[row["parent_id"]].append(row["child_id"])
+    return parents, children
+
+
+def _run_row_dict(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else None
+    except Exception:
+        metadata = None
+    return {
+        "id": int(row["id"]),
+        "task_id": row["task_id"],
+        "profile": row["profile"],
+        "step_key": row["step_key"],
+        "status": row["status"],
+        "outcome": row["outcome"],
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "summary": row["summary"],
+        "metadata": metadata,
+        "error": row["error"],
+    }
+
+
+def _runs_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    runs = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return runs
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"""
+        SELECT * FROM task_runs
+         WHERE task_id IN ({placeholders})
+         ORDER BY task_id, COALESCE(ended_at, started_at) DESC, id DESC
+        """,
+        tuple(task_ids),
+    ).fetchall():
+        runs.setdefault(row["task_id"], []).append(_run_row_dict(row))
+    return runs
+
+
+def _comments_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    comments = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return comments
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"SELECT * FROM task_comments WHERE task_id IN ({placeholders}) ORDER BY task_id, created_at ASC, id ASC",
+        tuple(task_ids),
+    ).fetchall():
+        comments.setdefault(row["task_id"], []).append({
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "author": row["author"],
+            "body": row["body"],
+            "created_at": row["created_at"],
+        })
+    return comments
+
+
+def _attachments_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Batch-load first-class task attachments (``task_attachments`` rows)
+    for every traversed task, mirroring ``kanban_db.list_attachments``
+    ordering. One query for the whole tree instead of N per-task calls."""
+    attachments = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return attachments
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"SELECT * FROM task_attachments WHERE task_id IN ({placeholders}) ORDER BY task_id, created_at ASC, id ASC",
+        tuple(task_ids),
+    ).fetchall():
+        attachments.setdefault(row["task_id"], []).append({
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "filename": row["filename"],
+            "stored_path": row["stored_path"],
+            "content_type": row["content_type"],
+            "size": row["size"] or 0,
+            "uploaded_by": row["uploaded_by"],
+            "created_at": row["created_at"],
+        })
+    return attachments
+
+
+def _events_for_many(conn: sqlite3.Connection, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    events = {tid: [] for tid in task_ids}
+    if not task_ids:
+        return events
+    placeholders = ",".join(["?"] * len(task_ids))
+    for row in conn.execute(
+        f"SELECT * FROM task_events WHERE task_id IN ({placeholders}) ORDER BY task_id, created_at ASC, id ASC",
+        tuple(task_ids),
+    ).fetchall():
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        events.setdefault(row["task_id"], []).append({
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "kind": row["kind"],
+            "payload": payload,
+            "created_at": row["created_at"],
+            "run_id": row["run_id"],
+        })
+    return events
+
+
+def _blocked_state(
+    task_status: str,
+    *,
+    runs: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    if task_status != "blocked":
+        return None
+    latest_block = next((e for e in reversed(events) if e.get("kind") == "blocked"), None)
+    blocked_runs = [r for r in runs if r.get("outcome") == "blocked" or r.get("status") == "blocked"]
+    blocked_runs.sort(
+        key=lambda r: (int(r.get("ended_at") or r.get("started_at") or 0), int(r.get("id") or 0)),
+        reverse=True,
+    )
+    latest_blocked_run = blocked_runs[0] if blocked_runs else None
+    reason = None
+    source = None
+    if latest_block and isinstance(latest_block.get("payload"), dict):
+        raw_reason = latest_block["payload"].get("reason")
+        if isinstance(raw_reason, str) and raw_reason.strip():
+            reason = raw_reason.strip()
+            source = "event.payload.reason"
+    if not reason and latest_blocked_run:
+        raw_summary = latest_blocked_run.get("summary") or latest_blocked_run.get("error")
+        if isinstance(raw_summary, str) and raw_summary.strip():
+            reason = raw_summary.strip()
+            source = "run.summary"
+    since = latest_block.get("created_at") if latest_block else None
+    relevant_comments = [c for c in comments if since is None or int(c.get("created_at") or 0) >= int(since)]
+    latest_comment = relevant_comments[-1] if relevant_comments else (comments[-1] if comments else None)
+    return {
+        "is_blocked": True,
+        "reason": reason,
+        "missing_info": reason,
+        "blocked_at": latest_block.get("created_at") if latest_block else None,
+        "event_id": latest_block.get("id") if latest_block else None,
+        "run_id": latest_block.get("run_id") if latest_block else (latest_blocked_run or {}).get("id"),
+        "source": source,
+        "latest_relevant_comment": latest_comment,
+        "comment_prompt": "Add the missing info as a comment, then unblock when ready.",
+    }
+
+
+def _important_comments(comments: list[dict[str, Any]], *, comment_limit: int) -> list[dict[str, Any]]:
+    """Newest comments whose body matches an importance term, capped at
+    ``comment_limit``, returned in chronological order.
+
+    No back-fill with ordinary comments: callers already get the recent
+    tail in ``comments``, so padding this list would make the two fields
+    redundant and leave the UI's recent-comments fallback unreachable.
+    """
+    if comment_limit <= 0:
+        return []
+    picked: list[dict[str, Any]] = []
+    for c in reversed(comments):
+        body = (c.get("body") or "").lower()
+        if any(term in body for term in _IMPORTANT_COMMENT_TERMS):
+            picked.append(c)
+            if len(picked) >= comment_limit:
+                break
+    return list(reversed(picked))
+
+
+def _safe_path_text(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or "\x00" in text or "\n" in text or len(text) > 4096:
+        return None
+    return text
+
+
+def _path_is_within(path: str, base: str) -> bool:
+    try:
+        base_resolved = Path(os.path.expanduser(base)).resolve(strict=False)
+        candidate_resolved = Path(os.path.expanduser(path)).resolve(strict=False)
+        candidate_resolved.relative_to(base_resolved)
+        return True
+    except Exception:
+        return False
+
+
+def _artifact_record(
+    raw_path: str,
+    *,
+    kind: str,
+    source: str,
+    workspace_path: Optional[str],
+    workspace_kind: Optional[str],
+    run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    text = _safe_path_text(raw_path)
+    if not text:
+        return None
+
+    resolved_path = None
+    exists = None
+    is_dir = None
+    availability = "unknown"
+    reason = None
+    public_path: Optional[str] = text
+
+    expanded = os.path.expanduser(text)
+    is_absolute = os.path.isabs(expanded) or (len(expanded) > 2 and expanded[1:3] in (":/", ":\\"))
+    if workspace_path and kind != "workspace":
+        try:
+            base = Path(os.path.expanduser(workspace_path)).resolve(strict=False)
+            candidate = Path(expanded) if is_absolute else base / expanded
+            resolved = candidate.resolve(strict=False)
+            resolved.relative_to(base)
+            resolved_path = str(resolved)
+            exists = resolved.exists()
+            is_dir = resolved.is_dir() if exists else None
+            availability = "available" if exists else "missing"
+            if not exists:
+                reason = "path does not exist"
+        except Exception:
+            availability = "outside_workspace"
+            public_path = None
+            resolved_path = None
+            reason = "path outside allowed workspace"
+    elif kind == "workspace" and text:
+        try:
+            resolved = Path(expanded).resolve(strict=False)
+            resolved_path = str(resolved)
+            exists = resolved.exists()
+            is_dir = resolved.is_dir() if exists else None
+            availability = "available" if exists else "missing"
+        except Exception:
+            availability = "unknown"
+            reason = "path could not be normalized"
+    elif is_absolute:
+        availability = "outside_workspace"
+        public_path = None
+        reason = "absolute path; no workspace base"
+
+    if workspace_kind == "scratch":
+        availability = "scratch"
+        public_path = None
+        resolved_path = None
+        reason = "scratch workspace is temporary; not a durable artifact"
+
+    return {
+        "path": public_path,
+        "resolved_path": resolved_path,
+        "label": public_path or kind.replace("_", " "),
+        "kind": kind,
+        "exists": exists,
+        "is_dir": is_dir,
+        "openable": False,
+        "user_actionable": availability == "available" and workspace_kind != "scratch",
+        "availability": availability,
+        "source": source,
+        "run_id": run_id,
+        "reason": reason,
+    }
+
+
+def _values_for_artifact_key(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, str):
+        text = _safe_path_text(value)
+        if text:
+            found.append(text)
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_values_for_artifact_key(item))
+    elif isinstance(value, dict):
+        for key in ("path", "resolved_path", "file", "folder"):
+            if key in value:
+                found.extend(_values_for_artifact_key(value[key]))
+        if not found:
+            for item in value.values():
+                found.extend(_values_for_artifact_key(item))
+    return found
+
+
+def _iter_artifact_metadata_values(value: Any, *, prefix: str = "run.metadata"):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_s = str(key)
+            source = f"{prefix}.{key_s}"
+            if key_s in _ARTIFACT_KEYS:
+                for path_value in _values_for_artifact_key(item):
+                    yield key_s, source, path_value
+            if isinstance(item, (dict, list)):
+                yield from _iter_artifact_metadata_values(item, prefix=source)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                yield from _iter_artifact_metadata_values(item, prefix=prefix)
+
+
+def _attachment_artifact_record(att: dict[str, Any]) -> dict[str, Any]:
+    """Read-only artifact record for an uploaded task attachment.
+
+    Attachments are first-class ``task_attachments`` rows whose blobs live
+    under the board's attachments root — not the task workspace — so they
+    skip the workspace containment check applied to run-metadata paths.
+    ``attachment_id`` lets the UI reuse the existing authenticated
+    ``GET /attachments/{id}`` download route; there is still no local-file
+    opener (``openable`` stays False).
+    """
+    stored_path = att.get("stored_path")
+    exists = bool(stored_path) and Path(stored_path).is_file()
+    return {
+        "path": att.get("filename"),
+        "resolved_path": stored_path,
+        "label": att.get("filename") or f"attachment {att.get('id')}",
+        "kind": "attachment",
+        "exists": exists,
+        "is_dir": False if exists else None,
+        "openable": False,
+        "user_actionable": exists,
+        "availability": "available" if exists else "missing",
+        "source": "task.attachment",
+        "run_id": None,
+        "reason": None if exists else "attachment blob missing on disk",
+        "attachment_id": att.get("id"),
+        "size": att.get("size"),
+        "content_type": att.get("content_type"),
+        "uploaded_by": att.get("uploaded_by"),
+    }
+
+
+def _extract_artifacts(
+    *,
+    task_row: sqlite3.Row,
+    runs: list[dict[str, Any]],
+    attachments: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    workspace_path = task_row["workspace_path"]
+    workspace_kind = task_row["workspace_kind"]
+
+    def add(record: Optional[dict[str, Any]]) -> None:
+        if not record:
+            return
+        key = (str(record.get("source")), str(record.get("kind")), str(record.get("resolved_path") or record.get("path") or record.get("label")))
+        if key in seen:
+            return
+        seen.add(key)
+        artifacts.append(record)
+
+    if workspace_path:
+        add(_artifact_record(
+            workspace_path,
+            kind="workspace",
+            source="task.workspace_path",
+            workspace_path=None,
+            workspace_kind=workspace_kind,
+        ))
+
+    for att in attachments or []:
+        add(_attachment_artifact_record(att))
+
+    for run in runs:
+        metadata = run.get("metadata")
+        if not metadata:
+            continue
+        for artifact_key, source, path_value in _iter_artifact_metadata_values(metadata):
+            add(_artifact_record(
+                path_value,
+                kind=_ARTIFACT_KEYS.get(artifact_key, "artifact"),
+                source=source,
+                workspace_path=workspace_path,
+                workspace_kind=workspace_kind,
+                run_id=run.get("id"),
+            ))
+    return artifacts
+
+
+def _artifact_state(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+    actionable = [a for a in artifacts if a.get("user_actionable")]
+    return {
+        "state": "available" if actionable else "absent",
+        "has_user_actionable": bool(actionable),
+        "user_actionable_count": len(actionable),
+        "candidate_count": len(artifacts),
+        "reason": None if actionable else (
+            artifacts[0].get("reason") if artifacts else "no artifact metadata found"
+        ),
+    }
+
+
+def _display_result(task_row: sqlite3.Row, latest_run: Optional[dict[str, Any]]) -> Optional[str]:
+    if task_row["result"]:
+        return task_row["result"]
+    if latest_run and latest_run.get("summary"):
+        return latest_run["summary"]
+    if latest_run and latest_run.get("error"):
+        outcome = latest_run.get("outcome") or latest_run.get("status") or "failed"
+        return f"{outcome}: {latest_run['error']}"
+    return None
+
+
+def _summary_tree_payload(
+    conn: sqlite3.Connection,
+    root_id: str,
+    *,
+    include_comments: bool = True,
+    comment_limit: int = 3,
+) -> dict[str, Any]:
+    if kanban_db.get_task(conn, root_id) is None:
+        raise HTTPException(status_code=404, detail=f"task {root_id} not found")
+    comment_limit = max(0, min(int(comment_limit), 20))
+    order, edges, depths, truncated = _walk_descendant_graph(conn, root_id)
+    rows = _rows_by_task_id(conn, order)
+    order = [tid for tid in order if tid in rows]
+    parents, children = _links_for_many(conn, order)
+    runs_by_task = _runs_for_many(conn, order)
+    comments_by_task = _comments_for_many(conn, order)
+    events_by_task = _events_for_many(conn, order)
+    attachments_by_task = _attachments_for_many(conn, order)
+
+    tasks: dict[str, dict[str, Any]] = {}
+    status_counts: dict[str, int] = {}
+    for tid in order:
+        row = rows[tid]
+        task_runs = runs_by_task.get(tid, [])
+        latest_run = task_runs[0] if task_runs else None
+        all_comments = comments_by_task.get(tid, [])
+        task_attachments = attachments_by_task.get(tid, [])
+        artifacts = _extract_artifacts(
+            task_row=row, runs=task_runs, attachments=task_attachments,
+        )
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        tasks[tid] = {
+            "id": row["id"],
+            "title": row["title"],
+            "body": row["body"],
+            "status": row["status"],
+            "assignee": row["assignee"],
+            "priority": row["priority"],
+            "tenant": row["tenant"],
+            "created_at": row["created_at"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "workspace_kind": row["workspace_kind"],
+            "workspace_path": row["workspace_path"],
+            "result": row["result"],
+            "current_step_key": row["current_step_key"] if "current_step_key" in row.keys() else None,
+            "workflow_template_id": row["workflow_template_id"] if "workflow_template_id" in row.keys() else None,
+            "latest_summary": latest_run.get("summary") if latest_run else None,
+            "display_result": _display_result(row, latest_run),
+            "latest_run": latest_run,
+            "run_count": len(task_runs),
+            "comments": all_comments[-comment_limit:] if include_comments and comment_limit else [],
+            "comment_count": len(all_comments),
+            "important_comments": _important_comments(all_comments, comment_limit=comment_limit) if include_comments else [],
+            "parents": parents.get(tid, []),
+            "children": children.get(tid, []),
+            "depth": depths.get(tid, 0),
+            "artifacts": artifacts,
+            "artifact_state": _artifact_state(artifacts),
+            "attachment_count": len(task_attachments),
+            "block": _blocked_state(
+                row["status"],
+                runs=task_runs,
+                comments=all_comments,
+                events=events_by_task.get(tid, []),
+            ),
+        }
+
+    stats: dict[str, Any] = {
+        "total": len(order),
+        "max_depth": max((depths.get(tid, 0) for tid in order), default=0),
+        "truncated": truncated,
+    }
+    for status_name in list(BOARD_COLUMNS) + ["archived"]:
+        stats[status_name] = status_counts.get(status_name, 0)
+    for status_name, count in status_counts.items():
+        stats.setdefault(status_name, count)
+    return {
+        "root_id": root_id,
+        "generated_at": int(time.time()),
+        "tasks": tasks,
+        "edges": [e for e in edges if e["parent_id"] in rows and e["child_id"] in rows],
+        "roots": [root_id],
+        "order": order,
+        "stats": stats,
+    }
+
+# ---------------------------------------------------------------------------
 # GET /board
 # ---------------------------------------------------------------------------
 
@@ -506,6 +1106,32 @@ def get_board(
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /tasks/:id/summary-tree
+# ---------------------------------------------------------------------------
+
+@router.get("/tasks/{task_id}/summary-tree")
+def get_task_summary_tree(
+    task_id: str,
+    include_comments: bool = Query(True),
+    comment_limit: int = Query(3, ge=0, le=20),
+    depth: str = Query("all", description="Currently accepts 'all'; traversal is capped defensively."),
+    board: Optional[str] = Query(None),
+):
+    _ = depth
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        return _summary_tree_payload(
+            conn,
+            task_id,
+            include_comments=include_comments,
+            comment_limit=comment_limit,
+        )
     finally:
         conn.close()
 

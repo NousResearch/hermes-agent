@@ -194,6 +194,114 @@ def test_openwakeword_bundled_model_matches_framework(monkeypatch):
     assert downloaded[0].endswith(".tflite")
 
 
+# ── sherpa-onnx open-vocabulary engine ───────────────────────────────────
+
+
+def _install_fake_sherpa(monkeypatch, tmp_path):
+    """Fake sherpa_onnx + a fake model dir so the engine builds offline."""
+    calls = {"text2token": [], "spotter": [], "results": []}
+
+    model_dir = tmp_path / "kws-model"
+    model_dir.mkdir()
+    for name in (
+        "tokens.txt",
+        "bpe.model",
+        "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+        "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+        "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
+    ):
+        (model_dir / name).write_bytes(b"x")
+
+    class _FakeStream:
+        def accept_waveform(self, sample_rate, samples):
+            pass
+
+    class _FakeSpotter:
+        def __init__(self, **kwargs):
+            calls["spotter"].append(kwargs)
+
+        def create_stream(self):
+            return _FakeStream()
+
+        def is_ready(self, stream):
+            return bool(calls["results"])
+
+        def decode_stream(self, stream):
+            pass
+
+        def get_result(self, stream):
+            return calls["results"].pop(0) if calls["results"] else ""
+
+        def reset_stream(self, stream):
+            pass
+
+    def _fake_text2token(phrases, tokens, tokens_type, bpe_model):
+        calls["text2token"].append(list(phrases))
+        return [p.split() for p in phrases]
+
+    sherpa = types.ModuleType("sherpa_onnx")
+    sherpa.KeywordSpotter = _FakeSpotter
+    sherpa.text2token = _fake_text2token
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", sherpa)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    return calls, model_dir
+
+
+def test_sherpa_engine_tokenizes_configured_phrase_at_runtime(monkeypatch, tmp_path):
+    # The open-vocab core: the phrase from config is tokenized at runtime —
+    # no per-phrase model, no training artifact.
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    eng = ww._SherpaKwsEngine({
+        "provider": "sherpa",
+        "phrase": "purple monkey dishwasher",
+        "sherpa": {"model_dir": str(model_dir)},
+    })
+    assert calls["text2token"] == [["PURPLE MONKEY DISHWASHER"]]
+    # keywords file was materialized with an underscored display name
+    with open(eng._keywords_file) as f:
+        line = f.read().strip()
+    assert line.endswith("@PURPLE_MONKEY_DISHWASHER")
+    eng.close()
+    assert not os.path.exists(eng._keywords_file)
+
+
+def test_sherpa_engine_process_fires_and_resets(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    eng = ww._SherpaKwsEngine({
+        "provider": "sherpa", "phrase": "hey hermes",
+        "sherpa": {"model_dir": str(model_dir)},
+    })
+    frame = [0] * eng.frame_length
+    assert eng.process(frame) is False       # no result queued
+    calls["results"].append("HEY_HERMES")
+    assert eng.process(frame) is True        # queued result → fire
+    old_stream = eng._stream
+    eng.reset()
+    assert eng._stream is not old_stream     # fresh decoder state
+
+
+def test_sherpa_provider_routing(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    for alias in ("sherpa", "sherpa-onnx", "kws", "open"):
+        eng = ww._build_engine({
+            "provider": alias, "phrase": "x",
+            "sherpa": {"model_dir": str(model_dir)},
+        })
+        assert isinstance(eng, ww._SherpaKwsEngine)
+
+
+def test_sherpa_requirements_probe_uses_sherpa_feature(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    monkeypatch.setattr(
+        "tools.lazy_deps.is_available", lambda f: seen.setdefault("feature", f) or True
+    )
+    r = ww.check_wake_word_requirements({"provider": "sherpa", "phrase": "anything at all"})
+    assert seen["feature"] == "wake.sherpa"
+    assert r["provider"] == "sherpa"
+    assert r["phrase"] == "anything at all"
+
+
 # ── Detector loop ────────────────────────────────────────────────────────
 
 

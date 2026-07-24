@@ -120,21 +120,24 @@ class TestMacosPngpaste:
 
 class TestMacosHasImage:
     def test_png_detected(self):
-        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 stdout="«class PNGf», «class ut16»", returncode=0
             )
             assert _macos_has_image() is True
 
     def test_tiff_detected(self):
-        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 stdout="«class TIFF»", returncode=0
             )
             assert _macos_has_image() is True
 
     def test_text_only(self):
-        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 stdout="«class ut16», «class utf8»", returncode=0
             )
@@ -143,14 +146,16 @@ class TestMacosHasImage:
 
 class TestMacosOsascript:
     def test_no_image_type_in_clipboard(self, tmp_path):
-        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 stdout="«class ut16», «class utf8»", returncode=0
             )
             assert _macos_osascript(tmp_path / "out.png") is False
 
     def test_clipboard_info_fails(self, tmp_path):
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=Exception("fail")):
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run", side_effect=Exception("fail")):
             assert _macos_osascript(tmp_path / "out.png") is False
 
     def test_success_with_png(self, tmp_path):
@@ -162,7 +167,8 @@ class TestMacosOsascript:
                 return MagicMock(stdout="«class PNGf», «class ut16»", returncode=0)
             dest.write_bytes(FAKE_PNG)
             return MagicMock(stdout="", returncode=0)
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_osascript(dest) is True
         assert dest.stat().st_size > 0
 
@@ -175,7 +181,8 @@ class TestMacosOsascript:
                 return MagicMock(stdout="«class TIFF»", returncode=0)
             dest.write_bytes(FAKE_PNG)
             return MagicMock(stdout="", returncode=0)
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_osascript(dest) is True
 
     def test_extraction_returns_fail(self, tmp_path):
@@ -186,7 +193,8 @@ class TestMacosOsascript:
             if len(calls) == 1:
                 return MagicMock(stdout="«class PNGf»", returncode=0)
             return MagicMock(stdout="fail", returncode=0)
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_osascript(dest) is False
 
     def test_extraction_writes_empty_file(self, tmp_path):
@@ -198,7 +206,8 @@ class TestMacosOsascript:
                 return MagicMock(stdout="«class PNGf»", returncode=0)
             dest.write_bytes(b"")
             return MagicMock(stdout="", returncode=0)
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+        with patch("hermes_cli.clipboard._macos_pyobjc_has_image", return_value=False), \
+             patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_osascript(dest) is False
 
 

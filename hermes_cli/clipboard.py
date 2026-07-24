@@ -1,15 +1,12 @@
-"""Clipboard image extraction for macOS, Windows, Linux, and WSL2.
+"""Clipboard image extraction and text writing for macOS, Windows, Linux, WSL2.
 
-Provides a single function `save_clipboard_image(dest)` that checks the
-system clipboard for image data, saves it to *dest* as PNG, and returns
-True on success.  No external Python dependencies — uses only OS-level
-CLI tools that ship with the platform (or are commonly installed).
+Public API:
+  save_clipboard_image(dest)  — extract image → PNG file, returns True on success
+  has_clipboard_image()       — quick check: is there an image on the clipboard?
+  set_clipboard_text(text)    — replace clipboard content with *text*
 
-Platform support:
-  macOS   — osascript (always available), pngpaste (if installed)
-  Windows — PowerShell via WinForms, Get-Clipboard, file-drop fallback
-  WSL2    — powershell.exe via WinForms, Get-Clipboard, file-drop fallback
-  Linux   — wl-paste (Wayland), xclip (X11)
+macOS uses PyObjC (AppKit) when available for zero-subprocess clipboard access,
+falling back to osascript/pngpaste.  No external Python dependencies required.
 """
 
 import base64
@@ -23,6 +20,18 @@ from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def set_clipboard_text(text: str) -> bool:
+    """Replace the system clipboard content with *text*.
+
+    Returns True on success, False if the clipboard could not be set.
+    """
+    if sys.platform == "darwin":
+        return _macos_set_text(text)
+    if sys.platform == "win32":
+        return _windows_set_text(text)
+    return _linux_set_text(text)
 
 
 def save_clipboard_image(dest: Path) -> bool:
@@ -492,3 +501,158 @@ def _xclip_save(dest: Path) -> bool:
         logger.debug("xclip image extraction failed: %s", e)
         dest.unlink(missing_ok=True)
     return False
+
+
+# ── set_clipboard_text implementations ──────────────────────────────────
+
+def _macos_set_text(text: str) -> bool:
+    """Set macOS clipboard to *text* using PyObjC, falling back to osascript."""
+    # Prefer PyObjC — no subprocess, no terminal flicker
+    try:
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSPasteboardTypeString)
+        return True
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug("PyObjC set_clipboard_text failed: %s", e)
+
+    # Fallback: osascript
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", f'set the clipboard to "{escaped}"'],
+            capture_output=True, timeout=3,
+        )
+        return r.returncode == 0
+    except Exception as e:
+        logger.debug("osascript set clipboard text failed: %s", e)
+    return False
+
+
+def _windows_set_text(text: str) -> bool:
+    """Set Windows clipboard to *text* via PowerShell."""
+    ps = _get_ps_exe()
+    if ps is None:
+        return False
+    # Escape for PowerShell string (double quotes → backtick-double-quote)
+    safe = text.replace('"', '`"')
+    try:
+        r = _run_powershell(ps,
+            f'Set-Clipboard -Value "{safe}"',
+            timeout=5,
+        )
+        return r.returncode == 0
+    except Exception as e:
+        logger.debug("Windows set clipboard text failed: %s", e)
+    return False
+
+
+def _linux_set_text(text: str) -> bool:
+    """Set Linux clipboard to *text* using wl-copy or xclip."""
+    if os.environ.get("WAYLAND_DISPLAY"):
+        try:
+            r = subprocess.run(
+                ["wl-copy"],
+                input=text, text=True, capture_output=True, timeout=3,
+            )
+            if r.returncode == 0:
+                return True
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug("wl-copy set clipboard failed: %s", e)
+
+    try:
+        r = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-in"],
+            input=text, text=True, capture_output=True, timeout=3,
+        )
+        return r.returncode == 0
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.debug("xclip set clipboard failed: %s", e)
+    return False
+
+
+# ── macOS PyObjC acceleration ───────────────────────────────────────────
+
+def _macos_pyobjc_save(dest: Path) -> bool:
+    """Save clipboard image via PyObjC — faster than osascript, no flicker.
+
+    Tries PNG first, then TIFF (NSTIFFPboardType), matching the original
+    osascript fallback that handles both formats.
+    """
+    try:
+        from AppKit import NSPasteboard, NSPasteboardTypePNG
+        pb = NSPasteboard.generalPasteboard()
+        # Try PNG first
+        data = pb.dataForType_(NSPasteboardTypePNG)
+        if data is not None and data.length() > 0:
+            data.writeToFile_atomically_(str(dest), True)
+            if dest.exists() and dest.stat().st_size > 0:
+                return True
+        # Try TIFF — osascript handles it, so should PyObjC
+        try:
+            from AppKit import NSTIFFPboardType
+            tiff_data = pb.dataForType_(NSTIFFPboardType)
+            if tiff_data is not None and tiff_data.length() > 0:
+                tiff_data.writeToFile_atomically_(str(dest), True)
+                return dest.exists() and dest.stat().st_size > 0
+        except ImportError:
+            pass
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug("PyObjC clipboard save failed: %s", e)
+    return False
+
+
+def _macos_pyobjc_has_image() -> bool:
+    """Check for clipboard image via PyObjC — checks both PNG and TIFF."""
+    try:
+        from AppKit import NSPasteboard, NSPasteboardTypePNG
+        pb = NSPasteboard.generalPasteboard()
+        data = pb.dataForType_(NSPasteboardTypePNG)
+        if data is not None and data.length() > 0:
+            return True
+        try:
+            from AppKit import NSTIFFPboardType
+            tiff_data = pb.dataForType_(NSTIFFPboardType)
+            if tiff_data is not None and tiff_data.length() > 0:
+                return True
+        except ImportError:
+            pass
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    return False  # signal "not determined" — caller should fall back
+
+
+# ── Patch macOS save/has_image to prefer PyObjC ─────────────────────────
+
+# Override the module-level functions to try PyObjC first.
+# Preserves original osascript/pngpaste as fallback.
+_macos_has_image_orig = _macos_has_image
+_macos_save_orig = _macos_save
+
+
+def _macos_has_image() -> bool:
+    """Check for clipboard image — PyObjC fast path, osascript fallback."""
+    if _macos_pyobjc_has_image():
+        return True
+    # PyObjC said no or not installed — fall back to osascript.
+    # Always try osascript because it can detect edge cases that
+    # PyObjC might miss (e.g. pasted image in a format not covered).
+    return _macos_has_image_orig()
+
+
+def _macos_save(dest: Path) -> bool:
+    """Save clipboard image — PyObjC fast path, pngpaste/osascript fallback."""
+    if _macos_pyobjc_save(dest):
+        return True
+    return _macos_save_orig(dest)

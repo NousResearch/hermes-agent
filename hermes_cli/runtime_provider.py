@@ -364,6 +364,11 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode value from config. Returns None if invalid."""
     if isinstance(raw, str):
         normalized = raw.strip().lower()
+        # Alias: "responses" is accepted as a shorthand for "codex_responses"
+        # so that api_mode: responses in config.yaml behaves identically to
+        # selecting option 3 in `hermes setup`.
+        if normalized == "responses":
+            return "codex_responses"
         if normalized in _VALID_API_MODES:
             return normalized
     return None

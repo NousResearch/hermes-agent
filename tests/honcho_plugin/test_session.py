@@ -361,6 +361,28 @@ class TestPeerLookupHelpers:
         user_peer.context.assert_called_once_with(target=session.user_peer_id)
         ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
+    def test_get_prefetch_context_passes_context_tokens_to_summary_call(self):
+        """The summary fetch must honour the configured contextTokens cap.
+
+        Regression: session.context(summary=True) was called without tokens=,
+        so Honcho always returned the long summary even when a cap was set,
+        silently inflating the injected block by ~10 KB per turn.
+        """
+        mgr, session = self._make_cached_manager()
+        mgr._context_tokens = 4000
+
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=SimpleNamespace(content="short summary")
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+        mgr._get_or_create_peer = MagicMock(return_value=MagicMock())
+
+        result = mgr.get_prefetch_context(session.key)
+
+        assert result["summary"] == "short summary"
+        honcho_session.context.assert_called_once_with(summary=True, tokens=4000)
+
     def test_get_prefetch_context_uses_assistant_observer_for_user_when_ai_observe_others(self):
         """With ai_observe_others enabled, get_prefetch_context must query
         the user context through the assistant observer, not the user peer."""

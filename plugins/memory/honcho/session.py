@@ -735,7 +735,7 @@ class HonchoSessionManager:
         try:
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session:
-                ctx = honcho_session.context(summary=True)
+                ctx = honcho_session.context(summary=True, tokens=self._context_tokens)
                 if ctx.summary and getattr(ctx.summary, "content", None):
                     result["summary"] = ctx.summary.content
         except Exception as e:
@@ -1023,6 +1023,7 @@ class HonchoSessionManager:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
             ctx = honcho_session.context(
                 summary=True,
+                tokens=self._context_tokens,
                 peer_target=target_peer_id or observer_peer_id,
                 peer_perspective=observer_peer_id,
             )

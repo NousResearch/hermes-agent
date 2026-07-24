@@ -663,6 +663,15 @@ class CodexAppServerSession:
                                 result.error
                                 or "codex reported turn_aborted"
                             )
+                    # An event callback may establish an authoritative
+                    # lifecycle boundary (for example, a verified terminal
+                    # Kanban run) and request an interrupt. Do not drain later
+                    # provider events or answer the pending server request
+                    # after that boundary.
+                    if self._interrupt_event.is_set():
+                        break
+                if self._interrupt_event.is_set():
+                    continue
                 self._handle_server_request(sreq)
                 # Activity counts as live signal — reset the post-tool
                 # quiet timer so an approval round-trip doesn't trip it.

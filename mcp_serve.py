@@ -29,6 +29,7 @@ MCP client config (e.g. claude_desktop_config.json):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -281,6 +282,51 @@ def _extract_attachments(msg: dict) -> List[dict]:
     return attachments
 
 
+def _pending_approval_kind(approval: dict) -> str:
+    """Infer a stable approval kind for bridge clients."""
+    kind = approval.get("kind")
+    if kind:
+        return str(kind)
+    return "exec" if approval.get("command") else "plugin"
+
+
+def _pending_approval_id(session_key: str, approval: dict) -> str:
+    """Build a stable approval identifier for MCP round-trips."""
+    fingerprint = {
+        "session_key": session_key,
+        "command": approval.get("command", ""),
+        "description": approval.get("description", ""),
+        "pattern_key": approval.get("pattern_key", ""),
+        "pattern_keys": approval.get("pattern_keys", []),
+        "turn_id": approval.get("turn_id", ""),
+        "tool_call_id": approval.get("tool_call_id", ""),
+        "created_at": approval.get("created_at", ""),
+    }
+    payload = json.dumps(fingerprint, sort_keys=True, default=str)
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    return f"{session_key}:{digest}"
+
+
+def _normalize_pending_approval(
+    session_key: str,
+    approval: dict,
+    *,
+    existing: Optional[dict] = None,
+) -> dict:
+    """Normalize approval payloads exposed through the MCP bridge."""
+    normalized = dict(approval)
+    normalized.setdefault("session_key", session_key)
+    normalized.setdefault("kind", _pending_approval_kind(normalized))
+    if existing and existing.get("created_at") and not normalized.get("created_at"):
+        normalized["created_at"] = existing["created_at"]
+    normalized.setdefault(
+        "created_at",
+        datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    )
+    normalized["id"] = _pending_approval_id(session_key, normalized)
+    return normalized
+
+
 # ---------------------------------------------------------------------------
 # Event Bridge — polls SessionDB for new messages, maintains event queue
 # ---------------------------------------------------------------------------
@@ -398,21 +444,92 @@ class EventBridge:
             )
 
     def respond_to_approval(self, approval_id: str, decision: str) -> dict:
-        """Resolve a pending approval (best-effort without gateway IPC)."""
+        """Resolve a pending approval and unblock the gateway wait if possible."""
         with self._lock:
-            approval = self._pending_approvals.pop(approval_id, None)
+            approval = self._pending_approvals.get(approval_id)
 
         if not approval:
             return {"error": f"Approval not found: {approval_id}"}
 
+        session_key = approval.get("session_key", "")
+        normalized_decision = {
+            "allow-once": "once",
+            "allow-always": "always",
+            "deny": "deny",
+        }.get(decision, decision)
+
+        if session_key:
+            try:
+                from tools.approval import resolve_gateway_approval
+
+                resolved = resolve_gateway_approval(session_key, normalized_decision)
+            except Exception as exc:
+                return {"error": f"Approval resolution failed: {exc}"}
+            if resolved <= 0:
+                return {"error": f"Approval no longer pending: {approval_id}"}
+
+        with self._lock:
+            self._pending_approvals.pop(approval_id, None)
+
         self._enqueue(QueueEvent(
             cursor=0,  # Will be set by _enqueue
             type="approval_resolved",
-            session_key=approval.get("session_key", ""),
+            session_key=session_key,
             data={"approval_id": approval_id, "decision": decision},
         ))
 
         return {"resolved": True, "approval_id": approval_id, "decision": decision}
+
+    def _sync_pending_approvals(self) -> None:
+        """Mirror live gateway approvals into the bridge event queue."""
+        try:
+            from tools.approval import list_pending_gateway_approvals
+
+            pending = list_pending_gateway_approvals()
+        except Exception as exc:
+            logger.debug("EventBridge approval sync skipped: %s", exc)
+            return
+
+        with self._lock:
+            previous = {
+                approval.get("session_key", ""): dict(approval)
+                for approval in self._pending_approvals.values()
+                if approval.get("session_key")
+            }
+
+        current: Dict[str, dict] = {}
+        for session_key, approval in pending.items():
+            current[session_key] = _normalize_pending_approval(
+                session_key,
+                approval,
+                existing=previous.get(session_key),
+            )
+
+        with self._lock:
+            self._pending_approvals = {
+                approval["id"]: approval for approval in current.values()
+            }
+
+        for session_key, approval in current.items():
+            if previous.get(session_key) != approval:
+                self._enqueue(QueueEvent(
+                    cursor=0,
+                    type="approval_requested",
+                    session_key=session_key,
+                    data=dict(approval),
+                ))
+
+        for session_key, approval in previous.items():
+            if session_key not in current:
+                self._enqueue(QueueEvent(
+                    cursor=0,
+                    type="approval_resolved",
+                    session_key=session_key,
+                    data={
+                        "approval_id": approval.get("id", ""),
+                        "decision": "resolved",
+                    },
+                ))
 
     def _enqueue(self, event: QueueEvent) -> None:
         """Add an event to the queue and wake any waiters."""
@@ -450,6 +567,8 @@ class EventBridge:
         eliminating the old dual-file (sessions.json + state.db) race that
         could drop brand-new conversations (#8925).
         """
+        self._sync_pending_approvals()
+
         try:
             from hermes_constants import get_hermes_home
             db_file = get_hermes_home() / "state.db"

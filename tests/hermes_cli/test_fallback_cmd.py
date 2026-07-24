@@ -54,6 +54,52 @@ class TestReadChain:
             {"provider": "nous", "model": "Hermes-4-Llama-3.1-405B"},
         ]
 
+    def test_reads_fallback_providers_nested_under_model(self):
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {
+            "model": {
+                "default": "primary-model",
+                "provider": "primary",
+                "fallback_providers": [
+                    {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+                ],
+            }
+        }
+        assert _read_chain(cfg) == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        ]
+
+    def test_reads_legacy_fallback_model_nested_under_model(self):
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {
+            "model": {
+                "default": "primary-model",
+                "provider": "primary",
+                "fallback_model": {"provider": "nous", "model": "Hermes-4"},
+            }
+        }
+        assert _read_chain(cfg) == [{"provider": "nous", "model": "Hermes-4"}]
+
+    def test_merges_top_level_before_nested_fallbacks(self):
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ],
+            "model": {
+                "fallback_providers": [
+                    {"provider": "OpenRouter", "model": "anthropic/claude-sonnet-4.6"},
+                    {"provider": "nous", "model": "Hermes-4"},
+                ],
+                "fallback_model": {"provider": "backup", "model": "backup-model"},
+            },
+        }
+        assert _read_chain(cfg) == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            {"provider": "nous", "model": "Hermes-4"},
+            {"provider": "backup", "model": "backup-model"},
+        ]
+
     def test_merges_new_and_legacy_formats(self):
         from hermes_cli.fallback_cmd import _read_chain
         cfg = {

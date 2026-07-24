@@ -3952,6 +3952,16 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
+    if not profile_arg:
+        # Pin the root service to the default profile explicitly. A bare
+        # ``hermes_cli.main gateway run`` follows the sticky active profile,
+        # so when a named profile is active the root and named launchd jobs can
+        # both start that profile with ``--replace`` and repeatedly terminate
+        # each other.
+        from hermes_constants import get_default_hermes_root
+
+        if Path(hermes_home).resolve() == get_default_hermes_root().resolve():
+            profile_arg = "--profile default"
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching

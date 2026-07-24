@@ -505,6 +505,27 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_default_service_pins_root_profile(self, tmp_path, monkeypatch):
+        """The root launchd job must not follow the sticky active profile."""
+        import hermes_constants
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_root)
+        monkeypatch.setattr(
+            hermes_constants,
+            "get_default_hermes_root",
+            lambda: hermes_root,
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert (
+            "<string>--profile</string>\n"
+            "        <string>default</string>\n"
+            "        <string>gateway</string>"
+        ) in plist
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

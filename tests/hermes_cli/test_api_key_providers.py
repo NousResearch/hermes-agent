@@ -52,7 +52,7 @@ class TestProviderRegistry:
 
     def test_zai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["zai"]
-        assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY")
+        assert pconfig.api_key_env_vars == ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "ZHIPUAI_API_KEY")
         assert pconfig.base_url_env_var == "GLM_BASE_URL"
 
     def test_xai_env_vars(self):

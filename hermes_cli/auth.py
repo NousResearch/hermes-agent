@@ -245,7 +245,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Z.AI / GLM",
         auth_type="api_key",
         inference_base_url="https://api.z.ai/api/paas/v4",
-        api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "ZHIPUAI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
     "kimi-coding": ProviderConfig(
@@ -1879,7 +1879,7 @@ def resolve_provider(
 
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
-        "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
+        "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai", "zhipuai": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",

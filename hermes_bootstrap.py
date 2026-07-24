@@ -49,11 +49,15 @@ against double-reconfigure.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+_dual_venv_warned = False
+
+logger = logging.getLogger(__name__)
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -158,6 +162,138 @@ def harden_import_path(src_root: str | None = None) -> None:
     sys.path.insert(0, root)
 
 
+def _is_reparse_point(path: str) -> bool:
+    """Return True if ``path`` is a Windows directory junction or symlink.
+
+    Uses ``GetFileAttributesW`` to inspect ``FILE_ATTRIBUTE_REPARSE_POINT``
+    (0x400). On POSIX every symlink counts as a reparse point. On Windows
+    this distinguishes a *materialized* ``.venv\\`` directory (no reparse
+    point) from a junction ``venv\\ -> .venv\\`` (reparse point set).
+
+    Returns False on any error (missing path, permission denied, non-Windows
+    ctypes import failure) so a transient filesystem hiccup never turns into
+    a bootstrap-time crash.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+            if attrs == 0xFFFFFFFF:  # INVALID_FILE_ATTRIBUTES
+                return False
+            return bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+        except (OSError, ImportError, AttributeError):
+            return False
+    # POSIX: a symlink is the only candidate; bare directories are not
+    # reparse points.
+    try:
+        return os.path.islink(path)
+    except OSError:
+        return False
+
+
+def _has_pyvenv_cfg(directory: str) -> bool:
+    """Return True if ``directory/pyvenv.cfg`` exists in a materialized venv.
+
+    A *materialized* venv has its own real ``pyvenv.cfg`` file. A junction
+    or symlink that aliases another venv resolves ``pyvenv.cfg`` through the
+    reparse point and would otherwise count as drift — this helper filters
+    those out by first checking that ``directory`` itself is not a reparse
+    point.  This is the core of the dual-venv-collapse fix: post-fix,
+    ``venv/`` is a junction and is correctly *not* counted as a second venv.
+    """
+    if _is_reparse_point(directory):
+        # It's a junction / symlink.  The pyvenv.cfg it resolves to belongs
+        # to whatever it points at, not to this directory.
+        return False
+    cfg_path = os.path.join(directory, "pyvenv.cfg")
+    try:
+        return os.path.isfile(cfg_path)
+    except OSError:
+        # Broken symlink, permission error, etc.  Treat as "not a real venv"
+        # — never raise from a bootstrap-time detector.
+        return False
+
+
+def detect_dual_venv_drift() -> bool:
+    """Detect whether two materialized venvs (``venv/`` and ``.venv/``) coexist.
+
+    Recon 2026-06-30 confirmed the repo shipped *two* independent copies of
+    ``pyvenv.cfg`` at the repository root — one in ``.venv/`` (uv/pytest) and
+    one in ``venv/`` (the ``hermes.EXE`` runtime).  Either copy can be
+    regenerated independently by ``uv sync`` / ``python -m venv`` / a manual
+    ``hermes update``, leaving the other at a stale ``version_info`` and
+    producing daemon-startup failures, broken editable-install ``.pth`` files,
+    and ``hermes doctor`` reporting the wrong interpreter.
+
+    This helper walks one level up from ``sys.prefix`` (the canonical venv
+    directory) and checks whether both ``venv/pyvenv.cfg`` and
+    ``.venv/pyvenv.cfg`` are materialized as real files.  If only one exists,
+    or one of them is a junction/symlink to the other (the post-fix state),
+    drift is absent.
+
+    Returns True on drift, False otherwise.  Never raises — every I/O path
+    swallows ``OSError`` so the bootstrap can't be blocked by a transient
+    filesystem hiccup.
+    """
+    if os.environ.get("HERMES_ALLOW_DUAL_VENV", "").strip() == "1":
+        # Opt-out for users who legitimately keep two venvs in sync by hand.
+        return False
+
+    parent = os.path.dirname(sys.prefix)
+    if not parent:
+        return False
+
+    candidates = ("venv", ".venv")
+    found = []
+    for name in candidates:
+        path = os.path.join(parent, name)
+        if _has_pyvenv_cfg(path):
+            found.append(path)
+
+    return len(found) >= 2
+
+
+def warn_dual_venv_drift() -> bool:
+    """Emit a one-shot WARNING if dual-venv drift is detected.
+
+    Idempotent: the warning fires at most once per process, regardless of how
+    many times the caller invokes this function.  A module-level
+    ``_dual_venv_warned`` flag guards against log spam on entry points that
+    import ``hermes_bootstrap`` transitively from several submodules.
+
+    Returns True when drift was detected and a warning was emitted, False
+    otherwise (no drift, or already warned).
+    """
+    global _dual_venv_warned
+
+    if _dual_venv_warned:
+        return False
+    if not detect_dual_venv_drift():
+        return False
+
+    parent = os.path.dirname(sys.prefix)
+    locations = []
+    for name in ("venv", ".venv"):
+        path = os.path.join(parent, name)
+        if _has_pyvenv_cfg(path):
+            locations.append(path)
+
+    logger.warning(
+        "dual venv detected at %s — both venv/ and .venv/ contain an "
+        "independent pyvenv.cfg, risking stale version_info after a partial "
+        "rebuild. Set HERMES_ALLOW_DUAL_VENV=1 to silence, or collapse to "
+        "a single .venv/ with `venv/` as a junction. See plans/001.",
+        parent,
+    )
+    for loc in locations:
+        logger.warning("  venv source of truth candidate: %s", loc)
+
+    _dual_venv_warned = True
+    return True
+
+
 def activate_durable_lazy_target() -> None:
     """Put the durable lazy-install dir on ``sys.path`` if one is configured.
 
@@ -193,3 +329,10 @@ apply_windows_utf8_bootstrap()
 # packages installed into the data volume on a previous run are importable
 # this run, before any backend module imports its SDK. No-op when unset.
 activate_durable_lazy_target()
+
+# Detect dual-venv drift (independent pyvenv.cfg in both venv/ and .venv/)
+# and emit a one-shot warning. Idempotent — safe to call repeatedly, but
+# the underlying detector runs at most once per process via its own guard.
+# Never raises: a broken filesystem path will surface as no warning, not a
+# crash on every Hermes entry point.
+warn_dual_venv_drift()

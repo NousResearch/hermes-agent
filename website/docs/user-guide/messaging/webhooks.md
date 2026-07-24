@@ -87,6 +87,9 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
+| `source_platform` | No | Deliver the inbound event through a connected native adapter (for example `telegram` or `discord`) rather than the webhook adapter. `webhook` and `api_server` are rejected to prevent recursion. |
+| `source_chat_id`, `source_user_id` | With `source_platform` | Configured native destination and sender identity. These are route configuration, never read from the request payload. |
+| `source_chat_name`, `source_user_name`, `source_chat_type`, `source_thread_id` | No | Optional configured native routing metadata. `source_thread_id` selects the native topic/thread session and response lane. |
 
 ### Full example
 
@@ -206,6 +209,29 @@ prompt: "PR #{pull_request.number} by {pull_request.user.login}: {__raw__}"
 If no `prompt` template is configured for a route, the entire payload is dumped as indented JSON (truncated at 4000 characters).
 
 The same dot-notation templates work in `deliver_extra` values.
+
+### Synthetic Native Sources and Media Payloads
+
+Set `source_platform` when an authenticated integration should behave as a message from a configured native chat, including that platform's authorization, session, thread, media, and reply-routing path. The target adapter must be enabled and connected; otherwise Hermes rejects the request rather than silently falling back to webhook routing. The configured `source_*` values are authoritative: payload fields with those names are ignored.
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        phone-relay:
+          secret: "relay-shared-secret"
+          prompt: "{message}"
+          source_platform: telegram
+          source_chat_id: "1000000001"
+          source_user_id: "1000000001"
+          source_chat_type: dm
+          source_thread_id: "42" # optional Telegram topic / native thread
+```
+
+The payload may contain exactly one base64 attachment. Audio aliases are `audio_base64` and `voice_base64`; their MIME aliases are `audio_mime_type` and `voice_mime_type`. Image aliases are `image_base64` and `screenshot_base64`; their MIME aliases are `image_mime_type` and `screenshot_mime_type`.
+
+Hermes accepts only supported audio (`audio/ogg`, `audio/opus`, `audio/mpeg`, `audio/wav`, `audio/flac`, `audio/mp4`, `audio/aac`) and image (`image/png`, `image/jpeg`, `image/gif`, `image/bmp`, `image/webp`) MIME values whose file signatures match the declared type. It rejects malformed base64, MIME/signature mismatches, oversized media, and requests containing both an audio and image. Media bytes use the normal gateway cache and its configured inbound-media limit.
 
 ### Forum Topic Delivery
 

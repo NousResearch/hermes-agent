@@ -327,6 +327,65 @@ def test_defaults_allowed_root_to_cwd(tmp_path: Path):
     assert any("outside the allowed workspace" in warning for warning in result.warnings)
 
 
+def test_remove_reference_tokens_keeps_structure_but_cleans_seam():
+    from agent.context_references import (
+        _remove_reference_tokens,
+        parse_context_references,
+    )
+
+    # Inline reference: the gap the removed token leaves is still tidied to a
+    # single space, exactly like before.
+    inline = "see @file:notes.txt here"
+    assert (
+        _remove_reference_tokens(inline, parse_context_references(inline))
+        == "see here"
+    )
+
+    # A reference on its own line keeps the surrounding paragraph break instead
+    # of merging the two paragraphs onto a single line.
+    multiline = "intro line\n\n@diff\n\noutro line"
+    assert (
+        _remove_reference_tokens(multiline, parse_context_references(multiline))
+        == "intro line\n\noutro line"
+    )
+
+
+def test_reference_expansion_preserves_message_paragraphs(sample_repo: Path):
+    """Using an @ reference must not flatten the rest of the user's message.
+
+    The token-removal cleanup used to collapse every run of whitespace
+    (newlines included) into a single space, so any message that used an @
+    reference had its blank lines and paragraph breaks merged before the model
+    saw it.
+    """
+    from agent.context_references import preprocess_context_references
+
+    message = (
+        "First paragraph with the task.\n"
+        "\n"
+        "@file:src/main.py\n"
+        "\n"
+        "Second paragraph with the constraints."
+    )
+
+    result = preprocess_context_references(
+        message,
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    prose = result.message.split("--- Attached Context ---", 1)[0]
+    assert "First paragraph with the task." in prose
+    assert "Second paragraph with the constraints." in prose
+    # The paragraph break survives; the two paragraphs are not merged.
+    assert (
+        "First paragraph with the task.\n\nSecond paragraph with the constraints."
+        in prose
+    )
+    assert "the task. Second paragraph" not in prose
+
+
 @pytest.mark.asyncio
 async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatch):
     from agent.context_references import preprocess_context_references_async

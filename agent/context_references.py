@@ -465,8 +465,18 @@ def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:
         cursor = ref.end
     pieces.append(message[cursor:])
     text = "".join(pieces)
-    text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    # Tidy the gap a removed token leaves behind WITHOUT reflowing the rest of
+    # the message. Collapsing every run of ``\s`` (which includes newlines)
+    # flattened the user's blank lines, paragraph breaks, and indentation into
+    # single spaces, so any message that used an @ reference reached the model
+    # as one run-on line. Restrict the cleanup to horizontal whitespace: collapse
+    # runs of spaces/tabs, drop horizontal whitespace before punctuation, strip
+    # the whitespace a removed token can leave at a line end, and cap the
+    # blank-line run a line-only reference leaves behind.
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    text = re.sub(r"[ \t]+(\r?\n)", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 

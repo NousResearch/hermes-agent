@@ -358,6 +358,19 @@ TOOL_CATEGORIES = {
                 "tts_provider": "gemini",
             },
             {
+                "name": "NVIDIA Magpie TTS",
+                "badge": "hosted",
+                "tag": "Nemotron Speech HTTP synthesis with multilingual voices",
+                "env_vars": [
+                    {
+                        "key": "NVIDIA_API_KEY",
+                        "prompt": "NVIDIA API key",
+                        "url": "https://build.nvidia.com/",
+                    },
+                ],
+                "tts_provider": "nvidia",
+            },
+            {
                 "name": "KittenTTS",
                 "badge": "local · free",
                 "tag": "Lightweight local ONNX TTS (~25MB), no API key",

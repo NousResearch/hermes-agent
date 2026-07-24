@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -25,6 +25,7 @@ Convert text to speech with ten providers:
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
+| **NVIDIA Magpie TTS** | Excellent | Free endpoint | `NVIDIA_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "nvidia" | local providers
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -76,6 +77,13 @@ tts:
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
     # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
+  nvidia:
+    voice: "Magpie-Multilingual.EN-US.Aria"
+    language: "en-US"
+    sample_rate_hz: 44100
+    custom_dictionary: ""       # Inline rules or a path to a UTF-8 dictionary
+    custom_configuration: ""    # Model-specific key:value pairs
+    customizations: {}           # Additional multipart form fields
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -416,6 +424,7 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 | **Local Whisper** (default) | Good | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
+| **NVIDIA Parakeet** | Excellent | Free endpoint | `NVIDIA_API_KEY` |
 
 :::info Zero Config
 Local transcription works out of the box when `faster-whisper` is installed. If that's unavailable, Hermes can also use a local `whisper` CLI from common install locations (like `/opt/homebrew/bin`) or a custom command via `HERMES_LOCAL_STT_COMMAND`.
@@ -426,7 +435,7 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "nvidia"
   local:
     model: "base"             # tiny, base, small, medium, large-v3
   openai:
@@ -435,6 +444,14 @@ stt:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
     model: "grok-stt"         # xAI Grok STT
+  nvidia:
+    model: "parakeet-tdt-0.6b-v2"  # Default; retries Parakeet CTC 1.1b on failure
+    language: "en-US"
+    boosted_words: ["Nemotron", "OpenClaw"]
+    boosted_words_score: 1.5
+    custom_configuration: "key:value"
+    customizations:
+      word_time_offsets: true
 ```
 
 ### Provider Details
@@ -456,6 +473,8 @@ stt:
 **Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `cd ~/.hermes/hermes-agent && uv pip install -e ".[mistral]"`.
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
+
+**NVIDIA Parakeet** — Requires `NVIDIA_API_KEY`. Uses the offline multipart HTTP API, tries Parakeet TDT 0.6b v2 first, and falls back to Parakeet CTC 1.1b. `boosted_words` is sent as repeated word-boost fields; `customizations` passes additional HTTP form fields through to the NIM. This provider does not add realtime transcription.
 
 **Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 
@@ -488,7 +507,7 @@ If your configured provider isn't available, Hermes automatically falls back:
 
 ### STT custom command providers
 
-If the STT engine you want isn't natively supported (Doubao ASR, NVIDIA Parakeet, a whisper.cpp build, an open-source SenseVoice CLI, anything else that exposes a shell command), wire it in as a **command-type provider** without writing any Python. Hermes runs your shell command against the audio file and reads back the transcript.
+If the STT engine you want isn't natively supported (Doubao ASR, a whisper.cpp build, an open-source SenseVoice CLI, anything else that exposes a shell command), wire it in as a **command-type provider** without writing any Python. Hermes runs your shell command against the audio file and reads back the transcript.
 
 Declare one or more providers under `stt.providers.<name>` and switch between them with `stt.provider: <name>` — same shape as the TTS [command-provider registry](#custom-command-providers), adapted for the input=audio → output=transcript direction.
 
@@ -564,7 +583,7 @@ The shell command runs under the same user as Hermes with full filesystem access
 
 ### Python plugin providers (STT)
 
-For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 6 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
+For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 7 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`, `nvidia`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
 
 #### When to pick which (STT)
 

@@ -29,6 +29,14 @@ from hermes_cli.tools_config import (
 )
 
 
+def test_tts_provider_registry_includes_nvidia_magpie():
+    providers = TOOL_CATEGORIES["tts"]["providers"]
+    nvidia = next((item for item in providers if item.get("tts_provider") == "nvidia"), None)
+
+    assert nvidia is not None
+    assert nvidia["env_vars"][0]["key"] == "NVIDIA_API_KEY"
+
+
 def test_agent_disabled_toolsets_suppresses_across_platforms():
     """agent.disabled_toolsets in config.yaml should remove those toolsets
     from the enabled set, regardless of platform defaults or explicit config.

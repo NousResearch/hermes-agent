@@ -1014,6 +1014,29 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
     return text or None
 
 
+def _normalize_job_tags(tags: Any) -> Optional[List[str]]:
+    """Normalize a user-supplied tag list: strip, drop empties, dedupe
+    (case-insensitively, keeping first spelling and order). None/empty → None
+    so unset stays absent from storage."""
+    if not isinstance(tags, list):
+        return None
+    seen = set()
+    normalized: List[str] = []
+    for tag in tags:
+        text = str(tag).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        normalized.append(text)
+    return normalized or None
+
+
+# Optional organizational metadata (#68482). Stored only when set — absent
+# keys keep existing jobs and the common case byte-identical (same policy as
+# attach_to_session). ``tags`` is a normalized list; the rest are plain text.
+_JOB_METADATA_TEXT_FIELDS = ("category", "description", "workflow")
+
+
 def _compute_provider_model_snapshots(
     *,
     provider: Any,
@@ -1087,6 +1110,10 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    tags: Optional[List[str]] = None,
+    category: Optional[str] = None,
+    description: Optional[str] = None,
+    workflow: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1131,6 +1158,12 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        tags: Optional list of free-form tags for grouping/filtering
+                (e.g. ["daily", "report"]). Deduped case-insensitively.
+        category: Optional single category label (e.g. "reporting").
+        description: Optional one-line human-readable summary of the job.
+        workflow: Optional description of the process the job follows
+                (e.g. "collect data -> analyze -> generate report").
 
     Returns:
         The created job dict
@@ -1259,6 +1292,19 @@ def create_job(
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
 
+    # Organizational metadata (#68482): same only-when-set persistence policy.
+    normalized_tags = _normalize_job_tags(tags)
+    if normalized_tags:
+        job["tags"] = normalized_tags
+    for _meta_field, _meta_value in (
+        ("category", category),
+        ("description", description),
+        ("workflow", workflow),
+    ):
+        _meta_text = _normalize_job_optional_text(_meta_value)
+        if _meta_text:
+            job[_meta_field] = _meta_text
+
     with _jobs_lock():
         jobs = load_jobs()
         jobs.append(job)
@@ -1356,8 +1402,31 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
 
+            # Normalize organizational metadata (#68482). A falsy update value
+            # (None, "", []) clears the field entirely — the key is dropped
+            # after the merge so cleared metadata does not linger as null in
+            # storage (matching create_job's only-when-set persistence).
+            _cleared_metadata: List[str] = []
+            if "tags" in updates:
+                _norm_tags = _normalize_job_tags(updates["tags"])
+                if _norm_tags:
+                    updates["tags"] = _norm_tags
+                else:
+                    _cleared_metadata.append("tags")
+            for _meta_field in _JOB_METADATA_TEXT_FIELDS:
+                if _meta_field in updates:
+                    _meta_text = _normalize_job_optional_text(updates[_meta_field])
+                    if _meta_text:
+                        updates[_meta_field] = _meta_text
+                    else:
+                        _cleared_metadata.append(_meta_field)
+            for _meta_field in _cleared_metadata:
+                updates.pop(_meta_field, None)
+
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            for _meta_field in _cleared_metadata:
+                updated.pop(_meta_field, None)
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

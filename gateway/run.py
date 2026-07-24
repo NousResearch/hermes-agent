@@ -20394,10 +20394,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
-            # Terminal commands on markdown platforms get a single-line capped
-            # fenced block (built above) instead of the truncated preview.
+            # Terminal commands render as plain text (not fenced code blocks) so
+            # the progress bubble stays compact (#70857).  Verbose mode retains
+            # the fenced block with full command text.
             if _code_block_short is not None:
-                msg = _code_block_short
+                # Compact mode: plain text, no fenced code block.  Use the
+                # already-truncated single line from _code_block_short's
+                # construction above, prefixed with the tool emoji.  Consecutive
+                # terminal calls suppress the emoji repeat (like the block
+                # header shortening in the verbose path).
+                _prefix = "" if last_was_terminal_block[0] else f"{emoji} "
+                msg = f"{_prefix}{_cmd_short}"
                 last_was_terminal_block[0] = True
             elif preview:
                 from agent.display import (

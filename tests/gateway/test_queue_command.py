@@ -50,7 +50,6 @@ def _make_runner(session_entry: SessionEntry):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._queued_events = {}
     runner._pending_approvals = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None

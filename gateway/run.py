@@ -2035,6 +2035,8 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    PendingEventQueue,
+    _new_gateway_session_ipc_event,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     is_gateway_session_ipc_task,
@@ -2140,7 +2142,6 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_service_tier_overrides",
     "_pending_model_notes",
     "_last_resolved_model",
-    "_queued_events",
     # Staged-but-never-consumed sidecar notes (turn aborted between staging
     # and run_sync) must not leak into a future conversation's first user
     # message — session keys are source-derived and REUSED.
@@ -3377,10 +3378,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # produce its own full agent turn, in FIFO order, with no merging.
         # When the slot is occupied, additional /queue items land here and
         # are promoted one-at-a-time after each run's drain.  Cleared on
-        # /new and /reset.  /model and other mid-session operations
-        # preserve the queue.
-        self._queued_events: Dict[str, List[MessageEvent]] = {}
-        self._busy_queue_lock = threading.RLock()
+        # Pending-event ownership lives on each adapter's PendingEventQueue.
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -4991,41 +4989,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # process to pick up.  "interrupt" mode drops them (current behaviour).
         return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
 
-    # -------- /queue FIFO helpers --------------------------------------
-    # /queue must produce one full agent turn per invocation, in FIFO
-    # order, with no merging.  The adapter's _pending_messages dict is a
-    # single "next-up" slot (shared with photo-burst follow-ups), so we
-    # use it for the head of the queue and an overflow list for the
-    # tail.  Enqueue puts new items in the slot when free, otherwise in
-    # the overflow.  Promotion (called after each run's drain) moves the
-    # next overflow item into the slot so the following recursion picks
-    # it up.  Clearing happens on /new and /reset via
-    # _handle_reset_command.
+    # -------- shared pending-event FIFO helpers ------------------------
 
-    def _busy_queue_guard(self) -> threading.RLock:
-        """Shared thread/loop-safe guard for pending-slot and FIFO mutations."""
-        lock = getattr(self, "_busy_queue_lock", None)
-        if lock is None:
-            lock = threading.RLock()
-            self._busy_queue_lock = lock
-        return lock
+    def _pending_events_for(self, adapter: Any) -> PendingEventQueue:
+        """Return the adapter-owned queue, migrating legacy test stubs lazily."""
+        queue = getattr(adapter, "pending_events", None)
+        if not isinstance(queue, PendingEventQueue):
+            queue = PendingEventQueue()
+            queue.replace_heads(getattr(adapter, "_pending_messages", None))
+            adapter.pending_events = queue
+            setattr(adapter, "_pending_messages", queue.compatibility_heads)
+        return queue
 
     def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
-        with self._busy_queue_guard():
-            if adapter is None:
-                return
-            pending_slot = getattr(adapter, "_pending_messages", None)
-            if pending_slot is None:
-                return
-            queued_events = getattr(self, "_queued_events", None)
-            if queued_events is None:
-                queued_events = {}
-                self._queued_events = queued_events
-            if session_key in pending_slot:
-                queued_events.setdefault(session_key, []).append(queued_event)
-            else:
-                pending_slot[session_key] = queued_event
+        """Append one event without overwriting or merging acknowledged work."""
+        if adapter is None:
+            return
+        self._pending_events_for(adapter).enqueue_fifo(session_key, queued_event)
 
     def _promote_queued_event(
         self,
@@ -5033,100 +5013,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter: Any,
         pending_event: Optional["MessageEvent"],
     ) -> Optional["MessageEvent"]:
-        """Promote the next overflow item after the slot was drained.
-
-        Called at the drain site after _dequeue_pending_event consumed
-        (or failed to consume) the slot.  If there's an overflow item:
-          - When pending_event is None (slot was empty), return the
-            overflow head as the new pending_event.
-          - When pending_event already exists (slot was populated by an
-            interrupt follow-up or similar), stage the overflow head in
-            the slot so the NEXT recursion picks it up.
-        Returns the (possibly updated) pending_event for drain to use.
-        """
-        with self._busy_queue_guard():
-            queued_events = getattr(self, "_queued_events", None)
-            if not queued_events:
-                return pending_event
-            overflow = queued_events.get(session_key)
-            if not overflow:
-                return pending_event
-            next_queued = overflow.pop(0)
-            if not overflow:
-                queued_events.pop(session_key, None)
-            if pending_event is None:
-                return next_queued
-            if adapter is not None and hasattr(adapter, "_pending_messages"):
-                adapter._pending_messages[session_key] = next_queued
-            else:
-                # No adapter — push back so we don't silently drop the item.
-                queued_events.setdefault(session_key, []).insert(0, next_queued)
+        """Compatibility shim for legacy callers that popped the head mapping."""
+        if adapter is None:
             return pending_event
+        return self._pending_events_for(adapter).promote_after_external_pop(
+            session_key,
+            pending_event,
+        )
 
     def _dequeue_and_promote_queued_event(
         self,
         session_key: str,
         adapter: Any,
     ) -> Optional["MessageEvent"]:
-        """Atomically consume the pending head and advance the FIFO."""
-        with self._busy_queue_guard():
-            pending_event = _dequeue_pending_event(adapter, session_key)
-            return self._promote_queued_event(session_key, adapter, pending_event)
+        """Atomically consume the pending head and promote its FIFO successor."""
+        if adapter is None:
+            return None
+        return self._pending_events_for(adapter).pop_next(session_key)
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
-        """Total pending /queue items for a session — slot + overflow."""
-        with self._busy_queue_guard():
-            queued_events = getattr(self, "_queued_events", None) or {}
-            depth = len(queued_events.get(session_key, []))
-            if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
-                depth += 1
-            return depth
+        """Return exact pending depth from the single adapter-owned protocol."""
+        if adapter is None:
+            return 0
+        return self._pending_events_for(adapter).depth(session_key)
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """Return True for synthetic /goal continuation turns.
-
-        Goal continuations are normal queued user-role events, so pause/clear
-        must distinguish them from real user /queue messages before removing or
-        suppressing them.
-        """
+        """Return True for synthetic /goal continuation turns."""
         text = getattr(event_or_text, "text", event_or_text) or ""
         return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
-        with self._busy_queue_guard():
-            return self._clear_goal_pending_continuations_locked(session_key, adapter)
-
-    def _clear_goal_pending_continuations_locked(self, session_key: str, adapter: Any) -> int:
-        """Remove queued synthetic /goal continuations for one session.
-
-        User-issued /goal pause/clear can race with a continuation already
-        queued by the judge.  Remove only synthetic goal continuations while
-        preserving normal /queue and user follow-up events.
-        """
-        removed = 0
-        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
-        if isinstance(pending_slot, dict):
-            pending_event = pending_slot.get(session_key)
-            if self._is_goal_continuation_event(pending_event):
-                pending_slot.pop(session_key, None)
-                removed += 1
-
-        queued_events = getattr(self, "_queued_events", None)
-        if isinstance(queued_events, dict):
-            overflow = queued_events.get(session_key) or []
-            if overflow:
-                kept = []
-                for queued_event in overflow:
-                    if self._is_goal_continuation_event(queued_event):
-                        removed += 1
-                    else:
-                        kept.append(queued_event)
-                if kept:
-                    queued_events[session_key] = kept
-                else:
-                    queued_events.pop(session_key, None)
-        return removed
+        if adapter is None:
+            return 0
+        return self._pending_events_for(adapter).remove_matching(
+            session_key,
+            self._is_goal_continuation_event,
+        )
 
     def _goal_still_active_for_session(self, session_id: str) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""
@@ -5962,51 +5885,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _BUSY_QUEUE_MAX_PENDING = 32
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        with self._busy_queue_guard():
-            self._queue_or_replace_pending_event_locked(session_key, event)
-
-    def _queue_or_replace_pending_event_locked(
-        self,
-        session_key: str,
-        event: MessageEvent,
-    ) -> None:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return
-        # #28503 — Previously this called ``merge_pending_message_event``
-        # with the default ``merge_text=False``, which silently OVERWROTE
-        # the single pending slot when consecutive text messages arrived
-        # in ``busy_input_mode: queue``. Route through the FIFO
-        # infrastructure shared with ``/queue`` so each follow-up gets
-        # its own turn in arrival order. Photo bursts still merge into
-        # the head slot via ``merge_pending_message_event`` (album
-        # semantics); everything else appends to the overflow tail.
-        pending_slot = getattr(adapter, "_pending_messages", None)
-        existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+        queue = self._pending_events_for(adapter)
+        existing = queue.peek(session_key)
         if existing is not None and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
             or bool(getattr(existing, "media_urls", None))
             or bool(getattr(event, "media_urls", None))
         ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
-            merge_pending_message_event(
-                adapter._pending_messages,
+            queue.merge(
                 session_key,
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
+                merger=merge_pending_message_event,
             )
             return
-
-        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+        if not queue.enqueue_fifo(
+            session_key,
+            event,
+            max_depth=self._BUSY_QUEUE_MAX_PENDING,
+        ):
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key,
                 self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
-
-        self._enqueue_fifo(session_key, event, adapter)
 
     def _enqueue_internal_fifo_event(
         self,
@@ -6014,21 +5920,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         adapter: Any,
     ) -> bool:
-        """Admit one internal IPC task without touching user media merge state."""
-        with self._busy_queue_guard():
-            return self._enqueue_internal_fifo_event_locked(session_key, event, adapter)
-
-    def _enqueue_internal_fifo_event_locked(
-        self,
-        session_key: str,
-        event: MessageEvent,
-        adapter: Any,
-    ) -> bool:
-        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+        """Atomically admit one trusted IPC task into the shared bounded FIFO."""
+        if not is_gateway_session_ipc_task(event):
             return False
-        before = self._queue_depth(session_key, adapter=adapter)
-        self._enqueue_fifo(session_key, event, adapter)
-        return self._queue_depth(session_key, adapter=adapter) == before + 1
+        return self._pending_events_for(adapter).enqueue_fifo(
+            session_key,
+            event,
+            max_depth=self._BUSY_QUEUE_MAX_PENDING,
+        )
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -9151,7 +9050,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"No live adapter owns exact route {session_key!r}",
                 )
 
-            event = MessageEvent(
+            event = _new_gateway_session_ipc_event(
                 text=message.strip(),
                 message_type=MessageType.TEXT,
                 source=source,
@@ -11324,8 +11223,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             channel_prompt=event.channel_prompt,
                             channel_context=event.channel_context,
                         )
-                        with self._busy_queue_guard():
-                            adapter._pending_messages[_quick_key] = queued_event
+                        self._pending_events_for(adapter).enqueue_fifo(
+                            _quick_key,
+                            queued_event,
+                            max_depth=self._BUSY_QUEUE_MAX_PENDING,
+                        )
                     return "Agent still starting — /steer queued for the next turn."
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
@@ -11348,8 +11250,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         channel_prompt=event.channel_prompt,
                         channel_context=event.channel_context,
                     )
-                    with self._busy_queue_guard():
-                        adapter._pending_messages[_quick_key] = queued_event
+                    self._pending_events_for(adapter).enqueue_fifo(
+                        _quick_key,
+                        queued_event,
+                        max_depth=self._BUSY_QUEUE_MAX_PENDING,
+                    )
                 return "No active agent — /steer queued for the next turn."
 
             # /model must not be used while the agent is running.
@@ -11467,8 +11372,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    with self._busy_queue_guard():
-                        merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    self._pending_events_for(adapter).merge(
+                        _quick_key,
+                        event,
+                        merger=merge_pending_message_event,
+                    )
                 return None
 
             _telegram_followup_grace = float(
@@ -11492,11 +11400,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if self._busy_input_mode == "queue":
                         self._enqueue_fifo(_quick_key, event, adapter)
                     else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
+                        self._pending_events_for(adapter).merge(
                             _quick_key,
                             event,
                             merge_text=True,
+                            merger=merge_pending_message_event,
                         )
                 return None
 
@@ -11512,11 +11420,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # agent starts.
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
+                    self._pending_events_for(adapter).merge(
                         _quick_key,
                         event,
                         merge_text=True,
+                        merger=merge_pending_message_event,
                     )
                 return None
             if self._draining:
@@ -18900,11 +18808,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
-        with self._busy_queue_guard():
-            for attr in _CONVERSATION_SCOPED_STATE:
-                store = getattr(self, attr, None)
-                if isinstance(store, dict):
-                    store.pop(session_key, None)
+        for attr in _CONVERSATION_SCOPED_STATE:
+            store = getattr(self, attr, None)
+            if isinstance(store, dict):
+                store.pop(session_key, None)
+        adapters = getattr(self, "adapters", None) or {}
+        for adapter in adapters.values():
+            pending_events = getattr(adapter, "pending_events", None)
+            if isinstance(pending_events, PendingEventQueue):
+                pending_events.clear(session_key)
         self._clear_session_boundary_security_state(session_key)
         logger.debug(
             "Cleared conversation scope for %s (%s)", session_key, reason
@@ -19046,8 +18958,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             else:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
-        if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+        if adapter:
+            self._pending_events_for(adapter).clear(session_key)
         self._pending_messages.pop(session_key, None)
         if release_running_state:
             self._release_running_agent_state(session_key)
@@ -22598,7 +22510,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # before checking _interrupt_requested, and the message
                             # is lost — neither the interrupt path nor the dequeue
                             # path finds it.
-                            _peek_event = _adapter._pending_messages.get(session_key)
+                            _peek_event = self._pending_events_for(_adapter).peek(session_key)
                             pending_text = None
                             if _peek_event is not None:
                                 pending_text = _peek_event.text or ""
@@ -22800,7 +22712,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
                                 and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter._pending_messages.get(session_key)
+                            _bp_event = self._pending_events_for(_backup_adapter).peek(session_key)
                             _bp_text = _bp_event.text if _bp_event else None
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
@@ -22873,7 +22785,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
                                 and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter._pending_messages.get(session_key)
+                            _bp_event = self._pending_events_for(_backup_adapter).peek(session_key)
                             _bp_text = _bp_event.text if _bp_event else None
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
@@ -23099,15 +23011,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _interrupt_depth, session_key,
                     )
                     adapter = self._adapter_for_source(source)
-                    with self._busy_queue_guard():
-                        if adapter and pending_event:
-                            merge_pending_message_event(
-                                adapter._pending_messages,
-                                session_key,
-                                pending_event,
-                            )
-                        elif adapter and hasattr(adapter, 'queue_message'):
-                            adapter.queue_message(session_key, pending)
+                    if adapter and pending_event:
+                        self._pending_events_for(adapter).prepend(session_key, pending_event)
+                    elif adapter and pending:
+                        self._pending_events_for(adapter).enqueue_fifo(
+                            session_key,
+                            MessageEvent(text=pending, source=source),
+                            max_depth=self._BUSY_QUEUE_MAX_PENDING,
+                        )
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")

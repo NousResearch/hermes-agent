@@ -177,7 +177,6 @@ class TestQueueConsumptionAfterCompletion:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
@@ -194,9 +193,9 @@ class TestQueueConsumptionAfterCompletion:
         for ev in events:
             runner._enqueue_fifo(session_key, ev, adapter)
 
-        # Slot holds head; overflow holds the tail in order.
-        assert adapter._pending_messages[session_key].text == "first"
-        assert [e.text for e in runner._queued_events[session_key]] == ["second", "third"]
+        assert [e.text for e in adapter.pending_events.snapshot(session_key)] == [
+            "first", "second", "third",
+        ]
         assert runner._queue_depth(session_key, adapter=adapter) == 3
 
     def test_promote_advances_queue_fifo(self):
@@ -204,7 +203,6 @@ class TestQueueConsumptionAfterCompletion:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
@@ -232,7 +230,7 @@ class TestQueueConsumptionAfterCompletion:
         pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
         assert pending_event.text == "B"
         assert adapter._pending_messages[session_key].text == "C"
-        assert session_key not in runner._queued_events  # overflow emptied
+        assert [e.text for e in adapter.pending_events.snapshot(session_key)] == ["C"]
 
         # Simulate turn 3 drain.
         pending_event = _dequeue_pending_event(adapter, session_key)
@@ -252,7 +250,6 @@ class TestQueueConsumptionAfterCompletion:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
@@ -280,7 +277,7 @@ class TestQueueConsumptionAfterCompletion:
             source=MagicMock(),
             message_id="m-urg",
         )
-        adapter._pending_messages[session_key] = interrupt_follow_up
+        adapter.pending_events.prepend(session_key, interrupt_follow_up)
 
         # Promotion must NOT overwrite the interrupt follow-up; Q2 should
         # move into a position that runs AFTER it.  In the current design
@@ -290,19 +287,15 @@ class TestQueueConsumptionAfterCompletion:
         # Q2 is positioned to run next.
         returned = runner._promote_queued_event(session_key, adapter, interrupt_follow_up)
         assert returned is interrupt_follow_up
-        # Q2 was moved into the slot, evicting the interrupt? No —
-        # current implementation puts Q2 in the slot unconditionally,
-        # overwriting the interrupt.  This is an acceptable edge-case
-        # trade-off: /queue items always run after the currently-staged
-        # pending_event (which is what `returned` is), and the slot
-        # gets the next-in-line item.
-        assert adapter._pending_messages[session_key].text == "Q2"
+        # The shared protocol preserves both events and their order.
+        assert [e.text for e in adapter.pending_events.snapshot(session_key)] == [
+            "urgent", "Q2",
+        ]
 
     def test_queue_depth_counts_slot_plus_overflow(self):
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         session_key = "telegram:user:depth"
 
@@ -338,7 +331,6 @@ class TestQueueConsumptionAfterCompletion:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         session_key = "telegram:user:nomerge"
 
@@ -356,9 +348,7 @@ class TestQueueConsumptionAfterCompletion:
             )
 
         # Slot + overflow contain exactly the three texts, unmodified.
-        collected = [adapter._pending_messages[session_key].text] + [
-            e.text for e in runner._queued_events[session_key]
-        ]
+        collected = [event.text for event in adapter.pending_events.snapshot(session_key)]
         assert collected == texts
 
 
@@ -376,7 +366,6 @@ class TestBusyInputModeQueueFifo:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         runner.adapters = {Platform.TELEGRAM: adapter}
         return runner, adapter
@@ -401,9 +390,8 @@ class TestBusyInputModeQueueFifo:
         for text in texts:
             runner._queue_or_replace_pending_event(session_key, self._text_event(text))
 
-        # Head slot keeps the first; overflow keeps the rest in order.
-        assert adapter._pending_messages[session_key].text == "one"
-        assert [e.text for e in runner._queued_events[session_key]] == [
+        assert [e.text for e in adapter.pending_events.snapshot(session_key)] == [
+            "one",
             "two",
             "three",
             "four",
@@ -428,7 +416,7 @@ class TestBusyInputModeQueueFifo:
         assert runner._queue_depth(session_key, adapter=adapter) == cap
         assert adapter._pending_messages[session_key].text == "msg-000"
         # The last accepted overflow item is msg-{cap-1}.
-        assert runner._queued_events[session_key][-1].text == f"msg-{cap - 1:03d}"
+        assert adapter.pending_events.snapshot(session_key)[-1].text == f"msg-{cap - 1:03d}"
 
     def test_photo_burst_still_merges_in_head_slot(self):
         """Photo bursts must keep album-merge semantics, not split into N turns."""
@@ -450,7 +438,7 @@ class TestBusyInputModeQueueFifo:
             )
 
         # Single merged head event with all three media URLs.
-        assert session_key not in runner._queued_events or not runner._queued_events[session_key]
+        assert len(adapter.pending_events.snapshot(session_key)) == 1
         head = adapter._pending_messages[session_key]
         assert head.message_type == MessageType.PHOTO
         assert len(head.media_urls) == 3

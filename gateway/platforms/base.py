@@ -15,10 +15,12 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, MutableMapping
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -1838,7 +1840,7 @@ class MessageEvent:
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        if self.internal and self.metadata.get("gateway_session_ipc_task") is True:
+        if is_gateway_session_ipc_task(self):
             return False
         return (self.text or "").lstrip().startswith("/")
     
@@ -1912,13 +1914,26 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
+_GATEWAY_SESSION_IPC_CAPABILITY = object()
+
+
+class _GatewaySessionIPCEvent(MessageEvent):
+    """Private event subtype constructible only with the in-process capability."""
+
+    def __init__(self, capability: object, **kwargs: Any) -> None:
+        if capability is not _GATEWAY_SESSION_IPC_CAPABILITY:
+            raise TypeError("trusted gateway session IPC events require server capability")
+        super().__init__(**kwargs)
+
+
+def _new_gateway_session_ipc_event(**kwargs: Any) -> MessageEvent:
+    """Create a server-owned IPC event; not part of the adapter/plugin API."""
+    return _GatewaySessionIPCEvent(_GATEWAY_SESSION_IPC_CAPABILITY, **kwargs)
+
+
 def is_gateway_session_ipc_task(event: "MessageEvent") -> bool:
-    """Return whether *event* is the dedicated non-command IPC task type."""
-    metadata = getattr(event, "metadata", None) or {}
-    return bool(
-        getattr(event, "internal", False)
-        and metadata.get("gateway_session_ipc_task") is True
-    )
+    """Return whether *event* carries the unforgeable in-process IPC type."""
+    return isinstance(event, _GatewaySessionIPCEvent)
 
 
 @dataclass
@@ -2214,6 +2229,186 @@ def merge_pending_message_event(
     pending_messages[session_key] = event
 
 
+class _PendingHeadView(MutableMapping[str, MessageEvent]):
+    """Compatibility mapping whose every operation participates in the protocol."""
+
+    def __init__(self, owner: "PendingEventQueue") -> None:
+        self._owner = owner
+
+    def __getitem__(self, key: str) -> MessageEvent:
+        with self._owner._lock:
+            return self._owner._heads[key]
+
+    def __setitem__(self, key: str, value: MessageEvent) -> None:
+        with self._owner._lock:
+            self._owner._heads[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        with self._owner._lock:
+            del self._owner._heads[key]
+
+    def __iter__(self) -> Iterator[str]:
+        with self._owner._lock:
+            return iter(tuple(self._owner._heads))
+
+    def __len__(self) -> int:
+        with self._owner._lock:
+            return len(self._owner._heads)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        with self._owner._lock:
+            return self._owner._heads.get(key, default)
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        with self._owner._lock:
+            return self._owner._heads.pop(key, default)
+
+    def clear(self) -> None:
+        self._owner.clear_all()
+
+
+class PendingEventQueue:
+    """One thread-safe pending-slot/FIFO protocol shared by adapters and IPC.
+
+    Lock ordering is one-way: callers may hold gateway/session lifecycle locks
+    before entering this lock, but queue methods never acquire those locks or
+    call adapter/runner callbacks. This keeps the IPC worker and adapter event
+    loop from forming a lock cycle.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._heads: dict[str, MessageEvent] = {}
+        self._fifo: dict[str, list[MessageEvent]] = {}
+        self._head_view = _PendingHeadView(self)
+
+    @property
+    def compatibility_heads(self) -> MutableMapping[str, MessageEvent]:
+        return self._head_view
+
+    def replace_heads(self, values: Any) -> None:
+        with self._lock:
+            self._heads = dict(values or {})
+
+    def peek(self, session_key: str) -> Optional[MessageEvent]:
+        with self._lock:
+            return self._heads.get(session_key)
+
+    def contains(self, session_key: str) -> bool:
+        with self._lock:
+            return session_key in self._heads
+
+    def depth(self, session_key: str) -> int:
+        with self._lock:
+            return int(session_key in self._heads) + len(self._fifo.get(session_key, ()))
+
+    def snapshot(self, session_key: str) -> tuple[MessageEvent, ...]:
+        """Return an immutable head-first view for diagnostics and tests."""
+        with self._lock:
+            head = self._heads.get(session_key)
+            tail = tuple(self._fifo.get(session_key, ()))
+            return ((head,) if head is not None else ()) + tail
+
+    def merge(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        merge_text: bool = False,
+        merger: Callable[..., None] = merge_pending_message_event,
+    ) -> None:
+        with self._lock:
+            existing = self._heads.get(session_key)
+            if existing is not None and (
+                is_gateway_session_ipc_task(existing)
+                or is_gateway_session_ipc_task(event)
+            ):
+                self._fifo.setdefault(session_key, []).append(event)
+                return
+            merger(self._heads, session_key, event, merge_text=merge_text)
+
+    def enqueue_fifo(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        max_depth: Optional[int] = None,
+    ) -> bool:
+        with self._lock:
+            if max_depth is not None and self.depth(session_key) >= max_depth:
+                return False
+            if session_key in self._heads:
+                self._fifo.setdefault(session_key, []).append(event)
+            else:
+                self._heads[session_key] = event
+            return True
+
+    def pop_next(self, session_key: str) -> Optional[MessageEvent]:
+        """Consume the head and atomically promote the FIFO successor."""
+        with self._lock:
+            event = self._heads.pop(session_key, None)
+            overflow = self._fifo.get(session_key)
+            if overflow:
+                self._heads[session_key] = overflow.pop(0)
+                if not overflow:
+                    self._fifo.pop(session_key, None)
+            return event
+
+    def prepend(self, session_key: str, event: MessageEvent) -> None:
+        with self._lock:
+            current = self._heads.get(session_key)
+            if current is not None:
+                self._fifo.setdefault(session_key, []).insert(0, current)
+            self._heads[session_key] = event
+
+    def promote_after_external_pop(
+        self,
+        session_key: str,
+        pending_event: Optional[MessageEvent],
+    ) -> Optional[MessageEvent]:
+        """Compatibility path for callers that consumed the head mapping directly."""
+        with self._lock:
+            if session_key in self._heads:
+                return pending_event
+            overflow = self._fifo.get(session_key)
+            if not overflow:
+                return pending_event
+            successor = overflow.pop(0)
+            if not overflow:
+                self._fifo.pop(session_key, None)
+            if pending_event is None:
+                return successor
+            self._heads[session_key] = successor
+            return pending_event
+
+    def remove_matching(self, session_key: str, predicate: Callable[[MessageEvent], bool]) -> int:
+        with self._lock:
+            events: list[MessageEvent] = []
+            head = self._heads.get(session_key)
+            if head is not None:
+                events.append(head)
+            events.extend(self._fifo.get(session_key, ()))
+            kept = [event for event in events if not predicate(event)]
+            removed = len(events) - len(kept)
+            self._heads.pop(session_key, None)
+            self._fifo.pop(session_key, None)
+            if kept:
+                self._heads[session_key] = kept[0]
+                if len(kept) > 1:
+                    self._fifo[session_key] = kept[1:]
+            return removed
+
+    def clear(self, session_key: str) -> None:
+        with self._lock:
+            self._heads.pop(session_key, None)
+            self._fifo.pop(session_key, None)
+
+    def clear_all(self) -> None:
+        with self._lock:
+            self._heads.clear()
+            self._fifo.clear()
+
+
 # Error substrings that indicate a transient *connection* failure worth retrying.
 # "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
 # excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
@@ -2495,7 +2690,7 @@ class BasePlatformAdapter(ABC):
         # Without the owner-task map, an old task's finally block could delete
         # a newer task's guard, leaving stale busy state.
         self._active_sessions: Dict[str, asyncio.Event] = {}
-        self._pending_messages: Dict[str, MessageEvent] = {}
+        self.pending_events = PendingEventQueue()
         self._session_tasks: Dict[str, asyncio.Task] = {}
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
@@ -2556,6 +2751,19 @@ class BasePlatformAdapter(ABC):
         # cadence picks up changes, so updating this dict costs no extra
         # platform API calls. Cleared when the typing loop winds down.
         self._status_text: Dict[str, str] = {}
+
+    @property
+    def _pending_messages(self) -> MutableMapping[str, MessageEvent]:
+        """Deprecated locked view retained for adapter/test compatibility."""
+        return self.pending_events.compatibility_heads
+
+    @_pending_messages.setter
+    def _pending_messages(self, values: Any) -> None:
+        queue = getattr(self, "pending_events", None)
+        if queue is None:
+            queue = PendingEventQueue()
+            self.pending_events = queue
+        queue.replace_heads(values)
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -4523,14 +4731,9 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
             state = store.get(session_key)
             if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
+                existing_pending = self.pending_events.peek(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(
-                        self._pending_messages,
-                        session_key,
-                        event,
-                        merge_text=True,
-                    )
+                    self.pending_events.merge(session_key, event, merge_text=True)
                 return
 
         now = time.monotonic()
@@ -4588,7 +4791,7 @@ class BasePlatformAdapter(ABC):
             state.task.cancel()
         state.task = None
 
-        existing_pending = self._pending_messages.get(session_key)
+        existing_pending = self.pending_events.peek(session_key)
         if (
             existing_pending is not None
             and not self._can_merge_text_debounce_events(existing_pending, state.event)
@@ -4598,12 +4801,7 @@ class BasePlatformAdapter(ABC):
         state = store.pop(session_key, None)
         if state is None:
             return False
-        merge_pending_message_event(
-            self._pending_messages,
-            session_key,
-            state.event,
-            merge_text=True,
-        )
+        self.pending_events.merge(session_key, state.event, merge_text=True)
         return True
 
     def _discard_text_debounce(self, session_key: str) -> None:
@@ -4679,7 +4877,7 @@ class BasePlatformAdapter(ABC):
             session_key,
         )
         self._active_sessions.pop(session_key, None)
-        self._pending_messages.pop(session_key, None)
+        self.pending_events.clear(session_key)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
@@ -4729,10 +4927,11 @@ class BasePlatformAdapter(ABC):
             enqueue_internal = getattr(runner, "_enqueue_internal_fifo_event", None)
             if callable(enqueue_internal):
                 return bool(enqueue_internal(session_key, event, self))
-            if session_key in self._pending_messages:
-                return False
-            self._pending_messages[session_key] = event
-            return True
+            return self.pending_events.enqueue_fifo(
+                session_key,
+                event,
+                max_depth=1,
+            )
 
         return self._start_session_processing(event, session_key)
 
@@ -4782,7 +4981,7 @@ class BasePlatformAdapter(ABC):
                     exc_info=True,
                 )
         if discard_pending:
-            self._pending_messages.pop(session_key, None)
+            self.pending_events.clear(session_key)
             self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)
@@ -4799,7 +4998,7 @@ class BasePlatformAdapter(ABC):
         command was running — spawns a fresh processing task for it.
         """
         await self._flush_text_debounce_now(session_key)
-        pending_event = self._pending_messages.pop(session_key, None)
+        pending_event = self.pending_events.pop_next(session_key)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is None:
             return
@@ -5052,7 +5251,7 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                merge_pending_message_event(self._pending_messages, session_key, event)
+                self.pending_events.merge(session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
             if self._is_queue_text_debounce_candidate(event):
@@ -5071,8 +5270,7 @@ class BasePlatformAdapter(ABC):
                     self.name,
                     session_key,
                 )
-                merge_pending_message_event(
-                    self._pending_messages,
+                self.pending_events.merge(
                     session_key,
                     event,
                     merge_text=event.message_type == MessageType.TEXT,
@@ -5190,7 +5388,7 @@ class BasePlatformAdapter(ABC):
             if (
                 response
                 and interrupt_event.is_set()
-                and session_key in self._pending_messages
+                and self.pending_events.contains(session_key)
             ):
                 logger.info(
                     "[%s] Suppressing stale response for interrupted session %s",
@@ -5540,8 +5738,8 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
 
             # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
+            pending_event = self.pending_events.pop_next(session_key)
+            if pending_event is not None:
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
@@ -5664,7 +5862,7 @@ class BasePlatformAdapter(ABC):
             # busy-handler path.  Without this block, we would delete the
             # active-session entry and the queued message would be silently
             # dropped (user never gets a reply).
-            late_pending = self._pending_messages.pop(session_key, None)
+            late_pending = self.pending_events.pop_next(session_key)
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)
@@ -5680,7 +5878,7 @@ class BasePlatformAdapter(ABC):
                     # (#17758 follow-up: prevents the create_task path
                     # from racing with itself across the in-band/finally
                     # boundary).
-                    self._pending_messages[session_key] = late_pending
+                    self.pending_events.prepend(session_key, late_pending)
                 else:
                     logger.debug(
                         "[%s] Late-arrival pending message during cleanup — spawning drain task",
@@ -5793,7 +5991,7 @@ class BasePlatformAdapter(ABC):
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._session_tasks.clear()
-        self._pending_messages.clear()
+        self.pending_events.clear_all()
         self._active_sessions.clear()
         for state in list(self._text_debounce_store().values()):
             if state.task is not None and not state.task.done():
@@ -5806,7 +6004,7 @@ class BasePlatformAdapter(ABC):
     
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
-        return self._pending_messages.pop(session_key, None)
+        return self.pending_events.pop_next(session_key)
     
     def build_source(
         self,

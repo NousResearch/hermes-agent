@@ -220,36 +220,48 @@ class GatewaySessionIPCServer:
                 f"Gateway IPC socket changed during stale-socket inspection: {self.socket_path}",
             )
 
-        # POSIX/Python has no atomic "unlink this pathname only if it still
-        # names inode X" operation. Move the pathname to a private unique
-        # quarantine first, then inspect the inode that was actually moved.
-        # A replacement racing the move is preserved and restored (or left at
-        # the quarantine path if another socket already reclaimed the public
-        # name); it is never path-unlinked as stale.
+        self._quarantine_socket_path(expected_identity, label="stale")
+
+    def _quarantine_socket_path(
+        self,
+        expected_identity: tuple[int, int],
+        *,
+        label: str,
+    ) -> None:
+        """Atomically move the canonical path, then delete only the moved inode."""
         quarantine = self.socket_path.with_name(
-            f".{self.socket_path.name}.stale-{os.getpid()}-{uuid.uuid4().hex}"
+            f".{self.socket_path.name}.{label}-{os.getpid()}-{uuid.uuid4().hex}"
         )
         try:
             os.replace(self.socket_path, quarantine)
         except FileNotFoundError:
             return
+
         moved = quarantine.lstat()
         moved_identity = (moved.st_dev, moved.st_ino)
-        if moved_identity != expected_identity:
-            try:
-                os.link(quarantine, self.socket_path, follow_symlinks=False)
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise SessionIPCRequestError(
-                    "socket_replaced",
-                    f"Gateway IPC replacement was quarantined and could not be restored: {exc}",
-                ) from exc
+        if moved_identity == expected_identity:
+            quarantine.unlink()
+            return
+
+        # The atomic move captured a replacement. Restore it only if the
+        # canonical name is still vacant; hard-link creation is no-clobber.
+        # If another actor reclaimed the canonical path, leave the replacement
+        # quarantined rather than deleting either inode.
+        try:
+            os.link(quarantine, self.socket_path, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        except OSError as exc:
             raise SessionIPCRequestError(
                 "socket_replaced",
-                f"Gateway IPC socket changed during stale-socket cleanup: {self.socket_path}",
-            )
-        quarantine.unlink()
+                f"Gateway IPC replacement was quarantined and could not be restored: {exc}",
+            ) from exc
+        else:
+            quarantine.unlink()
+        raise SessionIPCRequestError(
+            "socket_replaced",
+            f"Gateway IPC socket changed during {label} cleanup: {self.socket_path}",
+        )
 
     async def start(self) -> None:
         if not hasattr(socket, "AF_UNIX"):
@@ -282,16 +294,10 @@ class GatewaySessionIPCServer:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-        try:
-            info = self.socket_path.lstat()
-        except FileNotFoundError:
-            self._bound_identity = None
-            return
-        if (info.st_dev, info.st_ino) == self._bound_identity and stat.S_ISSOCK(info.st_mode) and (
-            not hasattr(os, "geteuid") or info.st_uid == os.geteuid()
-        ):
-            self.socket_path.unlink()
+        bound_identity = self._bound_identity
         self._bound_identity = None
+        if bound_identity is not None:
+            self._quarantine_socket_path(bound_identity, label="stop")
 
     @staticmethod
     def _peer_uid(writer: asyncio.StreamWriter) -> int | None:

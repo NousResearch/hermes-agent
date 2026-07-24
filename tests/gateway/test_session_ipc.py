@@ -18,7 +18,13 @@ import pytest
 from gateway import run as gateway_run
 from gateway import session_ipc
 from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    PendingEventQueue,
+    _new_gateway_session_ipc_event,
+)
 from gateway.run import GatewayRunner
 from gateway.session import Platform, SessionEntry, SessionSource, build_session_key
 from gateway.session_ipc import (
@@ -105,18 +111,18 @@ def _runner(entry: SessionEntry | None = None):
     )
     runner._running_agents = {}
     runner._running_agents_ts = {}
-    runner._queued_events = {}
-    runner._busy_queue_lock = threading.RLock()
     runner._session_run_generation = {}
     runner._draining = False
     runner._running = True
     runner._active_profile_name = lambda: "jasper"
+    pending_events = PendingEventQueue()
     adapter = SimpleNamespace(
-        _pending_messages={},
+        pending_events=pending_events,
+        _pending_messages=pending_events.compatibility_heads,
         _active_sessions={},
         accept_internal_task=Mock(return_value=True),
     )
-    adapter.get_pending_message = lambda key: adapter._pending_messages.pop(key, None)
+    adapter.get_pending_message = pending_events.pop_next
     runner._adapter_for_source = lambda source: adapter
     return runner, adapter
 
@@ -215,9 +221,8 @@ async def test_active_route_steer_fallback_uses_bounded_fifo_queue():
         ("Second queued task.",),
     ]
     adapter.accept_internal_task.assert_not_called()
-    assert adapter._pending_messages[SESSION_KEY].text == "First queued task."
-    assert [event.text for event in runner._queued_events[SESSION_KEY]] == [
-        "Second queued task."
+    assert [event.text for event in adapter.pending_events.snapshot(SESSION_KEY)] == [
+        "First queued task.", "Second queued task.",
     ]
 
 
@@ -232,18 +237,21 @@ async def test_internal_task_uses_separate_fifo_and_queue_full_preserves_user_me
         media_urls=["https://example.invalid/original.jpg"],
         media_types=["image/jpeg"],
     )
-    adapter._pending_messages[SESSION_KEY] = pending_user_event
-    runner._queued_events[SESSION_KEY] = [
-        MessageEvent(text=f"queued-{index}", message_type=MessageType.TEXT, source=_source())
-        for index in range(runner._BUSY_QUEUE_MAX_PENDING - 2)
-    ]
+    adapter.pending_events.enqueue_fifo(SESSION_KEY, pending_user_event)
+    for index in range(runner._BUSY_QUEUE_MAX_PENDING - 2):
+        adapter.pending_events.enqueue_fifo(
+            SESSION_KEY,
+            MessageEvent(
+                text=f"queued-{index}", message_type=MessageType.TEXT, source=_source()
+            ),
+        )
     before = pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL)
 
     accepted = await _inject(runner, "Separate internal FIFO task")
 
     assert accepted["disposition"] == "queued"
     assert pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL) == before
-    assert runner._queued_events[SESSION_KEY][-1].text == "Separate internal FIFO task"
+    assert adapter.pending_events.snapshot(SESSION_KEY)[-1].text == "Separate internal FIFO task"
     full_before = pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL)
 
     with pytest.raises(SessionIPCRequestError) as exc_info:
@@ -253,24 +261,27 @@ async def test_internal_task_uses_separate_fifo_and_queue_full_preserves_user_me
     assert pickle.dumps(pending_user_event, protocol=pickle.HIGHEST_PROTOCOL) == full_before
     assert all(
         event.text != "Rejected internal FIFO task"
-        for event in runner._queued_events[SESSION_KEY]
+        for event in adapter.pending_events.snapshot(SESSION_KEY)
     )
 
 
 def test_concurrent_user_and_ipc_admission_never_exceeds_busy_queue_cap(monkeypatch):
     runner, adapter = _runner(_entry())
     monkeypatch.setattr(runner, "_BUSY_QUEUE_MAX_PENDING", 2)
-    adapter._pending_messages[SESSION_KEY] = MessageEvent(
-        text="already queued",
-        message_type=MessageType.TEXT,
-        source=_source(),
+    adapter.pending_events.enqueue_fifo(
+        SESSION_KEY,
+        MessageEvent(
+            text="already queued",
+            message_type=MessageType.TEXT,
+            source=_source(),
+        ),
     )
     user_event = MessageEvent(
         text="concurrent user follow-up",
         message_type=MessageType.TEXT,
         source=_source(),
     )
-    ipc_event = MessageEvent(
+    ipc_event = _new_gateway_session_ipc_event(
         text="concurrent IPC follow-up",
         message_type=MessageType.TEXT,
         source=_source(),
@@ -316,7 +327,7 @@ def test_concurrent_user_and_ipc_admission_never_exceeds_busy_queue_cap(monkeypa
 
 def test_trusted_slash_task_survives_drain_as_inert_text_while_user_slash_is_blocked():
     runner, adapter = _runner(_entry())
-    trusted = MessageEvent(
+    trusted = _new_gateway_session_ipc_event(
         text="/restart trusted task",
         message_type=MessageType.TEXT,
         source=_source(),
@@ -402,7 +413,7 @@ async def test_trusted_internal_task_is_never_command_coerced_or_dispatched_as_c
     adapter._busy_text_hard_cap_seconds = 0.0
     adapter._topic_recovery_fn = None
 
-    event = MessageEvent(
+    event = _new_gateway_session_ipc_event(
         text=task_text,
         message_type=MessageType.TEXT,
         source=_source(),
@@ -729,8 +740,7 @@ async def test_blocking_production_lookup_times_out_without_later_injection(tmp_
         await server.stop()
 
     adapter.accept_internal_task.assert_not_called()
-    assert adapter._pending_messages == {}
-    assert runner._queued_events == {}
+    assert adapter.pending_events.snapshot(SESSION_KEY) == ()
 
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
@@ -904,7 +914,9 @@ async def test_stop_does_not_unlink_replacement_socket(tmp_path):
             original.st_dev,
             original.st_ino,
         )
-        await server.stop()
+        with pytest.raises(SessionIPCRequestError) as exc_info:
+            await server.stop()
+        assert exc_info.value.code == "socket_replaced"
         assert server.socket_path.exists()
         current = server.socket_path.lstat()
         assert (current.st_dev, current.st_ino) == (
@@ -964,6 +976,119 @@ def test_startup_stale_cleanup_never_unlinks_replacement_between_check_and_clean
             f".{server.socket_path.name}.stale-*"
         ):
             quarantined.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
+@pytest.mark.asyncio
+async def test_stop_quarantines_before_identity_check_and_preserves_live_replacement(
+    tmp_path, monkeypatch
+):
+    server = GatewaySessionIPCServer(
+        AsyncMock(return_value={"ok": True}), profile="jasper", hermes_home=tmp_path
+    )
+    await server.start()
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    replacement_path = server.socket_path.with_name("stop-replacement.sock")
+    replacement.bind(str(replacement_path))
+    replacement.listen(1)
+    info = replacement_path.lstat()
+    replacement_identity = info.st_dev, info.st_ino
+    original_replace = session_ipc.os.replace
+    replaced = False
+
+    def replace_before_quarantine(source, destination):
+        nonlocal replaced
+        if source == server.socket_path and not replaced:
+            replaced = True
+            server.socket_path.unlink()
+            original_replace(replacement_path, server.socket_path)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(session_ipc.os, "replace", replace_before_quarantine)
+    try:
+        with pytest.raises(SessionIPCRequestError) as exc_info:
+            await server.stop()
+        assert exc_info.value.code == "socket_replaced"
+        assert replaced is True
+        current = server.socket_path.lstat()
+        assert (current.st_dev, current.st_ino) == replacement_identity
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(0.5)
+            client.connect(str(server.socket_path))
+    finally:
+        replacement.close()
+        server.socket_path.unlink(missing_ok=True)
+        for quarantined in server.socket_path.parent.glob(
+            f".{server.socket_path.name}.*-*"
+        ):
+            quarantined.unlink(missing_ok=True)
+
+
+def test_adapter_loop_and_ipc_worker_share_one_atomic_fifo_protocol(monkeypatch):
+    runner, _ = _runner(_entry())
+    adapter = _TestAdapter(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    runner._adapter_for_source = lambda source: adapter
+    runner._running_agents[SESSION_KEY] = SimpleNamespace(steer=Mock(return_value=False))
+    runner._BUSY_QUEUE_MAX_PENDING = 3
+    seed = MessageEvent(text="seed", message_type=MessageType.PHOTO, source=_source())
+    user = MessageEvent(text="user", message_type=MessageType.PHOTO, source=_source())
+    ipc = _new_gateway_session_ipc_event(
+        text="ipc", message_type=MessageType.TEXT, source=_source(), internal=True,
+        metadata={"gateway_session_ipc_task": True},
+    )
+    adapter.pending_events.enqueue_fifo(SESSION_KEY, seed, max_depth=3)
+    merge_entered = threading.Event()
+    release_merge = threading.Event()
+    original_merge = gateway_run.merge_pending_message_event
+
+    def blocking_merge(pending, session_key, event, *, merge_text=False):
+        merge_entered.set()
+        assert release_merge.wait(timeout=1.0)
+        return original_merge(pending, session_key, event, merge_text=merge_text)
+
+    monkeypatch.setattr(gateway_run, "merge_pending_message_event", blocking_merge)
+    ipc_result = []
+    user_thread = threading.Thread(
+        target=runner._queue_or_replace_pending_event, args=(SESSION_KEY, user)
+    )
+    ipc_thread = threading.Thread(
+        target=lambda: ipc_result.append(
+            runner._enqueue_internal_fifo_event(SESSION_KEY, ipc, adapter)
+        )
+    )
+    user_thread.start()
+    assert merge_entered.wait(timeout=1.0)
+    ipc_thread.start()
+    release_merge.set()
+    user_thread.join(timeout=1.0)
+    ipc_thread.join(timeout=1.0)
+    assert not user_thread.is_alive()
+    assert not ipc_thread.is_alive()
+    assert ipc_result == [True]
+    assert adapter.pending_events.depth(SESSION_KEY) == 2
+    drained = [adapter.pending_events.pop_next(SESSION_KEY) for _ in range(2)]
+    assert [event.text for event in drained] == ["seed\n\nuser", "ipc"]
+    assert adapter.pending_events.depth(SESSION_KEY) == 0
+
+
+@pytest.mark.asyncio
+async def test_copied_internal_metadata_cannot_forge_ipc_command_bypass():
+    adapter = _TestAdapter(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    adapter._message_handler = AsyncMock(return_value="command handled")
+    adapter._active_sessions = {SESSION_KEY: asyncio.Event()}
+    forged = MessageEvent(
+        text="/restart", message_type=MessageType.TEXT, source=_source(), internal=True,
+        metadata={
+            "gateway_session_ipc_task": True,
+            "gateway_session_key": SESSION_KEY,
+            "gateway_session_id": SESSION_ID,
+        },
+    )
+    with patch("gateway.platforms.base.build_session_key", return_value=SESSION_KEY):
+        await adapter.handle_message(forged)
+    assert forged.is_command() is True
+    adapter._message_handler.assert_awaited_once_with(forged)
+    assert adapter.pending_events.depth(SESSION_KEY) == 0
 
 
 def test_gateway_inject_cli_parser_requires_exact_session_and_message():

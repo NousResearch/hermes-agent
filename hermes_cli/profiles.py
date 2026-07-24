@@ -1573,6 +1573,12 @@ def delete_profile(name: str, yes: bool = False) -> Path:
                 exc = exc[1]  # exc_info → actual exception object
 
             if isinstance(exc, PermissionError):
+                # macOS: files with the uchg (user immutable) flag can't be
+                # removed even with chmod +w. Try clearing the flag first.
+                try:
+                    os.chflags(path, 0)
+                except (AttributeError, OSError):
+                    pass
                 # Make the path writable
                 try:
                     os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)

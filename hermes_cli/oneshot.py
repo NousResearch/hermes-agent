@@ -167,6 +167,23 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _read_stdin_prompt(prompt: str) -> tuple[str, str | None]:
+    """Resolve ``-z -`` by reading the prompt body from stdin."""
+    if prompt != "-":
+        return prompt, None
+
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return prompt, "hermes -z: prompt '-' requires stdin.\n"
+        stdin_content = sys.stdin.read()
+    except Exception:
+        return prompt, "hermes -z: failed to read prompt from stdin.\n"
+
+    if not stdin_content:
+        return prompt, "hermes -z: prompt '-' requires non-empty stdin.\n"
+    return stdin_content, None
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -215,6 +232,10 @@ def run_oneshot(
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
+    prompt, stdin_error = _read_stdin_prompt(prompt)
+    if stdin_error:
+        sys.stderr.write(stdin_error)
+        return 2
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.

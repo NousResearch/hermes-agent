@@ -143,7 +143,10 @@ hermes -z "What's the capital of France?"
 # → Paris.
 
 # Parent scripts can cleanly capture the response:
-answer=$(hermes -z "summarize this" < /path/to/file.txt)
+answer=$(hermes -z "What's the capital of France?")
+
+# Read the prompt body from stdin explicitly with '-':
+answer=$(hermes -z - < /path/to/prompt.txt)
 ```
 
 Per-run overrides (no mutation to `~/.hermes/config.yaml`):

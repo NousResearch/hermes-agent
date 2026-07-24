@@ -389,6 +389,12 @@ _GROK_EFFORT_CAPABLE_PREFIXES = (
     # "none" ("This model does not support `reasoning_effort` value `none`"),
     # unlike grok-4.3. models.dev agrees: effort values [low, medium, high].
     "grok-4.5",
+    # grok-composer-2.5-fast: OAuth-only slug via Grok Build CLI
+    # (xai-oauth). Without this prefix, grok_supports_reasoning_effort()
+    # is False and transports omit the reasoning key entirely (silent
+    # zero-effort). Effort value set is still model-side; if a level
+    # 400s, narrow accepted values rather than dropping the prefix.
+    "grok-composer",
 )
 
 

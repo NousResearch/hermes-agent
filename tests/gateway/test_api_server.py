@@ -661,6 +661,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/api/model/options", adapter._handle_model_options)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -1174,6 +1175,61 @@ class TestModelsEndpoint:
             )
             assert resp.status == 200
 
+    @pytest.mark.asyncio
+    async def test_model_options_returns_shared_inventory(self, adapter, monkeypatch):
+        """GET /api/model/options builds the shared picker payload off-loop."""
+        from hermes_cli import inventory
+
+        ctx = object()
+        payload = {
+            "providers": [{"slug": "nous", "name": "Nous Portal", "models": ["gpt-5.5"]}],
+            "model": "gpt-5.5",
+            "provider": "nous",
+        }
+        seen = {"thread_calls": 0}
+
+        monkeypatch.setattr(inventory, "load_picker_context", lambda: ctx)
+
+        def fake_build_model_options_payload(received_ctx, **kwargs):
+            seen["ctx"] = received_ctx
+            seen["kwargs"] = kwargs
+            return payload
+
+        async def fake_to_thread(func, *args, **kwargs):
+            seen["thread_calls"] += 1
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(
+            inventory,
+            "build_model_options_payload",
+            fake_build_model_options_payload,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.api_server.asyncio.to_thread",
+            fake_to_thread,
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/model/options?refresh=true")
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data == payload
+        assert seen["thread_calls"] == 1
+        assert seen["ctx"] is ctx
+        assert seen["kwargs"] == {
+            "include_unconfigured": True,
+            "refresh": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_model_options_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/model/options")
+            assert resp.status == 401
+
 
 # ---------------------------------------------------------------------------
 # /v1/capabilities endpoint
@@ -1200,8 +1256,10 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 
@@ -5466,3 +5524,141 @@ class TestRouteWithoutModelKeepsDefault:
 
         assert captured["model"] == "global/model"
         assert captured["api_key"] == "sk-route"
+
+
+# ---------------------------------------------------------------------------
+# Empty-model recovery + provider-auth error typing in _create_agent
+# (salvaged from PR #57947 by @FvanW)
+# ---------------------------------------------------------------------------
+
+
+class TestCreateAgentModelRecovery:
+    def test_create_agent_defaults_to_provider_catalog_model_when_empty(self, monkeypatch):
+        """api_server.py had no equivalent of run.py's provider-catalog
+        default when model resolves empty but a provider did resolve (e.g.
+        `hermes auth add openai-codex` without `hermes model`) —
+        AIAgent(model="") 400s every call."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1",
+                     "api_mode": "codex_responses"},
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "hermes_cli.models.get_default_model_for_provider",
+            lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else None,
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "gpt-5.5-codex"
+
+    def test_create_agent_recovers_last_known_good_model_when_empty(self, monkeypatch):
+        """Last-known-good recovery (#35314): a transient config-cache miss
+        producing an empty model would build AIAgent(model="") and fail every
+        call until manual retry, instead of reusing the model that just
+        worked."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Turn 1: model resolves fine — populates the last-known-good cache
+        # (keyed on gateway_session_key).
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "minimax/minimax-m3")
+        adapter._create_agent(session_id="api-session", gateway_session_key="stable-chan-1")
+        assert captured[0]["model"] == "minimax/minimax-m3"
+        assert adapter._last_resolved_model["stable-chan-1"] == "minimax/minimax-m3"
+
+        # Turn 2: transient empty resolution, no provider catalog default —
+        # must recover the model from turn 1, not build model="".
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": None, "base_url": None, "api_mode": None},
+        )
+        adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
+        assert captured[1]["model"] == "minimax/minimax-m3"
+
+    def test_last_resolved_model_cache_does_not_grow_per_ephemeral_session_id(self, monkeypatch):
+        """/v1/responses and /v1/runs hand out a fresh UUID session_id per
+        one-off request (no gateway_session_key). Keying the last-known-good
+        cache on session_id would leave one permanent dict entry per
+        stateless request, growing unbounded for the life of the process.
+        Only gateway_session_key may create an entry."""
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        import uuid as _uuid
+        for _ in range(50):
+            adapter._create_agent(session_id=str(_uuid.uuid4()))
+
+        # Only the "*" process-wide fallback may exist — never one entry per
+        # ephemeral session_id.
+        assert list(adapter._last_resolved_model.keys()) == ["*"]
+
+    def test_create_agent_wraps_runtime_credential_failure_as_provider_auth_error(self, monkeypatch):
+        """_create_agent() must convert a RuntimeError from
+        gateway.run._resolve_runtime_agent_kwargs() — the sole raiser of
+        RuntimeError(format_runtime_provider_error(...)) in this call graph —
+        into _ProviderAuthResolutionError right at the call site, independent
+        of any caller's exception handling."""
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: (_ for _ in ()).throw(RuntimeError("No credentials found for provider 'nous'")),
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        with pytest.raises(_ProviderAuthResolutionError, match="No credentials found for provider 'nous'"):
+            adapter._create_agent(session_id="api-session")
+
+    def test_create_agent_session_model_pins_ahead_of_request(self, monkeypatch):
+        """Session-persisted model beats per-request body values but yields
+        to an explicit session /model override."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(
+            session_id="s1",
+            session_model="session-row/model",
+            requested_model="request/model",
+        )
+
+        assert captured["model"] == "session-row/model"

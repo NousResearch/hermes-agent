@@ -1541,6 +1541,7 @@ export const ja = defineLocale({
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',
+    deliverNeedsHomeChannel: '先にホームチャンネルを設定してください',
     modelLabel: 'モデル',
     modelDefault: 'デフォルト（グローバルモデル）',
     customScheduleLabel: 'カスタムスケジュール',
@@ -1552,7 +1553,23 @@ export const ja = defineLocale({
     scheduleRequired: 'スケジュールは必須です。',
     scriptOnlyEditHint: 'スクリプトのみのジョブ（AI プロンプトなし）。ジョブ ID:',
     saveChanges: '変更を保存',
-    createAction: 'Cron を作成'
+    createAction: 'Cron を作成',
+    tabs: {
+      jobs: 'ジョブ',
+      blueprints: 'ブレーンプリント'
+    },
+    blueprints: {
+      tab: 'ブレーンプリント',
+      subtitle: 'すぐに使える自動化',
+      dialogDesc: '詳細を入力してスケジュールします。',
+      scheduleIt: 'スケジュールする',
+      scheduling: 'スケジュール中...',
+      scheduled: 'ブレーンプリントをスケジュールしました',
+      loading: 'ブレーンプリントを読み込み中...',
+      failedLoad: 'ブレーンプリントの読み込みに失敗しました',
+      emptyTitle: '利用できるブレーンプリントはありません',
+      emptyDesc: 'このバックエンドで利用できる自動化ブレーンプリントはありません。'
+    }
   },
 
   artifacts: {
@@ -1989,6 +2006,43 @@ export const ja = defineLocale({
     viewDocs: 'インストールドキュメントを見る',
     installTo: 'インストール先',
     retryAfterRun: '実行しました — 再試行',
+    setupChoiceTitle: 'Hermes Desktop をセットアップ',
+    setupChoiceDesc:
+      'すでに実行している Hermes ゲートウェイに接続するか、このコンピューターに Hermes をローカルインストールします。',
+    connectExistingTitle: '既存の Hermes に接続',
+    connectExistingShort: '既存環境に接続',
+    connectExistingDesc:
+      'セッショントークンまたはブラウザーサインインでリモートバックエンドを使用します。ローカルインストールは開始されません。',
+    installLocalTitle: 'Hermes をローカルにインストール',
+    installLocalDesc: 'Hermes をダウンロードし、Python 環境を作成して、このコンピューターでバックエンドを実行します。',
+    localStartUnavailable:
+      'ローカルインストールを開始できません。Hermes Desktop を再起動して、もう一度お試しください。',
+    remoteSetupTitle: '既存の Hermes に接続',
+    remoteSetupDesc:
+      'ゲートウェイ URL を入力してください。Hermes Desktop がトークンとブラウザーサインインのどちらが必要かを検出します。',
+    remoteUrlTitle: 'ゲートウェイ URL',
+    remoteUrlDesc: 'Hermes ゲートウェイのベース URL を使用します。リモートの場合は https:// を含めてください。',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: 'ゲートウェイ認証方式を検出中...',
+    probeError: 'その Hermes ゲートウェイに到達できませんでした。',
+    identityProvider: 'ID プロバイダー',
+    authTitle: '認証',
+    authNeedsOauth: provider => `このゲートウェイをテストする前に ${provider} でサインインしてください。`,
+    authSignedIn: 'ブラウザーサインインが完了しました。',
+    connected: '接続済み',
+    signIn: 'サインイン',
+    signInWith: provider => `${provider} でサインイン`,
+    enterUrlFirst: '先にゲートウェイ URL を入力してください。',
+    signInIncomplete: '認証が完了する前にサインインウィンドウが閉じられました。',
+    tokenTitle: 'セッショントークン',
+    tokenDesc: 'リモートゲートウェイの .env ファイルからセッショントークンを貼り付けます。',
+    pasteSessionToken: 'セッショントークンを貼り付け',
+    incompleteSignInTest: 'OAuth で保護されたこのゲートウェイをテストする前にサインインしてください。',
+    incompleteTokenTest: 'このゲートウェイをテストする前にセッショントークンを入力してください。',
+    testConnection: '接続をテスト',
+    testSucceeded: (baseUrl, version) => `${baseUrl}${version ? ` (${version})` : ''} に接続しました。`,
+    applyRemote: '適用して再接続',
+    backToSetup: '戻る',
     failedTitle: 'インストールに失敗しました',
     settingUpTitle: 'Hermes Agent を設定中',
     finishingTitle: '仕上げ中',

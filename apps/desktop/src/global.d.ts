@@ -211,6 +211,7 @@ declare global {
       onPowerResume?: (callback: () => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
+      continueBootstrapLocal: () => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
@@ -627,6 +628,11 @@ export interface DesktopBootstrapUnsupportedPlatform {
   docsUrl: string
 }
 
+export interface DesktopBootstrapSetupChoice {
+  platform: string
+  activeRoot: string
+}
+
 export interface DesktopBootstrapState {
   active: boolean
   manifest: { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null } | null
@@ -635,10 +641,18 @@ export interface DesktopBootstrapState {
   log: Array<{ ts: number; stage: string | null; line: string; stream?: 'stdout' | 'stderr' }>
   startedAt: number | null
   completedAt: number | null
+  setupChoice: DesktopBootstrapSetupChoice | null
   unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
 }
 
 export type DesktopBootstrapEvent =
+  | { type: 'dismissed' }
+  | {
+      type: 'setup-choice'
+      active: boolean
+      platform?: string
+      activeRoot?: string
+    }
   | { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null }
   | {
       type: 'stage'

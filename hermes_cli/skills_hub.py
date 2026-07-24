@@ -921,14 +921,56 @@ def inspect_skill(identifier: str) -> Optional[dict]:
     return out
 
 
+def _truthy_frontmatter_value(value: object) -> bool:
+    """Return True for common YAML truthy spellings used by skill metadata."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _is_user_specific_skill(skill: dict, source_type: str,
+                            usage_record: Optional[dict] = None) -> bool:
+    """Return True for local skills explicitly tagged as user-specific, or
+    recorded as agent-created in the ``.usage.json`` sidecar.
+
+    Legacy agent-created skills predate the frontmatter markers and are only
+    identifiable via their ``skill_manage(action="create")`` usage record.
+    """
+    if source_type != "local":
+        return False
+
+    if _truthy_frontmatter_value(skill.get("user_specific")):
+        return True
+    if _truthy_frontmatter_value(skill.get("owner_specific")):
+        return True
+    owner = skill.get("owner")
+    if isinstance(owner, str) and owner.strip():
+        return True
+
+    raw_metadata = skill.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_hermes_meta = metadata.get("hermes")
+    hermes_meta = raw_hermes_meta if isinstance(raw_hermes_meta, dict) else {}
+    if _truthy_frontmatter_value(hermes_meta.get("user_specific")):
+        return True
+
+    from tools.skill_usage import _is_curator_managed_record
+    return _is_curator_managed_record(usage_record)
+
+
 def do_list(source_filter: str = "all",
             enabled_only: bool = False,
+            personal_only: bool = False,
             console: Optional[Console] = None) -> None:
     """List installed skills, distinguishing hub, builtin, and local skills.
 
     Args:
         source_filter: ``all`` | ``hub`` | ``builtin`` | ``local``.
         enabled_only: If True, hide disabled skills from the output.
+        personal_only: If True, show local user-specific / agent-created skills
+            rather than every locally installed skill.
 
     Enabled/disabled state is resolved against the currently active profile's
     config — ``hermes -p <profile> skills list`` reads that profile's
@@ -950,9 +992,16 @@ def do_list(source_filter: str = "all",
     all_skills = _find_all_skills(skip_disabled=True)
     disabled_names = get_disabled_skill_names()
 
+    usage_records = {}
+    if personal_only:
+        from tools.skill_usage import load_usage
+        usage_records = load_usage()
+
     title = "Installed Skills"
     if enabled_only:
         title += " (enabled only)"
+    if personal_only:
+        title += " (personal only)"
 
     table = Table(title=title)
     table.add_column("Name", style="bold cyan")
@@ -988,6 +1037,11 @@ def do_list(source_filter: str = "all",
         if source_filter != "all" and source_filter != source_type:
             continue
 
+        if personal_only and not _is_user_specific_skill(
+            skill, source_type, usage_records.get(name)
+        ):
+            continue
+
         is_enabled = name not in disabled_names
         if enabled_only and not is_enabled:
             continue
@@ -1012,6 +1066,8 @@ def do_list(source_filter: str = "all",
 
     c.print(table)
     summary = f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local"
+    if personal_only:
+        summary += " (personal filter applied)"
     if enabled_only:
         summary += f" — {enabled_count} enabled shown"
     else:
@@ -1719,6 +1775,7 @@ def skills_command(args) -> None:
         do_list(
             source_filter=args.source,
             enabled_only=getattr(args, "enabled_only", False),
+            personal_only=getattr(args, "personal", False),
         )
     elif action == "check":
         do_check(name=getattr(args, "name", None))
@@ -1896,11 +1953,17 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action == "list":
         source_filter = "all"
         enabled_only = "--enabled-only" in args or "--enabled" in args
+        personal_only = "--personal" in args or "--user" in args
         if "--source" in args:
             idx = args.index("--source")
             if idx + 1 < len(args):
                 source_filter = args[idx + 1]
-        do_list(source_filter=source_filter, enabled_only=enabled_only, console=c)
+        do_list(
+            source_filter=source_filter,
+            enabled_only=enabled_only,
+            personal_only=personal_only,
+            console=c,
+        )
 
     elif action == "check":
         name = args[0] if args else None
@@ -1998,8 +2061,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
-        "       List installed skills; --enabled-only filters to the active profile's live set\n"
+        "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only] [--personal]\n"
+        "       List installed skills; --personal filters to local user-specific/agent-created skills\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"

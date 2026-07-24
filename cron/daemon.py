@@ -59,7 +59,7 @@ def daemon_alive() -> bool:
         try:
             pid = int(pid_path.read_text().strip())
             # Check if process exists (signal 0)
-            os.kill(pid, 0)
+            os.kill(pid, 0)  # windows-footgun: ok — POSIX process check; daemon is Unix-only
             return True
         except (ValueError, OSError, ProcessLookupError):
             pid_path.unlink(missing_ok=True)
@@ -93,7 +93,7 @@ def stop_daemon() -> bool:
         # Wait briefly for cleanup
         for _ in range(10):
             try:
-                os.kill(pid, 0)
+                os.kill(pid, 0)  # windows-footgun: ok — POSIX process check; daemon is Unix-only
                 time.sleep(0.3)
             except ProcessLookupError:
                 break
@@ -155,18 +155,18 @@ def _signal_handler(signum, frame):
 
 def _daemonize():
     """Detach from terminal and run as background daemon."""
-    pid = os.fork()
+    pid = os.fork()  # windows-footgun: ok — daemon fork is Unix-only by design
     if pid > 0:
         # Parent: exit so the shell gets control back
         print(f"Cron daemon started (PID {pid}).")
         sys.exit(0)
 
     # Child: become session leader, detach from terminal
-    os.setsid()
+    os.setsid()  # windows-footgun: ok — session leader setup is Unix-only
     os.umask(0)
 
     # Second fork to prevent re-acquiring terminal
-    pid = os.fork()
+    pid = os.fork()  # windows-footgun: ok — daemon fork is Unix-only by design
     if pid > 0:
         sys.exit(0)
 
@@ -178,7 +178,7 @@ def _daemonize():
     # Register cleanup + signal handlers so PID file is removed on exit
     atexit.register(_cleanup_pid)
     signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGHUP, _signal_handler)
+    signal.signal(signal.SIGHUP, _signal_handler)  # windows-footgun: ok — SIGHUP reload is Unix-only
     signal.signal(signal.SIGINT, _signal_handler)
 
     # Close all file descriptors

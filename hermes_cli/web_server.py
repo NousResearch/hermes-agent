@@ -1720,6 +1720,50 @@ class ManagedFilesPolicy:
     can_change_path: bool
 
 
+def _resolve_fs_data_url_max_bytes() -> int:
+    """Read gateway.file_upload.fs_data_url_max_bytes from config.yaml.
+
+    When the value is 0 the limit is disabled (unlimited).
+    Falls back to 16 MB when unset or unreadable.
+    """
+    default = 16 * 1024 * 1024
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        val = raw.get("gateway", {}).get("file_upload", {}).get("fs_data_url_max_bytes")
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+    return default
+
+
+def _resolve_dashboard_ws_max_size_bytes() -> int:
+    """Read gateway.file_upload.dashboard_ws_max_size_bytes from config.yaml.
+
+    When the value is 0 the limit is disabled (unlimited).
+    Falls back to 16 MB when unset or unreadable.
+    """
+    default = 16 * 1024 * 1024
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        val = raw.get("gateway", {}).get("file_upload", {}).get("dashboard_ws_max_size_bytes")
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+    return default
+
+
 _FS_READDIR_HIDDEN = {
     ".git",
     ".hg",
@@ -1820,7 +1864,7 @@ def _is_sensitive_path(path: Path) -> bool:
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
 
 
-_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+_FS_DATA_URL_MAX_BYTES = _resolve_fs_data_url_max_bytes()
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 # Upper bound for the in-app spot editor's save. The editor only opens
@@ -2679,7 +2723,7 @@ async def fs_write_text(payload: FsWriteText):
 @app.get("/api/fs/read-data-url")
 async def fs_read_data_url(path: str):
     target, st = _fs_regular_file(_fs_path(path))
-    if st.st_size > _FS_DATA_URL_MAX_BYTES:
+    if _FS_DATA_URL_MAX_BYTES > 0 and st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     try:
         encoded = base64.b64encode(target.read_bytes()).decode("ascii")
@@ -19864,7 +19908,13 @@ def start_server(
         # reaped via the WebSocketDisconnect → disconnect/reap path.
         ws_ping_interval=None if _is_loopback else 20.0,
         ws_ping_timeout=None if _is_loopback else 20.0,
+        # Uvicorn's default ws_max_size is 16 MB (16777216). Files uploaded
+        # via remote-gateway are base64-encoded, so a 23 MB raw file becomes
+        # ~31 MB over the wire, which exceeds the default.  Override via
+        # config.yaml gateway.file_upload.dashboard_ws_max_size_bytes.
+        ws_max_size=_resolve_dashboard_ws_max_size_bytes(),
     )
+    
     server = uvicorn.Server(config)
 
     async def _serve():

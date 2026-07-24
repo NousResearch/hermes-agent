@@ -123,7 +123,30 @@ def _hermes_version() -> str:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+
+def _resolve_max_request_bytes() -> int:
+    """Read gateway.file_upload.max_request_bytes from config.yaml.
+
+    When the value is 0 the limit is disabled (unlimited).
+    Falls back to 10 MB when unset or unreadable.
+    """
+    default = 10_000_000
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        val = raw.get("gateway", {}).get("file_upload", {}).get("max_request_bytes")
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+    return default
+
+
+MAX_REQUEST_BYTES = _resolve_max_request_bytes()
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -824,7 +847,7 @@ if AIOHTTP_AVAILABLE:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    if MAX_REQUEST_BYTES > 0 and int(cl) > MAX_REQUEST_BYTES:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)

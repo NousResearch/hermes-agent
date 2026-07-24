@@ -102,6 +102,22 @@ class TestHelperFunctions(unittest.TestCase):
         result = _decode_header_value(encoded)
         self.assertEqual(result, "Merhaba")
 
+    def test_decode_header_malformed_does_not_raise(self):
+        """Email headers are attacker-controlled. A malformed RFC 2047
+        encoded-word (a 1-char base64 group, or an unknown charset) must not
+        raise — that would abort the whole inbound IMAP fetch and drop the
+        message, which was already marked Seen."""
+        from plugins.platforms.email.adapter import _decode_header_value
+        # 1-char base64 group: decode_header raises HeaderParseError.
+        self.assertEqual(_decode_header_value("=?utf-8?B?a?="), "=?utf-8?B?a?=")
+        # Same shape mid-header (e.g. a crafted From: display name).
+        self.assertEqual(
+            _decode_header_value("From =?utf-8?B?a?= <x@y.com>"),
+            "From =?utf-8?B?a?= <x@y.com>",
+        )
+        # Unknown charset label: bytes.decode raises LookupError; fall back.
+        self.assertEqual(_decode_header_value("=?bogus-charset?B?aGk=?="), "hi")
+
     def test_extract_email_address_with_name(self):
         from plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(

@@ -121,6 +121,59 @@ class TestCreateSession:
 
         assert state.agent.session_cwd == "/tmp/project"
 
+    @staticmethod
+    def _patch_make_agent_env(monkeypatch, config):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("acp_adapter.session.load_config", lambda: config, raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "openai_chat",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+    def test_make_agent_passes_configured_disabled_toolsets(self, monkeypatch):
+        # The CLI and gateway hand agent.disabled_toolsets to AIAgent, but the
+        # ACP path dropped it — config-disabled toolsets (e.g. todo) remained
+        # executable in editor/ACP sessions.
+        self._patch_make_agent_env(
+            monkeypatch,
+            {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "mcp_servers": {},
+                "agent": {"disabled_toolsets": ["todo", "browser"]},
+            },
+        )
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.agent.kwargs.get("disabled_toolsets") == ["todo", "browser"]
+
+    def test_make_agent_omits_disabled_toolsets_when_none_configured(self, monkeypatch):
+        self._patch_make_agent_env(
+            monkeypatch,
+            {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "mcp_servers": {},
+                "agent": {},
+            },
+        )
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert "disabled_toolsets" not in state.agent.kwargs
+
 
 
 

@@ -2,6 +2,8 @@
 
 import logging
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -91,6 +93,44 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
+
+    def test_get_plugin_manager_singleton_init_is_thread_safe(self):
+        """Concurrent lazy init must not create orphaned PluginManager instances."""
+        import hermes_cli.plugins as plugins_mod
+
+        first_started = threading.Event()
+        allow_finish = threading.Event()
+        created: list[object] = []
+
+        class FakeManager:
+            def __init__(self):
+                created.append(self)
+                if len(created) == 1:
+                    first_started.set()
+                    assert allow_finish.wait(timeout=1), "timed out waiting to release first constructor"
+
+        results: list[object] = []
+
+        def _worker():
+            results.append(plugins_mod.get_plugin_manager())
+
+        with patch.object(plugins_mod, "_plugin_manager", None), patch.object(
+            plugins_mod, "PluginManager", FakeManager
+        ):
+            t1 = threading.Thread(target=_worker)
+            t2 = threading.Thread(target=_worker)
+            t1.start()
+            assert first_started.wait(timeout=1), "first constructor never started"
+            t2.start()
+            time.sleep(0.05)
+            assert len(created) == 1
+            allow_finish.set()
+            t1.join(timeout=1)
+            t2.join(timeout=1)
+
+        assert len(created) == 1
+        assert len(results) == 2
+        assert results[0] is results[1]
 
     def test_discover_user_plugins(self, tmp_path, monkeypatch):
         """Plugins in ~/.hermes/plugins/ are discovered."""

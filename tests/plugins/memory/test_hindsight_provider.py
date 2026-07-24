@@ -1722,6 +1722,96 @@ class TestAvailability:
         assert p._mode == "disabled"
 
 
+class TestDaemonHealthProbe:
+    """check_daemon_health() — the live-probe supplement `hermes memory
+    status` uses when is_available()'s import-only check misses a daemon
+    that was started outside Hermes's own environment and is actually
+    healthy (#70089).
+    """
+
+    class _FakeResponse:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def test_healthy_daemon_reports_true(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "local_embedded"}))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=None: self._FakeResponse(
+                json.dumps({"status": "healthy", "database": "connected"}).encode()
+            ),
+        )
+
+        p = HindsightMemoryProvider()
+        assert p.check_daemon_health() is True
+
+    def test_unreachable_daemon_reports_false(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "local_embedded"}))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        def _raise(req, timeout=None):
+            raise OSError("Connection refused")
+
+        monkeypatch.setattr("urllib.request.urlopen", _raise)
+
+        p = HindsightMemoryProvider()
+        assert p.check_daemon_health() is False
+
+    def test_cloud_mode_never_probed(self, tmp_path, monkeypatch):
+        """Cloud mode has no local daemon to probe — must return False
+        without attempting a network call."""
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "cloud", "api_key": "***"}))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        def _fail_if_called(req, timeout=None):
+            raise AssertionError("cloud mode must not probe a local daemon")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fail_if_called)
+
+        p = HindsightMemoryProvider()
+        assert p.check_daemon_health() is False
+
+    def test_uses_configured_api_url_not_hardcoded_port(self, tmp_path, monkeypatch):
+        """A user running the daemon on a non-default port (e.g. started
+        manually via `hindsight-embed daemon start`) must be probed on
+        *that* port, not a hardcoded default."""
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_embedded",
+            "api_url": "http://127.0.0.1:9177",
+        }))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        seen_urls = []
+
+        def _capture(req, timeout=None):
+            seen_urls.append(req.full_url)
+            return self._FakeResponse(json.dumps({"status": "healthy"}).encode())
+
+        monkeypatch.setattr("urllib.request.urlopen", _capture)
+
+        p = HindsightMemoryProvider()
+        assert p.check_daemon_health() is True
+        assert seen_urls == ["http://127.0.0.1:9177/health"]
+
+
 class TestSharedEventLoopLifecycle:
     """Regression tests for #11923 — Hindsight leaking aiohttp ClientSession /
     TCPConnector objects in long-running gateway processes.

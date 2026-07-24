@@ -736,6 +736,40 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception:
             return False
 
+    def check_daemon_health(self) -> bool:
+        """Best-effort live probe of a local_embedded/local_external daemon's /health.
+
+        is_available() deliberately avoids network calls — it sits on the
+        agent-init hot path (every AIAgent construction checks it) and must
+        stay fast and side-effect-free. For local_embedded it falls back to
+        checking whether the ``hindsight``/``hindsight_embed`` packages
+        import cleanly in *this* process, which is a false negative when the
+        daemon was started independently (e.g. ``hindsight-embed daemon
+        start``) and is healthy but simply isn't importable from Hermes's
+        own environment (#70089).
+
+        This is an opt-in supplement for on-demand displays (``hermes memory
+        status``) where a couple hundred ms of network latency is expected
+        and acceptable — never called from the hot path.
+        """
+        try:
+            cfg = _load_config()
+            mode = cfg.get("mode", "cloud")
+            if mode == "local":
+                mode = "local_embedded"
+            if mode not in {"local_embedded", "local_external"}:
+                return False
+            api_url = cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", _DEFAULT_LOCAL_URL)
+            if not api_url:
+                return False
+            import urllib.request
+            req = urllib.request.Request(api_url.rstrip("/") + "/health")
+            with urllib.request.urlopen(req, timeout=2.0) as resp:  # noqa: S310
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+            return str(payload.get("status", "")).lower() == "healthy"
+        except Exception:
+            return False
+
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/hindsight/config.json."""
         import json

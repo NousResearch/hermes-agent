@@ -1,4 +1,6 @@
 import base64
+import os
+from pathlib import Path
 
 import pytest
 from acp.schema import (
@@ -10,7 +12,12 @@ from acp.schema import (
     TextResourceContents,
 )
 
-from acp_adapter.server import HermesACPAgent, _content_blocks_to_openai_user_content
+from acp_adapter.server import (
+    HermesACPAgent,
+    _content_blocks_to_openai_user_content,
+    _decode_text_bytes,
+    _path_from_file_uri,
+)
 
 
 def test_acp_image_blocks_convert_to_openai_multimodal_content():
@@ -57,6 +64,28 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
         f"URI: {attached.as_uri()}\n\n"
         "# Notes\n\nAttached file body"
     )
+
+
+def test_path_from_file_uri_accepts_bare_windows_drive_path():
+    path = _path_from_file_uri(r"C:\Users\alice\project\notes.md")
+
+    if os.name == "nt":
+        assert path == Path(r"C:\Users\alice\project\notes.md")
+    else:
+        assert path == Path("/mnt/c/Users/alice/project/notes.md")
+
+
+def test_path_from_file_uri_accepts_windows_drive_file_uri():
+    path = _path_from_file_uri("file:///C:/Users/alice/project/notes.md")
+
+    if os.name == "nt":
+        assert path == Path(r"C:\Users\alice\project\notes.md")
+    else:
+        assert path == Path("/mnt/c/Users/alice/project/notes.md")
+
+
+def test_decode_text_bytes_normalizes_crlf():
+    assert _decode_text_bytes(b"first\r\nsecond\r\n", "text/plain") == "first\nsecond\n"
 
 
 def test_acp_embedded_text_resource_is_inlined_as_text():

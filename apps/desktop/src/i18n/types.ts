@@ -1604,6 +1604,8 @@ export interface Translations {
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
+    wakeWordListening: (phrase: string) => string
+    wakeWordOff: (phrase: string) => string
     lookupLoading: string
     lookupNoMatches: string
     lookupTry: string

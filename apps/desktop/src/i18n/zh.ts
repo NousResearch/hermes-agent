@@ -2106,6 +2106,8 @@ export const zh: Translations = {
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
+    wakeWordListening: phrase => `唤醒词:"${phrase}" — 正在监听`,
+    wakeWordOff: phrase => `唤醒词:"${phrase}" — 已关闭`,
     lookupLoading: '查找中…',
     lookupNoMatches: '没有匹配项。',
     lookupTry: '试试',

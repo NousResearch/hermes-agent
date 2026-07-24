@@ -175,6 +175,20 @@ voice = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
+# "Hey Hermes" wake word — on-device hotword detection. All engines are
+# optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
+# open-vocabulary phrases (any typed phrase, zero training), Porcupine is
+# the premium alternative. Lazy-installed on first /wake; mirrored in
+# tools/lazy_deps.py.
+wake = [
+  "openwakeword==0.6.0",
+  "onnxruntime==1.27.0",
+  "sherpa-onnx==1.13.4",
+  "sentencepiece==0.2.2",
+  "pvporcupine==4.0.3",
+  "sounddevice==0.5.5",
+  "numpy==2.4.3",
+]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
 # (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the

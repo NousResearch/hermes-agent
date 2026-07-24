@@ -32,6 +32,7 @@ import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
@@ -619,6 +620,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // "too many re-renders" guard in embedded dashboard PTYs.
     ensureAgentsNudgeConfig()
 
+    // Arm "Hey Hermes" if this surface owns it (server gates on config).
+    // Fire-and-forget + idempotent server-side, so reconnects are harmless.
+    // Skipped when the user explicitly ran `/wake off` this session — an
+    // explicit opt-out must survive gateway reconnects (see wakeState.ts).
+    if (!isWakeUserDisabled()) {
+      void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
+    }
+
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {
         if (!r?.pairs) {
@@ -930,6 +939,47 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // submit reads it.
         setInput('')
         setTimeout(() => submitRef.current(text), 0)
+
+        return
+      }
+
+      case 'wake.detected': {
+        // "Hey Hermes": optionally open a fresh session (start_new_session),
+        // then arm voice capture so the user can speak hands-free. Mirrors CLI.
+        void (async () => {
+          // Multi-profile routing: the TUI is a single-profile process, so a
+          // phrase enrolled by ANOTHER profile can't be routed here — surface
+          // the switch command instead of starting voice on the wrong profile.
+          const wakeProfile = ev.payload?.profile?.trim()
+          const ownProfile = getUiState().info?.profile_name || 'default'
+
+          if (wakeProfile && wakeProfile !== ownProfile) {
+            sys(`wake phrase for profile '${wakeProfile}' — run: hermes -p ${wakeProfile} --tui`)
+            await rpc('wake.resume', {}).catch(() => undefined)
+
+            return
+          }
+
+          if (ev.payload?.start_new_session !== false) {
+            await newSession()
+          }
+
+          const sid = getUiState().sid
+
+          if (!sid) {
+            await rpc('wake.resume', {}).catch(() => undefined)
+
+            return
+          }
+
+          setVoiceEnabled(true)
+          await rpc('voice.toggle', { action: 'on' })
+          await rpc('voice.record', { action: 'start', session_id: sid })
+        })().catch((e: unknown) => {
+          sys(`wake: ${rpcErrorMessage(e)}`)
+
+          void rpc('wake.resume', {}).catch(() => undefined)
+        })
 
         return
       }

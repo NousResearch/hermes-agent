@@ -18,9 +18,10 @@ changes.
 - [x] Populate this directory from the official
       `NousResearch/hermes-agent` repository.
 - [x] Confirm the checkout has a clean upstream commit and full source tree.
-- [ ] Inventory supported runtimes and repository-defined verification commands.
-- [ ] Run fast, dependency-light structural checks.
-- [ ] Document the exact local development workflow.
+- [x] Inventory supported runtimes and repository-defined verification commands.
+- [x] Run fast, dependency-light structural checks.
+- [x] Document the exact local development workflow in this TODO and the
+      upstream `CONTRIBUTING.md`.
 
 ## Milestone 1 — Python core
 
@@ -80,3 +81,14 @@ changes.
 - 2026-07-24: Official upstream checkout established on branch `main` at
   `7e3acd02d925b25fcf5fb5afd0076954bb6fc769`.
 - 2026-07-24: All writes remain scoped to `/home/len/hermes-agent`.
+- 2026-07-24: Runtime inventory: Python 3.12.3 (supported range
+  `>=3.11,<3.14`), Node 22.23.1, npm 10.9.8. The repository contains 2,354
+  Python test files and 465 JavaScript/TypeScript test files.
+- 2026-07-24: Dependency-light baseline passed: `compileall` for tracked Python
+  sources, `bash -n` for shell scripts, JSON parsing for root/web/TUI/test/
+  desktop manifests, and `git fsck --no-dangling`. One existing test docstring
+  emitted a non-fatal invalid-escape `SyntaxWarning`.
+- 2026-07-24: Canonical workflows are `scripts/run_tests.sh` for isolated
+  Python tests and `npm run check` for Node workspaces. Local Python
+  development uses a venv plus editable `.[all,dev]`; JavaScript uses the root
+  npm lockfile and workspaces.

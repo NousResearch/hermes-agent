@@ -3990,11 +3990,18 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
+    # Check if this provider is already saved — update if name+url match.
+    # Same URL with a DIFFERENT name creates a new entry (multiple profiles
+    # for one endpoint, e.g. different API keys or model subsets).
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
             "/"
         ) == base_url.rstrip("/"):
+            # If the user gave an explicit name that differs from this
+            # entry's name, skip — it's a different provider profile.
+            entry_name = str(entry.get("name", "") or "").strip()
+            if name and entry_name and name != entry_name:
+                continue
             changed = False
             if model and entry.get("model") != model:
                 entry["model"] = model

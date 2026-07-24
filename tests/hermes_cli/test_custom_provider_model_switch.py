@@ -777,3 +777,74 @@ class TestCustomProviderDiscoverModels:
             _model_flow_named_custom({}, provider_info)
 
         mock_fetch.assert_not_called()
+
+
+class TestSaveCustomProviderDedupByName:
+    """Regression tests: same URL, different name creates new entry."""
+
+    def test_same_url_different_name_creates_new_entry(self, config_home):
+        """Two providers sharing one URL but with different names."""
+        from hermes_cli.main import _save_custom_provider
+
+        with patch("builtins.print"):
+            _save_custom_provider(
+                "https://api.poe.com/v1",
+                api_key="key1",
+                model="model-a",
+                name="POE-Account-1",
+            )
+            _save_custom_provider(
+                "https://api.poe.com/v1",
+                api_key="key2",
+                model="model-b",
+                name="POE-Account-2",
+            )
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert len(cfg["custom_providers"]) == 2
+        assert cfg["custom_providers"][0]["name"] == "POE-Account-1"
+        assert cfg["custom_providers"][1]["name"] == "POE-Account-2"
+
+    def test_same_url_same_name_updates_existing(self, config_home):
+        """Same URL and same name updates the existing entry."""
+        from hermes_cli.main import _save_custom_provider
+
+        with patch("builtins.print"):
+            _save_custom_provider(
+                "https://api.poe.com/v1",
+                api_key="key1",
+                model="model-a",
+                name="POE-Main",
+            )
+            _save_custom_provider(
+                "https://api.poe.com/v1",
+                api_key="key2",
+                model="model-b",
+                name="POE-Main",
+            )
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert len(cfg["custom_providers"]) == 1
+        assert cfg["custom_providers"][0]["model"] == "model-b"
+
+    def test_same_url_no_name_auto_generated_dedup(self, config_home):
+        """No explicit name: auto-generated from URL, dedup by URL."""
+        from hermes_cli.main import _save_custom_provider
+
+        with patch("builtins.print"):
+            _save_custom_provider(
+                "https://api.poe.com/v1",
+                api_key="key1",
+                model="model-a",
+            )
+            _save_custom_provider(
+                "https://api.poe.com/v1",
+                api_key="key2",
+                model="model-b",
+            )
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert len(cfg["custom_providers"]) == 1  # dedup'd (same auto-name)

@@ -27,6 +27,14 @@ class TestMemorySchema:
         assert "todo state" in description
         assert ">80%" not in description
 
+    def test_routes_project_local_decisions_away_from_memory(self):
+        description = MEMORY_SCHEMA["description"].lower()
+        assert "project-specific" in description
+        assert "repo docs/adr/tests" in description
+        assert "correction does not automatically" in description
+        assert "if the current project ended" in description
+        assert "preferences & corrections >" not in description
+
 
 # =========================================================================
 # Security scanning

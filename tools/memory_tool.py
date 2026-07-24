@@ -3,10 +3,10 @@
 Memory Tool Module - Persistent Curated Memory
 
 Provides bounded, file-backed memory that persists across sessions. Two stores:
-  - MEMORY.md: agent's personal notes and observations (environment facts, project
-    conventions, tool quirks, things learned)
-  - USER.md: what the agent knows about the user (preferences, communication style,
-    expectations, workflow habits)
+  - MEMORY.md: agent's cross-project notes (stable environment facts, safety
+    boundaries, tool quirks, and durable lookup entrypoints)
+  - USER.md: durable facts about the user across projects (preferences,
+    communication style, expectations, and workflow habits)
 
 Both are injected into the system prompt as a frozen snapshot at session start.
 Mid-session writes update files on disk immediately (durable) but do NOT change
@@ -1014,17 +1014,28 @@ MEMORY_SCHEMA = {
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
         "single lone change.\n\n"
-        "WHEN: save proactively when the user states a preference, correction, or personal "
-        "detail, or you learn a stable fact about their environment, conventions, or workflow. "
-        "Priority: user preferences & corrections > environment facts > procedures. The best "
-        "memory stops the user repeating themselves.\n\n"
+        "SCOPE GATE: before any add or replace, ask: if the current project ended, "
+        "would this still be true about the user or cross-project environment, useful in "
+        "an unrelated project, and independent of project requirements or code changes? "
+        "Only save when all are true. A correction does not automatically belong in user "
+        "memory; classify the scope of what was corrected first. If uncertain, do not write "
+        "memory.\n\n"
+        "WHEN: after the scope gate passes, save durable cross-project user preferences, "
+        "personal details, stable environment boundaries, and high-value lookup entrypoints. "
+        "The best memory prevents repeated steering across unrelated work.\n\n"
+        "ROUTE ELSEWHERE: project-specific goals, scope, UX, SLOs, acceptance criteria, "
+        "operations, models, policies, thresholds, deliverable specifications, and "
+        "implementation decisions belong in repo docs/ADR/tests, even when stated as a user "
+        "correction. Reusable procedures belong in skills; temporary history belongs in "
+        "session_search.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
-        "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "TARGETS: 'user' = who the user is across projects (name, role, durable preferences, "
+        "style). 'memory' = cross-project notes (stable environment boundaries, safety facts, "
+        "tool quirks, lookup entrypoints).\n\n"
+        "SKIP: project-local decisions, trivial/obvious info, easily re-discovered facts, raw "
+        "data dumps, task progress, completed-work logs, temporary TODO state (use "
+        "session_search for those)."
     ),
     "parameters": {
         "type": "object",

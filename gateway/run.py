@@ -23485,6 +23485,17 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
+def _resolve_stderr_level(requested: int, stream: Any) -> int:
+    """Cap macOS non-TTY stderr without changing foreground or other-platform logging."""
+    try:
+        is_tty = stream.isatty()
+    except Exception:
+        is_tty = False
+    if sys.platform == "darwin" and not is_tty:
+        return max(requested, logging.CRITICAL)
+    return requested
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -23707,8 +23718,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if verbosity is not None:
         from agent.redact import RedactingFormatter
 
-        _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+        _requested_stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
         _stderr_handler = logging.StreamHandler(_safe_stderr())
+        _stderr_level = _resolve_stderr_level(_requested_stderr_level, _stderr_handler.stream)
         _stderr_handler.setLevel(_stderr_level)
         _stderr_handler.setFormatter(RedactingFormatter('%(levelname)s %(name)s: %(message)s'))
         logging.getLogger().addHandler(_stderr_handler)

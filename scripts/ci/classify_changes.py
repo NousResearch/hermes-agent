@@ -32,6 +32,7 @@ must never skip one a change could break:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -89,6 +90,11 @@ def _is_ci_review(p: str) -> bool:
     return os.path.basename(p).startswith("eslint.config.")
 
 
+def ci_review_files(files: list[str]) -> list[str]:
+    """Return the CI-sensitive paths that need maintainer review."""
+    return sorted({f.strip() for f in files if f.strip() and _is_ci_review(f.strip())})
+
+
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
@@ -119,8 +125,12 @@ def classify(files: list[str]) -> dict[str, bool]:
 
 
 def main() -> int:
-    lanes = classify(sys.stdin.read().splitlines())
-    out = "\n".join(f"{k}={str(v).lower()}" for k, v in lanes.items())
+    files = sys.stdin.read().splitlines()
+    lanes = classify(files)
+    out = "\n".join([
+        *(f"{key}={str(value).lower()}" for key, value in lanes.items()),
+        f"ci_review_files={json.dumps(ci_review_files(files))}",
+    ])
     if dest := os.environ.get("GITHUB_OUTPUT"):
         with open(dest, "a", encoding="utf-8") as fh:
             fh.write(out + "\n")

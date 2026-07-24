@@ -1,21 +1,23 @@
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
-import { type ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,
+  type DesktopCommandSurface,
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
-import { notify, notifyError } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -23,21 +25,34 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
 
-import type { BrowserManageResponse, SessionTitleResponse, SlashExecResponse } from '../../../types'
+import type {
+  BrowserManageResponse,
+  ClientSessionState,
+  SessionCompressResponse,
+  SessionTitleResponse,
+  SlashExecResponse
+} from '../../../types'
 
 import {
   type GatewayRequest,
   isSessionIdCandidate,
   renderCommandsCatalog,
+  renderRpcResult,
   slashStatusText,
   type SubmitTextOptions
 } from './utils'
+
+// Manual compression is LLM-bound and routinely outlives the desktop's 30s
+// default WS request timeout on large sessions — give it the TUI client's
+// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
+const SESSION_COMPRESS_TIMEOUT_MS = 120_000
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
@@ -50,7 +65,12 @@ interface SlashActionCtx {
 
 interface SlashCommandDeps {
   activeSessionIdRef: MutableRefObject<string | null>
-  appendSessionTextMessage: (sessionId: string, role: ChatMessage['role'], text: string) => void
+  appendSessionTextMessage: (
+    sessionId: string,
+    role: ChatMessage['role'],
+    text: string,
+    storedSessionId?: string | null
+  ) => void
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
@@ -64,8 +84,14 @@ interface SlashCommandDeps {
   refreshSessions: () => Promise<void>
   requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
   submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<boolean>
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
 }
 
 /** The /slash command dispatcher, extracted from usePromptActions. */
@@ -83,9 +109,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     refreshSessions,
     requestGateway,
     resumeStoredSession,
+    selectedStoredSessionIdRef,
     startFreshSessionDraft,
-    submitPromptText
+    submitPromptText,
+    updateSessionState
   } = deps
+
+  const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
@@ -97,7 +127,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // build-renderSlashOutput boilerplate every exec-style handler repeats.
       const withSlashOutput = async (
         ctx: SlashActionCtx
-      ): Promise<{ render: (text: string) => void; sessionId: string } | null> => {
+      ): Promise<{ render: (text: string) => void; sessionId: string; storedSessionId: string | null } | null> => {
         const sessionId = await ensureSessionId(ctx.sessionHint)
 
         if (!sessionId) {
@@ -106,10 +136,19 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return null
         }
 
-        const render = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
+        // A long-running command can finish after a session switch. Keep its
+        // output bound to the stored session selected at invocation time.
+        const storedSessionId = selectedStoredSessionIdRef.current
 
-        return { render, sessionId }
+        const render = (text: string) =>
+          appendSessionTextMessage(
+            sessionId,
+            'system',
+            ctx.recordInput ? slashStatusText(ctx.command, text) : text,
+            storedSessionId
+          )
+
+        return { render, sessionId, storedSessionId }
       }
 
       // `exec` commands (and unknown skill / quick commands the backend owns)
@@ -130,6 +169,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           return
         }
+
+        let slashExecError: unknown = null
 
         const handleDispatch = async (
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
@@ -206,8 +247,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
           return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
+        } catch (error) {
+          // Fall back to command.dispatch for skill/send/alias directives, but
+          // keep the worker error: a slash.exec worker timeout/crash is the real
+          // failure, not the "not a quick/plugin/skill command" routing noise.
+          slashExecError = error
         }
 
         try {
@@ -223,6 +267,66 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
+          // "not a quick/plugin/skill command" just means the fallback had
+          // nothing to add — the slash.exec failure (worker timeout, crash) is
+          // the real error, so don't bury it under the routing noise.
+          const dispatchMessage = err instanceof Error ? err.message : String(err)
+
+          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+            const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
+            renderSlashOutput(`error: /${name} failed: ${original}`)
+
+            return
+          }
+
+          renderSlashOutput(`error: ${dispatchMessage}`)
+        }
+      }
+
+      // `rpc` commands have a dedicated gateway handler — skip slash.exec /
+      // command.dispatch entirely. The response is structured (a JSON RPC
+      // reply, not an inline text stream) so we render it via the generic
+      // `renderRpcResult` shaper that knows the field conventions shared by
+      // session.save / session.status / session.usage / session.steer /
+      // process.stop / agents.list.
+      async function runRpc(
+        surface: Extract<DesktopCommandSurface, { kind: 'rpc' }>,
+        ctx: SlashActionCtx
+      ): Promise<void> {
+        const resolved = await withSlashOutput(ctx)
+
+        if (!resolved) {
+          return
+        }
+
+        const { render: renderSlashOutput, sessionId } = resolved
+
+        try {
+          const params = surface.buildParams({
+            arg: ctx.arg,
+            command: ctx.command,
+            name: ctx.name,
+            sessionId
+          })
+
+          // Forward the surface's declared timeout when present; the default
+          // requestGateway layer keeps (30s) is too tight for RPCs that do
+          // real work.
+          const result = await requestGateway<unknown>(surface.rpc, params, surface.timeoutMs)
+          const body = renderRpcResult(result, ctx.name)
+
+          renderSlashOutput(body || `/${ctx.name}: no output`)
+        } catch (err) {
+          // TODO: remove this compatibility fallback once every supported
+          // managed runtime exposes the dedicated RPC surface. Desktop and its
+          // gateway update independently; older gateways still support the
+          // slash-worker route.
+          if (isMissingRpcMethod(err)) {
+            await runExec(ctx)
+
+            return
+          }
+
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
@@ -236,6 +340,145 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        // /compress (alias /compact) runs the gateway's dedicated
+        // session.compress RPC — the TUI's path
+        // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
+        // runExec: compressing a large session outlives the slash worker's pipe
+        // timeout (45s) and the desktop's 30s WS default, and the resulting
+        // slash.exec error cascaded into command.dispatch's misleading "not a
+        // quick/plugin/skill command: compress" (#44456).
+        //
+        // The RPC returns the post-compress `messages` array (same shape
+        // session.resume returns), so we replace the transcript from it —
+        // otherwise the summarized bubbles stay on screen forever (#44462
+        // review). `updateSessionState` only publishes for the active runtime,
+        // so a late result after a session switch refreshes its own cache
+        // without clobbering the foreground transcript (#53755 review).
+        compress: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+          const focusTopic = ctx.arg.trim()
+          const noticeId = `session-compress:${sessionId}`
+
+          // Coalesce concurrent compress requests for the same session so a
+          // double-enter doesn't fire two LLM summarise calls.
+          if (compressInFlightRef.current.has(sessionId)) {
+            return
+          }
+
+          compressInFlightRef.current.add(sessionId)
+          notify({
+            durationMs: 0,
+            id: noticeId,
+            kind: 'info',
+            message: focusTopic ? `compressing context for: ${focusTopic}` : 'compressing context...'
+          })
+
+          try {
+            const result = await requestGateway<SessionCompressResponse>(
+              'session.compress',
+              {
+                session_id: sessionId,
+                ...(focusTopic ? { focus_topic: focusTopic } : {})
+              },
+              SESSION_COMPRESS_TIMEOUT_MS
+            )
+
+            // Replace the transcript with the post-compress history so the
+            // summarized bubbles actually disappear. `messages` is the same
+            // shape session.resume returns (_history_to_messages), so
+            // toChatMessages handles it directly. updateSessionState only
+            // publishes for the active runtime, guarding against a late result
+            // clobbering the foreground after a session switch.
+            if (Array.isArray(result?.messages)) {
+              updateSessionState(
+                sessionId,
+                state => ({ ...state, messages: toChatMessages(result.messages!) }),
+                storedSessionId
+              )
+            }
+
+            const usage = { ...result?.usage, ...result?.info?.usage }
+
+            if (Object.keys(usage).length && activeSessionIdRef.current === sessionId) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+
+            if (result?.info?.title !== undefined) {
+              setSessions(prev =>
+                prev.map(session =>
+                  session.id === sessionId ? { ...session, title: result.info!.title || null } : session
+                )
+              )
+            }
+
+            if (result?.summary?.headline) {
+              const lines = [result.summary.headline, result.summary.token_line, result.summary.note].filter(
+                (line): line is string => Boolean(line)
+              )
+
+              const aborted = result.status === 'aborted' || result.summary.aborted === true
+
+              if (!aborted) {
+                // Keep a durable record of a successful manual compression in
+                // the chat after replacing it with the authoritative backend
+                // transcript. Errors remain transient: appending an error as a
+                // system message would look like a successful state change.
+                renderSlashOutput(lines.join('\n'))
+              }
+
+              notify({
+                durationMs: 5_000,
+                id: noticeId,
+                kind: aborted ? 'error' : 'success',
+                message: lines.join('\n')
+              })
+
+              return
+            }
+
+            const hostOutput = result?.host_ack?.output?.trim()
+
+            if (hostOutput) {
+              renderSlashOutput(hostOutput)
+              notify({ durationMs: 5_000, id: noticeId, kind: 'success', message: hostOutput })
+
+              return
+            }
+
+            const removed = result?.removed ?? 0
+            const message = removed > 0 ? `compressed ${removed} messages` : 'nothing to compress'
+            renderSlashOutput(message)
+            notify({
+              durationMs: 5_000,
+              id: noticeId,
+              kind: 'success',
+              message
+            })
+          } catch (err) {
+            dismissNotification(noticeId)
+
+            // Desktop and gateway runtimes update independently. Preserve the
+            // historical slash-worker path for an older gateway that has not
+            // shipped session.compress yet; it cannot offer the longer RPC
+            // timeout, but it must not turn a once-working command into an
+            // immediate "method not found" error.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          } finally {
+            compressInFlightRef.current.delete(sessionId)
+          }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
@@ -607,6 +850,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           case 'action':
             return actionHandlers[surface.action](ctx)
 
+          case 'rpc':
+            return runRpc(surface, ctx)
+
           default:
             // exec spec, or an unknown skill / quick command the backend owns.
             return runExec(ctx)
@@ -628,8 +874,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       refreshSessions,
       requestGateway,
       resumeStoredSession,
+      selectedStoredSessionIdRef,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      updateSessionState
     ]
   )
 }

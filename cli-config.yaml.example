@@ -407,12 +407,43 @@ compression:
   # Enable automatic context compression (default: true)
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
+
+  # Opt-in compression progress notices on chat platforms (default: false).
+  # By design, routine automatic compression is SILENT on human-facing chat
+  # gateways (Telegram, Discord, Slack, ...) — it happens in the background
+  # with server-side logging only. Set true to also deliver the routine
+  # progress statuses (compacting started, preflight/pre-API compression,
+  # idle compaction, retry progress, and the compaction-complete notice) to
+  # chat platforms. Unrelated operational noise (auxiliary model failures,
+  # provider retry chatter) stays suppressed either way, and compression
+  # FAILURE notices + manual /compress feedback are always visible
+  # regardless of this setting. (#52995)
+  progress_notices: false
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
   # Models with context windows below 512K are floored at 0.75 (raise-only) so
   # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
+
+  # Per-model threshold overrides: keys are substring-matched against the model
+  # name (longest match wins). Useful when some models need different compaction
+  # points — e.g. a 1M-context model can compress later (0.30) while a 128K
+  # model needs to compress earlier (0.60). The small-context floor (75% for
+  # <512K models) still applies on top of per-model overrides.
+  # model_thresholds:
+  #   "glm-5.2": 0.40
+  #   "claude-sonnet": 0.35
+  #   "gpt-5": 0.30
+
+  # Optional absolute token cap for the compression trigger (default: null = disabled).
+  # When set, compression fires at the LOWER of the ratio-based threshold and this
+  # absolute token count — first-fires-wins. It never fires later than this count
+  # regardless of which model is active (useful when switching between models with
+  # very different context windows). Clamped to the model's context length at
+  # apply-time, so a cap above the window is a no-op (ratio-based threshold wins).
+  # Survives model switches and fallback activations.
+  # threshold_tokens: 200000
 
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
@@ -428,6 +459,21 @@ compression:
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.
   protect_last_n: 20
+
+  # Minimum number of REAL (actionable) user messages guaranteed to survive in
+  # the uncompressed tail (default: 1 = the existing single last-user anchor,
+  # behavior-preserving). Raise to e.g. 3 to keep the last 3 real user turns
+  # verbatim even when bulky tool outputs fill the tail token budget — blank
+  # platform echoes, compaction handoffs, and synthetic continuation rows never
+  # count toward N. The tail can exceed the token budget when this pulls the
+  # cut back; the guarantee wins over the budget by design.
+  min_tail_user_messages: 1
+
+  # Compression retry rounds before a turn gives up with "max compression
+  # attempts reached" (default: 3, same as the previous hardcoded value).
+  # Raise (e.g. 6) for tool-schema-heavy sessions where 3 rounds cannot bring
+  # the request estimate under the threshold. Validated >= 1, hard cap 10.
+  max_attempts: 3
 
   # Codex app-server (codex CLI runtime) thread-compaction mode. The codex
   # agent owns the real thread context on this runtime, so Hermes' summarizer
@@ -448,6 +494,44 @@ compression:
   # Default 3 preserves the system prompt plus the first three non-system
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
+
+  # Idle compaction (default: 0 = disabled). When > 0, a session that resumes
+  # after at least this many seconds of inactivity compacts its accumulated
+  # history up front, before the first reply, so a long-lived thread you come
+  # back to later doesn't re-read its full stale context on every turn.
+  # Time-based, so it complements (does not replace) the size-based `threshold`
+  # above. It is skipped when the context is already small (at or below the
+  # post-compression target = threshold × target_ratio), so it never wastes a
+  # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
+  idle_compact_after_seconds: 0
+
+  # Proactive tool-result prune (default: 0 = disabled). Opt-in token trigger
+  # for a deterministic, no-LLM prune of OLD tool-result payloads, run
+  # independently of `threshold` above. On large-window models (512K/1M) the
+  # ratio threshold rarely fires, so bulky tool outputs (terminal dumps, file
+  # reads, web extracts) ride along in history and get re-billed every turn.
+  # When re-sent history exceeds this many tokens, the prune dedupes identical
+  # results, summarizes older oversized ones, and truncates large tool-call
+  # arguments — protecting the most recent `protect_last_n` messages and never
+  # calling the model. Try 48000 to enable. Built-in compressor engine only;
+  # other context engines inherit a safe no-op.
+  # NOTE: a committed prune rewrites already-sent history, which invalidates
+  # the provider's prompt-cache prefix — the min_reclaim gate below keeps
+  # those cache breaks episodic (like a compression boundary) instead of
+  # per-turn.
+  proactive_prune_tokens: 0
+
+  # The prune's summarize pass only touches tool results larger than this many
+  # characters (clamped to >= 200 so a generated summary can't be
+  # re-summarized). Default 8000.
+  proactive_prune_min_result_chars: 8000
+
+  # A proactive prune only COMMITS when it reclaims at least this many tokens
+  # (measured on the pruned output). This is the prompt-cache hysteresis gate:
+  # one meaningful, amortized cache break per batch of stale tool output
+  # instead of a tiny break on every tool iteration. 0 = commit any non-zero
+  # prune. Default 4096.
+  proactive_prune_min_reclaim_tokens: 4096
 
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
@@ -1489,7 +1573,10 @@ updates:
 #     access_token_env: BWS_ACCESS_TOKEN   # bootstrap token, sourced from .env
 #     project_id: ""                       # UUID of the BSM project to sync
 #     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
-#     cache_ttl_seconds: 300               # 0 disables caching
+#     cache_ttl_seconds: 300               # 0 disables fresh caching
+#     encrypted_cache:                     # optional encrypted stale fallback
+#       enabled: false
+#       max_stale_seconds: 0               # 0 disables stale fallback
 #     override_existing: true              # BSM values win over existing env
 #     auto_install: true                   # lazy-download bws into ~/.hermes/bin
 #
@@ -1506,3 +1593,16 @@ updates:
 #     binary_path: ""                               # "" = resolve op via PATH; else absolute path
 #     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
 #     override_existing: true                       # resolved values win over existing env
+#
+#   # ---- Command helper (any CLI vault) --------------------------------------
+#   # Run a user-configured helper that prints KEY=VALUE lines on stdout —
+#   # works with any secret store that has a CLI: keepassxc-cli, secret-tool,
+#   # pass, gpg, or a script that cats a tmpfs env file.  Composes with the
+#   # sources above (enable any combination).  POSIX-only (needs /bin/sh).
+#   # The helper must be fast and NON-interactive (hard timeout, 1 MiB cap);
+#   # its stderr is discarded so diagnostics can't leak secret material.
+#   command:
+#     enabled: false
+#     command: "cat /run/user/1000/hermes-secrets.env"
+#     helper_timeout_seconds: 3
+#     override_existing: false             # .env/shell win by default

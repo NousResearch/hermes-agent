@@ -439,18 +439,28 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Build a filtered environment dict for stdio subprocesses.
 
     Only passes through safe baseline variables (PATH, HOME, etc.) and XDG_*
-    variables from the current process environment, plus any variables
+    variables from the current process environment, secrets injected by an
+    external secret source (Bitwarden, 1Password, plugin backends) that
+    Hermes explicitly tagged during dotenv loading, plus any variables
     explicitly specified by the user in the server config.
 
     This prevents accidentally leaking secrets like API keys, tokens, or
-    credentials to MCP server subprocesses.
+    credentials to MCP server subprocesses.  Secret-source-injected vars are
+    an exception: users configured that backend specifically so Hermes and
+    its subprocesses can consume those credentials without duplicating them
+    in every MCP server's ``env:`` block.
     """
+    try:
+        from hermes_cli.env_loader import get_secret_source
+    except Exception:  # pragma: no cover — early bootstrap/import fallback
+        get_secret_source = None
     env = {}
     for key, value in os.environ.items():
         if (
             key in _SAFE_ENV_KEYS
             or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE
             or key.startswith("XDG_")
+            or (get_secret_source is not None and get_secret_source(key))
         ):
             env[key] = value
     if user_env:
@@ -2343,10 +2353,8 @@ class MCPServerTask:
         if not _MCP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                "it is not installed. Install with:\n"
-                "  pip install 'hermes-agent[mcp]'\n"
-                "or (full install):\n"
-                "  pip install 'hermes-agent[all]'"
+                "it is not installed. Run `hermes setup` to install MCP support, "
+                "then retry."
             )
 
         command = config.get("command")
@@ -5961,6 +5969,21 @@ def has_registered_mcp_tools() -> bool:
         return bool(_mcp_tool_server_names)
 
 
+def get_registered_mcp_server_names() -> set:
+    """Return the set of MCP server names that have actually registered at
+    least one tool into the registry (post-connection, post check_fn/include-
+    exclude filtering) -- i.e. the real, availability-filtered signal, not
+    just what's present in config.yaml under ``mcp_servers``.
+
+    Used by capability-aware prompt building (e.g. gateway/session.py's
+    Slack platform note) to detect an MCP server that provides a given
+    platform's capability regardless of what its config key is named.
+    """
+    with _lock:
+        return set(_mcp_tool_server_names.values())
+
+
+
 def refresh_agent_mcp_tools(
     agent,
     *,
@@ -6111,9 +6134,13 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
         memory_manager = getattr(agent, "_memory_manager", None)
         get_mem_schemas = getattr(memory_manager, "get_all_tool_schemas", None) if memory_manager else None
         if callable(get_mem_schemas):
-            # Honor the same enablement gate inject_memory_provider_tools uses.
+            # Honor the same toolset gate inject_memory_provider_tools uses.
             from agent.memory_manager import memory_provider_tools_enabled
-            if "memory" in name_set or memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None)):
+            if memory_provider_tools_enabled(
+                getattr(agent, "enabled_toolsets", None),
+                getattr(agent, "disabled_toolsets", None),
+                memory_tool_present="memory" in name_set,
+            ):
                 for schema in get_mem_schemas():
                     if isinstance(schema, dict):
                         _add(schema)

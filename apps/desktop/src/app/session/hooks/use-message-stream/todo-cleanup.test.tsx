@@ -151,7 +151,10 @@ describe('useMessageStream turn-end todo cleanup', () => {
     complete()
     const afterTurnA = $todoHistoryBySession.get()[SID]
 
-    expect(afterTurnA.map(snapshot => snapshot.id)).toEqual(['assistant-stream-1767225600000', 'older'])
+    expect(afterTurnA.map(snapshot => snapshot.id)).toEqual([
+      expect.stringMatching(/^assistant-stream-1767225600000-\d+$/),
+      'older'
+    ])
     expect(afterTurnA[0]?.timestamp).toBe(1_767_225_600)
     expect($todosBySession.get()[SID]).toEqual([todo('a', 'completed')])
 

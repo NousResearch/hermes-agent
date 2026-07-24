@@ -15,6 +15,7 @@ import type {
 } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
+import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -283,6 +284,10 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
+  ambient: ActiveWidget[]
+  /** Modal widget app — owns input, blocks the composer. */
+  widget: ActiveWidget | null
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState

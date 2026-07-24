@@ -861,8 +861,13 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["reference_models"]
-        assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
-        assert set(data["aggregator"]) == {"provider", "model"}
+        # Reference slots carry provider/model plus the per-advisor enabled
+        # flag (optional keys like reasoning_effort/max_tokens appear only
+        # when configured).
+        for slot in data["reference_models"]:
+            assert {"provider", "model"} <= set(slot)
+            assert isinstance(slot.get("enabled", True), bool)
+        assert {"provider", "model"} <= set(data["aggregator"])
 
     def test_put_moa_models_persists_provider_model_slots(self):
         from hermes_cli.config import load_config
@@ -875,6 +880,8 @@ class TestWebServerEndpoints:
             "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
             "reference_temperature": 0.6,
             "aggregator_temperature": 0.4,
+            "reference_timeout": 44.5,
+            "degraded_reference_policy": "silent",
             "max_tokens": 4096,
             "enabled": True,
         }
@@ -883,8 +890,50 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         cfg = load_config()
-        assert cfg["moa"]["reference_models"] == payload["reference_models"]
-        assert cfg["moa"]["aggregator"] == payload["aggregator"]
+        saved_refs = cfg["moa"]["reference_models"]
+        # Slots normalize with enabled=True defaulted in; provider/model must
+        # round-trip exactly.
+        assert [
+            {"provider": s["provider"], "model": s["model"]} for s in saved_refs
+        ] == payload["reference_models"]
+        assert all(s.get("enabled", True) is True for s in saved_refs)
+        agg = cfg["moa"]["aggregator"]
+        assert {"provider": agg["provider"], "model": agg["model"]} == payload["aggregator"]
+        assert cfg["moa"]["reference_timeout"] == 44.5
+        assert cfg["moa"]["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()
+        assert returned["reference_timeout"] == 44.5
+        assert returned["degraded_reference_policy"] == "silent"
+
+    def test_put_moa_models_persists_reference_failure_controls_per_preset(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "review",
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"}
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                    "reference_timeout": 87.5,
+                    "degraded_reference_policy": "silent",
+                }
+            },
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 200
+        saved = load_config()["moa"]["presets"]["review"]
+        assert saved["reference_timeout"] == 87.5
+        assert saved["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()["presets"]["review"]
+        assert returned["reference_timeout"] == 87.5
+        assert returned["degraded_reference_policy"] == "silent"
 
     def test_put_moa_models_rejects_half_filled_slot_with_422(self):
         """#64156: a mid-edit autosave (provider picked, model empty) used to be
@@ -1278,6 +1327,34 @@ class TestWebServerEndpoints:
             "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"userPeerAliases": "{not json"}},
         ).status_code == 400
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"reference_timeout": True},
+            {"reference_timeout": False},
+            {"reference_timeout": "nan"},
+            {"reference_timeout": "inf"},
+            {"presets": {"review": {"reference_timeout": True}}},
+            {"presets": {"review": {"reference_timeout": "-inf"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_reference_timeout(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"degraded_reference_policy": "verbose"},
+            {"presets": {"review": {"degraded_reference_policy": "verbose"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_degraded_reference_policy(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
 
     # ── GET /api/media (remote image display) ───────────────────────────
 
@@ -2192,7 +2269,7 @@ class TestWebServerEndpoints:
 
         captured = {}
 
-        def fake_transcribe_audio(path):
+        def fake_transcribe_audio(path, model=None):
             captured["path"] = path
             return {
                 "success": True,
@@ -2218,6 +2295,36 @@ class TestWebServerEndpoints:
         }
         assert captured["path"].endswith(".webm")
         assert not Path(captured["path"]).exists()
+
+    def test_audio_transcription_no_speech_is_not_an_error(self, monkeypatch):
+        """A provider hearing silence (empty transcript) must return 200/"" —
+        the live voice loop treats it as a quiet turn and re-listens, instead
+        of surfacing a 400 toast on every pause (the ElevenLabs empty-
+        transcript spam)."""
+        import tools.transcription_tools as transcription_tools
+
+        monkeypatch.setattr(
+            transcription_tools,
+            "transcribe_audio",
+            lambda path, model=None: {
+                "success": False,
+                "transcript": "",
+                "error": "ElevenLabs STT returned empty transcript",
+                "no_speech": True,
+            },
+        )
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["transcript"] == ""
 
     def test_audio_transcription_rejects_invalid_base64(self):
         resp = self.client.post(
@@ -2320,6 +2427,27 @@ class TestWebServerEndpoints:
         assert status_data["exit_code"] == 1
         assert status_data["pid"] is None
         assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
+
+    def test_update_hermes_returns_nix_guidance_without_spawning(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        def fail_spawn(*_args, **_kwargs):
+            raise AssertionError("Nix update guard should not spawn hermes update")
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "nix")
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["pid"] is None
+        assert data["error"] == "nix_update_unsupported"
+        assert "Nix" in data["message"]
 
     def test_update_hermes_returns_managed_runtime_guidance_without_spawning(self, monkeypatch):
         import hermes_cli.web_server as web_server
@@ -4632,6 +4760,44 @@ class TestBuildSchemaFromConfig:
         options = set(CONFIG_SCHEMA["memory.provider"]["options"])
         missing = set(list_memory_provider_names()) - options
         assert missing == set(), f"discovered providers missing from schema options: {missing}"
+
+    def test_dynamic_merge_recomputes_memory_provider_options(self, monkeypatch):
+        """The per-request schema merge re-discovers memory providers.
+
+        The import-time _SCHEMA_OVERRIDES freezes the list at server start;
+        _schema_with_dynamic_provider_options must recompute it so a provider
+        installed mid-session is selectable without a restart.
+        """
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {"memory": {"provider": "honcho"}})
+        monkeypatch.setattr(
+            web_server,
+            "_memory_provider_options",
+            lambda: ["", "honcho", "hindsight", "freshly_installed"],
+        )
+
+        fields = web_server._schema_with_dynamic_provider_options()
+
+        assert "freshly_installed" in fields["memory.provider"]["options"]
+        # The entry is copied, not mutated in place, and keeps its select type.
+        assert fields["memory.provider"]["type"] == "select"
+        assert web_server.CONFIG_SCHEMA["memory.provider"] is not fields["memory.provider"]
+
+    def test_dynamic_merge_preserves_configured_memory_provider(self, monkeypatch):
+        """A configured-but-undiscovered provider stays visible as the selection.
+
+        e.g. the plugin dir was removed but config still points at it — the
+        dropdown must not silently drop the active value.
+        """
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {"memory": {"provider": "gone_from_disk"}})
+        monkeypatch.setattr(web_server, "_memory_provider_options", lambda: ["", "honcho"])
+
+        fields = web_server._schema_with_dynamic_provider_options()
+
+        assert "gone_from_disk" in fields["memory.provider"]["options"]
 
     def test_approvals_mode_options_match_config_values(self):
         """approvals.mode select options must match the values accepted by config.py.

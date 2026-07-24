@@ -58,11 +58,11 @@ interface PaneChrome {
    *  (artifacts/skills/plugin pages) are not tab-able surfaces. The flag is
    *  live: the workspace contribution re-registers it on route changes. */
   headerVeto?: boolean
-  /** A lead-dot color for this pane's TAB (a session tab inheriting its
-   *  project color). Generic — any pane may contribute one; the strip just
-   *  renders a tinted dot before the label. Live: the owning contribution
-   *  re-registers it when the resolved color changes. */
-  accent?: string
+  /** A lead NODE for this pane's TAB, rendered before the label. A session
+   *  pane (main workspace + tiles) passes its live `SessionStatusDot` here so
+   *  the tab and the sidebar row render status/color from the ONE primitive
+   *  (self-subscribing — it updates without the strip re-registering). */
+  tabLead?: () => React.ReactNode
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome

@@ -7,6 +7,7 @@ import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-
 import { activateTreeTabSlot, cycleTreeTabInFocusedZone, layoutHasRootSide } from '@/components/pane-shell/tree/store'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
@@ -122,7 +123,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   handlersRef.current = {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
-    'composer.focus': () => requestComposerFocus('main'),
+    'composer.focus': () => requestComposerFocus('active'),
     'composer.modelPicker': () => setModelPickerOpen(true),
     'composer.voice': requestVoiceToggle,
 
@@ -180,10 +181,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.closeTerminal': () => $terminalTakeover.get() && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
     // ⌘W: close the focused tab (terminal / preview target / zone tree tab).
-    // On macOS the menu accelerator owns ⌘W and routes through the same
+    // On the main tab with session tabs stacked, it shifts the next one in —
+    // the loader navigates to that session's route (loads it into main). On
+    // macOS the menu accelerator owns ⌘W and routes through the same
     // closeActiveTab via IPC (see use-desktop-integrations); this binding is
     // the Win/Linux path where ⌘W reaches the renderer directly.
-    'view.closeTab': () => void closeActiveTab(),
+    'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
@@ -242,11 +245,32 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
       const actionId = $comboIndex.get().get(combo)
 
+      // Unbound printable → type-to-focus. Bound chords (shift+n, …) win above.
       if (!actionId) {
+        const typeChar = typeToFocusChar(event)
+
+        if (typeChar && composerFocusKeysAllowed(event, 'type')) {
+          event.preventDefault()
+          requestComposerFocus('active', { typeChar })
+        }
+
         return
       }
 
       if (isEditableTarget(event.target) && !comboAllowedInInput(combo)) {
+        return
+      }
+
+      // Soft `/` / Enter: gated so dialogs/buttons/terminal keep those keys.
+      // Rebound chords fall through to the normal handler.
+      if (actionId === 'composer.focus' && isComposerFocusSoftCombo(combo)) {
+        if (!composerFocusKeysAllowed(event, combo)) {
+          return
+        }
+
+        event.preventDefault()
+        requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
+
         return
       }
 

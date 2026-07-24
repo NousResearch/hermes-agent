@@ -132,23 +132,30 @@ _EMOJI_NEIGHBOUR_CP_RANGES = (
     (0x1F000, 0x1FFFF),
     (0x2600, 0x27BF),
     (0x2300, 0x23FF),
-    (0x1F1E6, 0x1F1FF),
-    (0x20E3, 0x20E3),
+    (0x1F1E6, 0x1F1FF),  # regional indicators
+    (0x20E3, 0x20E3),    # combining enclosing keycap
+    (0xE0020, 0xE007F),  # tag characters (flag sequences)
 )
 _VARIATION_SELECTOR_CP = 0xFE0F
+_TAG_CP_MIN = 0xE0020
+_TAG_CP_MAX = 0xE007F
 
 
 def _is_emoji_cp(cp: int) -> bool:
     return any(lo <= cp <= hi for lo, hi in _EMOJI_NEIGHBOUR_CP_RANGES)
 
 
+def _is_tag_cp(cp: int) -> bool:
+    return _TAG_CP_MIN <= cp <= _TAG_CP_MAX
+
+
 def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
     """Return True when the ZWJ at text[idx] appears inside an emoji sequence."""
     left = idx - 1
-    while left >= 0 and ord(text[left]) == _VARIATION_SELECTOR_CP:
+    while left >= 0 and (ord(text[left]) == _VARIATION_SELECTOR_CP or _is_tag_cp(ord(text[left]))):
         left -= 1
     right = idx + 1
-    while right < len(text) and ord(text[right]) == _VARIATION_SELECTOR_CP:
+    while right < len(text) and (ord(text[right]) == _VARIATION_SELECTOR_CP or _is_tag_cp(ord(text[right]))):
         right += 1
     return (
         left >= 0 and right < len(text)

@@ -178,6 +178,8 @@ curl -s http://127.0.0.1:8000/v1/models | jq '.data[].id'
 
 Both backends tested on the same machine (Apple M5 Max, 128 GB unified memory) running the same model (Qwen3.5-9B) at comparable quantization levels (Q4_K_M for GGUF, mxfp4 for MLX). Five diverse prompts, three runs each, backends tested sequentially to avoid resource contention.
 
+>> Benchmarks are likely running poorly quantized of misconfigured servers -> there is no way Llama.cpp is faster than OMXL/VMLX at anything, Q-quants have to re-quantize to native formats, mxpf4/mxfp8 are native, JangQ and OptiQ quants are highly recommended.
+
 ### Results
 
 | Metric | llama.cpp (Q4_K_M) | MLX (mxfp4) | Winner |

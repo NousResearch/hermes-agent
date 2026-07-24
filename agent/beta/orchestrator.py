@@ -131,6 +131,47 @@ def _execute_approved(
     return tuple(executed)
 
 
+def _reconcile_execution_response(
+    response: ConsolidatedResponse,
+    operations: tuple[Operation, ...],
+    executed: tuple[ExecutedAction, ...],
+) -> ConsolidatedResponse:
+    """Align the final response with the actual post-approval execution state."""
+    if not operations or not executed:
+        return response
+
+    completed = tuple(action for action in executed if action.status == "completed")
+    failed = tuple(action for action in executed if action.status == "failed")
+    executed_fingerprints = {action.operation_fingerprint for action in executed}
+    all_operations_executed = all(
+        operation.fingerprint in executed_fingerprints for operation in operations
+    )
+
+    if failed:
+        failure_details = tuple(
+            f"execution:{action.action}: {action.evidence}" for action in failed
+        )
+        return response.model_copy(update={
+            "result": "Approved execution failed validation",
+            "authorization_required": False,
+            "next_step": "Review executor failure evidence and replan before any retry",
+            "partial_failures": response.partial_failures + failure_details,
+        })
+
+    if completed and all_operations_executed:
+        execution_evidence = tuple(
+            f"execution:{action.action}: {action.evidence}" for action in completed
+        )
+        return response.model_copy(update={
+            "result": "Approved operations executed and validated",
+            "evidence": response.evidence + execution_evidence,
+            "authorization_required": False,
+            "next_step": "Execution completed; monitor the resulting system state",
+        })
+
+    return response
+
+
 def orchestrate_request(
     request: str,
     parent_agent: Any,
@@ -206,6 +247,7 @@ def orchestrate_request(
             available[operation.fingerprint] = receipt
 
     executed = _execute_approved(operations, available, gate, executor)
+    response = _reconcile_execution_response(response, operations, executed)
     return BetaRun(
         decision=decision,
         plan=plan,

@@ -1092,6 +1092,23 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+def _profile_name_for_home_path(home: str | Path | None) -> str | None:
+    """Return the named-profile id for a HERMES_HOME path, or None for default/root."""
+    if not home:
+        return None
+    path = Path(home)
+    if path.parent.name == "profiles":
+        return path.name
+    return None
+
+
+def _profile_name_for_session(session: dict | None) -> str | None:
+    """Best-effort profile stamp for a live session (profile_home → name)."""
+    if not session:
+        return None
+    return _profile_name_for_home_path(session.get("profile_home"))
+
+
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
 
@@ -2085,6 +2102,7 @@ def _ensure_session_db_row(session: dict) -> None:
             model_config=model_config or None,
             parent_session_id=parent_session_id,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
+            profile_name=_profile_name_for_session(session),
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
@@ -4108,7 +4126,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_behind": None,
         "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": _current_profile_name(),
+        # Prefer the session's own profile_home over the process launch profile
+        # so app-global remote mode doesn't report every chat as "default".
+        "profile_name": _profile_name_for_session(session) or _current_profile_name(),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -5473,6 +5493,7 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    profile_home: str | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5500,6 +5521,9 @@ def _init_session(
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
             "model_override": None,
+            # Named-profile home for app-global remote mode — branch/compress
+            # children must keep the parent's binding or they land in launch db.
+            "profile_home": str(profile_home) if profile_home else None,
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
@@ -6301,7 +6325,9 @@ def _(rid, params: dict) -> dict:
                 "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                "profile_name": _current_profile_name(),
+                # Echo the requested profile (not just the launch profile) so the
+                # desktop optimistic row + aggregator stay on the right home.
+                "profile_name": profile or _current_profile_name(),
             },
         },
     )
@@ -6439,7 +6465,13 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
+def _lazy_resume_info(
+    cwd: str,
+    *,
+    model: str = "",
+    provider: str = "",
+    profile_name: str | None = None,
+) -> dict:
     """session.info for a not-yet-built session (the shape session.create
     returns). tools/skills land later when the deferred build emits session.info."""
     info = {
@@ -6451,7 +6483,7 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
         "skills": {},
         "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-        "profile_name": _current_profile_name(),
+        "profile_name": profile_name or _current_profile_name(),
     }
     if provider:
         info["provider"] = provider
@@ -6703,7 +6735,10 @@ def _(rid, params: dict) -> dict:
                 "resumed": target,
                 "message_count": len(messages),
                 "messages": messages,
-                "info": _lazy_resume_info(cwd),
+                "info": _lazy_resume_info(
+                    cwd,
+                    profile_name=profile or _profile_name_for_home_path(profile_home),
+                ),
                 "inflight": None,
                 "running": child_running,
                 "session_key": target,
@@ -6790,6 +6825,7 @@ def _(rid, params: dict) -> dict:
                     cwd,
                     model=model_override.get("model") or "",
                     provider=overrides.get("provider_override") or "",
+                    profile_name=profile or _profile_name_for_home_path(profile_home),
                 ),
                 "inflight": None,
                 "running": False,
@@ -9531,13 +9567,31 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    db = _get_db()
+    # Branch into the PARENT's profile db/home — not the launch state.db.
+    # Without this, /branch on a non-default profile session drops the tip onto
+    # default (and later compression children follow it).
+    profile_home_str = session.get("profile_home") or None
+    profile_home = Path(profile_home_str) if profile_home_str else None
+    close_db = False
+    if profile_home is not None:
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=profile_home / "state.db")
+            close_db = True
+        except Exception as e:
+            return _err(rid, 5008, f"branch failed: {e}")
+    else:
+        db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5008)
     old_key = session["session_key"]
     with session["history_lock"]:
         history = [dict(msg) for msg in session.get("history", [])]
     if not history:
+        if close_db:
+            with contextlib.suppress(Exception):
+                db.close()
         return _err(rid, 4008, "nothing to branch — send a message first")
     new_key = _new_session_key()
     new_sid = uuid.uuid4().hex[:8]
@@ -9546,8 +9600,18 @@ def _(rid, params: dict) -> dict:
         new_key, live_session_id=new_sid, surface=source
     )
     if limit_message is not None:
+        if close_db:
+            with contextlib.suppress(Exception):
+                db.close()
         return _err(rid, 4090, limit_message)
     branch_name = params.get("name", "")
+    profile_name = _profile_name_for_session(session)
+    if not profile_name:
+        try:
+            parent_row = db.get_session(old_key) or {}
+            profile_name = parent_row.get("profile_name")
+        except Exception:
+            profile_name = None
     try:
         if branch_name:
             title = branch_name
@@ -9570,6 +9634,7 @@ def _(rid, params: dict) -> dict:
             model_config={"_branched_from": old_key},
             parent_session_id=old_key,
             cwd=_session_cwd(session),
+            profile_name=profile_name,
         )
         for msg in history:
             db.append_message(
@@ -9583,16 +9648,30 @@ def _(rid, params: dict) -> dict:
         if lease is not None:
             lease.release()
         return _err(rid, 5008, f"branch failed: {e}")
+    finally:
+        if close_db:
+            with contextlib.suppress(Exception):
+                db.close()
     try:
         tokens = _set_session_context(new_key)
+        home_token = None
+        branch_db = None
         try:
+            if profile_home is not None:
+                from hermes_state import SessionDB
+
+                home_token = set_hermes_home_override(str(profile_home))
+                branch_db = SessionDB(db_path=profile_home / "state.db")
             agent = _make_agent(
                 new_sid,
                 new_key,
                 session_id=new_key,
                 platform_override=source,
+                session_db=branch_db,
             )
         finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
             _clear_session_context(tokens)
         _init_session(
             new_sid,
@@ -9600,7 +9679,10 @@ def _(rid, params: dict) -> dict:
             agent,
             list(history),
             cols=session.get("cols", 80),
+            cwd=_session_cwd(session),
             source=source,
+            session_db=branch_db,
+            profile_home=profile_home_str,
         )
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease

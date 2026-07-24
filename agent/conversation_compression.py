@@ -1908,6 +1908,26 @@ def compress_context(
                     except Exception:
                         pass
                     agent._session_db_created = False
+                    # Compression children must keep the parent's profile stamp.
+                    # SessionDB backfills cwd/git from the parent, but profile_name
+                    # is not inferred from which state.db we write to — omitting it
+                    # leaves NULL and the unified desktop list tags the tip as
+                    # "default" even when the lineage started on a named profile.
+                    _parent_profile = None
+                    try:
+                        _prow = agent._session_db.get_session(old_session_id)
+                        if _prow:
+                            _parent_profile = _prow.get("profile_name")
+                    except Exception:
+                        _parent_profile = None
+                    if not _parent_profile:
+                        try:
+                            from hermes_cli.profiles import get_active_profile_name
+
+                            _pn = get_active_profile_name()
+                            _parent_profile = None if _pn in (None, "default") else _pn
+                        except Exception:
+                            _parent_profile = None
                     try:
                         agent._session_db.create_session(
                             session_id=agent.session_id,
@@ -1915,6 +1935,7 @@ def compress_context(
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,
+                            profile_name=_parent_profile,
                         )
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,

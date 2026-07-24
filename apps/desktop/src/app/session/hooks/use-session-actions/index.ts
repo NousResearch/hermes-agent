@@ -1056,15 +1056,31 @@ export function useSessionActions({
   // `parentStoredId` so it nests under its parent, then open it as its own tab
   // and switch to it — the parent chat stays put (mirrors openNewSessionTile).
   const forkBranch = useCallback(
-    async (branchMessages: BranchMessage[], parentStoredId: null | string, cwd?: string): Promise<boolean> => {
+    async (
+      branchMessages: BranchMessage[],
+      parentStoredId: null | string,
+      cwd?: string,
+      profile?: string | null
+    ): Promise<boolean> => {
       creatingSessionRef.current = true
 
       try {
+        // Branch must land in the SOURCE session's profile — not the new-chat
+        // picker / launch profile. In app-global remote mode one backend serves
+        // every profile, so omitting `profile` on session.create silently binds
+        // the branch to the launch HERMES_HOME/state.db ("rubberbands to default").
+        const sourceProfile = profile?.trim() || undefined
+
+        if (sourceProfile) {
+          await ensureGatewayProfile(sourceProfile)
+        }
+
         // No title: the backend auto-names the branch from its parent's lineage.
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           source: 'desktop',
           ...(cwd && { cwd }),
+          ...(sourceProfile ? { profile: sourceProfile } : {}),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
           ...(parentStoredId && { parent_session_id: parentStoredId })
         })
@@ -1165,7 +1181,17 @@ export function useSessionActions({
 
       clearNotifications()
 
-      return forkBranch(branchMessages, selectedStoredSessionIdRef.current, $currentCwd.get().trim())
+      const parentStoredId = selectedStoredSessionIdRef.current
+      const parentStored = parentStoredId
+        ? $sessions.get().find(session => sessionMatchesStoredId(session, parentStoredId))
+        : null
+
+      return forkBranch(
+        branchMessages,
+        parentStoredId,
+        $currentCwd.get().trim(),
+        parentStored?.profile
+      )
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]
   )
@@ -1197,7 +1223,12 @@ export function useSessionActions({
           return false
         }
 
-        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim())
+        return await forkBranch(
+          branchMessages,
+          stored?.id ?? storedSessionId,
+          stored?.cwd?.trim(),
+          profile
+        )
       } catch (err) {
         notifyError(err, copy.branchFailed)
 

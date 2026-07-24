@@ -526,6 +526,29 @@ function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionSt
   })
 }
 
+function currentBackendUpdateLines(status: Awaited<ReturnType<typeof getActionStatus>>): string[] {
+  let start = -1
+
+  for (let i = status.lines.length - 1; i >= 0; i -= 1) {
+    const line = status.lines[i] ?? ''
+
+    if (line.includes('=== hermes-update started') || line.includes('=== hermes update started')) {
+      start = i
+      break
+    }
+  }
+
+  // Action status buffers can contain output from an older command. Without
+  // the current update marker, none of those lines are safe to classify.
+  return start >= 0 ? status.lines.slice(start + 1) : []
+}
+
+function didBackendUpdateCompleteWithoutRestart(status: Awaited<ReturnType<typeof getActionStatus>>): boolean {
+  return status.exit_code === 0 && currentBackendUpdateLines(status).some(line => (
+    line.includes('Already up to date') || line.includes('Dependencies repaired')
+  ))
+}
+
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
@@ -581,6 +604,10 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     const ok = !!last && (last.exit_code ?? 1) === 0
 
     if (ok) {
+      if (last && didBackendUpdateCompleteWithoutRestart(last)) {
+        return finishBackendApply(true)
+      }
+
       $backendUpdateApply.set({
         ...$backendUpdateApply.get(),
         applying: true,

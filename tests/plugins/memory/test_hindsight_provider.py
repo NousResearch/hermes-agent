@@ -778,7 +778,7 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
 
-        assert result["result"] == "1. Recovered memory"
+        assert "Recovered memory" in result["result"]
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()

@@ -443,6 +443,10 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `mode` | `cloud` | `cloud` or `local` |
 | `bank_id` | `hermes` | Memory bank identifier |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
+| `recall_max_tokens` | `4096` | Maximum tokens rendered from recall results |
+| `recall_max_results` | `7` | Maximum distinct results after conservative deduplication |
+| `recall_types` | `observation` | Fact types surfaced by automatic and explicit recall |
+| `recall_authority_tags` | — | Optional tags whose matching results rank first; retention tags do not imply authority |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
@@ -453,6 +457,8 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+
+Automatic recall and `hindsight_recall` share the same bounded post-processing. Exact and narrowly equivalent repetitions are collapsed without deleting source memories, and an omission notice is shown when distinct results exceed the configured result or token limit.
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 

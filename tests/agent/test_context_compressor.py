@@ -725,6 +725,58 @@ class TestNonStringContent:
         assert "do something" in summary
         assert summary.endswith("plain summary text")
 
+    def test_empty_content_recovers_summary_from_reasoning_field(self):
+        """Reasoning/thinking models (DeepSeek, GLM, Qwen 3 via Ollama 0.22+)
+        return their output in ``reasoning`` with ``content`` empty — especially
+        under the constrained max_tokens compression uses. The summary must be
+        recovered from the reasoning field, not discarded as an empty-content
+        failure that drops the whole compaction (#19003)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].message.reasoning = "recovered summary body"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        # A real summary is produced from the reasoning field — NOT dropped as
+        # an empty-content failure, and no failure cooldown is engaged.
+        assert summary is not None
+        assert "recovered summary body" in summary
+        assert c._summary_failure_cooldown_until == 0
+
+    def test_empty_content_recovers_from_reasoning_content_dict_message(self):
+        """Same recovery when the backend returns a dict-shaped message with the
+        text in ``reasoning_content`` (llama.cpp / some proxies) (#19003)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = {
+            "content": "",
+            "reasoning_content": "dict reasoning summary",
+        }
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        assert summary is not None
+        assert "dict reasoning summary" in summary
+
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

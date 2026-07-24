@@ -3456,6 +3456,26 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
+            # Reasoning/thinking models (DeepSeek, GLM, Qwen 3 via Ollama 0.22+,
+            # etc.) return their output in the reasoning field with ``content``
+            # empty — especially under the constrained ``max_tokens`` compression
+            # uses, where reasoning tokens consume the whole budget. Without a
+            # fallback the summary reads as empty and the entire compaction is
+            # discarded for a static marker (#19003). Recover from the structured
+            # reasoning fields, mirroring ``auxiliary_client.extract_content_or_
+            # reasoning`` and the main agent loop, before the empty-content guard
+            # below treats it as a failure. Handles both object- and dict-shaped
+            # messages, like the coercion above.
+            if not content.strip():
+                for _reasoning_field in ("reasoning", "reasoning_content"):
+                    _reasoning_val = (
+                        message.get(_reasoning_field)
+                        if isinstance(message, dict)
+                        else getattr(message, _reasoning_field, None)
+                    )
+                    if isinstance(_reasoning_val, str) and _reasoning_val.strip():
+                        content = _reasoning_val
+                        break
             # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels)
             # return a well-formed HTTP 200 with an empty or whitespace-only
             # ``content`` instead of an error or empty ``choices``. That payload

@@ -62,14 +62,17 @@ _HERMES_ALWAYS_CORE_TOOLS = [
     # read-only terminal tab, open a URL/file in the preview pane, and focus a
     # pane (all gated on HERMES_DESKTOP via check_fn — hidden outside the GUI).
     "read_terminal", "close_terminal", "open_preview", "focus_pane",
-    # File manipulation
-    "write_file", "patch",
     # Skills management
     "skills_list", "skill_view", "skill_manage",
     # Code execution
     "execute_code",
     # Cronjob management
     "cronjob",
+]
+
+_HERMES_DEFERRABLE_CORE_TOOLS = [
+    # File mutation tools
+    "write_file", "patch",
     # Image generation — task-specific
     "image_generate",
     # Browser automation — 11 tools, significant schema weight

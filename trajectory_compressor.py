@@ -84,6 +84,10 @@ class CompressionConfig:
     """Configuration for trajectory compression."""
     # Tokenizer
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking"
+    # SECURITY: When True, allows executing arbitrary Python code from the
+    # tokenizer repository.  Required for some tokenizers (e.g. Kimi-K2) but
+    # means an untrusted or compromised ``tokenizer_name`` repo can run code
+    # on the host.  Set to False when using a standard HuggingFace tokenizer.
     trust_remote_code: bool = True
     
     # Compression targets
@@ -358,6 +362,13 @@ class TrajectoryCompressor:
         """Initialize HuggingFace tokenizer for token counting."""
         try:
             from transformers import AutoTokenizer
+            if self.config.trust_remote_code:
+                self.logger.warning(
+                    "trust_remote_code=True for tokenizer '%s' — "
+                    "this allows the tokenizer repository to execute "
+                    "arbitrary code. Only use with trusted repos.",
+                    self.config.tokenizer_name,
+                )
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.config.tokenizer_name,
                 trust_remote_code=self.config.trust_remote_code

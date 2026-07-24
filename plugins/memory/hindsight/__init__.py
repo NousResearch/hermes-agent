@@ -75,6 +75,24 @@ _PROVIDER_DEFAULT_MODELS = {
     "openai_compatible": "your-model-name",
 }
 
+# Providers that don't need an API key (mirrors ``_PROVIDERS_WITHOUT_API_KEY``
+# in the upstream hindsight llm_wrapper.py). When one of these is used
+# without an explicit key, we pass the provider name as a sentinel so the
+# hindsight-api daemon doesn't raise ValueError on early versions that
+# lack the ``requires_api_key()`` check (hindsight-client < 0.6.1 edge).
+_LOCAL_PROVIDERS = frozenset({
+    "ollama",
+    "lmstudio",
+    "llamacpp",
+    "vertexai",
+    "litellm",
+    "litellmrouter",
+    "bedrock",
+    "nous",
+    "mock",
+    "none",
+})
+
 
 def _parse_int_setting(value: Any, default: int) -> int:
     """Parse an integer config/env value, falling back on invalid input."""
@@ -523,7 +541,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 
     env_values = {
         "HINDSIGHT_API_LLM_PROVIDER": str(daemon_provider),
-        "HINDSIGHT_API_LLM_API_KEY": str(current_key or ""),
+        "HINDSIGHT_API_LLM_API_KEY": str(current_key or (daemon_provider if daemon_provider in _LOCAL_PROVIDERS else "")),
         "HINDSIGHT_API_LLM_MODEL": str(current_model),
         "HINDSIGHT_API_LOG_LEVEL": "info",
     }
@@ -1036,7 +1054,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=(
+                        self._config.get("llmApiKey")
+                        or self._config.get("llm_api_key")
+                        or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+                        or (llm_provider if llm_provider in _LOCAL_PROVIDERS else "")
+                    ),
                     llm_model=self._config.get("llm_model", ""),
                 )
                 if self._llm_base_url:

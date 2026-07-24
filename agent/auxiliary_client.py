@@ -617,10 +617,43 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     return merged or headers
 
 
+_response_cache_default_notice_shown = False
+
+
+def _warn_if_response_cache_default_unset() -> None:
+    """One-time notice for users who never touched ``openrouter.response_cache``.
+
+    The default flipped from enabled to disabled (#70387): it's a beta
+    edge-cache that could replay a stale full response — including prior
+    tool calls — for a request that merely looks similar to a past one.
+    Users who left the setting untouched previously got it on for free;
+    tell them once so the behavior change isn't silent, instead of just
+    hoping nobody notices the "free" caching stopped.
+    """
+    global _response_cache_default_notice_shown
+    if _response_cache_default_notice_shown:
+        return
+    try:
+        from hermes_cli.config import read_raw_config
+        raw_or = (read_raw_config() or {}).get("openrouter", {})
+        if isinstance(raw_or, dict) and "response_cache" in raw_or:
+            return  # explicitly set (to a falsy value) — nothing to explain
+    except Exception:
+        return
+    _response_cache_default_notice_shown = True
+    logger.info(
+        "openrouter.response_cache now defaults to off (previously on) — it's a "
+        "beta edge-cache that can replay a stale full response, including prior "
+        "tool calls, for a request that looks similar to a past one. Set "
+        "`openrouter.response_cache: true` in config.yaml or HERMES_OPENROUTER_CACHE=1 "
+        "to opt back in."
+    )
+
+
 def build_or_headers(or_config: dict | None = None) -> dict:
     """Build OpenRouter headers, optionally including response-cache headers.
 
-    Precedence for response cache: env var > config.yaml > default (enabled).
+    Precedence for response cache: env var > config.yaml > default (disabled).
 
     Environment variables:
         ``HERMES_OPENROUTER_CACHE`` — truthy (``1``/``true``/``yes``/``on``)
@@ -635,6 +668,7 @@ def build_or_headers(or_config: dict | None = None) -> dict:
     headers = dict(_OR_HEADERS_BASE)
 
     # Resolve config from disk if not provided.
+    loaded_from_disk = or_config is None
     if or_config is None:
         try:
             from hermes_cli.config import load_config
@@ -650,6 +684,8 @@ def build_or_headers(or_config: dict | None = None) -> dict:
         cache_enabled = or_config.get("response_cache", False)
 
     if not cache_enabled:
+        if loaded_from_disk and not env_cache:
+            _warn_if_response_cache_default_unset()
         return headers
 
     headers["X-OpenRouter-Cache"] = "true"

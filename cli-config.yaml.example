@@ -168,13 +168,16 @@ model:
 # =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)
 # =============================================================================
-# Cache identical API responses at the OpenRouter edge for free instant replays.
-# When enabled, identical requests (same model, messages, parameters) return
-# cached responses with zero billing. Separate from Anthropic prompt caching.
+# Beta edge-cache: identical requests (same model, messages, parameters) can
+# return a stored full response verbatim, including prior tool calls, instead
+# of a fresh generation. Distinct from Anthropic/provider prompt (KV) caching,
+# which this stays orthogonal to. Off by default — in an agent loop it risks
+# replaying stale tool-call decisions or stochastic output. Opt in only for
+# deterministic, tool-free, side-effect-free calls.
 # See: https://openrouter.ai/docs/guides/features/response-caching
 #
 # openrouter:
-#   response_cache: true         # Enable response caching (default: true)
+#   response_cache: true         # Enable response caching (default: false)
 #   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
 
 # =============================================================================

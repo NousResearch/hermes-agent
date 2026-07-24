@@ -1066,8 +1066,10 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 # and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
 #
 # This is never exposed to the model -- only infrastructure code calls it.
-# Thread-safe because each task_id is unique per rollout.
+# In the gateway, multiple sessions share the process, so access is
+# synchronized via _task_env_overrides_lock.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_task_env_overrides_lock = threading.Lock()
 
 # ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
 #
@@ -1138,7 +1140,8 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
-    _task_env_overrides[task_id] = overrides
+    with _task_env_overrides_lock:
+        _task_env_overrides[task_id] = overrides
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
@@ -1168,7 +1171,8 @@ def clear_task_env_overrides(task_id: str):
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(task_id, None)
+    with _task_env_overrides_lock:
+        _task_env_overrides.pop(task_id, None)
     clear_session_cwd(task_id)
 
 
@@ -1200,10 +1204,11 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         "docker_image", "modal_image", "singularity_image",
         "daytona_image", "env_type",
     })
-    if task_id and task_id in _task_env_overrides:
-        overrides = _task_env_overrides[task_id]
-        if set(overrides.keys()) & _ISOLATION_KEYS:
-            return task_id
+    with _task_env_overrides_lock:
+        if task_id and task_id in _task_env_overrides:
+            overrides = _task_env_overrides[task_id]
+            if set(overrides.keys()) & _ISOLATION_KEYS:
+                return task_id
     return "default"
 
 
@@ -1220,11 +1225,12 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     source of that lookup so the terminal and file layers can't drift apart.
     """
     raw = task_id or "default"
-    return (
-        _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
-        or {}
-    )
+    with _task_env_overrides_lock:
+        return (
+            _task_env_overrides.get(raw)
+            or _task_env_overrides.get(_resolve_container_task_id(raw))
+            or {}
+        )
 
 
 # Configuration from environment variables

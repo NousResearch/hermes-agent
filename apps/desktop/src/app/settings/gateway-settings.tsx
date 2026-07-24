@@ -1053,11 +1053,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
           <ModeCard
             active={state.mode === 'local'}
-            description={g.localDesc}
+            description={scope === null ? g.localDesc : g.inheritDesc}
             disabled={state.envOverride}
             icon={Monitor}
             onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={g.localTitle}
+            title={scope === null ? g.localTitle : g.inheritTitle}
           />
           <ModeCard
             active={state.mode === 'cloud'}

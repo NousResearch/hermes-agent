@@ -1550,6 +1550,23 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 if "typing_status_text" in platform_cfg:
                     bridged["typing_status_text"] = platform_cfg["typing_status_text"]
+                # Generic platform extras that should work when users place
+                # them directly under ``platforms.<name>`` instead of nesting
+                # under ``extra``.  This keeps adapter-specific runtime knobs
+                # (for example email approval routing) from being silently
+                # dropped by PlatformConfig.from_dict().
+                for _extra_key in (
+                    "suppress_home_notice",
+                    "suppress_home_channel_notice",
+                    "response_delivery",
+                    "approval_discord_channel",
+                    "approval_discord_thread",
+                    "approval_discord_thread_id",
+                    "approval_policy_note",
+                    "skip_attachments",
+                ):
+                    if _extra_key in platform_cfg:
+                        bridged[_extra_key] = platform_cfg[_extra_key]
                 # Bridge top-level port/host/secret into extra for platforms
                 # whose adapters read these from config.extra (webhook,
                 # msgraph_webhook, api_server).  Without this, YAML like:

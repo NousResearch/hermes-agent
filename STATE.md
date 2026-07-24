@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 02:38:00 PDT (UTC-07:00)
+Last verification time: 2026-07-24 03:32:52 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -35,6 +35,9 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 - Docker Engine: 29.1.3
 - Docker Compose: 5.1.2
 - Ollama: 0.32.1
+- AppArmor: 4.0.1really4.0.1-0ubuntu0.24.04.7
+- Bubblewrap: 0.9.0-1ubuntu0.1, protected by the Ubuntu-provided
+  `bwrap-userns-restrict` AppArmor profile
 
 ### Installed Ollama models
 
@@ -58,8 +61,8 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 - Root: `/home/len/hermes-agent`
 - Branch: `main`
-- Snapshot commit: `623d41908`
-- Upstream relation before adding this file: 13 commits ahead of `origin/main`
+- Repository baseline at this snapshot: `662723868`
+- Upstream relation before this state update: 14 commits ahead of `origin/main`
 - Python environment: repository-local `.venv`
 - Repository-local generated state: `.tmp`, `.cache`, `.tools`, and `.venv`
   are excluded from Git
@@ -112,6 +115,9 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 - Updated vulnerable Node and Python dependencies.
 - Reached zero npm audit vulnerabilities and zero high/critical Hermes OSV
   findings.
+- Installed and loaded Ubuntu's scoped `bwrap-userns-restrict` AppArmor
+  profile. The isolated user, PID, and network namespace probe passes while
+  `kernel.apparmor_restrict_unprivileged_userns=1` remains enabled.
 - Scanned tracked files for secret patterns and found no candidates outside
   explicit examples, documentation, fixtures, skills, and tests.
 - Added `OPERATOR.md` with verified instructions for this machine.
@@ -120,6 +126,8 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 ## Outstanding blockers
 
+- Ubuntu requires a system restart to complete the AppArmor package upgrade;
+  Bubblewrap works now, but profile persistence must be verified after reboot.
 - A real local-model tool-call smoke test is blocked on selecting or downloading
   a model that provides both a true 64K-or-larger context and reliable
   structured tool calling, or configuring a compatible remote provider.
@@ -131,22 +139,24 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 ## Active priorities
 
-1. Select a compatible local model or remote provider.
-2. Run and record an end-to-end conversation plus structured tool-call smoke
+1. Reboot the host, then confirm the AppArmor profile remains loaded and the
+   Bubblewrap namespace probe still exits successfully without audit denials.
+2. Select a compatible local model or remote provider.
+3. Run and record an end-to-end conversation plus structured tool-call smoke
    test using repository-isolated state.
-3. Review the local commit series and decide whether to push it or open a pull
+4. Review the local commit series and decide whether to push it or open a pull
    request against the desired remote branch.
-4. Configure only the provider credentials and optional integrations that are
+5. Configure only the provider credentials and optional integrations that are
    actually needed for deployment.
-5. Re-run the focused verification gates after any model, provider, dependency,
+6. Re-run the focused verification gates after any model, provider, dependency,
    or deployment configuration change.
 
 ## Next recommended task
 
-Select a Hermes-compatible model/provider, then run one repository-isolated
-end-to-end prompt that requires a structured tool call. Record the selected
-model, declared context length, request, tool invocation, response, and command
-exit status in `TODO.md`, and update this state snapshot with the outcome.
+Reboot the host, then repeat the Bubblewrap user/PID/network namespace probe and
+check the kernel audit log for new AppArmor denials. If persistence is verified,
+remove the reboot blocker and resume selection of a Hermes-compatible model or
+remote provider.
 
 ## References
 

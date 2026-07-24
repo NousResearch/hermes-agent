@@ -456,6 +456,25 @@ def _resolve_runtime_from_pool_entry(
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "xai":
         api_mode = "codex_responses"
+    elif provider == "openai-api" and base_url_host_matches(base_url, "openai.com"):
+        effective_model = str(target_model or model_cfg.get("default") or "").strip()
+        try:
+            from hermes_cli.models import openai_api_model_api_mode
+
+            inferred = openai_api_model_api_mode(effective_model)
+        except Exception:
+            inferred = None
+        if inferred:
+            api_mode = inferred
+        else:
+            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+                api_mode = configured_mode
+            else:
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
     elif provider == "nous":
         api_mode = "chat_completions"
         base_url = _nous_inference_base_url_override() or base_url
@@ -1516,6 +1535,24 @@ def _resolve_explicit_runtime(
             )
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider == "openai-api" and base_url_host_matches(base_url, "openai.com"):
+            effective_model = str(target_model or model_cfg.get("default") or "").strip()
+            try:
+                from hermes_cli.models import openai_api_model_api_mode
+
+                inferred = openai_api_model_api_mode(effective_model)
+            except Exception:
+                inferred = None
+            if inferred:
+                api_mode = inferred
+            else:
+                configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+                if configured_mode:
+                    api_mode = configured_mode
+                else:
+                    detected = _detect_api_mode_for_url(base_url)
+                    if detected:
+                        api_mode = detected
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -2095,6 +2132,25 @@ def resolve_runtime_provider(
             )
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider == "openai-api" and base_url_host_matches(base_url, "openai.com"):
+            _effective = target_model or model_cfg.get("default", "")
+            try:
+                from hermes_cli.models import openai_api_model_api_mode
+
+                inferred = openai_api_model_api_mode(_effective)
+            except Exception:
+                inferred = None
+            if inferred:
+                api_mode = inferred
+            else:
+                configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+                configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+                if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+                    api_mode = configured_mode
+                else:
+                    detected = _detect_api_mode_for_url(base_url)
+                    if detected:
+                        api_mode = detected
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

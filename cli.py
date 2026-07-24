@@ -11311,13 +11311,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         threading.Thread(target=_refresh_level, daemon=True).start()
 
     def _voice_stt_model(self) -> Optional[str]:
-        """STT model override from config, or None for the provider default."""
+        """STT model override from config, or None for the provider default.
+
+        For the local provider, prefer stt.local.model (default ``base``) so the
+        CLI passes a real model name into the local STT backend.
+        """
         try:
             from hermes_cli.config import load_config
             stt_config = load_config().get("stt", {})
-            return stt_config.get("model") if isinstance(stt_config, dict) else None
+            if not isinstance(stt_config, dict):
+                return None
+            provider = str(stt_config.get("provider") or "").strip().lower()
+            if provider == "local":
+                local_config = stt_config.get("local") or {}
+                if not isinstance(local_config, dict):
+                    local_config = {}
+                return local_config.get("model") or "base"
+            return stt_config.get("model")
         except Exception:
             return None
+
+    def _voice_stt_provider(self) -> str:
+        """Configured STT provider name (lowercased), or empty string."""
+        try:
+            from hermes_cli.config import load_config
+            stt_config = load_config().get("stt", {})
+            if not isinstance(stt_config, dict):
+                return ""
+            return str(stt_config.get("provider") or "").strip().lower()
+        except Exception:
+            return ""
 
     def _voice_restart_recording_async(self) -> None:
         """Restart continuous-mode recording off-thread (start() can block)."""
@@ -11365,10 +11388,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # _voice_processing is already True (set atomically above)
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
-            _cprint(f"{_DIM}Transcribing...{_RST}")
+
+            stt_model = self._voice_stt_model()
+            if self._voice_stt_provider() == "local":
+                _cprint(
+                    f"{_DIM}Preparing local STT model '{stt_model}' "
+                    f"(first use may download it from Hugging Face)...{_RST}"
+                )
+            else:
+                _cprint(f"{_DIM}Transcribing...{_RST}")
 
             from tools.voice_mode import transcribe_recording
-            result = transcribe_recording(wav_path, model=self._voice_stt_model())
+            result = transcribe_recording(wav_path, model=stt_model)
 
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()

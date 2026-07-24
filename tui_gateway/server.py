@@ -10045,6 +10045,27 @@ def _(rid, params: dict) -> dict:
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
+            # Guard: refuse an empty truncation (truncated == []) unless the
+            # client explicitly passes confirm_empty_truncate=true. A stale
+            # ordinal from a desynced frontend (e.g. ordinal=0 on an ordinary
+            # prompt.submit) would otherwise silently wipe the entire session
+            # transcript via replace_messages() — unrecoverable data loss.
+            if not truncated and not params.get("confirm_empty_truncate"):
+                logger.warning(
+                    "prompt.submit: REFUSED empty truncation of session %s "
+                    "(%d messages would be wiped; ordinal=%d).",
+                    sid, len(history), ordinal,
+                )
+                return _err(
+                    rid, 4025,
+                    "truncation would erase the entire session transcript; "
+                    "resubmit with confirm_empty_truncate=true if this is intended",
+                )
+            # Log every truncation so future incidents are traceable in agent.log.
+            logger.warning(
+                "prompt.submit: truncating session %s history %d -> %d messages (ordinal=%d)",
+                sid, len(history), len(truncated), ordinal,
+            )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if (db := _get_db()) is not None:

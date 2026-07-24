@@ -3239,6 +3239,77 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
         server._sessions.pop("trunc-sid", None)
 
 
+def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
+    """prompt.submit with truncate_before_user_ordinal=0 must be REFUSED
+    unless confirm_empty_truncate=true is explicitly passed. Without this guard
+    a stale ordinal from a desynced frontend silently wipes the session DB."""
+    replaced = []
+    started = []
+
+    class _FakeDB:
+        def replace_messages(self, key, messages):
+            replaced.append((key, list(messages)))
+
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "done"},
+    ]
+    server._sessions["empty-trunc-sid"] = _session(history=list(history))
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: started.append(True)
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: started.append(True)
+    )
+
+    try:
+        # --- Case 1: ordinal=0 without confirm_empty_truncate → REFUSED ---
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "empty-trunc-sid",
+                    "text": "next",
+                    "truncate_before_user_ordinal": 0,
+                },
+            }
+        )
+        assert resp.get("error"), f"expected error but got result: {resp.get('result')}"
+        assert resp["error"]["code"] == 4025, (
+            f"expected code 4025 (empty-truncation guard), got {resp['error']['code']}"
+        )
+        # History and DB must be untouched — no data loss.
+        assert server._sessions["empty-trunc-sid"]["history"] == history
+        assert server._sessions["empty-trunc-sid"]["running"] is False
+        assert replaced == [], f"replace_messages was called: {replaced}"
+        assert started == [], "no turn should have started"
+
+        # --- Case 2: ordinal=0 with confirm_empty_truncate=true → ALLOWED ---
+        resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "empty-trunc-sid",
+                    "text": "next",
+                    "truncate_before_user_ordinal": 0,
+                    "confirm_empty_truncate": True,
+                },
+            }
+        )
+        # With confirm_empty_truncate, the truncation goes through (the turn
+        # may still error on the agent build, but the history is truncated).
+        assert server._sessions["empty-trunc-sid"]["history"] == []
+        assert server._sessions["empty-trunc-sid"]["history_version"] == 1
+        assert replaced == [("session-key", [])]
+    finally:
+        server._sessions.pop("empty-trunc-sid", None)
+
+
 class _StopAfterOneNotificationPoll:
     def __init__(self):
         self._checks = 0

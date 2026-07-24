@@ -136,12 +136,12 @@ def _hex_response(payload_audio: bytes = b"\x00\x01\x02\x03"):
 class TestMinimaxTtsT2aV2:
     """Default path: base_url contains 't2a_v2'."""
 
-    def _run(self, tts_config, tmp_path, monkeypatch, response=None):
+    def _run(self, tts_config, tmp_path, monkeypatch, response=None, suffix=".mp3"):
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         resp = response if response is not None else _hex_response()
         with patch("requests.post", return_value=resp) as mock_post:
             from tools.tts_tool import _generate_minimax_tts
-            output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
+            output = _generate_minimax_tts("Hello", str(tmp_path / f"out{suffix}"), tts_config)
         return mock_post, output
 
     def test_nested_payload(self, tmp_path, monkeypatch):
@@ -156,6 +156,12 @@ class TestMinimaxTtsT2aV2:
         assert payload["audio_setting"]["format"] == "mp3"
         # Don't send flat top-level voice_id alongside nested voice_setting.
         assert "voice_id" not in payload
+
+    def test_ogg_output_requests_opus(self, tmp_path, monkeypatch):
+        """Native Opus is requested when the output path is an OGG file."""
+        mock_post, _ = self._run({}, tmp_path, monkeypatch, suffix=".ogg")
+        payload = mock_post.call_args[1]["json"]
+        assert payload["audio_setting"]["format"] == "opus"
 
     def test_decodes_hex_audio(self, tmp_path, monkeypatch):
         """t2a_v2 hex-encoded audio is decoded and written verbatim."""
@@ -205,6 +211,74 @@ class TestMinimaxTtsT2aV2:
         }
         with pytest.raises(RuntimeError, match="2013"):
             self._run({}, tmp_path, monkeypatch, response=resp)
+
+
+class TestMinimaxTelegramOutput:
+    def test_explicit_mp3_path_is_rewritten_to_native_ogg(self, tmp_path):
+        """Gateway temp paths must not force Telegram MiniMax replies to MP3."""
+        import json
+
+        from tools.tts_tool import text_to_speech_tool
+
+        requested_paths = []
+
+        def fake_generate(_text, output_path, _config):
+            requested_paths.append(output_path)
+            with open(output_path, "wb") as f:
+                f.write(b"opus")
+
+        with patch(
+            "tools.tts_tool._load_tts_config",
+            return_value={"provider": "minimax"},
+        ), patch(
+            "gateway.session_context.get_session_env",
+            return_value="telegram",
+        ), patch(
+            "tools.tts_tool._generate_minimax_tts",
+            side_effect=fake_generate,
+        ):
+            result = json.loads(text_to_speech_tool(
+                "Hello", output_path=str(tmp_path / "reply.mp3")
+            ))
+
+        assert requested_paths == [str(tmp_path / "reply.ogg")]
+        assert result["file_path"] == str(tmp_path / "reply.ogg")
+        assert result["voice_compatible"] is True
+
+
+class TestElevenLabsTelegramOutput:
+    def test_explicit_mp3_path_is_rewritten_to_native_ogg(self, tmp_path):
+        """Gateway temp paths must not force Telegram ElevenLabs replies to MP3."""
+        import json
+
+        from tools.tts_tool import text_to_speech_tool
+
+        requested_paths = []
+
+        def fake_generate(_text, output_path, _config):
+            requested_paths.append(output_path)
+            with open(output_path, "wb") as f:
+                f.write(b"opus")
+
+        with patch(
+            "tools.tts_tool._load_tts_config",
+            return_value={"provider": "elevenlabs"},
+        ), patch(
+            "gateway.session_context.get_session_env",
+            return_value="telegram",
+        ), patch(
+            "tools.tts_tool._import_elevenlabs",
+        ), patch(
+            "tools.tts_tool._generate_elevenlabs",
+            side_effect=fake_generate,
+        ):
+            result = json.loads(text_to_speech_tool(
+                "Hello", output_path=str(tmp_path / "reply.mp3")
+            ))
+
+        assert requested_paths == [str(tmp_path / "reply.ogg")]
+        assert result["file_path"] == str(tmp_path / "reply.ogg")
+        assert result["voice_compatible"] is True
 
 
 class TestMinimaxTtsLegacyTextToSpeech:

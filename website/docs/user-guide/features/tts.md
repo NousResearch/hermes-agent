@@ -171,7 +171,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 
 - **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
-- **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
+- **MiniMax TTS** produces Opus natively with the default `t2a_v2` endpoint; legacy endpoints output MP3 and need **ffmpeg**
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles

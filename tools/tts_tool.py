@@ -1489,7 +1489,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
             "audio_setting": {
                 "sample_rate": sample_rate,
                 "bitrate": bitrate,
-                "format": "mp3",
+                "format": "opus" if output_path.endswith(".ogg") else "mp3",
                 "channel": 1,
             },
         }
@@ -2284,6 +2284,18 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
+def _supports_opus_output(provider: str, tts_config: Dict[str, Any]) -> bool:
+    """Return whether *provider* can write an Opus OGG output path."""
+    if provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        return True
+    if provider == "minimax":
+        base_url = tts_config.get("minimax", {}).get(
+            "base_url", DEFAULT_MINIMAX_BASE_URL
+        )
+        return "t2a_v2" in base_url
+    return False
+
+
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
@@ -2334,6 +2346,7 @@ def text_to_speech_tool(
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
+    supports_opus_output = _supports_opus_output(provider, tts_config)
 
     # Determine output path
     if output_path:
@@ -2363,6 +2376,8 @@ def text_to_speech_tool(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
+        elif want_opus and supports_opus_output and file_path.suffix.lower() == ".mp3":
+            file_path = file_path.with_suffix(".ogg")
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
@@ -2372,7 +2387,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and supports_opus_output:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -2571,7 +2586,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif supports_opus_output:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)

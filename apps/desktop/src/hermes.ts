@@ -407,6 +407,8 @@ export async function listAllProfileSessions(
 export interface SidebarSessionSlice {
   sessions: SessionInfo[]
   total?: number
+  /** True when `total` is a pagination lower bound rather than an exact count. */
+  total_is_lower_bound?: boolean
   profile_totals?: Record<string, number>
 }
 

@@ -16,7 +16,8 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setSessionsTotalIsLowerBound
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
 
@@ -43,6 +44,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetSidebarBatchCapability()
   setSessions([])
   setSessionsTotal(0)
+  setSessionsTotalIsLowerBound(false)
   setSessionProfileTotals({})
   setCronSessions([])
   setMessagingSessions([])

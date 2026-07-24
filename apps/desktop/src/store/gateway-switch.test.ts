@@ -8,6 +8,7 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
+  $sessionsTotalIsLowerBound,
   setCronSessions,
   setFreshDraftReady,
   setMessagingSessions,
@@ -43,6 +44,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setMessagingSessions([])
     $stalledSessionIds.set([])
     setSessionsLoading(true)
+    $sessionsTotalIsLowerBound.set(true)
     $gatewaySwitching.set(false)
   })
 
@@ -51,6 +53,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
 
     expect($sessions.get()).toEqual([])
     expect($sessionsTotal.get()).toBe(0)
+    expect($sessionsTotalIsLowerBound.get()).toBe(false)
     expect($cronSessions.get()).toEqual([])
     expect($messagingSessions.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])

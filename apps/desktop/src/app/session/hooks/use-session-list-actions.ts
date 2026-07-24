@@ -26,7 +26,8 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setSessionsTotalIsLowerBound
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
@@ -202,6 +203,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
           return sameCronSignature(prev, next) ? prev : next
         })
+        setSessionsTotalIsLowerBound(Boolean(recents.total_is_lower_bound))
         setSessionsTotal(typeof recents.total === 'number' ? recents.total : recents.sessions.length)
         setSessionProfileTotals(prev => {
           const next = recents.profile_totals ?? {}

@@ -65,6 +65,7 @@ import {
   savedProfileSsh,
   tokenPreview
 } from './connection-config'
+import { fetchRemoteSessionListWithFallback, missingSessionListEndpoint } from './remote-session-compat'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
@@ -9068,12 +9069,24 @@ async function interceptSessionRequestForRemote(request) {
 
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
+    const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
     if (remoteProfiles.length === 0) {
-      return undefined // no remote profiles → local fast path
-    }
+      if (!globalRemoteActive()) {
+        return undefined // no remote profiles → local fast path
+      }
 
-    const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+      // Older remote backends expose the single-profile /api/sessions API but
+      // not Desktop's newer cross-profile aggregator. Try the aggregate path
+      // first and fall back only when that endpoint is explicitly missing.
+      const query = searchParams.toString()
+      return fetchRemoteSessionListWithFallback(
+        path => fetchJsonForProfile(null, path),
+        `${pathname}${query ? `?${query}` : ''}`,
+        `/api/sessions${query ? `?${query}` : ''}`,
+        requested
+      )
+    }
 
     if (requested !== 'all') {
       return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
@@ -9090,9 +9103,20 @@ async function interceptSessionRequestForRemote(request) {
   // remote correctness is preserved.
   if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
     const remoteProfiles = configuredRemoteProfileNames()
+    const globalRemoteCompat = remoteProfiles.length === 0 && globalRemoteActive()
 
-    if (remoteProfiles.length === 0) {
+    if (remoteProfiles.length === 0 && !globalRemoteCompat) {
       return undefined // local fast path → batched endpoint's single DB open
+    }
+
+    if (globalRemoteCompat) {
+      try {
+        return await fetchJsonForProfile(null, request.path)
+      } catch (error) {
+        if (!missingSessionListEndpoint(error)) {
+          throw error
+        }
+      }
     }
 
     const recentsProfile = (searchParams.get('recents_profile') || 'all').trim() || 'all'
@@ -9126,16 +9150,27 @@ async function interceptSessionRequestForRemote(request) {
       messagingSp.set('exclude_sources', messagingExclude)
     }
 
+    const fetchSlice = (params: URLSearchParams) =>
+      globalRemoteCompat
+        ? fetchRemoteSessionListWithFallback(
+            path => fetchJsonForProfile(null, path),
+            `/api/profiles/sessions?${params}`,
+            `/api/sessions?${params}`,
+            (params.get('profile') || 'all').trim() || 'all'
+          )
+        : fetchProfilesSessionSlice(params, remoteProfiles)
+
     const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles)
+      fetchSlice(recentsSp),
+      fetchSlice(cronSp),
+      fetchSlice(messagingSp)
     ])
 
     return {
       recents: {
         sessions: rowsOf(recents),
         total: Number(recents?.total) || 0,
+        total_is_lower_bound: Boolean(recents?.total_is_lower_bound),
         profile_totals: recents?.profile_totals || {}
       },
       cron: { sessions: rowsOf(cron) },

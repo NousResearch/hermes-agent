@@ -2242,7 +2242,104 @@ class TestRunPreUpdateBackup:
         assert "Pre-update snapshot" in out
         assert "Creating pre-update backup" not in out
         assert self._snaps(hermes_home)
+        assert self._snaps(hermes_home / "profiles" / "coder")
         assert not self._zips(hermes_home)
+
+    def test_snapshots_every_known_profile_before_shared_update(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        """Every registered profile gets a rollback point before shared update."""
+        other_home = hermes_home / "profiles" / "coder"
+        stopped_home = hermes_home / "profiles" / "stopped"
+        stopped_home.mkdir()
+        (stopped_home / "config.yaml").write_text("model:\n  provider: stopped\n")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("coder", other_home),
+                ("stopped", stopped_home),
+            ],
+        )
+
+        from hermes_cli.main import _run_pre_update_backup
+
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+
+        assert snap_id is not None
+        assert self._snaps(hermes_home)
+        assert self._snaps(other_home)
+        assert self._snaps(stopped_home)
+        assert "coder" in out
+        assert "stopped" in out
+
+    def test_secondary_snapshot_failure_does_not_skip_later_profiles(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        """A broken profile must not prevent snapshots for remaining gateways."""
+        from hermes_cli import backup as backup_mod
+
+        bad_home = hermes_home / "profiles" / "broken"
+        bad_home.mkdir()
+        (bad_home / "config.yaml").write_text("model:\n  provider: broken\n")
+        good_home = hermes_home / "profiles" / "coder"
+        profiles = [
+            ("broken", bad_home),
+            ("coder", good_home),
+        ]
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: profiles,
+        )
+
+        real_create = backup_mod.create_quick_snapshot
+
+        def flaky_create(*args, hermes_home=None, **kwargs):
+            if hermes_home == bad_home.resolve():
+                raise OSError("simulated snapshot failure")
+            return real_create(*args, hermes_home=hermes_home, **kwargs)
+
+        monkeypatch.setattr(backup_mod, "create_quick_snapshot", flaky_create)
+
+        from hermes_cli.main import _run_pre_update_backup
+
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+
+        assert snap_id is not None
+        assert self._snaps(good_home)
+        assert "broken" in out
+        assert "snapshot failed" in out.lower()
+
+    def test_active_snapshot_failure_does_not_skip_registered_profiles(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        """The active backup is isolated from backups for registered profiles."""
+        from hermes_cli import backup as backup_mod
+
+        other_home = hermes_home / "profiles" / "coder"
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [("coder", other_home)],
+        )
+        real_create = backup_mod.create_quick_snapshot
+
+        def active_fails(*args, hermes_home=None, **kwargs):
+            if hermes_home is None:
+                raise OSError("simulated active snapshot failure")
+            return real_create(*args, hermes_home=hermes_home, **kwargs)
+
+        monkeypatch.setattr(backup_mod, "create_quick_snapshot", active_fails)
+
+        from hermes_cli.main import _run_pre_update_backup
+
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+
+        assert snap_id is None
+        assert self._snaps(other_home)
+        assert "active profile" in out.lower()
+        assert "snapshot failed" in out.lower()
 
     def test_backup_flag_forces_full(self, hermes_home, capsys):
         """--backup forces the full zip (plus quick snapshot) for one run."""

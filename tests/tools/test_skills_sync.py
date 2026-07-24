@@ -930,6 +930,48 @@ class TestSyncSkills:
         assert manifest["old-skill"] == new_bundled_hash
         assert manifest["old-skill"] != old_hash
 
+    def test_sync_invalidates_prompt_cache_on_copy(self, tmp_path):
+        """sync_skills() clears the prompt cache when it copies new skills."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with (
+            self._patches(bundled, skills_dir, manifest_file),
+            patch(
+                "agent.prompt_builder.clear_skills_system_prompt_cache"
+            ) as mock_clear,
+        ):
+            result = sync_skills(quiet=True)
+
+        # A new skill was copied — cache must be invalidated
+        assert "new-skill" in result["copied"]
+        mock_clear.assert_called_once_with(clear_snapshot=True)
+
+    def test_sync_skips_invalidation_when_nothing_copied(self, tmp_path):
+        """sync_skills() does NOT clear the prompt cache when nothing changed."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # First sync: copies skills
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+        # Second sync: nothing to copy or update
+        with (
+            self._patches(bundled, skills_dir, manifest_file),
+            patch(
+                "agent.prompt_builder.clear_skills_system_prompt_cache"
+            ) as mock_clear,
+        ):
+            result = sync_skills(quiet=True)
+
+        # No new/updated skills — cache should not be invalidated
+        assert result["copied"] == []
+        assert result["updated"] == []
+        mock_clear.assert_not_called()
+
 
 class TestGetBundledDir:
     def test_env_var_override(self, tmp_path, monkeypatch):

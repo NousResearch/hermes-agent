@@ -706,6 +706,18 @@ def sync_skills(quiet: bool = False) -> dict:
     _write_manifest(manifest)
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)
 
+    # ── Invalidate skills prompt cache when new content landed on disk ──
+    # After first-run sync or an update that copies/updates skill files,
+    # clear both the in-process LRU cache and the disk snapshot so agents
+    # see the new skills immediately — no /reload-skills required.
+    if copied or updated:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass  # Best-effort — skills on disk are the source of truth
+
     return {
         "copied": copied,
         "updated": updated,

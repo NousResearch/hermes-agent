@@ -3168,7 +3168,7 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     if current_model not in catalog:
         current_model = default_model
 
-    model_ids = list(catalog.keys())
+    model_ids = list(catalog)
     # Put current model at the top so the cursor lands on it by default.
     ordered = [current_model] + [m for m in model_ids if m != current_model]
 
@@ -3252,7 +3252,7 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
     if current_model not in catalog:
         current_model = default_model
 
-    model_ids = list(catalog.keys())
+    model_ids = list(catalog)
     ordered = [current_model] + [m for m in model_ids if m != current_model]
 
     widths = {
@@ -3391,7 +3391,7 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
     if current_model not in catalog:
         current_model = default_model
 
-    model_ids = list(catalog.keys())
+    model_ids = list(catalog)
     ordered = [current_model] + [m for m in model_ids if m != current_model]
 
     widths = {

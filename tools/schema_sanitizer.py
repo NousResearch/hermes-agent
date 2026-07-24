@@ -400,7 +400,7 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
             # named "pattern" (search_files.pattern, etc.) because those live
             # inside a ``properties`` dict, not as siblings of ``type``.
             is_schema_node = "type" in node or "anyOf" in node or "oneOf" in node or "allOf" in node
-            for key in list(node.keys()):
+            for key in list(node):
                 if is_schema_node and key in _STRIP_ON_RECOVERY_KEYS:
                     node.pop(key, None)
                     stripped += 1

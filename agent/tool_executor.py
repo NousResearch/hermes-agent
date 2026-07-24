@@ -555,11 +555,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             display_args = _redact_tool_args_for_display(name, args) or args
             args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
-                print(f"  📞 Tool {i}: {name}({list(display_args.keys())})")
+                print(f"  📞 Tool {i}: {name}({list(display_args)})")
                 print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
             else:
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
-                print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+                print(f"  📞 Tool {i}: {name}({list(args)}) - {args_preview}")
 
     for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
@@ -1174,11 +1174,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
             args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
-                print(f"  📞 Tool {i}: {function_name}({list(display_args.keys())})")
+                print(f"  📞 Tool {i}: {function_name}({list(display_args)})")
                 print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
             else:
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
-                print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                print(f"  📞 Tool {i}: {function_name}({list(function_args)}) - {args_preview}")
 
         if not _execution_blocked:
             agent._current_tool = function_name

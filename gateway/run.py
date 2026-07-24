@@ -19212,7 +19212,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         excess = max(0, len(_cache) - _AGENT_CACHE_MAX_SIZE)
         evict_plan: List[tuple] = []  # [(key, agent), ...]
         if excess > 0:
-            ordered_keys = list(_cache.keys())
+            ordered_keys = list(_cache)
             for key in ordered_keys[:excess]:
                 entry = _cache.get(key)
                 agent = entry[0] if isinstance(entry, tuple) and entry else None
@@ -20268,7 +20268,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # detail.  Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                    msg = f"{emoji} {tool_name}({list(args)})\n{args_str}"
                 elif preview:
                     msg = f"{emoji} {tool_name}: \"{preview}\""
                 else:

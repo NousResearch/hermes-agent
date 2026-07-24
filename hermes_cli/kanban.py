@@ -1901,7 +1901,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         # Severity filter.
         sev = getattr(args, "severity", None)
         if sev:
-            for tid in list(diags_by_task.keys()):
+            for tid in list(diags_by_task):
                 kept = [d for d in diags_by_task[tid] if kd.SEVERITY_ORDER.index(d.severity) >= kd.SEVERITY_ORDER.index(sev)]
                 if kept:
                     diags_by_task[tid] = kept

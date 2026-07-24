@@ -171,7 +171,7 @@ def _drive_health_report(
 
     raise RuntimeError(
         "health_report response carried neither structuredContent nor a parseable "
-        f"JSON text block. Result keys: {list(result.keys())}"
+        f"JSON text block. Result keys: {list(result)}"
     )
 
 

@@ -624,7 +624,7 @@ def cmd_mcp_remove(args):
 
     if name not in existing:
         _error(f"Server '{name}' not found in config.")
-        servers = list(existing.keys())
+        servers = list(existing)
         if servers:
             _info(f"Available servers: {', '.join(servers)}")
         return
@@ -725,7 +725,7 @@ def cmd_mcp_test(args):
 
     if name not in servers:
         _error(f"Server '{name}' not found in config.")
-        available = list(servers.keys())
+        available = list(servers)
         if available:
             _info(f"Available: {', '.join(available)}")
         return
@@ -954,7 +954,7 @@ def cmd_mcp_configure(args):
 
     if name not in servers:
         _error(f"Server '{name}' not found in config.")
-        available = list(servers.keys())
+        available = list(servers)
         if available:
             _info(f"Available: {', '.join(available)}")
         return

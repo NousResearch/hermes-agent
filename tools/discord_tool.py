@@ -1009,7 +1009,7 @@ def _run_discord_action(
     if not action_fn:
         return json.dumps({
             "error": f"Unknown action: {action}",
-            "available_actions": list(valid_actions.keys()),
+            "available_actions": list(valid_actions),
         })
 
     # Config-level allowlist gate (defense in depth — schema already filtered,
@@ -1094,10 +1094,10 @@ def _make_handler(handler_fn):
 
 
 _STATIC_CORE_SCHEMA = _build_schema(
-    list(_CORE_ACTIONS.keys()), caps={"detected": False}, tool_name="discord",
+    list(_CORE_ACTIONS), caps={"detected": False}, tool_name="discord",
 )
 _STATIC_ADMIN_SCHEMA = _build_schema(
-    list(_ADMIN_ACTIONS.keys()), caps={"detected": False}, tool_name="discord_admin",
+    list(_ADMIN_ACTIONS), caps={"detected": False}, tool_name="discord_admin",
 )
 
 registry.register(

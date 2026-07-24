@@ -5671,7 +5671,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         return await _discover_and_register_server(name, cfg)
 
     async def _discover_all():
-        server_names = list(new_servers.keys())
+        server_names = list(new_servers)
         # Connect to all servers in PARALLEL
         results = await asyncio.gather(
             *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
@@ -5912,7 +5912,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     probed_servers: List[MCPServerTask] = []
 
     async def _probe_all():
-        names = list(enabled.keys())
+        names = list(enabled)
         coros = []
         for name, cfg in enabled.items():
             ct = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)

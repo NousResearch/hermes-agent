@@ -4443,7 +4443,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             logger.debug("Camofox cleanup for task %s: %s", task_id, e)
 
     logger.debug("cleanup_browser called for task_id: %s", task_id)
-    logger.debug("Active sessions: %s", list(_active_sessions.keys()))
+    logger.debug("Active sessions: %s", list(_active_sessions))
 
     # Check if session exists (under lock), but don't remove yet -
     # _run_browser_command needs it to build the close command.
@@ -4508,7 +4508,7 @@ def cleanup_all_browsers() -> None:
     Useful for cleanup on shutdown.
     """
     with _cleanup_lock:
-        task_ids = list(_active_sessions.keys())
+        task_ids = list(_active_sessions)
     for task_id in task_ids:
         cleanup_browser(task_id)
 

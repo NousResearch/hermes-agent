@@ -6044,7 +6044,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 _persist_migration(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
-                    for key in list(providers_dict.keys())[-migrated_count:]:
+                    for key in list(providers_dict)[-migrated_count:]:
                         ep = providers_dict[key]
                         print(f"    → {key}: {ep.get('api', '')}")
 

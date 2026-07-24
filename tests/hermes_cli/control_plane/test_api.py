@@ -42,6 +42,11 @@ def _enrollment(**overrides):
     return payload
 
 
+def _non_finite_body(payload, token):
+    body = json.dumps(payload, separators=(",", ":"))
+    return body.replace('"__NON_FINITE__"', token)
+
+
 @pytest.mark.asyncio
 async def test_api_and_cli_share_the_authoritative_registry(
     tmp_path, monkeypatch, capsys, client
@@ -166,6 +171,128 @@ async def test_audit_api_reports_corrupt_details_json_as_invalid(
 
     assert audit.status_code == 200
     assert audit.json() == {"valid": False}
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.asyncio
+async def test_api_rejects_nested_non_finite_json_without_database_or_audit_persistence(
+    tmp_path, monkeypatch, client, token
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    headers = {"content-type": "application/json"}
+    invalid_capabilities = {"nested": [{"measurement": "__NON_FINITE__"}]}
+
+    enrollment = await client.post(
+        "/api/control-plane/v1/nodes",
+        content=_non_finite_body(
+            _enrollment(capabilities=invalid_capabilities),
+            token,
+        ),
+        headers=headers,
+    )
+    assert enrollment.status_code == 400
+    assert enrollment.json()["error"]["code"] == "invalid_request"
+
+    valid = await client.post("/api/control-plane/v1/nodes", json=_enrollment())
+    credential = valid.json()["credential"]
+    baseline_events = len(NodeRegistry().history("node-1"))
+    observation = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations",
+        content=_non_finite_body(
+            {
+                "credential": credential,
+                "schema_version": 1,
+                "report_sequence": 1,
+                "observed_at": 100,
+                "health_state": "healthy",
+                "capabilities": invalid_capabilities,
+            },
+            token,
+        ),
+        headers=headers,
+    )
+    assert observation.status_code == 400
+    assert observation.json()["error"]["code"] == "invalid_request"
+    policy = await client.put(
+        "/api/control-plane/v1/nodes/node-1/policy",
+        content=_non_finite_body(
+            {
+                "schema_version": 1,
+                "desired_health_state": "healthy",
+                "capabilities": invalid_capabilities,
+                "expected_revision": 0,
+                "actor": "operator:alice",
+            },
+            token,
+        ),
+        headers=headers,
+    )
+    assert policy.status_code == 400
+    assert policy.json()["error"]["code"] == "invalid_request"
+
+    with NodeRegistry().connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM managed_nodes").fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT COUNT(*) FROM managed_node_observations").fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM managed_node_policies").fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM managed_node_events").fetchone()[0]
+            == baseline_events
+        )
+
+
+@pytest.mark.asyncio
+async def test_api_finite_numbers_round_trip_across_canonical_json_boundaries(
+    tmp_path, monkeypatch, client
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    finite = {"negative": -1.25, "nested": [{"zero": 0.0, "positive": 1.5e100}]}
+    enrolled = await client.post(
+        "/api/control-plane/v1/nodes",
+        json=_enrollment(capabilities=finite),
+    )
+    assert enrolled.status_code == 200
+    assert enrolled.json()["node"]["capabilities"] == finite
+    credential = enrolled.json()["credential"]
+
+    observed = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations",
+        json={
+            "credential": credential,
+            "schema_version": 1,
+            "report_sequence": 1,
+            "observed_at": 100,
+            "health_state": "healthy",
+            "capabilities": finite,
+        },
+    )
+    policy = await client.put(
+        "/api/control-plane/v1/nodes/node-1/policy",
+        json={
+            "schema_version": 1,
+            "desired_health_state": "healthy",
+            "capabilities": finite,
+            "expected_revision": 0,
+            "actor": "operator:alice",
+        },
+    )
+
+    assert observed.status_code == 200
+    assert observed.json()["capabilities"] == finite
+    assert policy.status_code == 200
+    assert policy.json()["capabilities"] == finite
+    assert (
+        await client.get("/api/control-plane/v1/nodes/node-1/observations/latest")
+    ).json()["capabilities"] == finite
+    assert (await client.get("/api/control-plane/v1/nodes/node-1/policy")).json()[
+        "capabilities"
+    ] == finite
+    assert (await client.get("/api/control-plane/v1/audit")).json() == {"valid": True}
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from hermes_cli.control_plane.nodes import (
     NodeRegistry,
     PolicyConflict,
     ReportConflict,
+    write_txn,
 )
 
 
@@ -128,6 +129,119 @@ def test_enrollment_rejects_nested_secret_capabilities_before_persistence(regist
             conn.execute("SELECT COUNT(*) FROM managed_node_events").fetchone()[0] == 0
         )
         assert secret not in "\n".join(conn.iterdump())
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+def test_canonical_json_boundaries_reject_nested_non_finite_values_without_persistence(
+    registry, non_finite
+):
+    with pytest.raises(ValueError, match="capabilities must contain JSON values"):
+        enroll(
+            registry,
+            capabilities={"runtime": [{"measurement": non_finite}]},
+        )
+
+    issuance = registry.enroll(
+        enrollment_key="valid-node",
+        node_id="valid-node",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    credential = issuance.credential
+    assert credential is not None
+    baseline_events = len(registry.history("valid-node"))
+
+    with pytest.raises(ValueError, match="capabilities must contain JSON values"):
+        registry.submit_observation(
+            "valid-node",
+            credential=credential,
+            schema_version=1,
+            report_sequence=1,
+            observed_at=100,
+            health_state="healthy",
+            capabilities={"runtime": [{"measurement": non_finite}]},
+        )
+    with pytest.raises(ValueError, match="capabilities must contain JSON values"):
+        registry.set_policy(
+            "valid-node",
+            actor="operator:alice",
+            schema_version=1,
+            desired_health_state="healthy",
+            capabilities={"thresholds": {"maximum": non_finite}},
+            expected_revision=0,
+        )
+    with registry.connect() as conn:
+        with pytest.raises(ValueError, match="Out of range float values"):
+            with write_txn(conn):
+                registry._append_event(
+                    conn,
+                    node_id="valid-node",
+                    event_type="node.test",
+                    actor="test",
+                    from_state="enrolled",
+                    to_state="enrolled",
+                    revision=1,
+                    occurred_at=1_000,
+                    details={"nested": [{"measurement": non_finite}]},
+                )
+
+    with registry.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM managed_nodes").fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT COUNT(*) FROM managed_node_observations").fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM managed_node_policies").fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM managed_node_events").fetchone()[0]
+            == baseline_events
+        )
+
+
+def test_finite_numbers_round_trip_across_canonical_json_boundaries(registry):
+    finite = {
+        "negative": -1.25,
+        "nested": [{"zero": 0.0, "positive": 1.5e100}],
+    }
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+        capabilities=finite,
+    )
+    credential = issuance.credential
+    assert credential is not None
+    assert issuance.node.capabilities == finite
+
+    observation = registry.submit_observation(
+        "node-1",
+        credential=credential,
+        schema_version=1,
+        report_sequence=1,
+        observed_at=100,
+        health_state="healthy",
+        capabilities=finite,
+    )
+    policy = registry.set_policy(
+        "node-1",
+        actor="operator:alice",
+        schema_version=1,
+        desired_health_state="healthy",
+        capabilities=finite,
+        expected_revision=0,
+    )
+
+    assert observation.capabilities == finite
+    assert policy.capabilities == finite
+    assert registry.latest_observation("node-1").capabilities == finite
+    assert registry.get_policy("node-1").capabilities == finite
+    assert registry.verify_audit_chain()
 
 
 def test_retry_without_caller_supplied_node_id_keeps_generated_identity(registry):

@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 05:08 PDT (UTC-07:00)
+Last verification time: 2026-07-24 05:14 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -61,8 +61,8 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 - Root: `/home/len/hermes-agent`
 - Branch: `main`
-- Current HEAD: `92bf92053`
-- Upstream relation at this verification: 24 commits ahead of `origin/main`
+- Current HEAD: `344ecafdd`
+- Upstream relation at this verification: 25 commits ahead of `origin/main`
 - `DESIRED.md` is an untracked user file and was left untouched
 - Python environment: repository-local `.venv`
 - Repository-local generated state: `.tmp`, `.cache`, `.tools`, and `.venv`
@@ -171,10 +171,14 @@ the snapshot is stale; reconcile any discovered drift back into this file.
   existing head once, every append advances the event row and checkpoint in one
   transaction, and verification fails closed for malformed/missing/mismatched
   heads plus newest-event and all-event deletion.
-- Verified the latest review fixes with 48 control-plane tests, repository-wide
+- Made the canonical control-plane JSON serializer standards-compliant by
+  recursively rejecting NaN and positive/negative infinity before managed-node
+  capabilities, desired policies, observations, or audit details can persist,
+  while preserving deterministic encoding, valid finite values, and hashes.
+- Verified the latest review fix with 56 control-plane tests, repository-wide
   Ruff, touched-file Ruff formatting checks, `git diff --check`, the uv
-  lockfile consistency check, and focused registry/API/CLI retirement,
-  observation, migration, concurrency/rollback, and audit-deletion coverage.
+  lockfile consistency check, and focused registry/API/CLI non-finite rejection,
+  no-persistence, finite round-trip, and audit-chain coverage.
 
 ### Packaging, security, and operations
 

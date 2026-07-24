@@ -63,11 +63,22 @@ In the Feishu developer console, go to **Permission Management** and add the fol
 
 | Scope | Purpose |
 |-------|---------|
-| `im:message` | Receive and read messages |
+| `im:message` | Base messaging scope (read/send via the API) |
+| `im:message.p2p_msg:readonly` | **Receive direct messages** sent to the bot |
+| `im:message.group_at_msg:readonly` | **Receive group messages that @mention the bot** |
 | `im:message:send_as_bot` | Send messages as the bot |
 | `im:resource` | Access images, files, and audio sent by users |
 | `im:chat` | Access chat/group metadata |
 | `im:chat:readonly` | Read chat list and membership |
+
+:::warning Receive scopes are required for inbound messages
+`im:message` alone does **not** cause inbound messages to be delivered to the `im.message.receive_v1` event. Feishu gates event delivery on the granular *receive* scopes, which are listed under **any one suffices** for that event in the console:
+
+- Grant `im:message.p2p_msg:readonly` so the bot receives **direct messages**.
+- Grant `im:message.group_at_msg:readonly` so the bot receives **group messages that @mention it**.
+
+A bot that is missing `im:message.group_at_msg:readonly` will answer DMs but **silently ignore every group @mention** — the event is never delivered, so nothing appears in the logs.
+:::
 
 **Recommended permissions (for full functionality):**
 
@@ -84,6 +95,10 @@ In **Events and Callbacks**:
 1. Set the connection mode to **Long Connection (WebSocket)** (recommended) or configure a webhook URL
 2. In the **Event Configuration** section, subscribe to:
    - `im.message.receive_v1` — required for receiving messages
+
+:::info
+The `im.message.receive_v1` event only pushes the message types you hold a matching *receive* scope for (the console shows these under **any one suffices**). Grant `im:message.p2p_msg:readonly` to receive DMs and `im:message.group_at_msg:readonly` to receive group @mentions — see [Configure Permissions](#configure-permissions) above. After adding a scope you must publish a new app version, or the change will not take effect.
+:::
 
 ### Publish the App
 
@@ -575,6 +590,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | Set both env vars or configure via `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Feishu app_id` | Only one Hermes instance can use the same app_id at a time. Stop the other gateway first. |
 | Bot doesn't respond in groups | Ensure the bot is @mentioned, check `FEISHU_GROUP_POLICY`, and verify the sender is in `FEISHU_ALLOWED_USERS` if policy is `allowlist` |
+| Bot answers DMs but ignores group @mentions | The app is missing the `im:message.group_at_msg:readonly` scope, so Feishu never delivers group @mention events (nothing shows in the logs). Add it under **Permission Management**, then publish a new app version. |
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |

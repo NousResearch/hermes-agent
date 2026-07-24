@@ -1424,14 +1424,15 @@ agent:
 
 ## Tool-Loop Guardrails
 
-Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.
+Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects. Interactive CLI, TUI, Desktop, and ACP sessions stay warning-only because a person can intervene; unattended gateway and cron sessions also enable the hard-stop circuit breaker by default.
 
-For unattended gateway / server deployments, enable hard stops so a stuck agent is circuit-broken instead of burning the iteration budget:
+The two switches let you override either side of that platform-aware default:
 
 ```yaml
 tool_loop_guardrails:
   warnings_enabled: true       # inject warnings into tool results (default: true)
-  hard_stop_enabled: false     # also BLOCK the call past the hard-stop threshold (default: false)
+  hard_stop_enabled: false     # force hard stops on every platform when true (default: false)
+  non_interactive_hard_stop_enabled: true  # default hard stops for gateway/cron sessions
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
@@ -1442,7 +1443,7 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 ```
 
-`hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+Set `hard_stop_enabled: true` to opt interactive clients into the same circuit breaker. To restore warning-only behavior on unattended gateway, cron, or worker sessions, set `non_interactive_hard_stop_enabled: false`. See also [Docker / unattended deployments](docker.md).
 
 ## TTS Configuration
 

@@ -71,14 +71,11 @@ See the [Where the logs go](#where-the-logs-go) section below for the full routi
 :::
 
 :::note Tool-loop hard stops for unattended gateways
-The `tool_loop_guardrails.hard_stop_enabled` setting defaults to `false`, which is reasonable for interactive CLI and TUI sessions where a person can see repeated tool-call warnings. In unattended gateway or server deployments, warnings alone may not stop an agent that gets stuck in a repeated tool-call loop. Operators who want circuit-breaker behavior should explicitly enable hard stops in the profile's `config.yaml`:
+Tool-loop hard stops are enabled by default for unattended gateway and cron sessions while interactive CLI, TUI, Desktop, and ACP sessions remain warning-only. To opt an unattended container out and restore warning-only behavior, set this in the profile's `config.yaml`:
 
 ```yaml
 tool_loop_guardrails:
-  hard_stop_enabled: true
-  hard_stop_after:
-    exact_failure: 5
-    idempotent_no_progress: 5
+  non_interactive_hard_stop_enabled: false
 ```
 :::
 

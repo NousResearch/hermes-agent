@@ -3558,6 +3558,15 @@ def ensure_hub_dirs() -> None:
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            raise PermissionError(_READ_ONLY_MESSAGE)
+    except PermissionError:
+        raise
+    except Exception:
+        pass
+
     ensure_hub_dirs()
     skill_name = _validate_skill_name(bundle.name)
     validated_files: List[Tuple[str, Union[str, bytes]]] = []
@@ -3590,6 +3599,15 @@ def install_from_quarantine(
     scan_provenance: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            raise PermissionError(_READ_ONLY_MESSAGE)
+    except PermissionError:
+        raise
+    except Exception:
+        pass
+
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -3670,6 +3688,13 @@ def install_from_quarantine(
 
 def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            return False, _READ_ONLY_MESSAGE
+    except Exception:
+        pass
+
     lock = HubLockFile()
     entry = lock.get_installed(skill_name)
     if not entry:

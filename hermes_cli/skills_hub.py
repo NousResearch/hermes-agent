@@ -519,6 +519,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
 
     c = console or _console
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            c.print(f"[bold red]Installation blocked:[/] {_READ_ONLY_MESSAGE}\n")
+            return
+    except Exception:
+        pass
     ensure_hub_dirs()
 
     # Resolve which source adapter handles this identifier
@@ -630,7 +637,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Quarantine the bundle
     try:
         q_path = quarantine_bundle(bundle)
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         c.print(f"[bold red]Installation blocked:[/] {exc}\n")
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
@@ -720,7 +727,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Install
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         c.print(f"[bold red]Installation blocked:[/] {exc}\n")
         shutil.rmtree(q_path, ignore_errors=True)
         from tools.skills_hub import append_audit_log

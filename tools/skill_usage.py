@@ -701,6 +701,13 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     when one is archived, its name is added to the suppression list so the
     update-time re-seeder leaves it archived instead of restoring it.
     """
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            return False, _READ_ONLY_MESSAGE
+    except Exception:
+        pass
+
     local_skill_dir = _find_skill_dir(skill_name)
     if local_skill_dir is None and _find_external_skill_dir(skill_name) is not None:
         return False, _external_read_only_message(skill_name)
@@ -765,6 +772,13 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     way to lift a prune). Restoring clears any suppression entry so future
     updates may re-seed the built-in again.
     """
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            return False, _READ_ONLY_MESSAGE
+    except Exception:
+        pass
+
     # Hub skills always have an external upstream owner — never shadow them.
     if is_hub_installed(skill_name):
         return False, (

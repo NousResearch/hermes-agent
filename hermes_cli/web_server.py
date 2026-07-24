@@ -145,6 +145,38 @@ _log = logging.getLogger(__name__)
 # when the same module is used across TestClient instances or uvicorn reloads.
 # ---------------------------------------------------------------------------
 
+def _no_live_gateway() -> bool:
+    """#66629 dispatch gate for the desktop cron ticker.
+
+    Return True (dispatch) only when no live gateway owns the gateway runtime
+    lock on this HERMES_HOME. When a gateway is live, return False so the tick is
+    left for it: the gateway has live platform adapters and renders Feishu
+    interactive cards, whereas the desktop standalone path silently degrades them
+    to plain text. Fails open (dispatch) on an indeterminate probe so a
+    desktop-only cron is never stalled, logging a warning for observability.
+    """
+    try:
+        from gateway.status import probe_gateway_runtime_lock
+
+        state = probe_gateway_runtime_lock()
+    except Exception:
+        _log.warning(
+            "Desktop cron: gateway runtime lock probe raised unexpectedly; "
+            "dispatching locally (#66629).",
+            exc_info=True,
+        )
+        return True
+    if state == "held":
+        return False
+    if state == "unknown":
+        _log.warning(
+            "Desktop cron: gateway runtime lock probe was indeterminate; "
+            "dispatching locally. If a gateway is in fact live, interactive-card "
+            "jobs may degrade to plain text (#66629)."
+        )
+    return True
+
+
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
@@ -163,7 +195,18 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 
     provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+    # #66629: only dispatch when no live gateway owns this HERMES_HOME, so cron
+    # delivery uses the gateway's live adapters (which render Feishu interactive
+    # cards) instead of the desktop standalone path (which silently degrades
+    # cards to plain text). Pass the gate only to providers that accept it — the
+    # built-in in-process scheduler does; an external provider may not.
+    start_kwargs = {"interval": interval}
+    try:
+        if "can_dispatch" in inspect.signature(provider.start).parameters:
+            start_kwargs["can_dispatch"] = _no_live_gateway
+    except (TypeError, ValueError):
+        pass
+    provider.start(stop_event, **start_kwargs)
 
 
 def _warm_gateway_module() -> None:

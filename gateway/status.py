@@ -492,6 +492,55 @@ def _profile_name_for_home(profile_home: Path) -> Optional[str]:
     return None
 
 
+def _parse_profile_selector_from_command(
+    command: str,
+) -> tuple[bool, Optional[str], Optional[str]]:
+    """Parse a gateway command line's explicit profile selection.
+
+    Returns ``(has_explicit_profile, profile_value, hermes_home_value)``:
+    ``profile_value`` is the value of ``--profile``/``-p`` (space or ``=`` form),
+    lower-cased; ``hermes_home_value`` is the value of an ``HERMES_HOME=`` token,
+    slash- and case-normalized. Tokenizes quote-aware (``shlex``) so callers can
+    match by EXACT argv token instead of substring — ``--profile work`` must not
+    be read as selecting profile ``worker`` (#66629 amend / Sol #2).
+
+    ``HERMES_HOME=`` is a best-effort signal only: the live command line is a
+    space-joined argv, so a HERMES_HOME path that itself contains spaces cannot
+    be recovered and yields only its first segment. A genuine owner then reads
+    as ``free`` (local dispatch, the fail-safe direction), never a false
+    ``held``. Profile scoping never relies on it when an explicit
+    ``--profile``/``-p`` is present.
+    """
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.split()
+    tokens = [t.strip("\"'") for t in tokens]
+
+    has_explicit_profile = False
+    profile_value: Optional[str] = None
+    hermes_home_value: Optional[str] = None
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        low = tok.lower()
+        if tok in ("--profile", "-p"):
+            has_explicit_profile = True
+            if i + 1 < len(tokens):
+                profile_value = tokens[i + 1].strip("\"'").lower()
+                i += 2
+                continue
+        elif low.startswith("--profile=") or low.startswith("-p="):
+            has_explicit_profile = True
+            profile_value = tok.split("=", 1)[1].strip("\"'").lower()
+        elif low.startswith("hermes_home="):
+            hermes_home_value = tok.split("=", 1)[1].strip("\"'").replace("\\", "/").lower()
+        i += 1
+
+    return has_explicit_profile, profile_value, hermes_home_value
+
+
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     """Return True when a gateway command line belongs to ``profile_home``.
 
@@ -504,27 +553,39 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     profile gateway carries ``-p <name>``/``--profile <name>`` (or, rarely, an
     explicit ``HERMES_HOME=<path>``) on its argv; the default/root gateway runs
     bare with no profile flag.
+
+    Matching is by EXACT argv token: the previous substring test let profile
+    ``work`` match a live ``--profile worker`` and (via a stale record whose
+    honest ``hermes_home`` still names ``work`` after PID reuse + a start-time
+    collision) report ``work`` running when only ``worker`` was live (#66629
+    amend / Sol #2).
     """
-    command_lc = command.lower()
     profile_name = _profile_name_for_home(profile_home)
-    home_lc = str(profile_home).lower()
+    home_norm = str(profile_home).replace("\\", "/").lower()
+    has_explicit_profile, profile_value, hermes_home_value = (
+        _parse_profile_selector_from_command(command)
+    )
 
     if profile_name is not None and profile_name != "default":
-        profile_lc = profile_name.lower()
-        return (
-            f"--profile {profile_lc}" in command_lc
-            or f"-p {profile_lc}" in command_lc
-            or f"hermes_home={home_lc}" in command_lc
-        )
+        if has_explicit_profile:
+            # An explicit --profile/-p selector is authoritative — Hermes'
+            # _apply_profile_override consumes it before argparse — so a
+            # HERMES_HOME= token on the SAME argv must not override it. A live
+            # `--profile worker` process is not this "work" profile even if its
+            # argv also carries HERMES_HOME=<work> (Sol #2, second pass).
+            return profile_value is not None and profile_value == profile_name.lower()
+        # No explicit selector: an explicit HERMES_HOME= token is the only
+        # profile evidence the argv can carry.
+        return hermes_home_value is not None and hermes_home_value == home_norm
 
     # Default/root profile: the gateway runs with no profile flag. Accept unless
     # the command advertises *some other* profile (an explicit -p/--profile) or
     # a non-matching explicit HERMES_HOME= on the argv. HERMES_HOME is usually
     # passed via the environment (not visible on the command line), so its mere
     # absence is not disqualifying — only a conflicting explicit value is.
-    if "--profile " in command_lc or " -p " in command_lc:
+    if has_explicit_profile:
         return False
-    if "hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc:
+    if hermes_home_value is not None and hermes_home_value != home_norm:
         return False
     return True
 
@@ -602,7 +663,9 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
         return None
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        # RecursionError: a deeply-nested corrupt file overflows json's
+        # recursive decoder (a RuntimeError subclass, not JSONDecodeError).
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -627,7 +690,11 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
 
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        # RecursionError: a deeply-nested corrupt record overflows json's
+        # recursive decoder. It is a RuntimeError subclass, not a
+        # JSONDecodeError, so callers guarding only OSError/JSONDecodeError
+        # would otherwise see it escape as a crash.
         try:
             return {"pid": int(raw)}
         except ValueError:
@@ -944,6 +1011,98 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
             handle.close()
         except OSError:
             pass
+
+
+def probe_gateway_runtime_lock(lock_path: Optional[Path] = None) -> str:
+    """Read-only owner probe of the gateway runtime lock: ``"held"``, ``"free"``, or ``"unknown"``.
+
+    Classifies ownership from the JSON lock record (pid + start_time + argv) and
+    a live-PID check with a PID-reuse guard — the same 4-step verification the
+    dashboard's :func:`get_running_pid` already uses (``:2105-2150``). NEVER
+    touches the OS lock, so a frequent caller (the desktop cron gate, #66629)
+    cannot serialize against :func:`acquire_gateway_runtime_lock` and cannot
+    make gateway startup lose its own lock. Observer-kills-owner is impossible
+    by construction, not by timing.
+
+    ``"unknown"`` means the record is empty or unreadable (a crashed mid-write,
+    or the ~1 ms startup window between ``_try_acquire_file_lock`` succeeding
+    and ``_write_gateway_lock_record`` completing). Callers must fail open
+    (never stall a desktop-only cron) and should surface a warning.
+    """
+    global _gateway_lock_handle
+    resolved_lock_path = lock_path or _get_gateway_lock_path()
+    # In-process fast path: this process already holds it.
+    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+        return "held"
+    try:
+        if not resolved_lock_path.exists():
+            return "free"
+    except OSError:
+        return "unknown"
+    try:
+        # _read_gateway_lock_record -> _read_pid_record does its OWN exists()
+        # check outside its own except, so a TOCTOU permission flip after the
+        # outer exists() above can still raise. Catch here so the probe's
+        # tri-state contract holds (Sol 4th finding 2).
+        record = _read_gateway_lock_record(resolved_lock_path)
+    except OSError:
+        return "unknown"
+    if not record:
+        # Empty / unparseable: a crashed mid-write, or the sub-millisecond
+        # startup window. Fail open (documented 1x degraded-delivery residual).
+        return "unknown"
+    pid = _pid_from_record(record)
+    if pid is None:
+        return "unknown"
+    if not _pid_exists(pid):
+        return "free"  # crash: OS released the lock, record is stale.
+    # Positive live-owner evidence (Sol 4th finding 1). Without every check
+    # below, a stale record whose PID has been recycled onto a live gateway on
+    # a DIFFERENT profile would answer "held" and stall this profile's desktop
+    # cron forever. Every leg must be positively established.
+    recorded_start = record.get("start_time")
+    live_start = _get_process_start_time(pid)
+    if recorded_start is None or live_start is None:
+        # Can't confirm identity from start_time (missing side). Fail open to
+        # unknown -> dispatch + warning; a desktop-only cron never stalls on
+        # an unverifiable record.
+        return "unknown"
+    if recorded_start != live_start:
+        return "free"  # PID reuse: same pid, different process.
+    # Same pid + start_time -> this live process IS the one that wrote the
+    # record. Profile identity now rests on the HERMES_HOME the record persisted
+    # about itself matching THIS lock's home (the lock lives directly under
+    # HERMES_HOME). Require positive, canonical home evidence: without it we do
+    # NOT fall through to the argv matcher, whose profile-name substring test
+    # (a profile named "work" matches a live "--profile worker") cannot by
+    # itself prove identity. A pre-fix or corrupt record that omits a usable
+    # home is indeterminate ownership, not proof of it. The matcher's own
+    # substring bug is a separate fix(status) follow-up; this probe simply
+    # never depends on it to scope a profile.
+    recorded_home = record.get("hermes_home")
+    if not isinstance(recorded_home, str) or not recorded_home.strip():
+        return "unknown"  # no usable home to prove profile identity -> fail open.
+    try:
+        probed_home = _canonical_hermes_home(resolved_lock_path.parent)
+        # Compare with the host's path + case semantics, not raw string
+        # equality: representations differing only in case (Windows) or
+        # normalization still name the same directory.
+        home_matches = _same_hermes_home(recorded_home, probed_home)
+    except (OSError, ValueError, TypeError, RuntimeError):
+        # Either side unresolvable: a bad HOME (RuntimeError from expanduser),
+        # non-path garbage that slipped past the str check (TypeError), or a
+        # transient FS error. Fail open to unknown so a desktop-only cron is
+        # never stalled on an unverifiable record.
+        return "unknown"
+    if not home_matches:
+        return "free"  # record belongs to a different HERMES_HOME.
+    # Home has proved profile identity. The live-cmdline match below is now
+    # defense-in-depth only: reached solely after an exact home match, it can
+    # withhold a "held" (fail-safe -> local dispatch) but can never manufacture
+    # one for the wrong profile.
+    if not _record_matches_live_gateway_pid(record, pid, expected_home=probed_home):
+        return "free"
+    return "held"
 
 
 def write_pid_file() -> None:

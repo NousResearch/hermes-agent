@@ -1,11 +1,13 @@
 """Tests for tools/skills_sync.py — manifest-based skill seeding and updating."""
 
+import importlib
 import shutil
 import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+import tools.skills_sync as skills_sync_module
 from tools.skills_sync import (
     _get_bundled_dir,
     _read_manifest,
@@ -416,6 +418,33 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
+
+    def test_follows_current_hermes_home_after_import(self, tmp_path, monkeypatch):
+        home_a = tmp_path / "home-a"
+        home_b = tmp_path / "home-b"
+        home_a.mkdir()
+        (home_a / ".no-bundled-skills").write_text("opted out\n")
+        bundled = self._setup_bundled(tmp_path)
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        importlib.reload(skills_sync_module)
+        assert skills_sync_module.HERMES_HOME == home_a
+
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        monkeypatch.setattr(skills_sync_module, "_get_bundled_dir", lambda: bundled)
+        monkeypatch.setattr(
+            skills_sync_module,
+            "_get_optional_dir",
+            lambda: tmp_path / "optional-skills",
+        )
+        with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+            result = skills_sync_module.sync_skills(quiet=True)
+
+        assert result.get("skipped_opt_out") is not True
+        assert set(result["copied"]) == {"new-skill", "old-skill"}
+        assert (home_b / "skills" / "category" / "new-skill" / "SKILL.md").exists()
+        assert (home_b / "skills" / ".bundled_manifest").exists()
+        assert not (home_a / "skills").exists()
 
     def test_suppressed_builtin_not_reseeded(self, tmp_path):
         """A curator-pruned built-in in the suppression list must NOT be

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -12,6 +13,7 @@ from agent.monitoring.events import CronExecutionEvent
 from agent.monitoring.gateway_health import GatewayHealthSnapshot, GatewayMetric
 from cron.jobs import (
     _compute_grace_seconds,
+    get_catch_up_occurrence_count,
     get_ticker_heartbeat_age,
     get_ticker_success_age,
     load_jobs,
@@ -42,7 +44,12 @@ def _job_key(raw: Any) -> str:
 
 def classify_cron_error(raw: Any) -> str:
     text = str(raw or "").lower()
-    if any(value in text for value in ("auth", "token", "unauthorized", "forbidden", "401", "403")):
+    if (
+        re.search(r"\b(?:authentication|authenticated|authenticate|authorization|authorized|authorize|unauthorized|forbidden)\b", text)
+        or re.search(r"\bbearer\b", text)
+        or re.search(r"\b(?:access|api|refresh) token\b", text)
+        or re.search(r"\b(?:401|403)\b", text)
+    ):
         return "auth_failed"
     if "rate limit" in text or "429" in text or "quota" in text:
         return "rate_limited"
@@ -85,6 +92,8 @@ def project_execution_event(
 ) -> CronExecutionEvent:
     status = str(record.get("status") or "unknown").lower()
     source = str(record.get("source") or "unknown").lower()
+    if source not in _KNOWN_SOURCES and source != "unknown":
+        source = "external"
     outcome = str(delivery_outcome).lower() if delivery_outcome is not None else None
     return CronExecutionEvent(
         status=status if status in _KNOWN_STATUSES else "unknown",
@@ -148,6 +157,17 @@ def build_cron_health_snapshot() -> CronHealthSnapshot:
                 metrics.append(GatewayMetric(name, max(0.0, float(value)), {}))
         except Exception:
             logger.debug("cron freshness metric unavailable", exc_info=True)
+
+    try:
+        metrics.append(
+            GatewayMetric(
+                "hermes.cron.scheduler.catch_up_occurrences",
+                get_catch_up_occurrence_count(),
+                {},
+            )
+        )
+    except Exception:
+        logger.debug("cron catch-up metric unavailable", exc_info=True)
 
     try:
         jobs = load_jobs()

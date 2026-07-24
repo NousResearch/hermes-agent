@@ -356,6 +356,7 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
         "hermes.platform.degraded",
         "hermes.cron.scheduler.heartbeat_age_seconds",
         "hermes.cron.scheduler.last_success_age_seconds",
+        "hermes.cron.scheduler.catch_up_occurrences",
         "hermes.cron.jobs.enabled",
         "hermes.cron.jobs.running",
         "hermes.cron.jobs.overdue",

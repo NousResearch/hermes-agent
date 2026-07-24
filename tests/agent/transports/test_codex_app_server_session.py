@@ -620,6 +620,31 @@ class TestRunTurn:
         assert r.interrupted is True
         assert r.error and "timed out" in r.error
 
+    def test_deadline_interrupt_broken_pipe_still_retires_turn(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+
+        def request(method: str, params: dict):
+            if method == "turn/start":
+                return {"turn": {"id": "turn-fake-001"}}
+            if method == "turn/interrupt":
+                raise RuntimeError(
+                    "codex app-server stdin closed unexpectedly: [Errno 32] Broken pipe"
+                )
+            return {}
+
+        client._request_handler = request
+        r = s.run_turn(
+            "never finishes",
+            turn_timeout=0.05,
+            notification_poll_timeout=0.01,
+        )
+
+        assert r.interrupted is True
+        assert r.should_retire is True
+        assert r.error and "timed out" in r.error
+
     def test_deadline_uses_monotonic_clock(self):
         client = FakeClient()
         s = make_session(client)
@@ -1485,6 +1510,23 @@ class TestSessionRetirement:
         assert r.should_retire is True
         # Stderr-derived auth hint takes precedence over generic message
         assert r.error and "codex login" in r.error
+
+    def test_close_during_turn_does_not_clear_client_under_loop(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+
+        def request(method: str, params: dict):
+            if method == "turn/start":
+                s.close()
+                return {"turn": {"id": "turn-fake-001"}}
+            return {}
+
+        client._request_handler = request
+        r = s.run_turn("x", turn_timeout=2.0, notification_poll_timeout=0.01)
+
+        assert r.should_retire is True
+        assert r.error and "subprocess exited unexpectedly" in r.error
 
 
 # ---- thread/start cross-fill ----

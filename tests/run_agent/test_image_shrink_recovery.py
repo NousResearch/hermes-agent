@@ -97,6 +97,60 @@ class TestImageTooLargeClassification:
         assert result.retryable is True
         assert _image_error_max_dimension(err) == 2000
 
+    def test_dimension_limit_on_wrapped_error_cause_chain(self):
+        """A ceiling carried on a wrapped error's __cause__ is still extracted.
+
+        classify_api_error already classifies wrapped image-dimension 400s as
+        image_too_large (it walks the cause chain since #53582); the recovery
+        helper must read the same chain, otherwise it returns None on a wrapped
+        error and the caller falls back to the 8000px cap and re-rejects.
+        """
+        inner = _FakeApiError(
+            status_code=400,
+            message=(
+                "messages.0.content.1.image.source.base64.data: At least one of "
+                "the image dimensions exceed max allowed size for many-image "
+                "requests: 2000 pixels"
+            ),
+        )
+        try:
+            raise RuntimeError("upstream provider request failed") from inner
+        except RuntimeError as wrapped:
+            # Top-level text has no ceiling; it must be found on __cause__.
+            assert _image_error_max_dimension(wrapped) == 2000
+
+    def test_dimension_limit_on_deep_context_chain(self):
+        """Implicit-chained (__context__) ceilings are found within the depth bound."""
+        api_err = _FakeApiError(
+            status_code=400,
+            message=(
+                "image dimensions exceed max allowed size: 1536 pixels"
+            ),
+        )
+        try:
+            try:
+                raise api_err
+            except _FakeApiError:
+                raise ValueError("re-raised during handling")  # sets __context__
+        except ValueError as exc:
+            assert _image_error_max_dimension(exc) == 1536
+
+    def test_trigger_terms_split_across_chain_not_matched(self):
+        """Trigger terms split across different chain levels must not synthesize a match.
+
+        Each exception is evaluated independently: a wrapper that merely mentions
+        'image' plus an unrelated cause that happens to carry a 'max allowed size'
+        ceiling is not an image-dimension limit and must return None.
+        """
+        inner = _FakeApiError(
+            status_code=400,
+            message="request dimension metadata invalid; max allowed size: 2000 pixels",
+        )
+        try:
+            raise RuntimeError("image upload failed") from inner
+        except RuntimeError as wrapped:
+            assert _image_error_max_dimension(wrapped) is None
+
 
 # ─── Shrink helper ───────────────────────────────────────────────────────────
 

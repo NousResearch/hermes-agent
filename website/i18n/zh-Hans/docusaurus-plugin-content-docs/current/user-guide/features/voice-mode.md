@@ -389,7 +389,7 @@ voice:
   record_key: "ctrl+b"            # 开始/停止录音的按键
   max_recording_seconds: 120       # 最大录音时长
   auto_tts: false                  # 启用语音模式时自动开启 TTS
-  beep_enabled: true               # 播放录音开始/结束提示音
+  beep_enabled: false              # 播放录音开始/结束提示音
   silence_threshold: 200           # 静音判定的 RMS 电平（0-32767）
   silence_duration: 3.0            # 自动停止前的静音秒数
 

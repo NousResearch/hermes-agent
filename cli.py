@@ -11541,10 +11541,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from hermes_cli.config import load_config
             voice_cfg = load_config().get("voice", {})
             if isinstance(voice_cfg, dict):
-                return bool(voice_cfg.get("beep_enabled", True))
+                return bool(voice_cfg.get("beep_enabled", False))
         except Exception:
             pass
-        return True
+        return False
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""

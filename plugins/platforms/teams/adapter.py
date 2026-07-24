@@ -1165,20 +1165,45 @@ class TeamsAdapter(BasePlatformAdapter):
 
         for chunk in chunks:
             try:
+                # Route plain sends via the cached ConversationReference when
+                # available so non-Teams channels (Web Chat, Bot Framework
+                # Emulator, Direct Line) reach the channel-correct serviceUrl
+                # instead of the SDK's hardcoded default Teams URL
+                # (https://smba.trafficmanager.net/teams). Without this the
+                # Bot Connector returns 400 because the conversation only
+                # exists at the channel-specific serviceUrl. Same pattern as
+                # send_image() and _send_card() below. Threaded replies via
+                # app.reply() are unaffected because the SDK resolves the
+                # conversation (and its serviceUrl) from the parent message
+                # ID; only the flat-send paths (no reply_to, and the
+                # threading 400 fallback) need explicit conv_ref routing.
+                from microsoft_teams.api import MessageActivityInput
+                conv_ref = self._conv_refs.get(chat_id)
+
                 if reply_to and reply_to.isdigit() and reply_to != "0":
                     try:
                         result = await self._app.reply(chat_id, reply_to, chunk)
                     except Exception as reply_err:
                         # Group chats 400 on threaded sends; the Teams SDK
                         # doesn't expose typed HTTP errors, so fall back on
-                        # any exception and log for diagnostics.
+                        # any exception and log for diagnostics. The
+                        # fallback honors per-conversation serviceUrl so
+                        # non-Teams channels still receive the reply.
                         logger.debug(
                             "Teams reply() failed, falling back to flat send: %s",
                             reply_err,
                         )
-                        result = await self._app.send(chat_id, chunk)
+                        if conv_ref:
+                            activity = MessageActivityInput().add_text(chunk)
+                            result = await self._app.activity_sender.send(activity, conv_ref)
+                        else:
+                            result = await self._app.send(chat_id, chunk)
                 else:
-                    result = await self._app.send(chat_id, chunk)
+                    if conv_ref:
+                        activity = MessageActivityInput().add_text(chunk)
+                        result = await self._app.activity_sender.send(activity, conv_ref)
+                    else:
+                        result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
@@ -1189,7 +1214,13 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return
         try:
-            await self._app.send(chat_id, TypingActivityInput())
+            # Same per-conversation routing as send() above so typing
+            # indicators reach Web Chat / Emulator / Direct Line correctly.
+            conv_ref = self._conv_refs.get(chat_id)
+            if conv_ref:
+                await self._app.activity_sender.send(TypingActivityInput(), conv_ref)
+            else:
+                await self._app.send(chat_id, TypingActivityInput())
         except Exception:
             pass
 

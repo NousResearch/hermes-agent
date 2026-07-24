@@ -10,6 +10,7 @@ We mock the slack modules at import time to avoid collection errors.
 
 import asyncio
 import contextlib
+import logging
 import importlib
 from importlib.machinery import PathFinder
 import os
@@ -883,6 +884,7 @@ class TestSlackSocketWatchdog:
                 self.client = MagicMock()
                 self.client.proxy = proxy
                 self.client.is_connected = lambda: True
+                self.client.aiohttp_client_session = MagicMock(closed=False)
                 self._start_event = asyncio.Event()
                 self.closed = False
                 self.start_calls = 0
@@ -1246,6 +1248,52 @@ class TestSlackSocketWatchdog:
                 assert len(instances) >= 2, "watchdog did not heal wedged (lying) transport"
                 assert instances[0].closed is True
                 assert adapter._handler is instances[-1]
+            finally:
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_reconnects_when_aiohttp_session_is_closed(self, caplog):
+        """slack_sdk's SocketModeClient keeps one aiohttp ClientSession for its
+        own entire lifetime and retries forever inside its own internal
+        connect() loop. If that session gets closed while the loop is still
+        running, every retry fails forever with RuntimeError("Session is
+        closed") -- but is_connected() only reflects WebSocket-level state,
+        so this dual-state (WebSocket looking fine, HTTP session dead) is
+        exactly what the old check missed. Verify the watchdog catches this
+        via aiohttp_client_session.closed even while is_connected() still
+        reports True, and that it logs a distinct reason from a plain
+        transport disconnect.
+        """
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        factory, instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                assert len(instances) == 1
+
+                # is_connected() still reports healthy -- only the aiohttp
+                # session itself is dead, matching the production incident.
+                assert instances[0].client.is_connected() is True
+                instances[0].client.aiohttp_client_session.closed = True
+
+                with caplog.at_level(logging.WARNING):
+                    for _ in range(40):
+                        if len(instances) >= 2:
+                            break
+                        await asyncio.sleep(0.01)
+
+                assert len(instances) >= 2, "watchdog did not heal dead aiohttp session"
+                assert instances[0].closed is True
+                assert adapter._handler is instances[-1]
+                assert any(
+                    "aiohttp session closed" in record.message
+                    for record in caplog.records
+                ), "expected a distinct 'aiohttp session closed' reason in the logs"
             finally:
                 await adapter.disconnect()
 

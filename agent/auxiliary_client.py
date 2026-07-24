@@ -10,17 +10,29 @@ Resolution order for text tasks (auto mode):
   2. OpenRouter  (OPENROUTER_API_KEY)
   3. Nous Portal (~/.hermes/auth.json active provider)
   4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  5. Direct API-key providers from PROVIDER_REGISTRY — z.ai/GLM, Kimi/Moonshot,
+     MiniMax, MiniMax-CN, and (when explicitly configured) native Anthropic.
+     Anthropic is NOT attempted automatically via Claude Code credentials; it
+     is only used when ``is_provider_explicitly_configured("anthropic")`` is
+     true — i.e. the auth.json active provider is anthropic, config.yaml
+     ``model.provider`` is anthropic, a usable ``ANTHROPIC_API_KEY`` env var
+     is set, or an explicitly-added credential-pool entry exists
+     (ambient borrowed sources like Claude Code's OAuth token are excluded).
+  6. None
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
   2. OpenRouter
   3. Nous Portal
-  4. Native Anthropic
-  5. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  6. None
+  4. None
+
+  Custom endpoints (local vision models: Qwen-VL, LLaVA, Pixtral, etc.) are
+  NOT an automatic fourth fallback — auto routing returns after Nous Portal.
+  A custom endpoint is used only when it is the selected main provider or via
+  an explicit ``base_url`` override.
+
+  Note: Native Anthropic is NOT in the vision auto-detect chain.  Use
+  ``auxiliary.vision.provider: anthropic`` to opt in explicitly.
 
 Codex OAuth (ChatGPT-account auth) is intentionally NOT in either
 fallback chain: OpenAI gates this endpoint behind an undocumented,

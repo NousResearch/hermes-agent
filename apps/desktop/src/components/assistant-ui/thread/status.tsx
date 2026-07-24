@@ -127,7 +127,7 @@ const STREAM_STALL_S = 2
 // Subscribes to the activity signal ITSELF (rather than taking it as a prop)
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
-export const StreamStallIndicator: FC = () => {
+export const StreamStallIndicator: FC<{ messageId: string }> = ({ messageId }) => {
   const activity = useAuiState(s => {
     let textLength = 0
 
@@ -144,7 +144,6 @@ export const StreamStallIndicator: FC = () => {
 
   const [stalled, setStalled] = useState(false)
   const compacting = useStore($compactionActive)
-  const turnTimerKey = useActiveTurnTimerKey()
   // A pending clarify / approval / sudo / secret means the turn is paused on the
   // user, not working — so don't resurrect the "thinking" timer while they
   // decide (matches the pet's awaitingInput pose taking priority over busy).
@@ -158,7 +157,7 @@ export const StreamStallIndicator: FC = () => {
   }, [activity])
 
   const active = (stalled || compacting) && !awaitingInput
-  const elapsed = useElapsedSeconds(active, compacting ? turnTimerKey : undefined)
+  const elapsed = useElapsedSeconds(active, `stream-stall:${messageId}`)
 
   if (!active) {
     return null

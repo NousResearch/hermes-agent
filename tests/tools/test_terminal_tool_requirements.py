@@ -153,6 +153,27 @@ class TestCheckFnTransientFailureSuppression:
         t["now"] += reg._CHECK_FN_FAILURE_GRACE_SECONDS + 1
         assert reg._check_fn_cached(probe) is False
 
+    def test_check_fn_can_opt_out_of_ttl_and_failure_grace(self, monkeypatch):
+        import tools.registry as reg
+
+        state = {"ok": True}
+        calls = {"n": 0}
+
+        def config_gate():
+            calls["n"] += 1
+            return state["ok"]
+
+        config_gate._hermes_check_fn_cache_ttl_seconds = 0.0
+        config_gate._hermes_check_fn_failure_grace_seconds = 0.0
+
+        t = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
+
+        assert reg._check_fn_cached(config_gate) is True
+        state["ok"] = False
+        assert reg._check_fn_cached(config_gate) is False
+        assert calls["n"] == 2
+
     def test_subagent_keeps_file_tools_through_docker_flake(self, monkeypatch):
         """End-to-end: a docker probe that flakes on the 2nd build keeps the
         file/terminal toolset available for the subagent being constructed."""

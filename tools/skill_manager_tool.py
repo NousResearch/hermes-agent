@@ -856,6 +856,20 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
+    # Discard any leftover usage record BEFORE the new directory is visible.
+    # Records are keyed by name and carry the curator's inactivity clock; a
+    # stale leftover would make an automatic-transition pass (including one
+    # already mid-walk with a snapshot row) archive the seconds-old skill
+    # into skills/.archive/ while create still reports the live path (#65992).
+    # Clearing the clock before mkdir closes the write-then-forget race with
+    # archive_skill's locked revalidation. Collision check above guarantees
+    # no live skill owns this record. Best-effort: telemetry never breaks create.
+    try:
+        from tools.skill_usage import forget
+        forget(name)
+    except Exception:
+        logger.debug("usage-record reset failed for %s", name, exc_info=True)
+
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)

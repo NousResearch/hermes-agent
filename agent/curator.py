@@ -369,7 +369,16 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             continue
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            ok, _msg = _u.archive_skill(name)
+            # Revalidate the live usage record under the usage lock inside
+            # archive_skill — a concurrent skill_manage(create) may have
+            # discarded/replaced the stale clock this snapshot still holds
+            # (#65992).
+            ok, _msg = _u.archive_skill(
+                name,
+                require_inactive_before=archive_cutoff,
+                stale_before=stale_cutoff,
+                now=now,
+            )
             if ok:
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:

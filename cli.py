@@ -13421,6 +13421,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ] if item is not None
         ]
 
+    def _abort_if_stdin_unavailable(self) -> bool:
+        """Bail out of the interactive loop when stdin (fd 0) is unusable.
+
+        On some Python installs (e.g. uv-managed cPython on macOS) ``fd 0`` is
+        invalid or can't be registered with the asyncio selector (#6393). When
+        that happens the TUI can't run, so we finalize and return True. This
+        mirrors the normal exit path's teardown — crucially including the
+        active-session lease release, which this early-out previously skipped,
+        leaving the global session slot claimed until interpreter exit.
+        """
+        try:
+            os.fstat(0)
+        except OSError:
+            print(
+                "Error: stdin (fd 0) is not available.\n"
+                "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
+                "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+            )
+            _run_cleanup()
+            self._print_exit_summary()
+            self._release_active_session()
+            return True
+        return False
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         if not self._claim_active_session("cli"):
@@ -15828,16 +15852,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Validate stdin before launching prompt_toolkit — on macOS with
         # uv-managed Python, fd 0 can be invalid or unregisterable with the
         # asyncio selector, causing "KeyError: '0 is not registered'" (#6393).
-        try:
-            os.fstat(0)
-        except OSError:
-            print(
-                "Error: stdin (fd 0) is not available.\n"
-                "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
-            )
-            _run_cleanup()
-            self._print_exit_summary()
+        if self._abort_if_stdin_unavailable():
             return
 
         # On macOS with uv-managed Python, kqueue's selector cannot register

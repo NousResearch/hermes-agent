@@ -85,6 +85,88 @@ class TestRunConversationCodexPath:
         assert result["api_calls"] == 1
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
+        assert result["response_previewed"] is False
+
+    def test_delivered_final_interim_is_marked_previewed(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            final_text = f"echo: {user_input}"
+            self._on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "final-message",
+                        "text": final_text,
+                    }
+                },
+            })
+            return TurnResult(
+                final_text=final_text,
+                projected_messages=[
+                    {"role": "assistant", "content": final_text}
+                ],
+                turn_id="turn-previewed-1",
+                thread_id="thread-previewed-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-previewed-1",
+        )
+        delivered = []
+        agent = _make_codex_agent(
+            interim_assistant_callback=lambda text, **kwargs: delivered.append(
+                (text, kwargs)
+            )
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert delivered == [("echo: hello", {"already_streamed": False})]
+        assert result["final_response"] == "echo: hello"
+        assert result["response_previewed"] is True
+
+    def test_distinct_interim_does_not_mark_final_previewed(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            self._on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "commentary-message",
+                        "text": "I'll inspect it first.",
+                    }
+                },
+            })
+            return TurnResult(
+                final_text="Done.",
+                projected_messages=[
+                    {"role": "assistant", "content": "Done."}
+                ],
+                turn_id="turn-distinct-1",
+                thread_id="thread-distinct-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-distinct-1",
+        )
+        delivered = []
+        agent = _make_codex_agent(
+            interim_assistant_callback=lambda text, **kwargs: delivered.append(text)
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert delivered == ["I'll inspect it first."]
+        assert result["final_response"] == "Done."
+        assert result["response_previewed"] is False
 
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
@@ -786,4 +868,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

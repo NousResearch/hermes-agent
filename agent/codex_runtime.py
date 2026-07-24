@@ -841,6 +841,19 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    # The app-server bridge publishes every completed agentMessage through the
+    # interim callback so mid-turn commentary remains visible. The last such
+    # item is also Codex's final response, so tell host surfaces when that exact
+    # text was delivered successfully. TUI uses this to settle the preview onto
+    # the terminal message; messaging gateways use it to skip a duplicate send.
+    # Unrelated commentary and callback-free runs remain false.
+    interim_was_delivered = getattr(agent, "_interim_text_was_delivered", None)
+    response_previewed = bool(
+        turn.final_text
+        and callable(interim_was_delivered)
+        and interim_was_delivered(turn.final_text)
+    )
+
     return {
         "final_response": turn.final_text,
         "messages": messages,
@@ -854,6 +867,7 @@ def run_codex_app_server_turn(
             else {}
         ),
         "error": turn.error,
+        "response_previewed": response_previewed,
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages
         # ourselves above (see the _flush_messages_to_session_db call after

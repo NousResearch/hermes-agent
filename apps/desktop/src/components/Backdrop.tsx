@@ -3,6 +3,7 @@ import { Leva, useControls } from 'leva'
 import { type CSSProperties, useEffect, useState } from 'react'
 
 import { $backdrop } from '@/store/backdrop'
+import { $backdropOpacity } from '@/store/backdrop-opacity'
 
 const BLEND_MODES = [
   'normal',
@@ -28,6 +29,7 @@ const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/
 
 export function Backdrop() {
   const [controlsOpen, setControlsOpen] = useState(false)
+  const backdropOpacity = useStore($backdropOpacity)
   const on = useStore($backdrop)
 
   useEffect(() => {
@@ -97,7 +99,7 @@ export function Backdrop() {
           className="pointer-events-none absolute inset-0 z-2"
           style={{
             mixBlendMode: statue.blendMode as CSSProperties['mixBlendMode'],
-            opacity: statue.opacity
+            opacity: statue.opacity * (backdropOpacity / 100)
           }}
         >
           <img

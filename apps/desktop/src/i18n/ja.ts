@@ -316,6 +316,8 @@ export const ja = defineLocale({
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
+      backdropOpacityTitle: '背景の不透明度',
+      backdropOpacityDesc: 'メインウィンドウの背景画像の不透明度を調整します。',
       backdropTitle: 'チャット背景',
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       embedsTitle: 'インライン埋め込み',

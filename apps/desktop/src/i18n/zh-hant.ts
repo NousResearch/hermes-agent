@@ -308,6 +308,8 @@ export const zhHant = defineLocale({
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
+      backdropOpacityTitle: '背景不透明度',
+      backdropOpacityDesc: '調整主視窗中背景圖片的不透明度。',
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       embedsTitle: '內嵌預覽',

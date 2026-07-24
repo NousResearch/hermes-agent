@@ -431,6 +431,8 @@ export const en: Translations = {
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      backdropOpacityTitle: 'Backdrop Opacity',
+      backdropOpacityDesc: 'Adjust the opacity of the backdrop image in the main window.',
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
       embedsTitle: 'Inline Embeds',

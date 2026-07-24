@@ -402,6 +402,19 @@ export const ga: Translations = {
     failedToLoadRaw: "Theip ar luchtú na cumraíochta amh",
     configImported: "Cumraíocht iompórtáilte — athbhreithnigh agus sábháil",
     invalidJson: "Comhad JSON neamhbhailí",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationLoading: "Loading subagent catalog…",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
+    delegationModelOnlyOption: "Custom model",
+    delegationCredentialsInherited: "Credentials inherited from the parent agent.",
     categories: {
       general: "Ginearálta",
       agent: "Agent",

@@ -389,6 +389,19 @@ export const zh: Translations = {
     failedToLoadRaw: "加载原始配置失败",
     configImported: "配置已导入 — 请检查后保存",
     invalidJson: "无效的 JSON 文件",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationLoading: "Loading subagent catalog…",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
+    delegationModelOnlyOption: "Custom model",
+    delegationCredentialsInherited: "Credentials inherited from the parent agent.",
     categories: {
       general: "通用",
       agent: "代理",

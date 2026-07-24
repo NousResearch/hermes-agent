@@ -467,6 +467,16 @@ export interface Translations {
     failedToLoadRaw: string;
     configImported: string;
     invalidJson: string;
+    delegationInheritFromMain: string;
+    delegationInheritUnknown: string;
+    delegationCurrentlyInheriting: (model: string) => string;
+    delegationLoadFailed: string;
+    delegationLoading: string;
+    delegationProviderLabel: string;
+    delegationModelLabel: string;
+    delegationCustomModelPlaceholder: string;
+    delegationModelOnlyOption: string;
+    delegationCredentialsInherited: string;
     categories: {
       general: string;
       agent: string;

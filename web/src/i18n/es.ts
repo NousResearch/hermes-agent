@@ -395,6 +395,19 @@ export const es: Translations = {
     failedToLoadRaw: "No se pudo cargar la configuración en bruto",
     configImported: "Configuración importada — revisa y guarda",
     invalidJson: "Archivo JSON no válido",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationLoading: "Loading subagent catalog…",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
+    delegationModelOnlyOption: "Custom model",
+    delegationCredentialsInherited: "Credentials inherited from the parent agent.",
     categories: {
       general: "General",
       agent: "Agente",

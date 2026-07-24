@@ -1048,6 +1048,89 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     return report
 
 
+# Non-whitespace placeholder for a blank assistant text block. Kept in sync with
+# agent.anthropic_adapter._EMPTY_TEXT_PLACEHOLDER in intent (any non-whitespace
+# string satisfies the provider); a distinct value marks a healed row.
+_BLANK_CONTENT_PLACEHOLDER = "(tool call)"
+
+
+def repair_blank_message_content(
+    db_path: Path, *, check_only: bool = False, backup: bool = True
+) -> Dict[str, Any]:
+    """Heal assistant messages whose text content is empty/whitespace-only while
+    they carry tool calls — a content-level poison distinct from the schema
+    corruption ``repair_state_db_schema`` handles.
+
+    Such a row serializes to an empty text content block. The Anthropic Messages
+    API (and Bedrock) reject a request containing a blank text block with HTTP
+    400 ``text content blocks must contain non-whitespace text``, and because the
+    blank is stored in history it replays on every subsequent turn — the session
+    hangs with no output until the block is coerced. The request-path adapters
+    coerce blanks on send, but rows persisted before that coercion existed stay
+    wedged; this repairs them in place so the next turn succeeds.
+
+    Only rows that are BOTH blank-text AND tool-call-bearing are touched, and
+    only their ``content`` is rewritten to a non-whitespace placeholder — the
+    tool_use blocks (the real payload of those turns) are untouched, and no
+    other column or message is modified. A truly empty assistant message with no
+    tool calls is left alone (it is not this poison class).
+
+    Returns ``{repaired: bool, affected: int, sessions: int,
+    backup_path: str|None, error: str|None}``. With ``check_only`` it reports
+    the count without writing.
+    """
+    report: Dict[str, Any] = {
+        "repaired": False,
+        "affected": 0,
+        "sessions": 0,
+        "backup_path": None,
+        "error": None,
+    }
+    if not db_path.exists():
+        return report
+
+    # Blank = NULL or whitespace-only; poison = blank AND has tool_calls.
+    # SQLite trim() strips only ASCII space by default, so pass the full
+    # whitespace set (space, tab, newline, CR) to catch "\n"/"\t"-only content
+    # the way Python str.strip() (used by the request-path coercion) would.
+    _ws = "char(32) || char(9) || char(10) || char(13)"
+    where = (
+        "role = 'assistant' AND active = 1 "
+        f"AND (content IS NULL OR trim(content, {_ws}) = '') "
+        "AND tool_calls IS NOT NULL"
+    )
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            row = conn.execute(
+                f"SELECT count(*), count(DISTINCT session_id) FROM messages WHERE {where}"
+            ).fetchone()
+            affected, sessions = (int(row[0]), int(row[1])) if row else (0, 0)
+            report["affected"] = affected
+            report["sessions"] = sessions
+            if affected == 0 or check_only:
+                return report
+
+            if backup:
+                bpath = _backup_db_file(db_path)
+                report["backup_path"] = str(bpath) if bpath else None
+
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                f"UPDATE messages SET content = ? WHERE {where}",
+                (_BLANK_CONTENT_PLACEHOLDER,),
+            )
+            conn.execute("COMMIT")
+            report["repaired"] = True
+            return report
+        finally:
+            conn.close()
+    except Exception as exc:
+        report["error"] = str(exc)
+        return report
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL

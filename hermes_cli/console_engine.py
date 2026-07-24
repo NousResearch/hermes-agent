@@ -1480,15 +1480,53 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> str:
     parser = _ArgumentParser(prog="sessions repair", add_help=False)
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--no-backup", action="store_true")
+    parser.add_argument(
+        "--content",
+        action="store_true",
+        help="Also heal blank assistant text blocks that wedge a session behind "
+        "an HTTP 400 (empty text content block replayed every turn).",
+    )
     ns = parser.parse_args(args)
 
     def _run() -> None:
-        from hermes_state import DEFAULT_DB_PATH, _db_opens_cleanly, repair_state_db_schema
+        from hermes_state import (
+            DEFAULT_DB_PATH,
+            _db_opens_cleanly,
+            repair_blank_message_content,
+            repair_state_db_schema,
+        )
 
         db_path = DEFAULT_DB_PATH
         if not db_path.exists():
             print(f"No session database at {db_path} (nothing to repair).")
             return
+
+        if ns.content:
+            content_report = repair_blank_message_content(
+                db_path, check_only=ns.check_only, backup=not ns.no_backup
+            )
+            if content_report.get("error"):
+                raise ConsoleCommandError(
+                    f"Content repair failed: {content_report['error']}"
+                )
+            affected = content_report.get("affected", 0)
+            sessions = content_report.get("sessions", 0)
+            if affected == 0:
+                print("No blank message content blocks found.")
+            elif ns.check_only:
+                print(
+                    f"Found {affected} blank message content block(s) across "
+                    f"{sessions} session(s) (run without --check-only to repair)."
+                )
+            else:
+                if content_report.get("backup_path"):
+                    print(f"backup: {content_report['backup_path']}")
+                print(
+                    f"Repaired {affected} blank message content block(s) across "
+                    f"{sessions} session(s)."
+                )
+            return
+
         reason = _db_opens_cleanly(db_path)
         if reason is None:
             print(f"{db_path} opens cleanly; no repair needed.")

@@ -84,7 +84,7 @@ def _cmd_status(args) -> int:
 
     rows = skill_usage.agent_created_report()
     if not rows:
-        print("\nno agent-created skills")
+        print("\nno curator-managed skills")
         return 0
 
     by_state = {"active": [], "stale": [], "archived": []}
@@ -95,7 +95,11 @@ def _cmd_status(args) -> int:
         if r.get("pinned"):
             pinned.append(r["name"])
 
-    print(f"\nagent-created skills: {len(rows)} total")
+    # Count provenance for the header line.
+    n_bundled = sum(1 for r in rows if r.get("provenance") == "bundled" or
+                    (not r.get("_persisted") and skill_usage.is_bundled(r["name"])))
+    n_agent = len(rows) - n_bundled
+    print(f"\ncurator-managed skills: {len(rows)} total  (agent-created={n_agent}  bundled={n_bundled})")
     for state_name in ("active", "stale", "archived"):
         bucket = by_state.get(state_name, [])
         print(f"  {state_name:10s} {len(bucket)}")

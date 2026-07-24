@@ -7,6 +7,7 @@ blocks completion, and never upgrades targeted checks into "repo green".
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shlex
@@ -70,6 +71,28 @@ def _connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)
     return conn
+
+
+@contextlib.contextmanager
+def _transaction():
+    """Open a connection and guarantee it is closed on exit.
+
+    sqlite3.Connection's built-in context manager only commits/rollbacks the
+    transaction; it does NOT close the file descriptor. In long-lived
+    processes (gateway) every ``_connect()`` call would otherwise leak an FD.
+    """
+    conn = _connect()
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -454,7 +477,7 @@ def record_terminal_result(
 
     created_at = _utc_now()
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO verification_events(
@@ -520,7 +543,7 @@ def mark_workspace_edited(
     edited_at = _utc_now()
 
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             row = conn.execute(
                 """
                 SELECT changed_paths_json FROM verification_state
@@ -570,7 +593,7 @@ def verification_status(
     sid = str(session_id or "default")
     root = str(facts.get("root") or Path(cwd or ".").resolve())
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             state = conn.execute(
                 """
                 SELECT last_event_id, last_edit_at, changed_paths_json

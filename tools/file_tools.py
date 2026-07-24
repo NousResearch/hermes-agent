@@ -361,6 +361,69 @@ def _resolve_base_dir(
     return base.resolve()
 
 
+def _is_doubled_path(base: Path | PurePosixPath, resolved: Path | PurePosixPath) -> bool:
+    """Return True when ``resolved`` contains ``base`` more than once.
+
+    This detects the "cwd-shaped relative path" failure mode: a model echoes
+    an absolute-looking string with the leading ``/`` missing (e.g. base is
+    ``/home/user/dev`` and the input is ``home/user/dev/notes/x.md``), which
+    naive join resolves to ``/home/user/dev/home/user/dev/notes/x.md``.
+    """
+    resolved_str = str(resolved)
+    base_str = str(base)
+    return base_str and resolved_str.count(base_str) > 1
+
+
+def _strip_cwd_shaped_prefix(base: Path | PurePosixPath, resolved: Path | PurePosixPath) -> Path | None:
+    """Strip the duplicated base prefix from a doubled path, if present.
+
+    The cwd-shaped failure mode joins base ``/A/B/C`` with relative
+    ``A/B/C/notes/x.md``, producing ``/A/B/C/A/B/C/notes/x.md``. After
+    detecting the doubled prefix, strip BOTH copies so the result is just
+    ``notes/x.md`` (to be re-joined onto the original base).
+    """
+    try:
+        base_rel = base.relative_to("/")
+        base_rel_str = str(base_rel)
+        resolved_str = str(resolved)
+        if not base_rel_str:
+            return None
+        doubled_prefix = "/" + base_rel_str + "/" + base_rel_str + "/"
+        if resolved_str.startswith(doubled_prefix):
+            stripped = resolved_str[len(doubled_prefix):].lstrip("/")
+            return type(resolved)(stripped) if stripped else type(resolved)(".")
+        doubled_prefix_rel = base_rel_str + "/" + base_rel_str + "/"
+        if resolved_str.startswith(doubled_prefix_rel):
+            stripped = resolved_str[len(doubled_prefix_rel):].lstrip("/")
+            return type(resolved)(stripped) if stripped else type(resolved)(".")
+    except ValueError:
+        pass
+    return None
+
+
+def _apply_cwd_shaped_fix(
+    base: Path | PurePosixPath,
+    doubled: Path | PurePosixPath,
+    original_filepath: str,
+    task_id: str,
+) -> Path | PurePosixPath:
+    """Warn and return the corrected path when a doubled base is detected."""
+    stripped = _strip_cwd_shaped_prefix(base, doubled)
+    if stripped is None:
+        return doubled
+    import warnings as _warnings
+    corrected = base / stripped
+    if hasattr(corrected, "resolve"):
+        corrected = corrected.resolve()
+    _warnings.warn(
+        f"Relative path {original_filepath!r} resolved to a doubled base "
+        f"({str(doubled)!r}). Corrected to {str(corrected)!r}. "
+        f"Pass an absolute path to avoid this.",
+        stacklevel=4,
+    )
+    return corrected
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
@@ -376,8 +439,9 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
         expanded = _expand_tilde(filepath)
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
-        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
-        return _normalize_without_host_deref(resolved)
+        base = _resolve_base_dir(task_id, container_paths=True)
+        resolved = _normalize_without_host_deref(base / expanded)
+        return _apply_cwd_shaped_fix(base, resolved, filepath, task_id)
 
     # Host paths only — never rewrite Linux paths inside a container/WSL env.
     from tools.environments.local import _msys_to_windows_path
@@ -388,14 +452,17 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
         if ntpath.isabs(expanded):
             return Path(ntpath.normpath(expanded))
-        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
-        return Path(ntpath.normpath(joined))
+        base = _resolve_base_dir(task_id, container_paths=False)
+        joined = ntpath.join(str(base), expanded)
+        resolved = Path(ntpath.normpath(joined))
+        return _apply_cwd_shaped_fix(base, resolved, filepath, task_id)
 
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    resolved = _resolve_base_dir(task_id, container_paths=False) / p
-    return resolved.resolve()
+    base = _resolve_base_dir(task_id, container_paths=False)
+    resolved = (base / p).resolve()
+    return _apply_cwd_shaped_fix(base, resolved, filepath, task_id)
 
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:

@@ -150,6 +150,26 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
 
+    # Mirror conversation_loop's post_api_request firing so plugin-side
+    # accounting (spend guards, usage ledgers) sees Codex app-server turns
+    # too — without this, subscription-billed codex sessions are invisible
+    # to every post_api_request consumer.
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook as _invoke_hook
+        if has_hook("post_api_request"):
+            _invoke_hook(
+                "post_api_request",
+                session_id=agent.session_id or "",
+                platform=getattr(agent, "platform", "") or "",
+                model=agent.model,
+                provider=agent.provider,
+                base_url=agent.base_url,
+                api_mode=getattr(agent, "api_mode", "") or "",
+                usage=dict(usage_dict),
+            )
+    except Exception:
+        logger.debug("codex post_api_request hook failed", exc_info=True)
+
     if agent._session_db and agent.session_id:
         try:
             if not agent._session_db_created:

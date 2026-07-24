@@ -37,6 +37,30 @@ _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
+_PLATFORM_RUNTIME_FIELDS = frozenset(
+    {
+        "credential_source",
+        "authenticated",
+        "bot_id",
+        "bot_username",
+        "transport_mode",
+        "transport_ready",
+        "verified_at",
+    }
+)
+_PLATFORM_RUNTIME_CREDENTIAL_SOURCES = frozenset(
+    {
+        "managed_env",
+        "bitwarden",
+        "onepassword",
+        "config_file",
+        "profile_env",
+        "process_env",
+        "missing",
+        "unknown",
+    }
+)
+_PLATFORM_RUNTIME_TRANSPORT_MODES = frozenset({"polling", "webhook"})
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
@@ -982,12 +1006,20 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    platform_runtime: Any = _UNSET,
     served_profiles: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
-    payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
+    payload = _read_json_file(path)
+    if payload is None or (
+        payload.get("pid") != current_record["pid"]
+        or payload.get("start_time") != current_record["start_time"]
+    ):
+        # Volatile authentication/readiness evidence belongs to one exact
+        # process incarnation. Never rebind an old receipt to a new PID/start.
+        payload = _build_runtime_status_record()
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
@@ -1008,6 +1040,12 @@ def write_runtime_status(
         # for a single-profile gateway. Lets `hermes status` show per-profile
         # coverage without a second probe.
         payload["served_profiles"] = list(served_profiles or [])
+        if len(payload["served_profiles"]) > 1:
+            # One platforms.<name>.runtime object cannot truthfully identify
+            # several profile-specific adapters for the same platform.
+            for existing_platform in payload["platforms"].values():
+                if isinstance(existing_platform, dict):
+                    existing_platform.pop("runtime", None)
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
@@ -1017,10 +1055,70 @@ def write_runtime_status(
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
+        if platform_runtime is not _UNSET:
+            sanitized_runtime = _sanitize_platform_runtime_receipt(platform_runtime)
+            served = payload.get("served_profiles")
+            multiplexed = isinstance(served, list) and len(served) > 1
+            if sanitized_runtime is None or multiplexed:
+                platform_payload.pop("runtime", None)
+            else:
+                platform_payload["runtime"] = sanitized_runtime
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 
     _write_json_file(path, payload)
+
+
+def _sanitize_platform_runtime_receipt(value: Any) -> Optional[dict[str, Any]]:
+    """Validate and copy the fixed public platform-runtime receipt.
+
+    Platform receipts are operator-facing evidence. They may contain public bot
+    identity and transport metadata, but never credentials, URLs, opaque SDK
+    payloads, errors, or future fields. ``None`` explicitly clears a stale
+    receipt.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("platform runtime receipt must be an object or null")
+    unknown_fields = set(value) - _PLATFORM_RUNTIME_FIELDS
+    if unknown_fields:
+        raise ValueError("platform runtime receipt contains an unapproved field")
+    if set(value) != _PLATFORM_RUNTIME_FIELDS:
+        raise ValueError("platform runtime receipt is missing required fields")
+
+    if value["credential_source"] not in _PLATFORM_RUNTIME_CREDENTIAL_SOURCES:
+        raise ValueError("platform runtime receipt credential source is invalid")
+    if type(value["authenticated"]) is not bool:
+        raise ValueError("platform runtime receipt authenticated must be boolean")
+    if not isinstance(value["bot_id"], str) or len(value["bot_id"]) > 128:
+        raise ValueError("platform runtime receipt bot_id must be a short string")
+    if value["bot_username"] is not None and (
+        not isinstance(value["bot_username"], str)
+        or len(value["bot_username"]) > 128
+    ):
+        raise ValueError(
+            "platform runtime receipt bot_username must be a short string or null"
+        )
+    if value["transport_mode"] not in _PLATFORM_RUNTIME_TRANSPORT_MODES:
+        raise ValueError("platform runtime receipt transport mode is invalid")
+    if type(value["transport_ready"]) is not bool:
+        raise ValueError("platform runtime receipt transport_ready must be boolean")
+    if not isinstance(value["verified_at"], str):
+        raise ValueError("platform runtime receipt verified_at must be a timestamp")
+    try:
+        verified_at = datetime.fromisoformat(
+            value["verified_at"].replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "platform runtime receipt verified_at must be a timestamp"
+        ) from exc
+    if verified_at.tzinfo is None:
+        raise ValueError(
+            "platform runtime receipt verified_at must include a timezone"
+        )
+    return dict(value)
 
 
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:

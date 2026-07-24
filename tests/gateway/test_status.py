@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from gateway import status
 
 
@@ -669,6 +671,104 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_write_runtime_status_records_sanitized_platform_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        receipt = {
+            "credential_source": "profile_env",
+            "authenticated": True,
+            "bot_id": "123456789",
+            "bot_username": "fleet_test_bot",
+            "transport_mode": "polling",
+            "transport_ready": True,
+            "verified_at": "2026-07-22T08:30:00+00:00",
+        }
+
+        status.write_runtime_status(
+            platform="telegram",
+            platform_state="connected",
+            platform_runtime=receipt,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["telegram"]["runtime"] == receipt
+        assert "token" not in json.dumps(payload).lower()
+
+    def test_write_runtime_status_rejects_secret_bearing_platform_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with pytest.raises(ValueError, match="unapproved"):
+            status.write_runtime_status(
+                platform="telegram",
+                platform_runtime={"bot_token": "123456:secret"},
+            )
+
+        payload = status.read_runtime_status()
+        assert payload is None
+
+    def test_write_runtime_status_drops_stale_receipt_on_process_rollover(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 99999,
+                    "start_time": 1,
+                    "platforms": {
+                        "telegram": {
+                            "state": "connected",
+                            "runtime": {
+                                "credential_source": "profile_env",
+                                "authenticated": True,
+                                "bot_id": "123",
+                                "bot_username": "old_bot",
+                                "transport_mode": "polling",
+                                "transport_ready": True,
+                                "verified_at": "2026-07-22T08:30:00+00:00",
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="starting")
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == os.getpid()
+        assert payload["platforms"] == {}
+
+    def test_multiplexed_status_never_persists_ambiguous_runtime_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        receipt = {
+            "credential_source": "profile_env",
+            "authenticated": True,
+            "bot_id": "123",
+            "bot_username": "fleet_test_bot",
+            "transport_mode": "polling",
+            "transport_ready": True,
+            "verified_at": "2026-07-22T08:30:00+00:00",
+        }
+        status.write_runtime_status(
+            platform="telegram",
+            platform_runtime=receipt,
+        )
+        status.write_runtime_status(served_profiles=["default", "secondary"])
+        status.write_runtime_status(
+            platform="telegram",
+            platform_runtime=receipt,
+        )
+
+        payload = status.read_runtime_status()
+        assert "runtime" not in payload["platforms"]["telegram"]
 
 
 class TestGetProcessStartTime:

@@ -836,7 +836,33 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
-        super()._mark_connected()
+        super()._mark_connected(platform_runtime=self._telegram_runtime_receipt())
+
+    def _telegram_runtime_receipt(self) -> dict[str, Any]:
+        """Build the fixed, secret-free Telegram runtime receipt."""
+        bot = getattr(self, "_bot", None)
+        bot_id = getattr(bot, "id", None)
+        bot_username = getattr(bot, "username", None)
+        return {
+            "credential_source": (
+                getattr(self.config, "credential_source", None) or "unknown"
+            ),
+            "authenticated": bot_id is not None,
+            "bot_id": str(bot_id) if bot_id is not None else "",
+            "bot_username": str(bot_username) if bot_username else None,
+            "transport_mode": (
+                "webhook" if getattr(self, "_webhook_mode", False) else "polling"
+            ),
+            "transport_ready": not getattr(self, "_send_path_degraded", False),
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _publish_telegram_runtime_receipt(self, context: str) -> None:
+        """Persist an authenticated transport-readiness transition."""
+        self._write_runtime_status_safe(
+            context,
+            platform_runtime=self._telegram_runtime_receipt(),
+        )
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
@@ -2060,10 +2086,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if generation != self._polling_generation:
             return
+        was_degraded = getattr(self, "_send_path_degraded", False)
         self._polling_progress_event.set()
         self._polling_network_error_count = 0
         self._polling_conflict_count = 0
         self._send_path_degraded = False
+        if was_degraded and getattr(self, "_running", False):
+            self._publish_telegram_runtime_receipt("polling-progress")
 
     def _observe_polling_request_result(self, request, generation, result):
         """Record getUpdates progress from an observed do_request result.
@@ -2255,6 +2284,8 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
         self._send_path_degraded = True
+        if getattr(self, "_running", False):
+            self._publish_telegram_runtime_receipt("polling-degraded")
         logger.warning(
             "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
             self.name, reason, _redact_telegram_error_text(error),
@@ -2358,6 +2389,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_network_error_count += 1
         self._send_path_degraded = True
+        if getattr(self, "_running", False):
+            self._publish_telegram_runtime_receipt("polling-network-error")
         attempt = self._polling_network_error_count
 
         if attempt > MAX_NETWORK_RETRIES:
@@ -2850,6 +2883,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # retry attempt instead of returning silently, and only escalate to
         # fatal after all retries are exhausted.
         self._polling_conflict_count += 1
+        self._send_path_degraded = True
+        if getattr(self, "_running", False):
+            self._publish_telegram_runtime_receipt("polling-conflict")
 
         MAX_CONFLICT_RETRIES = 5
         # Delay grows with each attempt: 15s, 25s, 35s, 45s, 55s.

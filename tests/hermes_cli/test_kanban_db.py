@@ -3253,6 +3253,12 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
+    # Exercise the NFS/SMB fallback itself even on a local SQLite build that
+    # takes the separate WAL-reset-vulnerability fallback before WAL is tried.
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "is_sqlite_wal_reset_vulnerable", lambda: False)
+    hermes_state._wal_fallback_warned_paths.clear()
+
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
 

@@ -358,6 +358,9 @@ def test_wal_checkpoint_failure_never_fails_the_tick(tmp_path, monkeypatch):
 
 def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
     """End-to-end: the checkpoint actually truncates the -wal sidecar."""
+    # This test exercises WAL checkpoint behavior, not the runtime guard that
+    # selects DELETE mode on SQLite builds affected by the WAL-reset bug.
+    monkeypatch.setattr("hermes_state.is_sqlite_wal_reset_vulnerable", lambda: False)
     db_path = tmp_path / "kanban.db"
     _build_board_db(db_path, tasks=1)
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

@@ -11,7 +11,6 @@ that will be useful when we add named profiles (multiple agents running
 concurrently under distinct configurations).
 """
 
-import errno
 import hashlib
 import json
 import logging
@@ -947,87 +946,53 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
             pass
 
 
-def _probe_file_lock(handle) -> str:
-    """Non-mutating, tri-state probe of an already-open lock handle.
-
-    Returns ``"free"`` (the lock could be taken, so no live process owns it),
-    ``"held"`` (contention — a live owner), or ``"unknown"`` (a non-contention
-    error left ownership indeterminate). Unlike :func:`_try_acquire_file_lock`,
-    this NEVER writes to the file (stays strictly read-only) and distinguishes
-    lock CONTENTION (EACCES / EAGAIN) from other OS errors — the desktop cron
-    gate must fail open on the latter rather than mistake it for a live owner
-    (#66629).
-    """
-    try:
-        if _IS_WINDOWS:
-            # msvcrt byte-range locks need a byte at the lock offset. A live
-            # gateway lock is non-empty (it holds a JSON record); an empty file
-            # means no owner has recorded yet. Report it indeterminate rather
-            # than writing a byte to make it lockable — keep the probe read-only.
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                return "unknown"
-            handle.seek(_WINDOWS_LOCK_OFFSET)
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError as e:
-                # Contention on Windows surfaces as EACCES (measured); any other
-                # errno (ENOTSUP, EIO, ...) is a real error, not a live owner.
-                return "held" if e.errno == errno.EACCES else "unknown"
-            try:
-                handle.seek(_WINDOWS_LOCK_OFFSET)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            except OSError:
-                pass
-            return "free"
-        else:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as e:
-                # Contention is EAGAIN (== EWOULDBLOCK); some platforms report
-                # EACCES. Anything else (ENOLCK, ENOTSUP, EIO) is a real error,
-                # not proof of a live owner.
-                return "held" if e.errno in (errno.EACCES, errno.EAGAIN) else "unknown"
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
-            return "free"
-    except OSError:
-        return "unknown"
-
-
 def probe_gateway_runtime_lock(lock_path: Optional[Path] = None) -> str:
-    """Read-only probe of the gateway runtime lock: ``"held"``, ``"free"`` or ``"unknown"``.
+    """Read-only owner probe of the gateway runtime lock: ``"held"``, ``"free"``, or ``"unknown"``.
 
-    Unlike :func:`is_gateway_runtime_lock_active`, this never creates the lock
-    file (opens ``"r+"``, not ``"a+"``), never unlinks it, and never writes to it
-    — so a frequent caller (the desktop cron gate, #66629) cannot mutate the
-    gateway's own lock. ``"unknown"`` means the owner could not be determined (a
-    permission or stat error, an unsupported filesystem, or a not-yet-recorded
-    empty lock); such callers must fail open (never stall a desktop-only cron)
-    and should surface a warning.
+    Classifies ownership from the JSON lock record (pid + start_time + argv) and
+    a live-PID check with a PID-reuse guard — the same 4-step verification the
+    dashboard's :func:`get_running_pid` already uses (``:2105-2150``). NEVER
+    touches the OS lock, so a frequent caller (the desktop cron gate, #66629)
+    cannot serialize against :func:`acquire_gateway_runtime_lock` and cannot
+    make gateway startup lose its own lock. Observer-kills-owner is impossible
+    by construction, not by timing.
+
+    ``"unknown"`` means the record is empty or unreadable (a crashed mid-write,
+    or the ~1 ms startup window between ``_try_acquire_file_lock`` succeeding
+    and ``_write_gateway_lock_record`` completing). Callers must fail open
+    (never stall a desktop-only cron) and should surface a warning.
     """
     global _gateway_lock_handle
+    resolved_lock_path = lock_path or _get_gateway_lock_path()
+    # In-process fast path: this process already holds it.
+    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+        return "held"
     try:
-        resolved_lock_path = lock_path or _get_gateway_lock_path()
-        # This process already holds it (in-process gateway on the same HERMES_HOME).
-        if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
-            return "held"
         if not resolved_lock_path.exists():
             return "free"
-        handle = open(resolved_lock_path, "r+", encoding="utf-8")
     except OSError:
-        # Path inspection or open failed (permission, unsupported FS): ownership
-        # is indeterminate. Never create or unlink the lock here.
         return "unknown"
-    try:
-        return _probe_file_lock(handle)
-    finally:
-        try:
-            handle.close()
-        except OSError:
-            pass
+    record = _read_gateway_lock_record(resolved_lock_path)
+    if not record:
+        # Empty / unparseable: a crashed mid-write, or the sub-millisecond
+        # startup window. Fail open (documented 1x degraded-delivery residual).
+        return "unknown"
+    pid = _pid_from_record(record)
+    if pid is None:
+        return "unknown"
+    if not _pid_exists(pid):
+        return "free"  # crash: OS released the lock, record is stale.
+    recorded_start = record.get("start_time")
+    live_start = _get_process_start_time(pid)
+    if (
+        recorded_start is not None
+        and live_start is not None
+        and recorded_start != live_start
+    ):
+        return "free"  # PID reused by an unrelated process.
+    if not _record_matches_live_gateway_pid(record, pid):
+        return "free"  # live PID, but not a gateway (foreign process using the same PID).
+    return "held"
 
 
 def write_pid_file() -> None:

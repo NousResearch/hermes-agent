@@ -11,6 +11,7 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     check_config_version,
     get_hermes_home,
+    get_project_root,
     ensure_hermes_home,
     get_compatible_custom_providers,
     _explicit_config_paths,
@@ -106,6 +107,38 @@ class TestEnsureHermesHome:
             with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
                 ensure_hermes_home()
         assert not profile_home.exists()
+
+
+class TestGetProjectRoot:
+    def test_prefers_repo_root_from_cwd_when_running_from_site_packages(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "hermes-agent"
+        (repo_root / "hermes_cli").mkdir(parents=True)
+        (repo_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        (repo_root / "pyproject.toml").write_text(
+            "[project]\nname = \"hermes-agent\"\n",
+            encoding="utf-8",
+        )
+
+        fake_site_packages = tmp_path / "site-packages" / "hermes_cli"
+        fake_site_packages.mkdir(parents=True)
+        monkeypatch.setattr("hermes_cli.config.__file__", str(fake_site_packages / "config.py"))
+        monkeypatch.chdir(repo_root / "hermes_cli")
+        monkeypatch.delenv("HERMES_PROJECT_ROOT", raising=False)
+
+        assert get_project_root() == repo_root.resolve()
+
+    def test_honors_valid_hermes_project_root_env_override(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "custom-root"
+        (repo_root / "hermes_cli").mkdir(parents=True)
+        (repo_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        (repo_root / "pyproject.toml").write_text(
+            "[project]\nname = \"hermes-agent\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_PROJECT_ROOT", str(repo_root))
+
+        assert get_project_root() == repo_root.resolve()
 
 
 class TestLoadConfigDefaults:

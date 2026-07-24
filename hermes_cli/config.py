@@ -34,6 +34,11 @@ from typing import Dict, Any, Optional, List, Tuple, Set
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
+
 logger = logging.getLogger(__name__)
 
 # Track which (config_path, mtime_ns, size) tuples we've already warned about
@@ -689,9 +694,55 @@ def get_env_path() -> Path:
     """Get the .env file path (for API keys)."""
     return get_hermes_home() / ".env"
 
+def _is_hermes_project_root(path: Path) -> bool:
+    """Return True when ``path`` looks like a Hermes source checkout."""
+    if not path or not path.is_dir():
+        return False
+
+    pyproject_path = path / "pyproject.toml"
+    hermes_main = path / "hermes_cli" / "main.py"
+    if not pyproject_path.is_file() or not hermes_main.is_file():
+        return False
+
+    try:
+        with pyproject_path.open("rb") as handle:
+            pyproject = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+
+    project = pyproject.get("project")
+    return isinstance(project, dict) and project.get("name") == "hermes-agent"
+
 def get_project_root() -> Path:
-    """Get the project installation directory."""
-    return Path(__file__).parent.parent.resolve()
+    """Get the best Hermes project root for update/build style commands.
+
+    In editable/dev installs this is the checkout root containing
+    ``pyproject.toml``. In pip/site-packages installs there is no repo root
+    next to ``hermes_cli/``, so we first honor ``HERMES_PROJECT_ROOT`` and
+    then walk upward from the current working directory to recover the real
+    checkout when the operator launched ``hermes`` from inside one.
+    """
+    env_root = os.environ.get("HERMES_PROJECT_ROOT", "").strip()
+    if env_root:
+        candidate = Path(env_root).expanduser()
+        if _is_hermes_project_root(candidate):
+            return candidate.resolve()
+
+    install_root = Path(__file__).parent.parent.resolve()
+    if _is_hermes_project_root(install_root):
+        return install_root
+
+    try:
+        cwd = Path.cwd().resolve()
+    except OSError:
+        cwd = None
+
+    if cwd is not None:
+        for candidate in (cwd, *cwd.parents):
+            if _is_hermes_project_root(candidate):
+                return candidate
+
+    return install_root
 
 def _resolve_hermes_uid_gid() -> tuple[Optional[int], Optional[int]]:
     """Read the HERMES_UID / HERMES_GID env vars set by Docker deployments.

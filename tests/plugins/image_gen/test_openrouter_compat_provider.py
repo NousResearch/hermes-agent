@@ -45,6 +45,35 @@ def _mock_chat_response(images):
     return resp
 
 
+def _mock_image_api_response(images):
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "data": [
+            {"b64_json": u.split(",", 1)[1]} if u.startswith("data:") else {"url": u}
+            for u in images
+        ]
+    }
+    return resp
+
+
+def _mock_models_response():
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "data": [
+            {
+                "id": "bytedance-seed/seedream-4.5",
+                "name": "Seedream 4.5",
+                "description": "Text-to-image and image-editing model",
+            }
+        ]
+    }
+    return resp
+
+
 def _openrouter():
     from plugins.image_gen.openrouter import OpenRouterCompatImageProvider
 
@@ -245,6 +274,21 @@ class TestHelpers:
         # A 200-class transient with an openai model but no access signal → no hint.
         assert _access_error_hint("OpenRouter", "openai/gpt-5.4-image-2", "X", 500, "server error") is None
 
+    def test_extract_image_api_images(self):
+        from plugins.image_gen.openrouter import _extract_image_api_images
+
+        payload = {"data": [{"b64_json": "AA"}, {"url": "https://cdn/x.png"}]}
+        assert _extract_image_api_images(payload) == [
+            "data:image/png;base64,AA",
+            "https://cdn/x.png",
+        ]
+
+    def test_extract_image_api_images_preserves_media_type(self):
+        from plugins.image_gen.openrouter import _extract_image_api_images
+
+        payload = {"data": [{"b64_json": "AA", "media_type": "image/webp"}]}
+        assert _extract_image_api_images(payload) == ["data:image/webp;base64,AA"]
+
 
 # ---------------------------------------------------------------------------
 # generate()
@@ -260,7 +304,7 @@ class TestGenerate:
 
     def test_success_data_uri(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])), \
+             patch("requests.post", return_value=_mock_image_api_response([_PNG_DATA_URI])), \
              patch(
                  "plugins.image_gen.openrouter.save_b64_image",
                  return_value=Path("/tmp/openrouter_gen.png"),
@@ -274,7 +318,7 @@ class TestGenerate:
 
     def test_success_http_url(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", return_value=_mock_chat_response(["https://cdn/x.png"])), \
+             patch("requests.post", return_value=_mock_image_api_response(["https://cdn/x.png"])), \
              patch(
                  "plugins.image_gen.openrouter.save_url_image",
                  return_value=Path("/tmp/openrouter_gen_url.png"),
@@ -285,39 +329,54 @@ class TestGenerate:
         assert result["image"] == "/tmp/openrouter_gen_url.png"
         mock_save_url.assert_called_once()
 
+    def test_success_uses_media_type_for_saved_extension(self):
+        response = _mock_image_api_response([])
+        response.json.return_value = {
+            "data": [{"b64_json": "AA", "media_type": "image/jpeg"}]
+        }
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=response), \
+             patch(
+                 "plugins.image_gen.openrouter.save_b64_image",
+                 return_value=Path("/tmp/openrouter_gen.jpg"),
+             ) as mock_save:
+            result = _openrouter().generate(prompt="a pet")
+
+        assert result["success"] is True
+        assert result["image"].endswith(".jpg")
+        assert mock_save.call_args.kwargs["extension"] == "jpg"
+
     def test_empty_response(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", return_value=_mock_chat_response([])):
+             patch("requests.post", return_value=_mock_image_api_response([])):
             result = _openrouter().generate(prompt="a pet")
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
 
-    def test_payload_shape_and_references(self, tmp_path):
-        """Wire payload must carry image modalities, aspect_ratio, and the
-        reference image inlined as a data URI (this is what makes pet rows
-        stay on-model)."""
+    def test_openrouter_image_api_payload_shape_and_references(self, tmp_path):
+        """OpenRouter uses the dedicated Image API and passes references."""
         ref = tmp_path / "base.png"
         ref.write_bytes(b"\x89PNG\r\n")
 
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("requests.post", return_value=_mock_image_api_response([_PNG_DATA_URI])) as mock_post, \
              patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             _openrouter().generate(
                 prompt="a pet", aspect_ratio="square", reference_images=[str(ref)]
             )
 
+        assert mock_post.call_args[0][0] == "https://openrouter.ai/api/v1/images"
         payload = mock_post.call_args.kwargs["json"]
-        assert payload["modalities"] == ["image", "text"]
-        assert payload["image_config"]["aspect_ratio"] == "1:1"
-        content = payload["messages"][0]["content"]
-        assert content[0] == {"type": "text", "text": "a pet"}
-        image_parts = [c for c in content if c["type"] == "image_url"]
-        assert len(image_parts) == 1
-        assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert payload["prompt"] == "a pet"
+        assert payload["aspect_ratio"] == "1:1"
+        assert payload["n"] == 1
+        reference = payload["input_references"][0]
+        assert reference["type"] == "image_url"
+        assert reference["image_url"]["url"].startswith("data:image/png;base64,")
 
     def test_auth_header(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("requests.post", return_value=_mock_image_api_response([_PNG_DATA_URI])) as mock_post, \
              patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             _openrouter().generate(prompt="a pet")
 
@@ -327,7 +386,7 @@ class TestGenerate:
     def test_generate_uses_model_kwarg_from_dispatch(self):
         """image_generate passes image_gen.model as a model kwarg — honor it."""
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("requests.post", return_value=_mock_image_api_response([_PNG_DATA_URI])) as mock_post, \
              patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             result = _openrouter().generate(prompt="a pet", model="openai/gpt-image-2")
 
@@ -352,6 +411,36 @@ class TestGenerate:
         assert result["provider"] == "nous"
         url = mock_post.call_args[0][0]
         assert url == "https://inference.nousresearch.com/v1/chat/completions"
+
+    def test_nous_payload_still_uses_chat_completions(self):
+        nous_runtime = _runtime_ok(
+            provider="nous", base_url="https://inference.nousresearch.com/v1", api_key="nous-tok"
+        )
+        with patch(_RUNTIME, return_value=nous_runtime), \
+             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+            from plugins.image_gen.openrouter import _build_providers
+
+            nous = {p.name: p for p in _build_providers()}["nous"]
+            nous.generate(prompt="a pet", aspect_ratio="landscape")
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["modalities"] == ["image", "text"]
+        assert payload["image_config"]["aspect_ratio"] == "16:9"
+
+    def test_openrouter_lists_image_models_from_image_api(self):
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.get", return_value=_mock_models_response()) as mock_get:
+            models = _openrouter().list_models()
+
+        assert mock_get.call_args[0][0] == "https://openrouter.ai/api/v1/images/models"
+        assert models == [
+            {
+                "id": "bytedance-seed/seedream-4.5",
+                "display": "Seedream 4.5",
+                "strengths": "Text-to-image and image-editing model",
+            }
+        ]
 
     def test_api_error(self):
         import requests as req_lib
@@ -411,7 +500,7 @@ class TestGenerate:
         gated.raise_for_status.side_effect = req_lib.HTTPError(response=gated)
 
         with patch(_RUNTIME, return_value=_runtime_ok()), \
-             patch("requests.post", side_effect=[gated, _mock_chat_response([_PNG_DATA_URI])]) as mock_post, \
+             patch("requests.post", side_effect=[gated, _mock_image_api_response([_PNG_DATA_URI])]) as mock_post, \
              patch(
                  "plugins.image_gen.openrouter.save_b64_image",
                  return_value=Path("/tmp/openrouter_gen_fallback.png"),

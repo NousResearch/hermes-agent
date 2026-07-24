@@ -223,7 +223,7 @@ class TestVerifyCoreDependencies:
              patch("hermes_cli.main._is_windows", return_value=True), \
              patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts), \
              patch("hermes_cli.main._run_install_with_heartbeat"), \
-             patch("hermes_cli.main._quarantine_running_hermes_exe", return_value=[]) as mock_quar:
+             patch("hermes_cli.main._quarantine_running_hermes_exe", return_value=([], [])) as mock_quar:
 
             from hermes_cli.main import _verify_core_dependencies_installed
             _verify_core_dependencies_installed(["uv", "pip"], env=env)

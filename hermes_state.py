@@ -210,7 +210,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
 # state_meta key ``fts_storage_version``. The main schema version advances
@@ -220,7 +220,9 @@ SCHEMA_VERSION = 23
 # layout 0 (marker absent) with a working inline index until the user opts in.
 #   1 = v23 external-content layout (content/tool_name/tool_calls,
 #       tool-row-excluded trigram)
-FTS_STORAGE_VERSION = 1
+#   2 = multimodal text projection for the trigram index (image payloads and
+#       the NUL JSON sentinel are excluded)
+FTS_STORAGE_VERSION = 2
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -1109,6 +1111,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     role TEXT NOT NULL,
     content TEXT,
+    fts_content TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
@@ -1295,14 +1298,23 @@ END;
 # of the text it covers), and ``role='tool'`` rows are ~90% of message bytes
 # while being almost entirely machine noise (base64 payloads, file dumps,
 # delegation transcripts).  The index therefore reads through
-# ``messages_fts_trigram_src``, a view that excludes tool rows — they stay
+# ``messages_fts_trigram_src``, a view that excludes tool rows and reads their
+# SessionDB-maintained multimodal text projection — they stay
 # fully stored in ``messages`` and fully searchable via the standard
 # ``messages_fts`` index; they just don't get trigram (CJK substring)
-# treatment.  ``search_messages`` routes CJK queries that filter on
+# treatment. ``search_messages`` routes CJK queries that filter on
 # ``role='tool'`` to the LIKE fallback for the same reason.
-FTS_TRIGRAM_SQL = """
+def _fts_index_content_sql(content: str, projection: str) -> str:
+    """Return the FTS value for a trusted pair of message column expressions."""
+    return (
+        f"CASE WHEN substr(CAST({content} AS BLOB), 1, 6) = X'006A736F6E3A' "
+        f"THEN COALESCE({projection}, '') ELSE {content} END"
+    )
+
+
+FTS_TRIGRAM_SQL = f"""
 CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
-    SELECT id, role, content, tool_name, tool_calls
+    SELECT id, role, {_fts_index_content_sql('content', 'fts_content')} AS content, tool_name, tool_calls
     FROM messages
     WHERE role <> 'tool';
 
@@ -1323,7 +1335,7 @@ WHEN new.role <> 'tool'
                             WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+    VALUES (new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
@@ -1334,7 +1346,7 @@ WHEN old.role <> 'tool'
                             WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+    VALUES ('delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages
@@ -1348,10 +1360,10 @@ WHEN (old.content IS NOT new.content
                             WHERE key = 'fts_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
-    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
+    SELECT 'delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls
     WHERE old.role <> 'tool';
     INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
-    SELECT new.id, new.content, new.tool_name, new.tool_calls
+    SELECT new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls
     WHERE new.role <> 'tool';
 END;
 """
@@ -1390,9 +1402,9 @@ END;
 # an external-content 'delete' op for a rowid the index never held is the
 # canonical FTS5 index-corruption hazard the v23 marker gating exists to
 # prevent.
-FTS_CJK_TABLE_SQL = """
+FTS_CJK_TABLE_SQL = f"""
 CREATE VIEW IF NOT EXISTS messages_fts_cjk_src AS
-    SELECT id, role, content, tool_name, tool_calls
+    SELECT id, role, {_fts_index_content_sql('content', 'fts_content')} AS content, tool_name, tool_calls
     FROM messages
     WHERE role <> 'tool';
 
@@ -1406,7 +1418,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_cjk USING fts5(
 );
 """
 
-FTS_CJK_TRIGGER_SQL = """
+FTS_CJK_TRIGGER_SQL = f"""
 CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_insert AFTER INSERT ON messages
 WHEN new.role <> 'tool'
    AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -1415,7 +1427,7 @@ WHEN new.role <> 'tool'
                             WHERE key = 'fts_cjk_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+    VALUES (new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_delete AFTER DELETE ON messages
@@ -1426,7 +1438,7 @@ WHEN old.role <> 'tool'
                             WHERE key = 'fts_cjk_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+    VALUES ('delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_update AFTER UPDATE ON messages
@@ -1440,10 +1452,10 @@ WHEN (old.content IS NOT new.content
                             WHERE key = 'fts_cjk_rebuild_progress'), -1))
 BEGIN
     INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
+    SELECT 'delete', old.id, {_fts_index_content_sql('old.content', 'old.fts_content')}, old.tool_name, old.tool_calls
     WHERE old.role <> 'tool';
     INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    SELECT new.id, new.content, new.tool_name, new.tool_calls
+    SELECT new.id, {_fts_index_content_sql('new.content', 'new.fts_content')}, new.tool_name, new.tool_calls
     WHERE new.role <> 'tool';
 END;
 """
@@ -2328,7 +2340,7 @@ class SessionDB:
                 )
                 conn.execute(
                     "INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) "
-                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    f"SELECT m.id, {_fts_index_content_sql('m.content', 'm.fts_content')}, m.tool_name, m.tool_calls "
                     "FROM messages m "
                     "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
                     "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
@@ -2433,7 +2445,7 @@ class SessionDB:
                 conn.execute(
                     "INSERT INTO messages_fts_trigram"
                     "(rowid, content, tool_name, tool_calls) "
-                    "SELECT id, content, tool_name, tool_calls FROM messages "
+                    f"SELECT id, {_fts_index_content_sql('content', 'fts_content')}, tool_name, tool_calls FROM messages "
                     "WHERE id > ? AND id <= ? AND role <> 'tool'",
                     (progress, upper),
                 )
@@ -2500,7 +2512,7 @@ class SessionDB:
             upper = min(progress + chunk, high_water)
             conn.execute(
                 "INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls) "
-                "SELECT id, content, tool_name, tool_calls FROM messages "
+                f"SELECT id, {_fts_index_content_sql('content', 'fts_content')}, tool_name, tool_calls FROM messages "
                 "WHERE id > ? AND id <= ? AND role <> 'tool'",
                 (progress, upper),
             )
@@ -2535,7 +2547,7 @@ class SessionDB:
                 lo, hi = hw - 1000, hw + 1000
                 conn.execute(
                     "INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls) "
-                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    f"SELECT m.id, {_fts_index_content_sql('m.content', 'm.fts_content')}, m.tool_name, m.tool_calls "
                     "FROM messages m "
                     "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
                     "AND NOT EXISTS (SELECT 1 FROM messages_fts_cjk_docsize d WHERE d.id = m.id)",
@@ -2588,20 +2600,116 @@ class SessionDB:
                 self._ensure_fts_cjk_schema(self._conn)
                 self._conn.commit()
 
-    # ── Opt-in v23 FTS storage optimization (`hermes sessions optimize-storage`) ──
+    # ── Opt-in FTS storage optimization (`hermes sessions optimize-storage`) ──
     #
     # This is the ONLY path that migrates an existing legacy (v22 inline) DB
-    # to the v23 external-content schema. It is deliberately foreground and
-    # user-invoked, never automatic, because it is disk-heavy and long. It
-    # runs the throttled/resumable chunk engine above to completion
-    # synchronously — demote → new schema → chunked backfill → chunked
-    # teardown — with progress callbacks, a disk preflight in the CLI
-    # wrapper, a VACUUM at the end, and a defensive schema_version bump.
+    # to the current external-content schema, or rebuilds an older FTS
+    # projection. It is deliberately foreground and user-invoked, never
+    # automatic, because it is disk-heavy and long. It runs the throttled /
+    # resumable chunk engine above to completion synchronously — demote → new
+    # schema → chunked backfill → chunked teardown — with progress callbacks,
+    # a disk preflight in the CLI wrapper, a VACUUM at the end, and a
+    # defensive schema_version bump.
+
+    @staticmethod
+    def _fts_storage_version(cursor) -> int:
+        """Read the independently-versioned FTS storage layout marker."""
+        row = cursor.execute(
+            "SELECT value FROM state_meta WHERE key = 'fts_storage_version'"
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(row[0])
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _fts_view_uses_multimodal_projection(cursor, view_name: str) -> bool:
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
+            (view_name,),
+        ).fetchone()
+        return row is None or "fts_content" in ((row[0] or "").lower())
+
+    def _fts_trigram_needs_multimodal_projection(self, cursor) -> bool:
+        """True when an existing trigram view still indexes raw JSON blobs."""
+        return (
+            self._fts_storage_version(cursor) < FTS_STORAGE_VERSION
+            and not self._fts_view_uses_multimodal_projection(
+                cursor, "messages_fts_trigram_src"
+            )
+        )
+
+    def _fts_cjk_needs_multimodal_projection(self, cursor) -> bool:
+        """True when a pre-projection CJK view needs an explicit rebuild."""
+        cjk_present = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'messages_fts_cjk'"
+        ).fetchone()
+        return bool(cjk_present) and not self._fts_view_uses_multimodal_projection(
+            cursor, "messages_fts_cjk_src"
+        )
+
+    def _upgrade_fts_trigram_projection(self) -> bool:
+        """Rebuild the trigram index against the portable text projection."""
+        with self._lock:
+            if not self._fts_trigram_needs_multimodal_projection(self._conn):
+                return False
+
+        def _do(conn):
+            for trigger in _FTS_TRIGGERS:
+                if trigger.startswith("messages_fts_trigram_"):
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP VIEW IF EXISTS messages_fts_trigram_src")
+            self._backfill_fts_content(conn)
+            if not self._ensure_fts_schema(
+                conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
+            ):
+                return False
+            conn.execute(
+                "INSERT INTO messages_fts_trigram(messages_fts_trigram) "
+                "VALUES('rebuild')"
+            )
+            return True
+
+        return bool(self._execute_write(_do))
+
+    def _upgrade_fts_cjk_projection(self) -> bool:
+        """Rebuild the optional CJK index against the same text projection."""
+        if not self._fts_cjk_loaded:
+            return False
+        with self._lock:
+            if not self._fts_cjk_needs_multimodal_projection(self._conn):
+                return False
+
+        def _do(conn):
+            for trigger in _FTS_CJK_TRIGGERS:
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP VIEW IF EXISTS messages_fts_cjk_src")
+            self._backfill_fts_content(conn)
+            conn.executescript(FTS_CJK_TABLE_SQL)
+            conn.executescript(FTS_CJK_TRIGGER_SQL)
+            conn.execute(
+                "INSERT INTO messages_fts_cjk(messages_fts_cjk) VALUES('rebuild')"
+            )
+            conn.execute(
+                "DELETE FROM state_meta WHERE key IN "
+                "('fts_cjk_rebuild_high_water', 'fts_cjk_rebuild_progress', ?) ",
+                (FTS_CJK_STALE_KEY,),
+            )
+            return True
+
+        upgraded = bool(self._execute_write(_do))
+        if upgraded:
+            self._fts_cjk_available = True
+        return upgraded
 
     def fts_optimize_available(self) -> bool:
         """True when `optimize_fts_storage()` has work to do: either this DB
-        is a legacy inline-FTS install that can be optimized to the v23
-        external-content schema, or a previous optimize run was interrupted
+        is a legacy inline-FTS install that can be optimized to the current
+        external-content schema, its trigram index still needs the multimodal
+        text projection, or a previous optimize run was interrupted
         (legacy vtables already demoted, but backfill markers and/or trash
         tables remain) and re-running would resume it, or the CJK-bigram
         index needs a backfill/rebuild on this tokenizer-capable host.
@@ -2611,6 +2719,8 @@ class SessionDB:
             return False
         with self._lock:
             if self._db_has_legacy_inline_fts(self._conn):
+                return True
+            if self._fts_trigram_needs_multimodal_projection(self._conn):
                 return True
             # Interrupted optimize: demotion already removed the legacy
             # vtables (so the check above is False), but the transition is
@@ -2629,6 +2739,10 @@ class SessionDB:
                 "SELECT 1 FROM state_meta WHERE key IN "
                 f"('fts_cjk_rebuild_high_water', '{FTS_CJK_STALE_KEY}') LIMIT 1"
             ).fetchone():
+                return True
+            if self._fts_cjk_loaded and self._fts_cjk_needs_multimodal_projection(
+                self._conn
+            ):
                 return True
             return self._has_fts_trash(self._conn)
 
@@ -2671,7 +2785,8 @@ class SessionDB:
                 ]
                 for sh in shadows:
                     conn.execute(f"ALTER TABLE {sh} RENAME TO fts_v22_trash_{sh}")
-            # Create the new v23 empty schema + set the backfill markers.
+            self._backfill_fts_content(conn)
+            # Create the current empty schema + set the backfill markers.
             self._ensure_fts_schema(conn, "messages_fts", FTS_SQL)
             self._ensure_fts_schema(conn, "messages_fts_trigram", FTS_TRIGRAM_SQL)
             hw = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
@@ -2694,9 +2809,12 @@ class SessionDB:
         progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
         vacuum: bool = True,
     ) -> Dict[str, Any]:
-        """Migrate a legacy v22 inline-FTS DB to the v23 external-content
-        schema, foreground and to completion. Safe to re-run: if a previous
-        attempt was interrupted it resumes from the progress marker.
+        """Migrate or rebuild the FTS layout, foreground and to completion.
+
+        Safe to re-run: if a previous attempt was interrupted it resumes from
+        the progress marker. Older external-content indexes are rebuilt here
+        as well so their trigram and CJK indexes use the multimodal text
+        projection.
 
         ``progress_cb`` receives {"phase", "percent", "indexed", "total"}
         dicts for a CLI progress bar. Returns a summary dict.
@@ -2718,6 +2836,8 @@ class SessionDB:
         pending = self.get_meta("fts_rebuild_high_water") is not None
         if legacy and not pending:
             self._demote_legacy_fts_to_trash()
+        elif not legacy:
+            self._upgrade_fts_trigram_projection()
 
         # A stale CJK index (triggers dropped by a tokenizer-less process)
         # can only be recovered from scratch — reset it now so the cjk
@@ -2730,6 +2850,7 @@ class SessionDB:
             with self._lock:
                 self._ensure_fts_cjk_schema(self._conn)
                 self._conn.commit()
+            self._upgrade_fts_cjk_projection()
 
         def _emit(phase: str) -> None:
             if progress_cb is None:
@@ -2808,12 +2929,19 @@ class SessionDB:
         # DB opened only by pre-decoupling code still settles). The FTS-layout
         # marker is the source of truth for "is this DB optimized".
         def _settle(conn):
-            conn.execute(
-                "INSERT INTO state_meta (key, value) VALUES ('fts_storage_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (str(FTS_STORAGE_VERSION),),
-            )
-            conn.execute("DELETE FROM state_meta WHERE key = 'fts_optimize_available'")
+            if not self._fts_trigram_needs_multimodal_projection(conn):
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES ('fts_storage_version', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (str(FTS_STORAGE_VERSION),),
+                )
+                conn.execute("DELETE FROM state_meta WHERE key = 'fts_optimize_available'")
+            else:
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES "
+                    "('fts_optimize_available', '1') "
+                    "ON CONFLICT(key) DO UPDATE SET value = '1'"
+                )
             conn.execute(
                 "UPDATE schema_version SET version = ? WHERE version < ?",
                 (SCHEMA_VERSION, SCHEMA_VERSION),
@@ -3216,15 +3344,12 @@ class SessionDB:
                     self.set_meta("fts_optimize_available", "1", cursor=cursor)
 
             # The FTS storage layout is versioned independently of the main
-            # schema (see the v23 note above). Stamp the current layout so the
-            # main version can always advance: a fresh/optimized DB is at
-            # FTS_STORAGE_VERSION; a legacy DB is left at whatever it had
-            # (absent/0) until `optimize-storage` runs. An INTERRUPTED
-            # optimize (legacy vtables already demoted, but rebuild markers
-            # or demoted trash tables still present) is NOT stamped either —
-            # the marker is the source of truth for "fully optimized", and
-            # `fts_optimize_available()` keeps offering the resume until the
-            # transition actually completes.
+            # schema (see the v23 note above). Stamp a fresh/current layout so
+            # the main version can always advance. A legacy DB, an older
+            # trigram projection, or an interrupted optimize is left at its
+            # prior marker until the foreground `optimize-storage` rebuild
+            # completes — the marker is the source of truth for whether the
+            # index itself is current.
             if (
                 fts5_available
                 and not self._db_has_legacy_inline_fts(cursor)
@@ -3234,9 +3359,12 @@ class SessionDB:
                 ).fetchone() is None
                 and not self._has_fts_trash(cursor)
             ):
-                self.set_meta(
-                    "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor
-                )
+                if self._fts_trigram_needs_multimodal_projection(cursor):
+                    self.set_meta("fts_optimize_available", "1", cursor=cursor)
+                else:
+                    self.set_meta(
+                        "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor
+                    )
 
             # Advance schema_version to current for ALL non-FTS-layout
             # migrations. This is deliberately NOT gated on the FTS opt-in —
@@ -5709,6 +5837,42 @@ class SessionDB:
                 return content
         return content
 
+    @classmethod
+    def _fts_content(cls, content: Any) -> Optional[str]:
+        """Return the text worth indexing from stored message content.
+
+        Multimodal rows retain their sentinel-prefixed JSON verbatim for
+        replay, but only explicit text parts belong in substring indexes.
+        Image URLs frequently contain multi-megabyte base64 data and are not
+        meaningful search targets.
+        """
+        decoded = cls._decode_content(content)
+        if isinstance(decoded, list):
+            text_parts = [
+                part.get("text")
+                for part in decoded
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ]
+            return " ".join(text_parts).replace("\x00", " ")
+        if isinstance(decoded, dict):
+            text = decoded.get("text") if decoded.get("type") == "text" else ""
+            return text.replace("\x00", " ") if isinstance(text, str) else ""
+        return None
+
+    def _backfill_fts_content(self, conn) -> None:
+        """Populate indexed text before rebuilding a projection-backed FTS view."""
+        rows = conn.execute(
+            "SELECT id, content FROM messages "
+            "WHERE substr(CAST(content AS BLOB), 1, 6) = X'006A736F6E3A'"
+        )
+        while batch := rows.fetchmany(500):
+            conn.executemany(
+                "UPDATE messages SET fts_content = ? WHERE id = ?",
+                [(self._fts_content(row[1]), row[0]) for row in batch],
+            )
+
     def append_message(
         self,
         session_id: str,
@@ -5780,6 +5944,7 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        fts_content = self._fts_content(stored_content)
 
         message_timestamp = time.time()
         if timestamp is not None:
@@ -5798,15 +5963,16 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                """INSERT INTO messages (session_id, role, content, fts_content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
                     stored_content,
+                    fts_content,
                     tool_call_id,
                     tool_calls_json,
                     _scrub_surrogates(tool_name),
@@ -5937,17 +6103,19 @@ class SessionDB:
             )
 
             api_content = msg.get("api_content")
+            stored_content = self._encode_content(msg.get("content"))
 
             conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                """INSERT INTO messages (session_id, role, content, fts_content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
-                    self._encode_content(msg.get("content")),
+                    stored_content,
+                    self._fts_content(stored_content),
                     msg.get("tool_call_id"),
                     tool_calls_json,
                     _scrub_surrogates(msg.get("tool_name")),

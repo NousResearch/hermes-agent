@@ -6358,14 +6358,13 @@ def _print_curator_first_run_notice() -> None:
 
 
 def _print_fts_optimize_available_notice() -> None:
-    """Advertise the opt-in v23 search-index optimization after `hermes update`.
+    """Advertise an opt-in search-index upgrade after `hermes update`.
 
-    Only fires when the current profile's state.db is still on the legacy
-    (pre-v23) inline FTS layout. Leads with the reclaimable-space figure and
-    points at the exact command. Honors ``sessions.fts_optimize_notice``:
-    ``advise`` (default) prints an advisory notice, ``require`` prints a
-    firmer required-upgrade notice, ``off`` suppresses it. Silent for
-    fresh/already-optimized installs.
+    Fires for either the legacy pre-v23 inline layout or an external-content
+    index that still includes raw multimodal image payloads. Honors
+    ``sessions.fts_optimize_notice``: ``advise`` (default) prints an advisory
+    notice, ``require`` prints a firmer required-upgrade notice, ``off``
+    suppresses it. Silent for fresh/current installs.
     """
     mode = "advise"
     try:
@@ -6383,7 +6382,7 @@ def _print_fts_optimize_available_notice() -> None:
 
     try:
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from hermes_state import FTS_STORAGE_VERSION, SessionDB
     except Exception:
         return
     db_path = get_hermes_home() / "state.db"
@@ -6398,6 +6397,7 @@ def _print_fts_optimize_available_notice() -> None:
         return
     db = None
     interrupted = False
+    multimodal_projection_upgrade = False
     try:
         db = SessionDB(db_path=db_path, read_only=True)
         # read_only opens skip schema init, so probe the layout directly.
@@ -6405,6 +6405,22 @@ def _print_fts_optimize_available_notice() -> None:
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
+        trigram_view = db._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'view' AND name = 'messages_fts_trigram_src'"
+        ).fetchone()
+        layout_row = db._conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'fts_storage_version'"
+        ).fetchone()
+        try:
+            layout_version = int(layout_row[0]) if layout_row else 0
+        except (TypeError, ValueError):
+            layout_version = 0
+        multimodal_projection_upgrade = (
+            layout_version < FTS_STORAGE_VERSION
+            and trigram_view is not None
+            and "fts_content" not in ((trigram_view[0] or "").lower())
+        )
         # An interrupted `optimize-storage` run: the table is already the
         # v23 shape, but backfill markers / demoted trash tables remain.
         # Offer the command again — re-running resumes and finishes it.
@@ -6431,8 +6447,12 @@ def _print_fts_optimize_available_notice() -> None:
             except Exception:
                 pass
     sql = (row[0] if row else "") or ""
-    if not sql or ("tool_name" in sql and not interrupted):
-        # v23 layout already present (fresh/optimized) — nothing to offer.
+    if not sql or (
+        "tool_name" in sql
+        and not interrupted
+        and not multimodal_projection_upgrade
+    ):
+        # Current layout already present — nothing to offer.
         return
 
     if interrupted:
@@ -6442,6 +6462,17 @@ def _print_fts_optimize_available_notice() -> None:
             "  A previous `hermes sessions optimize-storage` run was "
             "interrupted. Search still works; re-run the command to resume "
             "and finish reclaiming disk:"
+        )
+        print("    hermes sessions optimize-storage")
+        return
+
+    if multimodal_projection_upgrade:
+        print()
+        print("◆ Search index update available")
+        print(
+            "  Your trigram index includes multimodal image payloads. "
+            "Rebuilding it indexes only message text, which avoids "
+            "SQLite-version-dependent FTS checks and can reclaim space:"
         )
         print("    hermes sessions optimize-storage")
         return
@@ -15304,12 +15335,13 @@ def main():
 
     sessions_optimize_storage = sessions_subparsers.add_parser(
         "optimize-storage",
-        help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs)",
+        help="Rebuild the compact search index and omit multimodal image payloads",
         description=(
-            "Rebuild the full-text search index in the compact v23 "
-            "external-content layout. On large databases this reclaims a "
-            "large fraction of state.db (the old layout stored duplicate "
-            "copies of every message and indexed tool output). Runs "
+            "Rebuild the full-text search index in the compact "
+            "external-content layout. On large databases this can reclaim a "
+            "large fraction of state.db: the old layout stored duplicate "
+            "copies of every message and the current projection omits "
+            "multimodal image payloads. Runs "
             "foreground with a progress bar, throttles so a running gateway "
             "stays responsive, and VACUUMs at the end. Safe to interrupt and "
             "re-run — it resumes where it left off. No conversation data is "

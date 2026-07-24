@@ -272,6 +272,31 @@ def test_group_policy_allowlist_allows_listed_group():
     assert adapter._should_process_message(_group_message("agus test")) is True
 
 
+def test_same_account_group_payload_still_obeys_allowlist_and_mention_gate():
+    """Once the Node bridge admits a same-account group message, the normal
+    Python group-policy and mention gates must remain authoritative."""
+    adapter = _make_adapter(
+        group_policy="allowlist",
+        group_allow_from=["120363001234567890@g.us"],
+        require_mention=True,
+        mention_patterns=[r"^\s*@?hermes\b"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("hello everyone", fromOwner=False)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("@hermes status", fromOwner=False)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message(
+            "@hermes status",
+            chatId="999999999999@g.us",
+            fromOwner=False,
+        )
+    ) is False
+
+
 def test_group_policy_open_allows_all_groups():
     adapter = _make_adapter(group_policy="open", require_mention=True)
 
@@ -297,6 +322,7 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
         "whatsapp:\n"
         "  dm_policy: disabled\n"
         "  group_policy: allowlist\n"
+        "  process_from_me_groups: true\n"
         "  group_allow_from:\n"
         "    - \"120363001234567890@g.us\"\n",
         encoding="utf-8",
@@ -306,6 +332,7 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     monkeypatch.delenv("WHATSAPP_DM_POLICY", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_POLICY", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("WHATSAPP_PROCESS_FROM_ME_GROUPS", raising=False)
 
     config = load_gateway_config()
 
@@ -316,6 +343,22 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "disabled"
     assert __import__("os").environ["WHATSAPP_GROUP_POLICY"] == "allowlist"
     assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
+    assert __import__("os").environ["WHATSAPP_PROCESS_FROM_ME_GROUPS"] == "true"
+
+
+def test_process_from_me_groups_env_takes_precedence(monkeypatch, tmp_path):
+    config_dir = tmp_path / ".hermes"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        "whatsapp:\n  process_from_me_groups: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(config_dir))
+    monkeypatch.setenv("WHATSAPP_PROCESS_FROM_ME_GROUPS", "true")
+
+    load_gateway_config()
+
+    assert __import__("os").environ["WHATSAPP_PROCESS_FROM_ME_GROUPS"] == "true"
 
 
 def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):

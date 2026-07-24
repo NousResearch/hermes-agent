@@ -62,6 +62,21 @@ class TestReadTrackerCaps:
         assert ("/p0", 0, 500) not in task_data["dedup"]
         assert ("/p14", 0, 500) not in task_data["dedup"]
 
+    def test_dedup_hits_capped_oldest_first(self, monkeypatch):
+        """dedup_hits dict is bounded; oldest entries evicted first."""
+        from tools import file_tools as ft
+
+        monkeypatch.setattr(ft, "_DEDUP_CAP", 3)
+        task_data = {
+            "read_history": set(),
+            "dedup": {},
+            "dedup_hits": {f"key-{i}": i for i in range(8)},
+            "read_timestamps": {},
+        }
+        ft._cap_read_tracker_data(task_data)
+        assert len(task_data["dedup_hits"]) == 3
+        assert list(task_data["dedup_hits"]) == ["key-5", "key-6", "key-7"]
+
     def test_read_timestamps_capped_oldest_first(self, monkeypatch):
         """read_timestamps dict is bounded; oldest entries evicted first."""
         from tools import file_tools as ft
@@ -107,6 +122,15 @@ class TestReadTrackerCaps:
         ft._cap_read_tracker_data({})  # no containers at all
         ft._cap_read_tracker_data({"read_history": None})
         ft._cap_read_tracker_data({"dedup": None})
+
+    def test_file_state_cap_dict_trims_multiple_entries_without_runtime_error(self):
+        """file_state dict caps snapshot keys before popping multiple entries."""
+        from tools import file_state
+
+        data = {i: i for i in range(5)}
+        file_state._cap_dict(data, 2)
+
+        assert list(data) == [3, 4]
 
     def test_live_cap_applied_after_read_add(self, tmp_path, monkeypatch):
         """Live read_file path enforces caps."""

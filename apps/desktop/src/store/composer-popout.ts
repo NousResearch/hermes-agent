@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 
 const POPOUT_ENABLED_STORAGE_KEY = 'hermes.desktop.composerPopout.enabled'
+const POPOUT_GESTURES_ENABLED_STORAGE_KEY = 'hermes.desktop.composerPopout.gesturesEnabled'
 const POPOUT_POSITION_STORAGE_KEY = 'hermes.desktop.composerPopout.position'
 
 /** Where the floating composer's bottom-right corner sits, measured as an inset
@@ -111,11 +112,24 @@ function clampPosition({ bottom, right }: PopoutPosition, size?: PopoutSize, are
 }
 
 export const $composerPoppedOut = atom(storedBoolean(POPOUT_ENABLED_STORAGE_KEY, false))
+export const $composerPopoutGesturesEnabled = atom(storedBoolean(POPOUT_GESTURES_ENABLED_STORAGE_KEY, true))
 export const $composerPopoutPosition = atom<PopoutPosition>(readPosition())
 
 export function setComposerPoppedOut(value: boolean) {
   $composerPoppedOut.set(value)
   persistBoolean(POPOUT_ENABLED_STORAGE_KEY, value)
+}
+
+export function setComposerPopoutGesturesEnabled(value: boolean) {
+  $composerPopoutGesturesEnabled.set(value)
+  persistBoolean(POPOUT_GESTURES_ENABLED_STORAGE_KEY, value)
+
+  // Turning the feature off is an immediate lock-to-dock action, not merely a
+  // promise to ignore the next gesture. Clear the persisted floating state so
+  // a reload cannot restore a composer the user explicitly locked.
+  if (!value) {
+    setComposerPoppedOut(false)
+  }
 }
 
 /** Move the box (state only by default). Used per-frame during a drag — no IO

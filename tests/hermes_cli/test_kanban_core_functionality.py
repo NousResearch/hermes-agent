@@ -55,6 +55,7 @@ def kanban_home(tmp_path, monkeypatch):
 # Idempotency key
 # ---------------------------------------------------------------------------
 
+
 def test_idempotency_key_returns_existing_task(kanban_home):
     conn = kb.connect()
     try:
@@ -92,6 +93,7 @@ def test_no_idempotency_key_never_collides(kanban_home):
 # ---------------------------------------------------------------------------
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
+
 
 def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawnable):
     """N consecutive spawn failures on the same task → auto_blocked."""
@@ -366,6 +368,7 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
 # Worker aliveness / crash detection
 # ---------------------------------------------------------------------------
 
+
 def test_pid_alive_helper():
     # Our own pid is alive.
     assert kb._pid_alive(os.getpid())
@@ -429,6 +432,7 @@ def test_detect_crashed_workers_reclaims(kanban_home):
 # Daemon loop
 # ---------------------------------------------------------------------------
 
+
 def test_daemon_runs_and_stops(kanban_home):
     """run_daemon should execute at least one tick and exit cleanly on
     stop_event."""
@@ -482,6 +486,7 @@ def test_daemon_keeps_going_after_tick_exception(kanban_home, monkeypatch):
 # Stats + age
 # ---------------------------------------------------------------------------
 
+
 def test_board_stats(kanban_home):
     conn = kb.connect()
     try:
@@ -514,6 +519,7 @@ def test_task_age_helper(kanban_home):
 # ---------------------------------------------------------------------------
 # Notify subscriptions
 # ---------------------------------------------------------------------------
+
 
 def test_notify_sub_crud(kanban_home):
     conn = kb.connect()
@@ -636,6 +642,7 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
 # GC + retention
 # ---------------------------------------------------------------------------
 
+
 def test_gc_events_keeps_active_task_history(kanban_home):
     """gc_events should only prune rows for terminal (done/archived) tasks."""
     conn = kb.connect()
@@ -679,6 +686,7 @@ def test_gc_worker_logs_deletes_old_files(kanban_home):
 # ---------------------------------------------------------------------------
 # Log rotation + accessor
 # ---------------------------------------------------------------------------
+
 
 def test_worker_log_rotation_keeps_one_generation(kanban_home, tmp_path):
     log_dir = kanban_home / "kanban" / "logs"
@@ -736,6 +744,7 @@ def test_read_worker_log_tail(kanban_home):
 # ---------------------------------------------------------------------------
 # CLI bulk verbs
 # ---------------------------------------------------------------------------
+
 
 def test_cli_complete_bulk(kanban_home):
     conn = kb.connect()
@@ -839,6 +848,7 @@ def test_cli_create_with_idempotency_key(kanban_home):
 # CLI stats / watch / log / notify / daemon parity
 # ---------------------------------------------------------------------------
 
+
 def test_cli_stats_json(kanban_home):
     conn = kb.connect()
     try:
@@ -939,6 +949,7 @@ def test_run_slash_every_verb_returns_sensible_output(kanban_home, tmp_path):
 # ---------------------------------------------------------------------------
 # Max-runtime enforcement (item 1 from the Multica audit)
 # ---------------------------------------------------------------------------
+
 
 def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
@@ -1129,6 +1140,7 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
 # Heartbeat (item 2 from the Multica audit)
 # ---------------------------------------------------------------------------
 
+
 def test_heartbeat_on_running_task(kanban_home):
     conn = kb.connect()
     try:
@@ -1183,6 +1195,7 @@ def test_cli_heartbeat_verb(kanban_home):
 # ---------------------------------------------------------------------------
 # Event vocab rename + spawned event (item 3 from Multica)
 # ---------------------------------------------------------------------------
+
 
 def test_recompute_ready_emits_promoted_not_ready(kanban_home):
     conn = kb.connect()
@@ -1276,6 +1289,7 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
 # Assignees (item 4 from Multica)
 # ---------------------------------------------------------------------------
 
+
 def test_list_profiles_on_disk(tmp_path, monkeypatch):
     """list_profiles_on_disk returns the implicit default profile plus
     named profiles under ~/.hermes/profiles/ that contain a config.yaml."""
@@ -1359,6 +1373,7 @@ def test_cli_assignees_json(kanban_home):
 # CLI --max-runtime flag + duration parser
 # ---------------------------------------------------------------------------
 
+
 def test_parse_duration_accepts_formats():
     from hermes_cli.kanban import _parse_duration
     assert _parse_duration(None) is None
@@ -1401,6 +1416,7 @@ def test_cli_create_max_runtime_bad_format_exits_nonzero(kanban_home):
 # ---------------------------------------------------------------------------
 # Runs as first-class (vulcan-artivus RFC feedback)
 # ---------------------------------------------------------------------------
+
 
 def test_run_created_on_claim(kanban_home):
     """claim_task opens a new task_runs row and points current_run_id at it."""
@@ -1943,6 +1959,7 @@ def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):
 # Integration hardening (Apr 2026 audit fixes)
 # -------------------------------------------------------------------------
 
+
 def test_archive_of_running_task_closes_run(kanban_home):
     """Archiving a claimed task must close the in-flight run with
     outcome='reclaimed', not orphan it."""
@@ -2105,6 +2122,7 @@ def test_completed_event_payload_summary_none_when_missing(kanban_home):
 # Deep-scan fixes (Apr 2026 second audit)
 # -------------------------------------------------------------------------
 
+
 def test_complete_never_claimed_task_synthesizes_run(kanban_home):
     """complete_task on a ready (never-claimed) task must persist the
     handoff instead of silently dropping summary/metadata."""
@@ -2259,6 +2277,7 @@ def test_claim_task_recovers_from_invariant_leak(kanban_home):
 # Live-test findings (Apr 2026 third pass: auto-init, show --json carries runs)
 # -------------------------------------------------------------------------
 
+
 def test_cli_create_on_fresh_home_auto_inits(tmp_path, monkeypatch):
     """First CLI action on an empty HERMES_HOME must not error with
     'no such table: tasks' — init_db auto-runs now."""
@@ -2340,6 +2359,7 @@ def test_cli_show_json_carries_runs(kanban_home):
 # -------------------------------------------------------------------------
 # Pre-merge audit by @erosika (issue #16102 comment 4331125835) — fixes
 # -------------------------------------------------------------------------
+
 
 def test_unblock_invariant_recovery(kanban_home):
     """unblock_task must leave current_run_id NULL even if some other
@@ -2502,6 +2522,7 @@ def test_build_worker_context_role_history_bounded_to_5(kanban_home):
 
 @pytest.mark.skipif("linux" not in __import__("sys").platform,
                     reason="zombie detection is Linux-specific")
+
 def test_pid_alive_detects_zombie(kanban_home):
     """_pid_alive must return False for a zombie process.
 
@@ -2938,10 +2959,10 @@ def test_build_worker_context_includes_runtime_timeout_budget(kanban_home, monke
     assert "Terminal timeout: 3570s" in ctx
 
 
-
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills
 # ---------------------------------------------------------------------------
+
 
 def test_create_task_persists_skills(kanban_home):
     """Task.skills round-trips through create -> get_task."""
@@ -3423,6 +3444,7 @@ def test_legacy_migration_both_columns_already_present(tmp_path):
 # Gateway-embedded dispatcher: config, CLI warnings, daemon deprecation stub
 # ---------------------------------------------------------------------------
 
+
 def test_config_default_dispatch_in_gateway_is_true():
     """Default config must enable gateway-embedded dispatch out of the box.
     Flipping this default to false is a user-visible behaviour change and
@@ -3611,6 +3633,7 @@ def test_cli_daemon_help_marks_deprecated():
 # Gateway embedded dispatcher watcher
 # ---------------------------------------------------------------------------
 
+
 def test_gateway_dispatcher_watcher_respects_config_flag_off(monkeypatch):
     """dispatch_in_gateway=false -> watcher exits fast, no loop."""
     import asyncio
@@ -3675,6 +3698,7 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
 
 
 @pytest.mark.parametrize("corrupt_exc", ["sqlite", "guard"])
+
 def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     monkeypatch, tmp_path, caplog, corrupt_exc
 ):
@@ -3862,6 +3886,7 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
 # ---------------------------------------------------------------------------
 # Hallucination gate (created_cards verify + prose scan)
 # ---------------------------------------------------------------------------
+
 
 def test_complete_with_created_cards_all_verified_records_manifest(kanban_home):
     """A completion with created_cards that all exist + belong to this
@@ -4111,6 +4136,7 @@ def test_complete_prose_scan_ignores_existing_ids(kanban_home):
 # Recovery helpers (reclaim + reassign)
 # ---------------------------------------------------------------------------
 
+
 def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
     """Manual reclaim releases the claim, resets status, and emits a
     ``reclaimed`` event even when claim_expires has not passed."""
@@ -4254,6 +4280,7 @@ def test_reassign_task_with_reclaim_first_switches_profile(kanban_home):
 # as spawn failures, and the circuit breaker trips after N consecutive
 # failures regardless of which outcome caused them.
 # ---------------------------------------------------------------------------
+
 
 def test_enforce_max_runtime_increments_consecutive_failures(kanban_home, monkeypatch):
     """A single timeout increments consecutive_failures by 1 (was the
@@ -4648,6 +4675,196 @@ def test_protocol_violation_respects_max_retries_precedence(kanban_home):
             )
         _drive_protocol_violation(conn, lenient, 992104)
         assert kb.get_task(conn, lenient).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_protocol_violation_surfaces_worker_error(kanban_home):
+    """When the worker stamped its real error onto the open run before
+    exiting rc=0, the protocol-violation diagnostic surfaces it instead
+    of the bare "protocol violation" message — so a human sees the actual
+    cause (e.g. an inference/model-config failure) rather than a generic
+    handshake complaint.
+
+    Regression test for #46593.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Worker records its real error on the open run before exiting rc=0.
+        real_error = "litellm.AuthenticationError: invalid model 'gpt-bogus'"
+        with _kb.write_txn(conn):
+            stamped = _kb.record_worker_error(conn, tid, real_error)
+        assert stamped, "expected the open run to accept the worker error"
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in result_crashed
+        task = kb.get_task(conn, tid)
+        # First protocol violation retries (streak budget on main); error still stamped.
+        assert task.status == "ready"
+        # Both the protocol-violation handshake note AND the real error.
+        assert "kanban_complete" in (task.last_failure_error or "")
+        assert real_error in (task.last_failure_error or ""), (
+            f"expected the real worker error to be surfaced, "
+            f"got {task.last_failure_error!r}"
+        )
+
+        events = kb.list_events(conn, tid)
+        pv = [e for e in events if e.kind == "protocol_violation"]
+        assert pv, "expected a protocol_violation event"
+        assert pv[0].payload.get("worker_error") == real_error, (
+            f"expected worker_error in event payload, got {pv[0].payload}"
+        )
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_nonzero_exit_surfaces_worker_error(kanban_home):
+    """A worker that stamped its real error and then exited non-zero gets
+    the error folded into the ``crashed`` diagnostic too — surfacing the
+    actual cause is not special-cased to the protocol-violation branch.
+
+    Regression test for #46593 (whole bug class — clean-exit *and*
+    nonzero-exit reaps both surface the worker's error).
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="crashy", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999995
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        real_error = "RuntimeError: provider returned 400 invalid_request"
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, real_error)
+
+        # WIFEXITED with status 1 → raw wait-status (1 << 8).
+        _kb._record_worker_exit(fake_pid, 1 << 8)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert "exited with code 1" in (task.last_failure_error or "")
+        assert real_error in (task.last_failure_error or ""), (
+            f"nonzero-exit diagnostic should surface the worker error, "
+            f"got {task.last_failure_error!r}"
+        )
+        crashed = [e for e in kb.list_events(conn, tid) if e.kind == "crashed"]
+        assert crashed and crashed[0].payload.get("worker_error") == real_error
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_noop_after_terminal_transition(kanban_home):
+    """``record_worker_error`` is a no-op once the run is closed — a worker
+    that already called kanban_complete / kanban_block must not have its
+    terminal run's error column clobbered.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="done", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        # Worker completed normally — run closed, current_run_id cleared.
+        kb.complete_task(conn, tid, summary="all good")
+        with _kb.write_txn(conn):
+            stamped = _kb.record_worker_error(conn, tid, "spurious late error")
+        assert not stamped, "must not touch a closed run"
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_noop_on_empty_error(kanban_home):
+    """Empty errors are ignored at the DB layer too."""
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="empty", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, "") is False
+        assert _kb._open_run_error(conn, tid) is None
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_truncates_to_ctx_max(kanban_home):
+    """``record_worker_error`` caps stored text at ``_CTX_MAX_FIELD_BYTES``."""
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="big", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        long_error = "X" * (_kb._CTX_MAX_FIELD_BYTES + 100)
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, long_error)
+        stored = _kb._open_run_error(conn, tid)
+        assert stored is not None
+        assert len(stored) == _kb._CTX_MAX_FIELD_BYTES
+        assert stored == long_error[: _kb._CTX_MAX_FIELD_BYTES]
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_rate_limited_skips_worker_error(kanban_home, monkeypatch):
+    """Quota-wall requeues must not attach a stamped worker error — the exit
+    is a throttle, not a task failure worth a postmortem."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    conn = kb.connect()
+    try:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="rl-skip", assignee="worker")
+        kb.claim_task(conn, tid, claimer=f"{host}:w")
+        fake_pid = 888881
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        real_error = "litellm.RateLimitError: quota exhausted"
+        with _kb.write_txn(conn):
+            assert _kb.record_worker_error(conn, tid, real_error)
+
+        _kb._record_worker_exit(
+            fake_pid, _kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8,
+        )
+        kb.detect_crashed_workers(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert real_error not in (task.last_failure_error or "")
+
+        events = kb.list_events(conn, tid)
+        rl = [e for e in events if e.kind == "rate_limited"]
+        assert rl, "expected a rate_limited event"
+        assert "worker_error" not in (rl[0].payload or {}), (
+            f"rate-limited reap must not carry worker_error, got {rl[0].payload}"
+        )
     finally:
         conn.close()
 

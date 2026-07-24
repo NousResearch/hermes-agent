@@ -1330,6 +1330,32 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         _single_query_finalize_attempted_session_ids.add(session_id)
 
 
+def _stamp_kanban_worker_error_if_needed(result) -> None:
+    """Best-effort: stamp a dispatcher worker's fatal error onto its open run.
+
+    Dispatcher-spawned workers exit without ``kanban_complete`` /
+    ``kanban_block`` when inference or model-config fails; without this
+    stamp the reap classifier only reports a bare protocol-violation /
+    nonzero-exit diagnostic (#46593). No-op outside a kanban worker
+    (``record_worker_error_from_env`` gates on ``HERMES_KANBAN_TASK``),
+    after a terminal transition, on empty errors, and on rate-limit /
+    billing failures (those requeue rather than fail the task).
+    """
+    if not isinstance(result, dict):
+        return
+    error = result.get("error")
+    if not error:
+        return
+    if result.get("failure_reason") in ("rate_limit", "billing"):
+        return
+    try:
+        from tools.kanban_tools import record_worker_error_from_env
+
+        record_worker_error_from_env(str(error))
+    except Exception as exc:
+        logger.debug("kanban worker error-record failed: %s", exc)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
@@ -12783,6 +12809,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._voice_continuous = False
                     _cprint(f"\n{_DIM}Continuous voice mode stopped due to error.{_RST}")
 
+            # Ordinary dispatcher workers launch as ``chat -q`` (not ``-Q``),
+            # which lands here rather than in ``main``'s full-quiet branch.
+            # Stamp before returning so protocol-violation / crash reaps can
+            # surface the real cause (#46593 / sweeper review on #46985).
+            _stamp_kanban_worker_error_if_needed(result)
+
             # Handle interrupt - check if we were interrupted
             pending_message = None
             _interrupted_this_turn = bool(result and result.get("interrupted"))
@@ -16551,6 +16583,11 @@ def main(
                                 _run_kanban_goal_loop_q(cli, response)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
+
+                        # Goal-mode workers append ``-Q`` and take this full-
+                        # quiet branch; ordinary workers take ``chat()`` above.
+                        # Shared helper so both launch modes stamp (#46985).
+                        _stamp_kanban_worker_error_if_needed(result)
 
                         # Session ID goes to stderr so piped stdout is clean.
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)

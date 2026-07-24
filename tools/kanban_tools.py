@@ -320,6 +320,47 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
+def record_worker_error_from_env(error: str) -> bool:
+    """Best-effort: stamp the current worker's real error onto its open run.
+
+    A dispatcher-spawned worker that hits a fatal error (e.g. an
+    inference/model-config failure) but exits ``rc=0`` without calling
+    ``kanban_complete`` / ``kanban_block`` leaves the run ``running``. The
+    dispatcher's reap classifier then records a bare "protocol violation",
+    hiding the actual cause. Calling this before exit preserves the real error
+    on the open run so ``detect_crashed_workers`` can surface it.
+
+    Identity comes from the same env vars the dispatcher sets in
+    ``_default_spawn``: ``HERMES_KANBAN_TASK`` (required; absence is a no-op)
+    and ``HERMES_KANBAN_RUN_ID`` (pins the run so a stale/reclaimed run isn't
+    touched). A no-op once the worker reached a terminal transition (run
+    closed) — ``record_worker_error`` only writes to the open run. Returns
+    True when the open run row was updated.
+    """
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid or not error:
+        return False
+    try:
+        from hermes_cli import kanban_db as kb
+        run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+        try:
+            run_id = int(run_id_raw) if run_id_raw else None
+        except (TypeError, ValueError):
+            run_id = None
+        conn = kb.connect()
+        try:
+            with kb.write_txn(conn):
+                stamped = kb.record_worker_error(
+                    conn, tid, str(error), run_id=run_id,
+                )
+        finally:
+            conn.close()
+        return stamped
+    except Exception:
+        logger.debug("record_worker_error_from_env failed", exc_info=True)
+        return False
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 

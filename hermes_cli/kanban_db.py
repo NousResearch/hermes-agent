@@ -3802,6 +3802,61 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+def _open_run_error(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the error stamped on the task's still-open run, if any.
+
+    Used by ``detect_crashed_workers`` to recover a worker's real error
+    (recorded via ``record_worker_error``) when reaping a clean-exit
+    protocol violation. Returns ``None`` when there is no open run or no
+    error was stamped.
+    """
+    rid = _current_run_id(conn, task_id)
+    if not rid:
+        return None
+    row = conn.execute(
+        "SELECT error FROM task_runs WHERE id = ? AND ended_at IS NULL",
+        (int(rid),),
+    ).fetchone()
+    err = row["error"] if row else None
+    return err or None
+
+
+def record_worker_error(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error: str,
+    *,
+    run_id: Optional[int] = None,
+) -> bool:
+    """Stamp the worker's real error onto its still-open run, without ending it.
+
+    A kanban worker that hits a fatal error (e.g. an inference/model-config
+    failure) but exits ``rc=0`` without calling ``kanban_complete`` /
+    ``kanban_block`` leaves the run ``running``. The dispatcher's reap
+    classifier then sees a clean exit and records a bare "protocol violation",
+    hiding the actual cause. Calling this before exit preserves the real error
+    text on the open run so ``detect_crashed_workers`` can surface it in the
+    diagnostic instead of the generic message.
+
+    Best-effort and idempotent: only the *open* run (``ended_at IS NULL``) is
+    touched, so a worker that already reached a terminal transition (run
+    closed, ``current_run_id`` cleared) is a no-op — there's no risk of
+    clobbering a completed/blocked run's outcome. Returns True when a row was
+    updated.
+    """
+    if not error:
+        return False
+    rid = run_id if run_id is not None else _current_run_id(conn, task_id)
+    if not rid:
+        return False
+    cur = conn.execute(
+        "UPDATE task_runs SET error = ? "
+        "WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+        (str(error)[:_CTX_MAX_FIELD_BYTES], int(rid), task_id),
+    )
+    return cur.rowcount > 0
+
+
 def _synthesize_ended_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7404,6 +7459,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+
+            # If the worker stamped its real error onto the still-open run
+            # before exiting (see ``record_worker_error``), surface it so the
+            # diagnostic names the actual cause (e.g. an inference/model-config
+            # failure) instead of the opaque handshake/exit-code message. Skip
+            # rate-limited requeues — those are a clean throttle, not a failure
+            # worth a worker-error postmortem.
+            if not rate_limited_exit:
+                worker_error = _open_run_error(conn, row["id"])
+                if worker_error:
+                    error_text = f"{error_text}; last worker error: {worker_error}"
+                    event_payload["worker_error"] = worker_error
 
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "

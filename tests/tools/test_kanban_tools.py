@@ -199,6 +199,103 @@ def test_show_explicit_task_id(worker_env):
     assert d["task"]["id"] == other
 
 
+def test_record_worker_error_from_env_stamps_open_run(worker_env):
+    """The env-driven helper stamps the worker's real error onto its open
+    run so the dispatcher can surface it (see #46593)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    assert kt.record_worker_error_from_env("boom: model not found")
+    conn = kb.connect()
+    try:
+        assert kb._open_run_error(conn, worker_env) == "boom: model not found"
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_from_env_noop_without_task(monkeypatch, tmp_path):
+    """No-op outside a dispatcher-spawned worker (no HERMES_KANBAN_TASK)."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    assert kt.record_worker_error_from_env("ignored") is False
+
+
+def test_record_worker_error_from_env_noop_on_empty_error(worker_env):
+    """Empty error strings are ignored — nothing to stamp."""
+    from tools import kanban_tools as kt
+    assert kt.record_worker_error_from_env("") is False
+
+
+def test_record_worker_error_from_env_with_run_id(worker_env, monkeypatch):
+    """HERMES_KANBAN_RUN_ID pins the run row the dispatcher opened."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        run_id = kb._current_run_id(conn, worker_env)
+        assert run_id is not None
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    assert kt.record_worker_error_from_env("pinned run error")
+
+    conn = kb.connect()
+    try:
+        assert kb._open_run_error(conn, worker_env) == "pinned run error"
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_from_env_invalid_run_id_falls_back(worker_env, monkeypatch):
+    """Unparseable HERMES_KANBAN_RUN_ID falls back to the task's current run."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "not-a-run-id")
+    assert kt.record_worker_error_from_env("fallback error")
+
+    conn = kb.connect()
+    try:
+        assert kb._open_run_error(conn, worker_env) == "fallback error"
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_from_env_stale_run_id_noop(worker_env, monkeypatch):
+    """A run id that does not match the open run must not stamp anything."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "999999")
+    assert kt.record_worker_error_from_env("must not land") is False
+
+    conn = kb.connect()
+    try:
+        assert kb._open_run_error(conn, worker_env) is None
+    finally:
+        conn.close()
+
+
+def test_record_worker_error_from_env_truncates_long_error(worker_env):
+    """Oversized errors are capped at the kanban context field limit."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    long_error = "E" * (kb._CTX_MAX_FIELD_BYTES + 500)
+    assert kt.record_worker_error_from_env(long_error)
+
+    conn = kb.connect()
+    try:
+        stored = kb._open_run_error(conn, worker_env)
+        assert stored is not None
+        assert len(stored) == kb._CTX_MAX_FIELD_BYTES
+        assert stored == long_error[: kb._CTX_MAX_FIELD_BYTES]
+    finally:
+        conn.close()
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

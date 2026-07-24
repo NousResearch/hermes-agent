@@ -15,7 +15,7 @@ without any external IDP.  Exercises:
 from __future__ import annotations
 
 import pytest
-
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
@@ -139,6 +139,42 @@ def test_gated_static_asset_path_is_public(gated_app):
     # 404 not 401 — proves middleware let the request through to the
     # static-files mount, which then 404'd because the file isn't there.
     assert r.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/manifest.webmanifest",
+        "/sw.js",
+        "/pwa-icon-180.png",
+        "/pwa-icon-192.png",
+        "/pwa-icon-512.png",
+        "/pwa-icon.svg",
+    ],
+)
+def test_gated_pwa_asset_is_served_without_auth(monkeypatch, tmp_path, path):
+    """PWA metadata must remain fetchable before a browser has a session."""
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+
+    asset = tmp_path / path.removeprefix("/")
+    expected = b"{}" if path.endswith("webmanifest") else b"asset"
+    asset.write_bytes(expected)
+    (tmp_path / "index.html").write_text("<html></html>", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    monkeypatch.setattr(web_server, "WEB_DIST", tmp_path)
+
+    app = FastAPI()
+    app.state.auth_required = True
+    app.middleware("http")(gated_auth_middleware)
+    web_server.mount_spa(app)
+    response = TestClient(app).get(path, follow_redirects=False)
+
+    assert response.status_code == 200, (
+        f"{path} was not served through the auth gate: "
+        f"{response.status_code} {response.text}"
+    )
+    assert response.content == expected
+    assert "/login" not in response.headers.get("location", "")
 
 
 # ---------------------------------------------------------------------------

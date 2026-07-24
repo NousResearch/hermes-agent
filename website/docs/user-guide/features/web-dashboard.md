@@ -131,6 +131,19 @@ Close the browser tab and the PTY is reaped cleanly on the server. Re-opening sp
 
 To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a dashboard running on another machine instead of its own bundled backend, see the remote-backend section below.
 
+### Installing the dashboard as a mobile PWA
+
+The dashboard ships a web app manifest, iOS Home Screen metadata, app icons, and a conservative service worker for static assets. The service worker intentionally does **not** cache dashboard HTML, `/api/*` calls, or WebSocket traffic because the backend injects fresh auth/session bootstrap state into each HTML response.
+
+On iPhone or iPad:
+
+1. Expose the dashboard through a secure HTTPS URL. iOS requires HTTPS for Home Screen web apps except for localhost.
+2. Open the dashboard URL in Safari and sign in if your remote bind has the auth gate enabled.
+3. Tap **Share → Add to Home Screen**.
+4. Launch **Hermes** from the Home Screen. The app opens standalone and uses the same `/chat` PTY/WebSocket path as the browser dashboard.
+
+For remote access, run the dashboard bound to a reachable address with a real auth provider; do not expose an unauthenticated non-loopback dashboard.
+
 ### Connecting Hermes Desktop to a remote backend
 
 Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateway → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.

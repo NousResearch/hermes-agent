@@ -66,6 +66,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from agent.secret_scope import get_secret
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -727,9 +729,9 @@ def check_matrix_requirements() -> bool:
     forever and broke E2EE connect with ``No module named 'asyncpg'``
     (#31116).  Rebinds module-level type globals on success.
     """
-    token = os.getenv("MATRIX_ACCESS_TOKEN", "")
-    password = os.getenv("MATRIX_PASSWORD", "")
-    homeserver = os.getenv("MATRIX_HOMESERVER", "")
+    token = get_secret("MATRIX_ACCESS_TOKEN", "") or ""
+    password = get_secret("MATRIX_PASSWORD", "") or ""
+    homeserver = get_secret("MATRIX_HOMESERVER", "") or ""
 
     if not token and not password:
         logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")

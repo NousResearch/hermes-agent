@@ -130,6 +130,62 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
 
 
+
+
+def _simplify_markdown_for_simplex(text: str) -> str:
+    """Convert standard markdown to SimpleX-compatible formatting.
+
+    SimpleX supports: *bold*, ~strikethrough~, ```code```, links.
+    Does NOT support: **bold**, _italic_, # headers, > quotes, tables.
+    """
+    if not text:
+        return text
+
+    # Remove reasoning blocks that may have leaked through
+    text = re.sub(r'💭\s*\*\*Reasoning:?\*\*\s*```.*?```\s*', '', text, flags=re.DOTALL)
+
+    # **bold** → *bold*
+    text = re.sub(r'\*\*(.+?)\*\*', r'**', text)
+
+    # _italic_ → just text (SimpleX italic is unreliable)
+    # Only strip leading/trailing underscores from single words
+    # text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'', text)
+
+    # # Headers → bold text
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'**', text, flags=re.MULTILINE)
+
+    # > blockquotes → just text with prefix
+    text = re.sub(r'^>\s?(.*)$', r'│ ', text, flags=re.MULTILINE)
+
+    # Tables: convert to simple list format
+    # Detect table rows (lines starting/ending with |)
+    lines = text.split('\n')
+    result_lines = []
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('|') and stripped.endswith('|'):
+            if not in_table:
+                in_table = True
+            # Skip separator rows (|---|---|)
+            if re.match(r'^\|[-\s|]+\|$', stripped):
+                continue
+            # Convert table row to list item
+            cells = [c.strip() for c in stripped.strip('|').split('|')]
+            if cells:
+                result_lines.append('• ' + ' — '.join(cells))
+        else:
+            if in_table:
+                in_table = False
+                result_lines.append('')
+            result_lines.append(line)
+    text = '\n'.join(result_lines)
+
+    # Clean up excessive blank lines (3+ → 2)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
 # ---------------------------------------------------------------------------
 # SimpleX Adapter
 # ---------------------------------------------------------------------------
@@ -188,6 +244,9 @@ class SimplexAdapter(BasePlatformAdapter):
         # because we actually await responses to commands we send.
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._corr_counter = 0
+
+        # Track last inbound item_id per chat for reaction updates
+        self._last_inbound_item: Dict[str, tuple] = {}  # chat_id -> (chat_ref, item_id)
 
         # Text message batching — concatenate rapid-fire messages into one
         # event before dispatching, mirroring Telegram's batching.
@@ -469,6 +528,13 @@ class SimplexAdapter(BasePlatformAdapter):
         if resp_type:
             logger.debug("SimpleX: unhandled event type: %s", resp_type)
 
+    async def _add_reaction(self, chat_ref: str, item_id: int, emoji: str, add: bool = True) -> None:
+        """Add or remove an emoji reaction on a message."""
+        reaction = json.dumps({"type": "emoji", "emoji": emoji})
+        onoff = "on" if add else "off"
+        cmd = f"/_reaction {chat_ref} {item_id} {onoff} {reaction}"
+        await self._send_fire_and_forget(cmd)
+
     async def _handle_chat_item(self, chat_item: dict) -> None:
         """Process a single chat item from a newChatItems event."""
         chat_info = chat_item.get("chatInfo", {}) or {}
@@ -658,6 +724,17 @@ class SimplexAdapter(BasePlatformAdapter):
             (text or "")[:50],
         )
 
+        # React with 🚀 to acknowledge receipt
+        item_id = meta.get("itemId")
+        if item_id is not None and chat_id:
+            chat_prefix = "#" if is_group else "@"
+            chat_ref = f"{chat_prefix}{chat_id}"
+            self._last_inbound_item[chat_id] = (chat_ref, item_id)
+            try:
+                await self._add_reaction(chat_ref, item_id, "🚀")
+            except Exception:
+                logger.debug("SimpleX: failed to add rocket reaction")
+
         # Batch consecutive text messages so the agent sees one combined
         # message instead of dropping earlier ones when the user pastes
         # several lines in quick succession.
@@ -829,6 +906,7 @@ class SimplexAdapter(BasePlatformAdapter):
             content = re.sub(r"MEDIA:\S+", "", content).strip()
 
         if content:
+            content = _simplify_markdown_for_simplex(content)
             corr_id = self._make_corr_id()
             if chat_id.startswith("group:"):
                 # Structured form: addresses by numeric ID, and json.dumps
@@ -838,7 +916,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 )
                 cmd_str = f"/_send #{chat_id[6:]} json {composed}"
             else:
-                cmd_str = f"@{chat_id} {content}"
+                cmd_str = f"/_send @{chat_id} text {content}"
 
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 
@@ -850,6 +928,15 @@ class SimplexAdapter(BasePlatformAdapter):
                 media_result = await self.send_document(chat_id, path)
             if not media_result.success:
                 return media_result
+
+        # Update reaction: 🚀→✅ on the last inbound message
+        if chat_id in self._last_inbound_item:
+            ref, iid = self._last_inbound_item.pop(chat_id)
+            try:
+                await self._add_reaction(ref, iid, "🚀", add=False)  # remove rocket
+                await self._add_reaction(ref, iid, "✅", add=True)   # add checkmark
+            except Exception:
+                logger.debug("SimpleX: failed to update reaction to checkmark")
 
         return SendResult(success=True)
 
@@ -1198,8 +1285,7 @@ async def _standalone_send(
             )
             cmd_str = f"/_send #{group_id} json {composed}"
         else:
-            # Direct contacts are addressed by display name without brackets.
-            cmd_str = f"@{chat_id} {message}"
+            cmd_str = f"/_send @{chat_id} text {message}"
 
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",

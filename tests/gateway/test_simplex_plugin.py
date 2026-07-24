@@ -222,7 +222,7 @@ async def test_send_dm():
     result = await adapter.send("contact-42", "Hello, SimpleX!")
     mock_ws.send.assert_called_once()
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "@contact-42 Hello, SimpleX!"
+    assert payload["cmd"] == "/_send @contact-42 text Hello, SimpleX!"
     assert payload["corrId"].startswith(_CORR_PREFIX)
     assert result.success is True
 
@@ -349,7 +349,7 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
 
     result = await _standalone_send(pconfig, "contact-42", "hi")
     assert result == {"success": True, "platform": "simplex", "chat_id": "contact-42"}
-    assert sent_payloads[0]["cmd"] == "@contact-42 hi"
+    assert sent_payloads[0]["cmd"] == "/_send @contact-42 text hi"
 
 
 @pytest.mark.asyncio

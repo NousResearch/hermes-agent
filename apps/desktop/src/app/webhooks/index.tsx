@@ -458,9 +458,10 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                 </Field>
                 <div className="grid gap-1.5">
                   <span className="text-xs font-medium text-muted-foreground">{w.fieldDeliverOnly}</span>
-                  <label className="flex h-9 items-center gap-2 text-sm text-muted-foreground">
+                  <label className="flex min-h-9 items-start gap-2 pt-1.5 text-sm text-muted-foreground">
                     <input
                       checked={deliverOnly}
+                      className="mt-0.5"
                       onChange={e => setDeliverOnly(e.target.checked)}
                       type="checkbox"
                     />

@@ -574,10 +574,10 @@ export function useSessionActions({
       const listed = options?.listed ?? true
 
       try {
-        // Fresh tile → the caller's workspace when one was named (the sidebar
-        // "+" on a project/worktree lane), else the resolved new-session cwd
-        // (project scope → configured default).
-        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
+        // Fresh tile → the resolved new-session cwd (project/default), not the
+        // primary composer's live cwd. A drag from a project row pins `cwd` to
+        // that project's path so the new session is created inside it.
+        const params = await desktopSessionCreateParams((options?.cwd ?? resolveNewSessionCwd()).trim())
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 

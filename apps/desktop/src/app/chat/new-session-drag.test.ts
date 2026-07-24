@@ -76,8 +76,11 @@ const fakePointerEvent = () =>
     pointerId: 1
   }) as unknown as React.PointerEvent<HTMLElement>
 
-function engage(onCreate: (placement: NewSessionPlacement) => void = vi.fn()) {
-  startNewSessionDrag(onCreate, fakePointerEvent())
+function engage(
+  onCreate: (placement: NewSessionPlacement) => void = vi.fn(),
+  opts?: { cwd?: null | string; label?: string }
+) {
+  startNewSessionDrag(onCreate, fakePointerEvent(), opts)
   const spec = captured.spec
 
   if (!spec) {throw new Error('startDragSession was not called')}
@@ -183,5 +186,51 @@ describe('startNewSessionDrag', () => {
 
     spec.onEnd()
     expect(source.style.opacity).toBe('')
+  })
+
+  it('labels the ghost with the project name for a project-row drag', () => {
+    startNewSessionDrag(vi.fn(), fakePointerEvent(), { cwd: '/repo', label: 'New session in Hermes Browser' })
+    expect(captured.spec?.ghost).toEqual({ label: 'New session in Hermes Browser' })
+  })
+
+  it('pins the created session to the project cwd on a center drop', () => {
+    const onCreate = vi.fn()
+    subZonePosition.mockReturnValue('center')
+    const spec = engage(onCreate, { cwd: '/repo/hermes-browser' })
+
+    const hint = spec.resolveMove(400, 300, false)
+    spec.onCommit(hint)
+
+    expect(onCreate).toHaveBeenCalledWith({
+      anchor: 'workspace',
+      cwd: '/repo/hermes-browser',
+      dir: 'center'
+    } satisfies NewSessionPlacement)
+  })
+
+  it('pins the created session to the project cwd on an edge split', () => {
+    const onCreate = vi.fn()
+    subZonePosition.mockReturnValue('left')
+    const spec = engage(onCreate, { cwd: '/repo/hermes-browser' })
+
+    const hint = spec.resolveMove(20, 300, false)
+    spec.onCommit(hint)
+
+    expect(onCreate).toHaveBeenCalledWith({
+      anchor: 'workspace',
+      cwd: '/repo/hermes-browser',
+      dir: 'left'
+    } satisfies NewSessionPlacement)
+  })
+
+  it('leaves cwd undefined for a plain New session drag', () => {
+    const onCreate = vi.fn()
+    subZonePosition.mockReturnValue('center')
+    const spec = engage(onCreate)
+
+    const hint = spec.resolveMove(400, 300, false)
+    spec.onCommit(hint)
+
+    expect(onCreate).toHaveBeenCalledWith({ anchor: 'workspace', cwd: undefined, dir: 'center' })
   })
 })

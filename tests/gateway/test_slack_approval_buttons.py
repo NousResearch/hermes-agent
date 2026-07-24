@@ -678,6 +678,44 @@ class TestSlackThreadContext:
         # Marked as the thread parent.
         assert "[thread parent]" in context
 
+    def test_render_message_text_extracts_legacy_attachment_urls(self):
+        """Legacy attachment URL fields and nested Block Kit links survive."""
+        expected_urls = (
+            "https://alerts.example/incident/42",
+            "https://alerts.example/service",
+            "https://alerts.example/events/42",
+            "https://alerts.example/runbook/42",
+        )
+        rendered = SlackAdapter._render_message_text(
+            {
+                "text": "Incident triggered",
+                "attachments": [
+                    {
+                        "title": "Incident details",
+                        "title_link": expected_urls[0],
+                        "author_name": "Alert service",
+                        "author_link": expected_urls[1],
+                        "from_url": expected_urls[2],
+                        "text": "Threshold exceeded",
+                        "blocks": [
+                            {
+                                "type": "actions",
+                                "elements": [
+                                    {
+                                        "type": "button",
+                                        "url": expected_urls[3],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
+
+        for url in expected_urls:
+            assert url in rendered
+
     @pytest.mark.asyncio
     async def test_fetch_thread_context_includes_blocks_only_parent(self):
         """A parent message with empty ``text`` but non-empty ``blocks`` must

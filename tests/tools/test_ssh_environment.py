@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -133,6 +134,133 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="h", user="u", port=23).control_socket != base
         assert SSHEnvironment(host="h", user="v", port=22).control_socket != base
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
+
+
+class TestSSHBulkUploadTarCompatibility:
+    def _make_env(self, supports_no_overwrite_dir):
+        env = object.__new__(SSHEnvironment)
+        env.host = "h"
+        env.user = "u"
+        env.port = 22
+        env.key_path = ""
+        env.control_socket = Path("/tmp/hermes-test.sock")
+        env._remote_home = "/Users/devhub"
+        env._build_ssh_command = lambda extra_args=None: ["ssh"] + (extra_args or [])
+        env._remote_tar_supports_no_overwrite_dir = lambda: supports_no_overwrite_dir
+        return env
+
+    def _fake_popen(self, calls):
+        class Proc:
+            def __init__(self, args):
+                self.args = args
+                self.returncode = 0
+                self.stdout = MagicMock()
+                self.stderr = MagicMock()
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return (b"", b"")
+
+            def wait(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        def _popen(args, **kwargs):
+            calls.append(args)
+            return Proc(args)
+
+        return _popen
+
+    def test_bulk_upload_uses_gnu_no_overwrite_dir_when_supported(self, tmp_path, monkeypatch):
+        src = tmp_path / "file.txt"
+        src.write_text("data")
+        env = self._make_env(supports_no_overwrite_dir=True)
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0))
+        popen_calls = []
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen", self._fake_popen(popen_calls))
+
+        env._ssh_bulk_upload([(str(src), "/Users/devhub/.hermes/file.txt")])
+
+        assert any("tar xf - --no-overwrite-dir -C /Users/devhub/.hermes" in call for call in popen_calls)
+
+    def test_bulk_upload_falls_back_for_bsd_tar_without_no_overwrite_dir(self, tmp_path, monkeypatch):
+        src = tmp_path / "file.txt"
+        src.write_text("data")
+        env = self._make_env(supports_no_overwrite_dir=False)
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0))
+        popen_calls = []
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen", self._fake_popen(popen_calls))
+
+        env._ssh_bulk_upload([(str(src), "/Users/devhub/.hermes/file.txt")])
+
+        assert any("tar xmf - -C /Users/devhub/.hermes" in call for call in popen_calls)
+        assert not any("--no-overwrite-dir" in " ".join(call) for call in popen_calls)
+
+    def test_bulk_upload_archives_files_not_staging_root(self, tmp_path, monkeypatch):
+        src = tmp_path / "file.txt"
+        src.write_text("data")
+        env = self._make_env(supports_no_overwrite_dir=False)
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0))
+        popen_calls = []
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen", self._fake_popen(popen_calls))
+
+        env._ssh_bulk_upload([(str(src), "/Users/devhub/.hermes/nested/file.txt")])
+
+        tar_cmd = popen_calls[0]
+        assert tar_cmd[:4] == ["tar", "-chf", "-", "-C"]
+        assert tar_cmd[-1] == "nested/file.txt"
+        assert "." not in tar_cmd[5:]
+
+    def _make_probe_env(self):
+        env = object.__new__(SSHEnvironment)
+        env._remote_tar_no_overwrite_dir_support = None
+        env._build_ssh_command = lambda extra_args=None: ["ssh"] + (extra_args or [])
+        return env
+
+    def test_remote_tar_support_probe_caches_success(self, monkeypatch):
+        env = self._make_probe_env()
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess(args, 0)
+
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", fake_run)
+
+        assert env._remote_tar_supports_no_overwrite_dir() is True
+        assert env._remote_tar_supports_no_overwrite_dir() is True
+        assert len(calls) == 1
+        assert calls[0][0][-1] == "tar --no-overwrite-dir --help >/dev/null 2>&1"
+        assert calls[0][1]["stdin"] is subprocess.DEVNULL
+
+    def test_remote_tar_support_probe_caches_failure(self, monkeypatch):
+        env = self._make_probe_env()
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 1)
+
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", fake_run)
+
+        assert env._remote_tar_supports_no_overwrite_dir() is False
+        assert env._remote_tar_supports_no_overwrite_dir() is False
+        assert len(calls) == 1
+
+    def test_remote_tar_support_probe_falls_back_on_exception(self, monkeypatch):
+        env = self._make_probe_env()
+
+        def fake_run(*args, **kwargs):
+            raise OSError("ssh failed")
+
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", fake_run)
+
+        assert env._remote_tar_supports_no_overwrite_dir() is False
+        assert env._remote_tar_no_overwrite_dir_support is False
 
 
 class TestTerminalToolConfig:

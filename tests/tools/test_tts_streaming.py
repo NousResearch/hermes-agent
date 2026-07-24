@@ -229,6 +229,41 @@ def test_streamer_path_handles_misaligned_pcm_chunks(monkeypatch):
     assert done.is_set()
 
 
+def test_streamer_path_survives_portaudio_write_error(monkeypatch):
+    """Regression: a transient PortAudio error on output_stream.write must
+    not kill the playback thread or hang the pipeline join.
+
+    PortAudio/Core Audio can raise errors mid-stream (e.g. PaErrorCode -9986
+    "Internal PortAudio error" on macOS device state changes).  The worker
+    must log and break, not crash — otherwise _playback_done never fires.
+    """
+    from tools import tts_tool
+
+    class _Fake(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            yield b"\x01\x00" * 50
+            yield b"\x02\x00" * 50
+
+    sd, out = _sd_mock()
+    out.write.side_effect = OSError("Internal PortAudio error [PaErrorCode -9986]")
+    q = _drain_queue(["A complete sentence for testing."])
+    stop, done = threading.Event(), threading.Event()
+
+    with patch("tools.tts_streaming.resolve_streaming_provider",
+               return_value=_Fake({}, {})), \
+         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
+        tts_tool.stream_tts_to_speaker(q, stop, done)
+
+    assert out.write.called, "expected at least one write attempt"
+    assert done.is_set(), "done event must fire even after PortAudio error"
+
+
 def test_stop_event_aborts_streaming(monkeypatch):
     from tools import tts_tool
 

@@ -123,6 +123,54 @@ class TestParseProfileRoutes:
         assert not routes[0].enabled
         assert routes[1].enabled
 
+    def test_coerces_yaml_native_int_ids_to_str(self):
+        # PyYAML loads unquoted snowflakes as int; inbound SessionSource IDs are str.
+        raw = [
+            {
+                "name": "server",
+                "platform": "discord",
+                "profile": "p",
+                "guild_id": 111,
+                "chat_id": 222,
+                "thread_id": 333,
+            },
+        ]
+        routes = parse_profile_routes(raw)
+        assert routes[0].guild_id == "111"
+        assert routes[0].chat_id == "222"
+        assert routes[0].thread_id == "333"
+        assert all(isinstance(v, str) for v in (
+            routes[0].guild_id, routes[0].chat_id, routes[0].thread_id,
+        ))
+        matched = match_profile_route(
+            routes, "discord", guild_id="111", chat_id="222", thread_id="333",
+        )
+        assert matched is not None
+        assert matched.name == "server"
+
+    def test_coerces_negative_telegram_chat_id(self):
+        raw = [
+            {
+                "name": "tg",
+                "platform": "telegram",
+                "profile": "p",
+                "chat_id": -1001234567890,
+            },
+        ]
+        routes = parse_profile_routes(raw)
+        assert routes[0].chat_id == "-1001234567890"
+        matched = match_profile_route(routes, "telegram", chat_id="-1001234567890")
+        assert matched is not None
+        assert matched.name == "tg"
+
+    def test_omitted_ids_remain_none(self):
+        routes = parse_profile_routes([
+            {"name": "platform-only", "platform": "discord", "profile": "p"},
+        ])
+        assert routes[0].guild_id is None
+        assert routes[0].chat_id is None
+        assert routes[0].thread_id is None
+
 
 class TestMatchProfileRoute:
     def test_no_routes(self):

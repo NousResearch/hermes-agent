@@ -18,6 +18,10 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from agent.image_data_url import (
+    INVALID_IMAGE_ATTACHMENT_NOTE,
+    sanitize_image_data_url,
+)
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
@@ -120,7 +124,19 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
                 url = image_ref
             if not isinstance(url, str) or not url:
                 continue
-            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            sanitized_url, removed = sanitize_image_data_url(url)
+            if removed:
+                converted.append({
+                    "type": text_type,
+                    "text": INVALID_IMAGE_ATTACHMENT_NOTE,
+                })
+                continue
+            if not isinstance(sanitized_url, str) or not sanitized_url:
+                continue
+            image_part: Dict[str, Any] = {
+                "type": "input_image",
+                "image_url": sanitized_url,
+            }
             if isinstance(detail, str) and detail.strip():
                 image_part["detail"] = detail.strip()
             converted.append(image_part)
@@ -797,7 +813,19 @@ def _preflight_codex_input_items(
                             url = image_ref
                         if not isinstance(url, str):
                             url = str(url or "")
-                        image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                        sanitized_url, removed = sanitize_image_data_url(url)
+                        if removed:
+                            validated.append({
+                                "type": text_type,
+                                "text": INVALID_IMAGE_ATTACHMENT_NOTE,
+                            })
+                            continue
+                        if not isinstance(sanitized_url, str) or not sanitized_url:
+                            continue
+                        image_part: Dict[str, Any] = {
+                            "type": "input_image",
+                            "image_url": sanitized_url,
+                        }
                         if isinstance(detail, str) and detail.strip():
                             image_part["detail"] = detail.strip()
                         validated.append(image_part)

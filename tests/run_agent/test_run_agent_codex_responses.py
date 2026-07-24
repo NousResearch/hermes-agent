@@ -1,3 +1,4 @@
+import base64
 import sys
 import types
 from types import SimpleNamespace
@@ -244,6 +245,22 @@ def _codex_request_kwargs():
         "tools": None,
         "store": False,
     }
+
+
+def _valid_png_data_url():
+    png_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+    )
+    return "data:image/png;base64," + base64.b64encode(png_bytes).decode(
+        "ascii"
+    )
+
+
+def _invalid_jpeg_data_url():
+    bad_bytes = b"\x10JFIF\x00\x01\x01\x01"
+    return "data:image/jpeg;base64," + base64.b64encode(bad_bytes).decode(
+        "ascii"
+    )
 
 
 def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
@@ -1671,6 +1688,113 @@ def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
     assert function_call["call_id"] == "call_pair123"
     assert "id" not in function_call
     assert function_output["call_id"] == "call_pair123"
+
+
+def test_chat_messages_to_responses_input_replaces_invalid_image_data_url(
+    monkeypatch,
+):
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import (
+        _chat_messages_to_responses_input,
+    )
+    from agent.image_data_url import INVALID_IMAGE_ATTACHMENT_NOTE
+
+    bad_url = _invalid_jpeg_data_url()
+    items = _chat_messages_to_responses_input(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": bad_url},
+                    },
+                    {"type": "text", "text": "after"},
+                ],
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "before"},
+                {
+                    "type": "input_text",
+                    "text": INVALID_IMAGE_ATTACHMENT_NOTE,
+                },
+                {"type": "input_text", "text": "after"},
+            ],
+        }
+    ]
+    assert bad_url not in str(items)
+
+
+def test_preflight_codex_api_kwargs_preserves_valid_image_data_url(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    png_url = _valid_png_data_url()
+    preflight = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "see"},
+                        {"type": "input_image", "image_url": png_url},
+                    ],
+                }
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    assert preflight["input"][0]["content"] == [
+        {"type": "input_text", "text": "see"},
+        {"type": "input_image", "image_url": png_url},
+    ]
+
+
+def test_preflight_codex_api_kwargs_replaces_invalid_image_data_url(
+    monkeypatch,
+):
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    from agent.image_data_url import INVALID_IMAGE_ATTACHMENT_NOTE
+
+    bad_url = _invalid_jpeg_data_url()
+    preflight = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "before"},
+                        {"type": "input_image", "image_url": bad_url},
+                        {"type": "input_text", "text": "after"},
+                    ],
+                }
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    content = preflight["input"][0]["content"]
+    assert content == [
+        {"type": "input_text", "text": "before"},
+        {"type": "input_text", "text": INVALID_IMAGE_ATTACHMENT_NOTE},
+        {"type": "input_text", "text": "after"},
+    ]
+    assert bad_url not in str(content)
 
 
 def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):

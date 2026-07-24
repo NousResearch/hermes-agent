@@ -1589,6 +1589,36 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Local model server (Ollama/vLLM via config auxiliary.local_model).
+    # Without this short-circuit a main-loop `--provider local` falls through
+    # to the generic env/config path and silently lands on OpenRouter/Codex
+    # instead of localhost. A user-saved custom provider named "local" keeps
+    # priority — the generic named-custom path below resolves it with its
+    # saved credentials.
+    if requested_provider == "local" and not _get_named_custom_provider("local"):
+        _local_cfg: dict = {}
+        try:
+            from hermes_cli.config import load_config
+
+            _raw = (load_config().get("auxiliary") or {}).get("local_model")
+            if isinstance(_raw, dict):
+                _local_cfg = _raw
+        except Exception:
+            _local_cfg = {}
+        _local_base = (
+            os.getenv("HERMES_LOCAL_AUX_BASE_URL", "").strip()
+            or str(_local_cfg.get("base_url", "")).strip()
+            or "http://localhost:11434/v1"
+        )
+        return {
+            "provider": "local",
+            "api_mode": "chat_completions",
+            "base_url": ((explicit_base_url or "").strip() or _local_base).rstrip("/"),
+            "api_key": (explicit_api_key or "").strip() or "no-key-required",
+            "source": "local-aux-config",
+            "requested_provider": requested_provider,
+        }
+
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
     # return provider="custom" with chat_completions api_mode and no valid key).

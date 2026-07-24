@@ -3118,6 +3118,10 @@ def create_task(
                     ),
                 )
                 for pid in parents:
+                    if _would_cycle(conn, pid, task_id):
+                        raise ValueError(
+                            f"linking {pid} -> {task_id} would create a cycle"
+                        )
                     conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),

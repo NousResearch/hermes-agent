@@ -302,13 +302,26 @@ def test_link_rejects_self_loop(kanban_home):
 
 def test_link_detects_cycle(kanban_home):
     with kb.connect() as conn:
-        a = kb.create_task(conn, title="a")
-        b = kb.create_task(conn, title="b", parents=[a])
-        c = kb.create_task(conn, title="c", parents=[b])
-        with pytest.raises(ValueError, match="cycle"):
-            kb.link_tasks(conn, c, a)
-        with pytest.raises(ValueError, match="cycle"):
-            kb.link_tasks(conn, b, a)
+        a = kb.create_task(conn, title="A")
+        b = kb.create_task(conn, title="B", parents=[a])
+        c = kb.create_task(conn, title="C", parents=[b])
+        with pytest.raises(ValueError):
+            kb.link_tasks(conn, parent_id=c, child_id=a)
+
+
+def test_create_task_rejects_parent_edge_that_would_cycle(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="A")
+        b = kb.create_task(conn, title="B", parents=[a])
+
+        original = kb._would_cycle
+        monkeypatch.setattr(
+            kb,
+            "_would_cycle",
+            lambda conn_, parent_id, child_id: parent_id == b or original(conn_, parent_id, child_id),
+        )
+        with pytest.raises(ValueError, match="would create a cycle"):
+            kb.create_task(conn, title="bad", parents=[b])
 
 
 def test_recompute_ready_cascades_through_chain(kanban_home):

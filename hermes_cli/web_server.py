@@ -928,10 +928,11 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
     # it into the agent tab rather than spawning a one-field orphan category.
     "onboarding": "agent",
-    # Only `telegram.reactions` currently lives under telegram — fold it in
-    # with the other messaging-platform config (discord) so it isn't an
-    # orphan tab of one field.
-    "telegram": "discord",
+    # Platform-specific settings share one Messaging tab.  Do not fold
+    # Telegram into a Discord-labeled category: the dashboard category name
+    # should describe the mixed-platform contents, not one member platform.
+    "discord": "messaging",
+    "telegram": "messaging",
     # `mcp.auto_reload_on_config_change` is the only schema-surfaced mcp
     # runtime field (server definitions live under mcp_servers, edited via
     # the MCP tab) — fold it into the agent tab rather than spawning a
@@ -947,7 +948,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
-    "tts", "stt", "logging", "discord", "auxiliary",
+    "tts", "stt", "logging", "messaging", "auxiliary",
 ]
 
 

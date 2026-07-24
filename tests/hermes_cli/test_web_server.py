@@ -2717,6 +2717,10 @@ class TestWebServerEndpoints:
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
+        assert "messaging" in data["category_order"]
+        assert schema["discord.require_mention"]["category"] == "messaging"
+        assert schema["telegram.reactions"]["category"] == "messaging"
+        assert "discord" not in data["category_order"]
 
     def _schema_provider_options(self, key):
         resp = self.client.get("/api/config/schema")

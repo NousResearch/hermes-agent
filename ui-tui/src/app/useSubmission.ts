@@ -305,16 +305,22 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const submit = useCallback(
     (value: string) => {
+      let submitValue = value
+
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
         const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
 
         if (next !== null) {
-          return composerActions.setInput(next)
+          if (!looksLikeSlashCommand(value)) {
+            return composerActions.setInput(next)
+          }
+
+          submitValue = next
         }
       }
 
-      if (!value.trim() && !composerState.inputBuf.length) {
+      if (!submitValue.trim() && !composerState.inputBuf.length) {
         const live = getUiState()
         const now = Date.now()
         const doubleTap = now - lastEmptyAt.current < DOUBLE_ENTER_MS
@@ -344,13 +350,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       lastEmptyAt.current = 0
 
-      if (value.endsWith('\\')) {
-        composerActions.setInputBuf(prev => [...prev, value.slice(0, -1)])
+      if (submitValue.endsWith('\\')) {
+        composerActions.setInputBuf(prev => [...prev, submitValue.slice(0, -1)])
 
         return composerActions.setInput('')
       }
 
-      dispatchSubmission([...composerState.inputBuf, value].join('\n'))
+      dispatchSubmission([...composerState.inputBuf, submitValue].join('\n'))
     },
     [appendMessage, composerActions, composerRefs, composerState, dispatchSubmission, gw, sys]
   )

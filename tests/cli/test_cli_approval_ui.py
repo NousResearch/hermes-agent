@@ -398,6 +398,37 @@ class TestCliApprovalUi:
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
         assert not cli._background_tasks
 
+    def test_background_agent_inherits_effective_cli_activity_flags(self):
+        cli = _make_background_cli_stub()
+        cli.agent = SimpleNamespace(
+            tool_reasons_enabled=False,
+            tool_result_summaries_enabled=True,
+        )
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self._print_fn = None
+                self.thinking_callback = None
+
+            def run_conversation(self, **_kwargs):
+                return {"final_response": "done"}
+
+        with (
+            patch.object(cli_module, "AIAgent", FakeAgent),
+            patch.object(cli_module, "_cprint"),
+            patch.object(cli_module, "ChatConsole") as chat_console,
+        ):
+            chat_console.return_value.print = MagicMock()
+            cli._handle_background_command("/background verify activity")
+            for thread in list(cli._background_tasks.values()):
+                thread.join(timeout=10)
+
+        assert captured["tool_reasons_enabled"] is False
+        assert captured["tool_result_summaries_enabled"] is True
+        assert not cli._background_tasks
+
 
 def _make_real_paint_cli_stub():
     """A stub whose modal repaint path runs the REAL _paint_now / _invalidate.

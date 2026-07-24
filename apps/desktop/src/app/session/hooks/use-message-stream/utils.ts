@@ -86,6 +86,7 @@ export const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.start',
   'subagent.thinking',
   'subagent.tool',
+  'subagent.tool.completed',
   'subagent.progress',
   'subagent.complete'
 ])

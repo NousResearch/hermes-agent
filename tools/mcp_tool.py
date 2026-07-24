@@ -6061,6 +6061,19 @@ def refresh_agent_mcp_tools(
         )
         or []
     )
+    # Match the agent's session-static schema contract for late MCP discovery.
+    # A config edit during a turn must not alter existing snapshots; use the
+    # flag captured by agent_init rather than reading config here.
+    staged_reason_names: set[str] = set()
+    try:
+        from agent.tool_activity import augment_tool_schemas
+        new_defs = augment_tool_schemas(
+            new_defs,
+            enabled=bool(getattr(agent, "tool_reasons_enabled", False)),
+            activity_tool_names=staged_reason_names,
+        )
+    except Exception:
+        logger.debug("MCP tool-reason augmentation skipped", exc_info=True)
     new_names = {t["function"]["name"] for t in new_defs}
 
     # Re-append the post-build injected families that get_tool_definitions does
@@ -6072,6 +6085,15 @@ def refresh_agent_mcp_tools(
     # half-swap. ``staged_engine_names`` are the context-engine routing names
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
+    try:
+        from agent.tool_activity import augment_tool_schemas
+        new_defs = augment_tool_schemas(
+            new_defs,
+            enabled=bool(getattr(agent, "tool_reasons_enabled", False)),
+            activity_tool_names=staged_reason_names,
+        )
+    except Exception:
+        logger.debug("Re-injected tool-reason augmentation skipped", exc_info=True)
 
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
@@ -6093,10 +6115,12 @@ def refresh_agent_mcp_tools(
         if new_names == current:
             # No change → leave the live snapshot untouched (no churn), but
             # record the generation so an in-flight older caller can't clobber.
+            agent._tool_reason_tool_names = staged_reason_names
             agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
             return set()
         agent.tools = new_defs
         agent.valid_tool_names = new_names
+        agent._tool_reason_tool_names = staged_reason_names
         # Publish context-engine routing names atomically with the snapshot.
         engine_names = getattr(agent, "_context_engine_tool_names", None)
         if isinstance(engine_names, set):

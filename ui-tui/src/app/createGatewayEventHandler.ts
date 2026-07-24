@@ -23,7 +23,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
+import type { ActiveSubagentToolCall, Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -357,6 +357,34 @@ const pushUnique =
 const pushThinking = pushUnique(6)
 const pushNote = pushUnique(6)
 const pushTool = pushUnique(8)
+
+const startSubagentTool = (
+  active: ActiveSubagentToolCall[] = [],
+  payload: { call_id?: string; tool_call_id?: string; tool_name?: string },
+  line: string
+) => {
+  const name = payload.tool_name || 'delegate_task'
+  const stableId = payload.tool_call_id || payload.call_id
+  const id = stableId || `legacy:${name}:${active.length}`
+
+  return [...active.filter(tool => tool.id !== id), { id, line, name }]
+}
+
+const completeSubagentTool = (
+  active: ActiveSubagentToolCall[] = [],
+  payload: { call_id?: string; tool_call_id?: string; tool_name?: string }
+) => {
+  const stableId = payload.tool_call_id || payload.call_id
+
+  if (stableId) {
+    return active.filter(tool => tool.id !== stableId)
+  }
+
+  const name = payload.tool_name || 'delegate_task'
+  const legacyIndex = active.findIndex(tool => tool.name === name)
+
+  return legacyIndex < 0 ? active : active.filter((_tool, index) => index !== legacyIndex)
+}
 
 const KNOWN_SUBAGENT_STATUSES = new Set<SubagentStatus>([
   'completed',
@@ -1052,7 +1080,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
           ev.payload.context ?? '',
-          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined
+          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined,
+          ev.payload.reason
         )
 
         return
@@ -1075,17 +1104,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             inlineDiffText,
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.error,
-            ev.payload.duration_s,
+            ev.payload.error || (ev.payload.is_error ? 'Tool failed' : undefined),
+            ev.payload.duration_seconds ?? ev.payload.duration_s,
             resultText
           )
         } else {
           turnController.recordToolComplete(
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.error,
+            ev.payload.error || (ev.payload.is_error ? 'Tool failed' : undefined),
             ev.payload.summary,
-            ev.payload.duration_s,
+            ev.payload.duration_seconds ?? ev.payload.duration_s,
             ev.payload.todos,
             resultText
           )
@@ -1221,10 +1250,36 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         turnController.upsertSubagent(
           ev.payload,
-          c => ({
-            status: keepTerminalElseRunning(c.status),
-            tools: pushTool(c.tools, line)
-          }),
+          c =>
+            isTerminalStatus(c.status)
+              ? {}
+              : {
+                  activeToolCalls: startSubagentTool(c.activeToolCalls, ev.payload, line),
+                  status: 'running',
+                  tools: pushTool(c.tools, line)
+                },
+          { createIfMissing: false }
+        )
+
+        return
+      }
+
+      case 'subagent.tool.completed': {
+        const detail = [ev.payload.reason, ev.payload.summary]
+          .map(value => String(value ?? '').trim())
+          .filter(Boolean)
+          .join(' — ')
+
+        turnController.upsertSubagent(
+          ev.payload,
+          c =>
+            isTerminalStatus(c.status)
+              ? {}
+              : {
+                  activeToolCalls: completeSubagentTool(c.activeToolCalls, ev.payload),
+                  notes: detail ? pushNote(c.notes, detail) : c.notes,
+                  status: 'running'
+                },
           { createIfMissing: false }
         )
 
@@ -1254,6 +1309,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.upsertSubagent(
           ev.payload,
           c => ({
+            activeToolCalls: [],
             durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
             status: normalizeSubagentStatus(ev.payload.status, 'completed'),
             summary: ev.payload.summary || ev.payload.text || c.summary

@@ -826,6 +826,128 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert events[1][0] == "tool.complete"
     assert "args_text" not in events[0][2]
     assert "result_text" not in events[1][2]
+    assert "result" not in events[1][2]
+    assert "summary" not in events[1][2]
+
+
+def test_tui_tool_completion_never_emits_raw_result_or_derives_summary(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "privacy-test",
+        {"tool_progress_mode": "verbose", "tool_started_at": {}},
+    )
+
+    sentinel = "authorization=Bearer super-secret-token"
+    server._on_tool_complete(
+        "privacy-test",
+        "tool-1",
+        "terminal",
+        {"command": "print secret"},
+        sentinel,
+    )
+
+    assert events[0][0] == "tool.complete"
+    payload = events[0][2]
+    assert "result" not in payload
+    assert "result_text" not in payload
+    assert "summary" not in payload
+    assert sentinel not in json.dumps(payload)
+
+
+def test_todo_completion_uses_safe_arguments_and_never_raw_result(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "todo-privacy-test",
+        {"tool_progress_mode": "all", "tool_started_at": {}},
+    )
+
+    raw_result = json.dumps(
+        {
+            "todos": [
+                {
+                    "id": "raw",
+                    "content": "PRIVATE_RESULT_MARKER authorization=Bearer CREDENTIAL_MARKER",
+                    "status": "pending",
+                }
+            ]
+        }
+    )
+    safe_todos = [{"id": "safe", "content": "Inspect the safe projection", "status": "in_progress"}]
+    server._on_tool_complete(
+        "todo-privacy-test",
+        "todo-1",
+        "todo",
+        {"todos": safe_todos},
+        raw_result,
+        summary="todo: 1 item",
+        status="completed",
+        is_error=False,
+    )
+
+    assert len(events) == 1
+    payload = events[0][2]
+    assert payload["todos"] == safe_todos
+    assert "PRIVATE_RESULT_MARKER" not in json.dumps(payload)
+    assert "CREDENTIAL_MARKER" not in json.dumps(payload)
+
+
+def test_tool_events_preserve_rich_surface_metadata(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "rich-tool-test",
+        {"tool_progress_mode": "all", "tool_started_at": {}},
+    )
+
+    server._on_tool_start(
+        "rich-tool-test",
+        "tool-1",
+        "search_files",
+        {"path": "src"},
+        reason="Find the relevant source files",
+        status="running",
+    )
+    server._on_tool_complete(
+        "rich-tool-test",
+        "tool-1",
+        "search_files",
+        {"path": "src"},
+        '{"output":"src/app.ts"}',
+        summary="Found 1 source file",
+        status="completed",
+        is_error=False,
+        duration_seconds=1.25,
+    )
+
+    assert events[0] == (
+        "tool.start",
+        "rich-tool-test",
+        {
+            "tool_id": "tool-1",
+            "tool_call_id": "tool-1",
+            "name": "search_files",
+            "context": "Searching files",
+            "reason": "Find the relevant source files",
+            "status": "running",
+        },
+    )
+    assert events[1][0:2] == ("tool.complete", "rich-tool-test")
+    assert events[1][2]["tool_call_id"] == "tool-1"
+    assert events[1][2]["summary"] == "Found 1 source file"
+    assert events[1][2]["status"] == "completed"
+    assert events[1][2]["is_error"] is False
+    assert events[1][2]["duration_seconds"] == 1.25
 
 
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
@@ -886,6 +1008,40 @@ def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     assert events[0][2]["name"] == "clarify"
     assert events[0][2]["tool_id"] == "tool-clarify"
     assert events[1][2]["result"]["user_response"] == "A"
+
+
+def test_tui_clarify_completion_result_is_allowlisted(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "clarify-safe-result-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    args = {"question": "Pick one", "choices": ["A", "B"]}
+    result = json.dumps(
+        {
+            "question": "Pick one",
+            "choices_offered": ["A", "B"],
+            "user_response": "A",
+            "internal_context": "must not cross the presentation boundary",
+        }
+    )
+
+    server._on_tool_complete(
+        "clarify-safe-result-test", "tool-clarify", "clarify", args, result
+    )
+
+    assert len(events) == 1
+    assert events[0][0] == "tool.complete"
+    assert events[0][2]["result"] == {
+        "question": "Pick one",
+        "choices_offered": ["A", "B"],
+        "user_response": "A",
+    }
 
 
 def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
@@ -2642,6 +2798,63 @@ def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     assert kwargs["fallback_model"] == chain
 
 
+def test_preview_restart_callbacks_never_emit_raw_result_and_respect_summary_flag(monkeypatch):
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload: emitted.append((event, sid, payload)),
+    )
+    raw = json.dumps({"output": "RAW_RESULT_SHOULD_NOT_BE_PRESENT", "exit_code": 0})
+
+    disabled = server._preview_restart_callbacks("parent", "task", show_summaries=False)
+    disabled["tool_start_callback"]("call-disabled", "terminal", {"command": "pwd"})
+    disabled["tool_complete_callback"](
+        "call-disabled",
+        "terminal",
+        {},
+        raw,
+        summary="terminal: exit 0",
+    )
+    disabled["tool_progress_callback"]("tool.completed", "terminal")
+
+    enabled = server._preview_restart_callbacks("parent", "task", show_summaries=True)
+    enabled["tool_start_callback"]("call-enabled", "terminal", {"command": "pwd"})
+    enabled["tool_complete_callback"](
+        "call-enabled",
+        "terminal",
+        {},
+        raw,
+        summary="terminal: exit 0",
+    )
+
+    texts = [payload["text"] for event, _sid, payload in emitted if event == "preview.restart.progress"]
+    assert all("RAW_RESULT_SHOULD_NOT_BE_PRESENT" not in text for text in texts)
+    assert texts.count("terminal: exit 0") == 1
+    assert "tool completed: terminal" not in texts
+    assert not any(text.startswith("Finished terminal") for text in texts)
+
+
+def test_background_agent_kwargs_preserves_tool_activity_session_snapshot(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        platform="desktop",
+        tool_reasons_enabled=True,
+        tool_result_summaries_enabled=False,
+        _fallback_chain=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["platform"] == "desktop"
+    assert kwargs["tool_reasons_enabled"] is True
+    assert kwargs["tool_result_summaries_enabled"] is False
+
+
 def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     agent = types.SimpleNamespace(
         model="gpt-5.5",
@@ -2948,6 +3161,11 @@ def test_init_session_fires_reset_hook(monkeypatch):
 
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda *_args, **_kwargs: threading.Event(),
+    )
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         server,
@@ -2971,7 +3189,8 @@ def test_init_session_fires_reset_hook(monkeypatch):
         )
         assert ("on_session_reset", "session-key") in hooks
     finally:
-        server._sessions.pop(sid, None)
+        session = server._sessions.pop(sid, None)
+        server._teardown_session(session)
 
 
 def test_session_title_creates_row_and_sets_immediately_when_not_ready(monkeypatch):
@@ -11141,6 +11360,30 @@ def test_make_agent_reads_nested_max_turns(monkeypatch):
         server._make_agent("sid1", "key1")
 
     assert mock_agent.call_args.kwargs["max_iterations"] == 200
+
+
+def test_make_agent_resolves_tool_activity_flags_for_effective_platform(monkeypatch):
+    _setup_make_agent_mocks(
+        monkeypatch,
+        {
+            "display": {
+                "tool_reasons": False,
+                "tool_result_summaries": True,
+                "platforms": {
+                    "desktop": {
+                        "tool_reasons": True,
+                        "tool_result_summaries": False,
+                    }
+                },
+            }
+        },
+    )
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1", platform_override="desktop")
+
+    assert mock_agent.call_args.kwargs["tool_reasons_enabled"] is True
+    assert mock_agent.call_args.kwargs["tool_result_summaries_enabled"] is False
 
 
 def test_make_agent_waits_for_shared_mcp_discovery(monkeypatch):

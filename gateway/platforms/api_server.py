@@ -90,6 +90,11 @@ from gateway.platforms.base import (
     validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_activity import (
+    redact_activity_args,
+    redact_activity_text,
+    sanitize_persisted_tool_activity,
+)
 from gateway.readiness import collect_runtime_readiness
 
 logger = logging.getLogger(__name__)
@@ -2211,6 +2216,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        from gateway.display_config import resolve_display_setting
+        from utils import is_truthy_value
+        tool_reasons_enabled = is_truthy_value(
+            resolve_display_setting(user_config, "api_server", "tool_reasons", False),
+            default=False,
+        )
+        tool_result_summaries_enabled = is_truthy_value(
+            resolve_display_setting(user_config, "api_server", "tool_result_summaries", False),
+            default=False,
+        )
 
         max_iterations = _current_max_iterations()
 
@@ -2225,6 +2240,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "max_iterations": max_iterations,
             "quiet_mode": True,
             "verbose_logging": False,
+            "tool_reasons_enabled": tool_reasons_enabled,
+            "tool_result_summaries_enabled": tool_result_summaries_enabled,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets,
             "session_id": session_id,
@@ -2562,6 +2579,45 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
+        """Project a stored message onto the presentation-safe session API."""
+        safe_keys = (
+            "id", "session_id", "role", "content", "tool_call_id",
+            "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
+            "reasoning_content",
+        )
+        payload = {key: message.get(key) for key in safe_keys if key in message}
+
+        raw_tool_calls = message.get("tool_calls")
+        if isinstance(raw_tool_calls, list):
+            safe_tool_calls = []
+            for call in raw_tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                safe_call = {
+                    key: call[key]
+                    for key in ("id", "tool_call_id", "type", "name", "tool_name")
+                    if key in call
+                }
+                function = call.get("function")
+                if isinstance(function, dict) and function.get("name"):
+                    safe_call["function"] = {"name": str(function["name"])}
+                safe_tool_calls.append(safe_call)
+            payload["tool_calls"] = safe_tool_calls
+
+        activity = sanitize_persisted_tool_activity(
+            message.get("_tool_activity") or message.get("tool_activity")
+        )
+        if activity:
+            payload["_tool_activity"] = activity
+
+        if message.get("role") == "tool":
+            payload["content"] = str(activity.get("summary") or "") if activity else ""
+
+        return payload
+
+    @staticmethod
+    def _model_message_response(message: Dict[str, Any]) -> Dict[str, Any]:
+        """Preserve authoritative tool content for the OpenAI Responses contract."""
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
             "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
@@ -2957,11 +3013,48 @@ class APIServerAdapter(BasePlatformAdapter):
                 _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+            safe_preview = redact_activity_text(preview) if preview is not None else None
             if event_type == "reasoning.available":
-                _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
+                _enqueue(
+                    "tool.progress",
+                    {
+                        "message_id": message_id,
+                        "tool_name": tool_name or "_thinking",
+                        "delta": safe_preview or "",
+                    },
+                )
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 event_name = event_type.replace("tool.", "tool.")
-                _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+                # Custom Hermes SSE only: OpenAI's standard Chat/Responses
+                # chunks remain spec-shaped. Re-sanitize at the wire boundary;
+                # callback inputs are not trusted presentation values.
+                payload = {
+                    "message_id": message_id,
+                    "tool_name": tool_name,
+                    "preview": safe_preview,
+                    "args": redact_activity_args(args),
+                }
+                tool_call_id = kwargs.get("tool_call_id")
+                if isinstance(tool_call_id, str) and tool_call_id:
+                    payload["tool_call_id"] = tool_call_id
+
+                for key in ("reason", "summary"):
+                    value = kwargs.get(key)
+                    if isinstance(value, str):
+                        payload[key] = redact_activity_text(value)
+
+                status = kwargs.get("status")
+                if status in {"running", "completed", "failed", "blocked", "cancelled", "timeout"}:
+                    payload["status"] = status
+
+                is_error = kwargs.get("is_error")
+                if isinstance(is_error, bool):
+                    payload["is_error"] = is_error
+
+                duration = kwargs.get("duration_seconds")
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration >= 0:
+                    payload["duration_seconds"] = duration
+                _enqueue(event_name, payload)
 
         async def _run_and_signal() -> None:
             try:
@@ -3214,7 +3307,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # producing an orphaned event clients can't correlate.
             _started_tool_call_ids: set[str] = set()
 
-            def _on_tool_start(tool_call_id, function_name, function_args):
+            def _on_tool_start(tool_call_id, function_name, function_args, **metadata):
                 """Emit ``hermes.tool.progress`` with ``status: running``.
 
                 Replaces the old ``tool_progress_callback("tool.started",
@@ -3231,16 +3324,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     return
                 _started_tool_call_ids.add(tool_call_id)
                 from agent.display import build_tool_preview, get_tool_emoji
+
+                function_args = redact_activity_args(function_args or {})
                 label = build_tool_preview(function_name, function_args) or function_name
-                _stream_q.put(("__tool_progress__", {
+                payload = {
                     "tool": function_name,
                     "emoji": get_tool_emoji(function_name),
                     "label": label,
                     "toolCallId": tool_call_id,
                     "status": "running",
-                }))
+                }
+                if metadata.get("reason") is not None:
+                    payload["reason"] = redact_activity_text(metadata["reason"])
+                _stream_q.put(("__tool_progress__", payload))
 
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            def _on_tool_complete(tool_call_id, function_name, function_args, function_result, **metadata):
                 """Emit the matching ``status: completed`` event.
 
                 Dropped if the start was filtered (internal tool, missing
@@ -3250,11 +3348,23 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put(("__tool_progress__", {
+                payload = {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
-                    "status": "completed",
-                }))
+                    "status": "failed" if metadata.get("is_error") else "completed",
+                }
+                for source_key, wire_key in (
+                    ("reason", "reason"),
+                    ("summary", "summary"),
+                    ("is_error", "isError"),
+                    ("duration_seconds", "durationSeconds"),
+                ):
+                    if metadata.get(source_key) is not None:
+                        value = metadata[source_key]
+                        if source_key in {"reason", "summary"}:
+                            value = redact_activity_text(value)
+                        payload[wire_key] = value
+                _stream_q.put(("__tool_progress__", payload))
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
@@ -4354,21 +4464,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 """
                 return
 
-            def _on_tool_start(tool_call_id, function_name, function_args):
+            def _on_tool_start(tool_call_id, function_name, function_args, **metadata):
                 """Queue a started tool for live function_call streaming."""
                 _stream_q.put(("__tool_started__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
-                    "arguments": function_args or {},
+                    "arguments": redact_activity_args(function_args or {}),
                 }))
 
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
-                """Queue a completed tool result for live function_call_output streaming."""
+            def _on_tool_complete(tool_call_id, function_name, function_args, function_result, **metadata):
+                """Queue a presentation-safe completion for live Responses streaming."""
                 _stream_q.put(("__tool_completed__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
-                    "arguments": function_args or {},
-                    "result": function_result,
+                    "arguments": redact_activity_args(function_args or {}),
+                    "result": redact_activity_text(metadata.get("summary") or ""),
                 }))
 
             agent_ref = [None]
@@ -4973,7 +5083,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 continue
             if msg.get("role") not in {"assistant", "tool"}:
                 continue
-            out.append(cls._message_response(msg))
+            out.append(cls._model_message_response(msg))
         return out
 
     @staticmethod

@@ -279,7 +279,7 @@ class TestToolProgressDispatch:
         assert "ls /tmp" in call.args[2]  # preview
         assert call.args[3] == {"command": "ls /tmp", "cwd": "/tmp"}
 
-    def test_command_completed_fires_tool_completed_with_result(self):
+    def test_command_completed_fires_tool_completed_without_raw_result(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
         bridge(_item_started({
@@ -304,11 +304,17 @@ class TestToolProgressDispatch:
         assert completed.args[3] is None  # args unused on completion
         assert completed.kwargs["duration"] == pytest.approx(0.042)
         assert completed.kwargs["is_error"] is False
-        assert completed.kwargs["result"] == "hi\n"
+        assert "result" not in completed.kwargs
+        assert "hi" not in repr(completed)
 
     def test_nonzero_exit_marks_completion_error(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_started({
+            "type": "commandExecution",
+            "id": "exec-3",
+            "command": "missing-command",
+        }))
         bridge(_item_completed({
             "type": "commandExecution",
             "id": "exec-3",
@@ -318,7 +324,8 @@ class TestToolProgressDispatch:
         call = agent.tool_progress_callback.call_args
         assert call.args[0] == "tool.completed"
         assert call.kwargs["is_error"] is True
-        assert "[exit 127]" in call.kwargs["result"]
+        assert "result" not in call.kwargs
+        assert "not found" not in repr(call)
 
     def test_apply_patch_started_and_completed(self):
         agent = _make_stub_agent()
@@ -343,7 +350,7 @@ class TestToolProgressDispatch:
         assert names == ["apply_patch", "apply_patch"]
         completed = agent.tool_progress_callback.call_args_list[1]
         assert completed.kwargs["is_error"] is False
-        assert "2 change(s)" in completed.kwargs["result"]
+        assert "result" not in completed.kwargs
 
     def test_mcp_tool_uses_namespaced_tool_name(self):
         agent = _make_stub_agent()
@@ -382,7 +389,8 @@ class TestToolProgressDispatch:
         assert names == ["web_search", "web_search"]
         completed = agent.tool_progress_callback.call_args_list[1]
         assert completed.kwargs["is_error"] is False
-        assert "results" in completed.kwargs["result"]
+        assert "result" not in completed.kwargs
+        assert "results" not in repr(completed)
 
     def test_web_search_builtin_fires_started_and_completed(self):
         """Codex's built-in webSearch produces a start/complete bubble pair

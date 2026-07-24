@@ -958,6 +958,9 @@ def _build_child_progress_callback(
             return
 
         if event == DelegateEvent.TASK_TOOL_COMPLETED:
+            # Preserve the child's canonical activity metadata for parent
+            # surfaces and live observers without adding noisy spinner output.
+            _relay("subagent.tool.completed", tool_name, preview, args, **kwargs)
             return
 
         if event == DelegateEvent.TASK_PROGRESS:
@@ -1007,7 +1010,7 @@ def _build_child_progress_callback(
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
-            _relay("subagent.tool", tool_name, preview, args)
+            _relay("subagent.tool", tool_name, preview, args, **kwargs)
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
@@ -1402,6 +1405,10 @@ def _build_child_agent(
             ),
             openrouter_min_coding_score=child_openrouter_min_coding_score,
             tool_progress_callback=child_progress_cb,
+            tool_reasons_enabled=bool(getattr(parent_agent, "tool_reasons_enabled", False)),
+            tool_result_summaries_enabled=bool(
+                getattr(parent_agent, "tool_result_summaries_enabled", False)
+            ),
             iteration_budget=None,  # fresh budget per subagent
             **child_optional_kwargs,
         )

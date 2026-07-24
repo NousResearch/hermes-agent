@@ -7,7 +7,7 @@ per child under::
 
 The files are pre-created with a header at dispatch time (so ``tail -f``
 attaches immediately) and then stream one line per child event: assistant
-text, thinking, tool calls, tool results, and lifecycle markers. The paths
+text, thinking, tool calls, safe completion summaries, and lifecycle markers. The paths
 are returned from ``delegate_task`` so the parent agent (or the user) can
 watch a child work instead of waiting blind for the consolidated summary.
 
@@ -87,8 +87,8 @@ def _redact(text: str) -> str:
     READ-ONLY into remote terminal backends — so every line written here is
     readable from inside the sandbox. The events rendered here carry exactly
     the data that tends to hold secrets: tool args (a bearer header on a
-    curl), tool results (a ``.env`` dump, a provider error echoing the key
-    back) and streamed assistant text. Every other sink for that data already
+    curl), completion summaries (a provider error echoing a key), and streamed
+    assistant text. Every other sink for that data already
     routes through this same redactor — search results via
     ``redact_sensitive_text``, terminal output via ``redact_terminal_output``
     — so a transcript that skipped it is the one place the operator's keys
@@ -102,9 +102,9 @@ def _redact(text: str) -> str:
     if not text:
         return text
     try:
-        from agent.redact import redact_sensitive_text
+        from agent.tool_activity import redact_activity_text
 
-        return redact_sensitive_text(text, force=True) or ""
+        return redact_activity_text(text) or ""
     except Exception:  # pragma: no cover - core module; never leak on failure
         return "[line withheld: redaction unavailable]"
 
@@ -178,13 +178,25 @@ class LiveTranscriptWriter:
         if t:
             self.event("think", t)
 
-    def tool_start(self, name: str, args_preview: Any = None) -> None:
+    def tool_start(
+        self, name: str, args_preview: Any = None, reason: Any = None
+    ) -> None:
         self.flush_stream()
         args = _one_line(args_preview, _ARGS_MAX)
-        self.event("tool", f"-> {name or '?'}({args})")
+        line = f"-> {name or '?'}({args})"
+        safe_reason = _one_line(reason, _ARGS_MAX)
+        if safe_reason:
+            line += f" — {safe_reason}"
+        self.event("tool", line)
 
-    def tool_result(self, name: str, result: Any = None,
-                    duration: Any = None, is_error: bool = False) -> None:
+    def tool_result(
+        self,
+        name: str,
+        result: Any = None,
+        duration: Any = None,
+        is_error: bool = False,
+        summary: Any = None,
+    ) -> None:
         status = "ERROR" if is_error else "ok"
         dur = ""
         try:
@@ -192,8 +204,15 @@ class LiveTranscriptWriter:
                 dur = f" {float(duration):.1f}s"
         except (TypeError, ValueError):
             pass
-        self.event("result", f"{name or '?'} {status}{dur}: "
-                             f"{_one_line(result, _RESULT_MAX)}")
+        # ``result`` remains in the signature for legacy callback compatibility,
+        # but raw tool output is model/history data, never transcript content.
+        # An absent summary yields a useful generic lifecycle line instead.
+        display_summary = _one_line(_redact(str(summary or "")), _RESULT_MAX)
+        detail = f": {display_summary}" if display_summary else ""
+        self.event(
+            "result",
+            f"{name or '?'} {status}{dur}{detail}",
+        )
 
     def marker(self, text: str) -> None:
         """Lifecycle marker: start / final / error / interrupt / budget."""
@@ -229,13 +248,17 @@ class LiveTranscriptWriter:
         """
         et = str(event_type or "")
         if et == "tool.started":
-            self.tool_start(str(tool_name or ""), preview if preview else args)
+            self.tool_start(
+                str(tool_name or ""),
+                preview if preview else args,
+                reason=kwargs.get("reason"),
+            )
         elif et == "tool.completed":
             self.tool_result(
                 str(tool_name or ""),
-                result=kwargs.get("result"),
                 duration=kwargs.get("duration"),
                 is_error=bool(kwargs.get("is_error")),
+                summary=kwargs.get("summary"),
             )
         elif et == "_thinking":
             # Fired as cb("_thinking", <text>) — the text rides in the

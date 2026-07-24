@@ -252,6 +252,29 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertTrue(names & {"terminal", "read_file", "web_search"})
         self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
 
+    def test_child_inherits_tool_activity_session_snapshot(self):
+        parent = _make_mock_parent()
+        parent.tool_reasons_enabled = True
+        parent.tool_result_summaries_enabled = False
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertTrue(kwargs["tool_reasons_enabled"])
+        self.assertFalse(kwargs["tool_result_summaries_enabled"])
+
     def test_orchestrator_composite_regains_only_delegate_task(self):
         import model_tools
 
@@ -2470,15 +2493,35 @@ class TestDelegateEventEnum(unittest.TestCase):
         cb("reasoning.available", tool_name=None, preview="hmm")
         assert any("💭" in str(c) for c in parent._delegate_spinner.print_above.call_args_list)
 
-    def test_progress_callback_tool_completed_is_noop(self):
-        """tool.completed is normalised but produces no display output."""
+    def test_progress_callback_relays_tool_completion_metadata_without_spinner_noise(self):
         parent = _make_mock_parent()
         parent._delegate_spinner = MagicMock()
-        parent.tool_progress_callback = None
+        parent.tool_progress_callback = MagicMock()
 
         cb = _build_child_progress_callback(0, "test goal", parent, task_count=1)
-        cb("tool.completed", tool_name="terminal")
+        assert cb is not None
+        cb(
+            "tool.completed",
+            tool_name="terminal",
+            tool_call_id="child-call-1",
+            reason="Inspect child workspace",
+            summary="terminal: exit 0 in 0.2s",
+            status="completed",
+            is_error=False,
+            duration_seconds=0.2,
+        )
+
         parent._delegate_spinner.print_above.assert_not_called()
+        parent.tool_progress_callback.assert_called_once()
+        args, kwargs = parent.tool_progress_callback.call_args
+        self.assertEqual(args[0], "subagent.tool.completed")
+        self.assertEqual(args[1], "terminal")
+        self.assertEqual(kwargs["tool_call_id"], "child-call-1")
+        self.assertEqual(kwargs["reason"], "Inspect child workspace")
+        self.assertEqual(kwargs["summary"], "terminal: exit 0 in 0.2s")
+        self.assertEqual(kwargs["status"], "completed")
+        self.assertFalse(kwargs["is_error"])
+        self.assertEqual(kwargs["duration_seconds"], 0.2)
 
     def test_progress_callback_ignores_unknown_events(self):
         """Unknown event types are silently ignored."""

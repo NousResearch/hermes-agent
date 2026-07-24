@@ -98,6 +98,12 @@ class ToolCallChunk:
     # start and so "new"-mode dedup (only report when the tool changes) works
     # without the consumer tracking call order itself.
     index: int = 0
+    # Stable provider/tool-loop identifier. Optional for legacy callbacks that
+    # only supplied a monotonic index.
+    tool_call_id: Optional[str] = None
+    # User-presentable activity context. This is never hidden model reasoning.
+    reason: Optional[str] = None
+    status: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +120,22 @@ class ToolCallFinished:
     duration: float = 0.0
     ok: bool = True
     index: int = 0
+    tool_call_id: Optional[str] = None
+    # Summary/status are safe presentation metadata, distinct from raw result.
+    summary: Optional[str] = None
+    reason: Optional[str] = None
+    status: Optional[str] = None
+    is_error: Optional[bool] = None
+    duration_seconds: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        # Keep the legacy duration spelling and normalized wire spelling in sync.
+        if self.duration_seconds is None:
+            object.__setattr__(self, "duration_seconds", self.duration)
+        elif self.duration == 0.0:
+            object.__setattr__(self, "duration", self.duration_seconds)
+        if self.is_error is None:
+            object.__setattr__(self, "is_error", not self.ok)
 
 
 # ── Gateway control / lifecycle events ───────────────────────────────────────

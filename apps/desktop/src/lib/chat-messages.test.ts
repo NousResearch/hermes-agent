@@ -72,6 +72,51 @@ describe('toChatMessages', () => {
     expect(chatMessageText(assistantMessages[0])).toContain('Now let me check git status and commit.')
   })
 
+  it('restores persisted tool activity without replaying raw arguments or results', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        tool_calls: [
+          {
+            id: 'tc-rich',
+            function: {
+              name: 'terminal',
+              arguments: '{"command":"PRIVATE_ARG_MARKER authorization=Bearer CREDENTIAL_MARKER"}'
+            }
+          }
+        ]
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'tc-rich',
+        tool_name: 'terminal',
+        content: 'PRIVATE_RESULT_MARKER',
+        timestamp: 2,
+        _tool_activity: {
+          reason: 'Confirm the working directory',
+          summary: 'terminal: completed',
+          status: 'completed',
+          is_error: false,
+          duration_seconds: 0.2
+        }
+      }
+    ])
+
+    const part = message.parts.find(row => row.type === 'tool-call')
+    expect(part && 'args' in part ? part.args : undefined).toMatchObject({ reason: 'Confirm the working directory' })
+    expect(part && 'result' in part ? part.result : undefined).toEqual({
+      summary: 'terminal: completed',
+      status: 'completed',
+      is_error: false,
+      duration_seconds: 0.2
+    })
+    expect(JSON.stringify(message)).not.toContain('PRIVATE_ARG_MARKER')
+    expect(JSON.stringify(message)).not.toContain('CREDENTIAL_MARKER')
+    expect(JSON.stringify(message)).not.toContain('PRIVATE_RESULT_MARKER')
+  })
+
   it('hides attached context payloads from user message display', () => {
     const [message] = toChatMessages([
       {
@@ -126,9 +171,9 @@ describe('toChatMessages', () => {
         part.type === 'tool-call' && part.toolName === 'image_generate'
     )
 
-    expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
-    // The duplicated image is stripped, but the agent's words survive.
-    expect(chatMessageText(message)).toBe('Here you go.')
+    expect(toolPart?.result).toEqual({ status: 'completed' })
+    // With raw tool results suppressed, the assistant-authored image remains visible.
+    expect(chatMessageText(message)).toBe('Here you go.\n\n![Generated image](https://cdn.example/cat.png)')
   })
 
   it('coerces non-string message content without throwing', () => {
@@ -426,6 +471,42 @@ describe('preserveLocalAssistantErrors', () => {
 })
 
 describe('upsertToolPart', () => {
+  it('preserves rich tool metadata across start and complete events', () => {
+    const running = upsertToolPart(
+      [],
+      {
+        name: 'search_files',
+        reason: 'Find the rendering component',
+        status: 'running',
+        tool_call_id: 'tool-1'
+      },
+      'running'
+    )
+
+    const completed = upsertToolPart(
+      running,
+      {
+        duration_seconds: 1.2,
+        is_error: false,
+        name: 'search_files',
+        status: 'completed',
+        summary: 'Found 1 rendering component',
+        tool_call_id: 'tool-1'
+      },
+      'complete'
+    )
+
+    const [part] = completed
+
+    expect(part && 'args' in part ? part.args : undefined).toMatchObject({ reason: 'Find the rendering component' })
+    expect(part && 'result' in part ? part.result : undefined).toMatchObject({
+      duration_seconds: 1.2,
+      is_error: false,
+      status: 'completed',
+      summary: 'Found 1 rendering component'
+    })
+  })
+
   it('preserves inline diffs from tool completion events', () => {
     const parts = upsertToolPart(
       [],
@@ -570,6 +651,51 @@ describe('upsertToolPart', () => {
     expect(webParts).toHaveLength(2)
     expect(contexts).toEqual(['tokyo weather', 'reykjavik weather'])
     expect(summaries).toEqual(['Did 5 searches', 'Did 5 searches'])
+  })
+
+  it('keeps parallel same-name tools with distinct stable ids and targets distinct', () => {
+    const startedAlpha = upsertToolPart(
+      [],
+      {
+        args: { path: 'fixtures/alpha', pattern: 'alpha' },
+        name: 'search_files',
+        tool_id: 'search-alpha'
+      },
+      'running'
+    )
+
+    const startedBeta = upsertToolPart(
+      startedAlpha,
+      {
+        args: { path: 'fixtures/beta', pattern: 'beta' },
+        name: 'search_files',
+        tool_id: 'search-beta'
+      },
+      'running'
+    )
+
+    const startedGamma = upsertToolPart(
+      startedBeta,
+      {
+        args: { path: 'fixtures/gamma', pattern: 'gamma' },
+        name: 'search_files',
+        tool_id: 'search-gamma'
+      },
+      'running'
+    )
+
+    const searchParts = startedGamma.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'search_files'
+    )
+
+    expect(searchParts).toHaveLength(3)
+    expect(searchParts.map(part => part.toolCallId)).toEqual(['search-alpha', 'search-beta', 'search-gamma'])
+    expect(searchParts.map(part => String((part.args as Record<string, unknown>)?.path || ''))).toEqual([
+      'fixtures/alpha',
+      'fixtures/beta',
+      'fixtures/gamma'
+    ])
   })
 
   it('pairs a terminal completion with its context-only start when event IDs differ', () => {

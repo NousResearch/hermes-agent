@@ -41,6 +41,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Discord defaults to "subtext"; everywhere else defaults to "code".
     "reasoning_style": "code",
     "tool_preview_length": 0,
+    # Optional safe tool activity context. Both are off by default; values are
+    # resolved through config.yaml's normal per-platform display resolver.
+    "tool_reasons": False,
+    "tool_result_summaries": False,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter controls. These default on for
     # back-compat, but mobile platforms can opt down to final-answer-first.

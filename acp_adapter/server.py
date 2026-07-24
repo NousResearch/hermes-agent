@@ -64,10 +64,11 @@ from acp.schema import (
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.events import (
-    _build_plan_update_from_todo_result,
+    _build_plan_update_from_todo_args,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_complete_cb,
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
@@ -78,6 +79,7 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
 )
+from agent.tool_activity import redact_activity_args
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
@@ -1133,8 +1135,11 @@ class HermesACPAgent(acp.Agent):
                         if not tool_call_id:
                             continue
                         tool_name, args = self._history_tool_call_name_args(tool_call)
-                        active_tool_calls[tool_call_id] = (tool_name, args)
-                        if not await _send(build_tool_start(tool_call_id, tool_name, args)):
+                        safe_args = redact_activity_args(args)
+                        if not isinstance(safe_args, dict):
+                            safe_args = {}
+                        active_tool_calls[tool_call_id] = (tool_name, safe_args)
+                        if not await _send(build_tool_start(tool_call_id, tool_name, safe_args)):
                             return
                 continue
 
@@ -1158,7 +1163,7 @@ class HermesACPAgent(acp.Agent):
                 ):
                     return
                 if tool_name == "todo":
-                    plan_update = _build_plan_update_from_todo_result(result_text)
+                    plan_update = _build_plan_update_from_todo_args(function_args)
                     if plan_update is not None and not await _send(plan_update):
                         return
 
@@ -1520,6 +1525,9 @@ class HermesACPAgent(acp.Agent):
             )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            tool_complete_cb = make_tool_complete_cb(
+                conn, session_id, loop, tool_call_ids, tool_call_meta
+            )
             message_cb = make_message_cb(conn, session_id, loop)
 
             def stream_delta_cb(text: str) -> None:
@@ -1542,6 +1550,7 @@ class HermesACPAgent(acp.Agent):
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
         else:
             tool_progress_cb = None
+            tool_complete_cb = None
             reasoning_cb = None
             step_cb = None
             stream_delta_cb = None
@@ -1549,6 +1558,7 @@ class HermesACPAgent(acp.Agent):
 
         agent = state.agent
         agent.tool_progress_callback = tool_progress_cb
+        agent.tool_complete_callback = tool_complete_cb
         # ACP thought panes should not receive Hermes' local kawaii waiting/status
         # updates. Route provider/model reasoning deltas instead; if the provider
         # emits no reasoning, Zed should not get a fake "thinking" accordion.

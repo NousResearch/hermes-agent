@@ -1240,6 +1240,16 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Ask the model to attach a short, display-safe reason to each tool call.
+  # Off by default to preserve existing schemas and prompt-cache behavior.
+  # Per-platform override: display.platforms.<platform>.tool_reasons
+  tool_reasons: false
+
+  # Show a deterministic, redacted one-line completion summary for tool calls.
+  # Independent of tool_reasons and off by default.
+  # Per-platform override: display.platforms.<platform>.tool_result_summaries
+  tool_result_summaries: false
+
   # Per-platform defaults can be quieter than the global setting. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy

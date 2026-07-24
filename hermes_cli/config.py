@@ -1892,6 +1892,10 @@ DEFAULT_CONFIG = {
         # seconds, and with this off the user stares at a spinner the whole
         # time even though tokens are streaming. Set false for quiet output.
         "show_reasoning": True,
+        # Tool-call activity metadata is opt-in during rollout. Both values are
+        # snapped at agent/session construction to preserve prompt caching.
+        "tool_reasons": False,
+        "tool_result_summaries": False,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the
         # complete thinking text uncollapsed (live streaming is always full).

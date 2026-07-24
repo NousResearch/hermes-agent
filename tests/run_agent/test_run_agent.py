@@ -188,6 +188,36 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
 
 
+def test_flush_persists_tool_activity_sidecar(agent):
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    agent._persist_user_message_idx = None
+    agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
+    activity = {
+        "reason": "Inspect the failing test",
+        "summary": "terminal: 3 tests passed",
+        "status": "completed",
+        "is_error": False,
+        "duration_seconds": 0.5,
+    }
+    message = {
+        "role": "tool",
+        "content": "raw output for the model",
+        "tool_name": "terminal",
+        "tool_call_id": "call-1",
+        "_tool_activity": activity,
+    }
+
+    agent._flush_messages_to_session_db([message], [])
+
+    db_write = agent._session_db.append_message.call_args.kwargs
+    assert db_write["content"] == "raw output for the model"
+    assert db_write["tool_activity"] == activity
+
+
 def test_direct_session_db_flushes_share_marker_claim(agent):
     """A direct flush cannot interleave its marker check with `_persist_session`."""
     class _BarrierDB:
@@ -2432,9 +2462,19 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         hook_calls = []
+        progress_events = []
+        complete_events = []
         agent.session_id = "session-1"
         agent._current_turn_id = "turn-1"
         agent._current_api_request_id = "api-1"
+        agent.tool_result_summaries_enabled = True
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
+        agent.tool_complete_callback = (
+            lambda *args, **kwargs: complete_events.append((args, kwargs))
+        )
 
         def _capture_hook(hook_name, **kwargs):
             hook_calls.append((hook_name, kwargs))
@@ -2460,6 +2500,74 @@ class TestExecuteToolCalls:
         assert post_calls[0]["status"] == "cancelled"
         assert post_calls[0]["error_type"] == "keyboard_interrupt"
         assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
+        assert [(event[0], event[2]["status"]) for event in progress_events] == [
+            ("tool.started", "running"),
+            ("tool.completed", "cancelled"),
+        ]
+        assert len(complete_events) == 1
+        assert complete_events[0][0][:2] == ("c1", "web_search")
+        assert complete_events[0][1]["status"] == "cancelled"
+        assert complete_events[0][1]["is_error"] is True
+        assert messages[-1]["_tool_activity"]["status"] == "cancelled"
+
+    def test_inline_tool_keyboard_interrupt_finalizes_cancelled_activity(self, agent, monkeypatch):
+        tc = _mock_tool_call(
+            name="todo",
+            arguments='{"todos": [{"id": "demo", "content": "demo", "status": "pending"}]}',
+            call_id="todo-cancel-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        hook_calls = []
+        progress_events = []
+        complete_events = []
+        agent.session_id = "session-inline"
+        agent._current_turn_id = "turn-inline"
+        agent._current_api_request_id = "api-inline"
+        agent.tool_result_summaries_enabled = True
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
+        agent.tool_complete_callback = (
+            lambda *args, **kwargs: complete_events.append((args, kwargs))
+        )
+
+        def _capture_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _capture_hook)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+
+        with (
+            patch("tools.todo_tool.todo_tool", side_effect=KeyboardInterrupt),
+            patch("run_agent._set_interrupt"),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-inline")
+
+        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
+        assert len(post_calls) == 1
+        assert post_calls[0]["tool_name"] == "todo"
+        assert post_calls[0]["tool_call_id"] == "todo-cancel-1"
+        assert post_calls[0]["status"] == "cancelled"
+        assert post_calls[0]["error_type"] == "keyboard_interrupt"
+        assert [(event[0], event[2]["status"]) for event in progress_events] == [
+            ("tool.started", "running"),
+            ("tool.completed", "cancelled"),
+        ]
+        assert len(complete_events) == 1
+        complete_args, complete_metadata = complete_events[0]
+        assert complete_args[:2] == ("todo-cancel-1", "todo")
+        assert complete_args[3] == complete_metadata["summary"]
+        assert "cancelled" in complete_args[3].lower()
+        assert complete_metadata["status"] == "cancelled"
+        assert complete_metadata["is_error"] is True
+        assert len(messages) == 1
+        assert messages[0]["tool_call_id"] == "todo-cancel-1"
+        assert json.loads(messages[0]["content"])["status"] == "cancelled"
+        assert messages[0]["_tool_activity"]["status"] == "cancelled"
 
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -2846,6 +2954,90 @@ class TestConcurrentToolExecution:
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
 
+    def test_concurrent_preserves_distinct_activity_reasons_by_child_id(self, agent):
+        """Transport reasons survive fan-out without reaching tool backends."""
+        import threading as _threading
+
+        tc1 = _mock_tool_call(
+            name="web_search",
+            arguments='{"activity_reason":"Inspect alpha source","q":"alpha"}',
+            call_id="c1",
+        )
+        tc2 = _mock_tool_call(
+            name="web_search",
+            arguments='{"activity_reason":"Inspect beta source","q":"beta"}',
+            call_id="c2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        observed_args = {}
+        progress_events = []
+        barrier = _threading.Barrier(2)
+        agent.tool_reasons_enabled = True
+        agent._tool_reason_tool_names = {"web_search"}
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
+
+        def fake_handle(name, args, task_id, **kwargs):
+            observed_args[kwargs["tool_call_id"]] = dict(args)
+            barrier.wait(timeout=2)
+            return json.dumps({"result": args["q"]})
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert observed_args == {
+            "c1": {"q": "alpha"},
+            "c2": {"q": "beta"},
+        }
+        by_event_and_id = {
+            (event_type, metadata["tool_call_id"]): metadata
+            for event_type, _name, metadata in progress_events
+        }
+        for event_type in ("tool.started", "tool.completed"):
+            assert by_event_and_id[(event_type, "c1")]["reason"] == "Inspect alpha source"
+            assert by_event_and_id[(event_type, "c2")]["reason"] == "Inspect beta source"
+        assert getattr(agent, "_tool_call_reasons", {}) == {}
+
+    def test_sequential_preserves_activity_reason_on_start_and_completion(self, agent):
+        """Sequential calls preserve reasons just like concurrent children."""
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments='{"activity_reason":"Inspect sequential source","q":"alpha"}',
+            call_id="c-sequential",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        observed_args = {}
+        progress_events = []
+        agent.tool_reasons_enabled = True
+        agent._tool_reason_tool_names = {"web_search"}
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
+
+        def fake_handle(name, args, task_id, **kwargs):
+            observed_args.update(args)
+            return json.dumps({"result": args["q"]})
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert observed_args == {"q": "alpha"}
+        by_event = {
+            event_type: metadata
+            for event_type, _name, metadata in progress_events
+            if event_type in {"tool.started", "tool.completed"}
+        }
+        assert by_event["tool.started"]["tool_call_id"] == "c-sequential"
+        assert by_event["tool.started"]["reason"] == "Inspect sequential source"
+        assert by_event["tool.completed"]["tool_call_id"] == "c-sequential"
+        assert by_event["tool.completed"]["reason"] == "Inspect sequential source"
+        assert getattr(agent, "_tool_call_reasons", {}) == {}
+
     def test_concurrent_none_args_rejected_without_crash(self, agent):
         """Concurrent executor must not crash on arguments=None. Current
         contract (_parse_tool_arguments): non-object args are rejected with
@@ -2966,6 +3158,12 @@ class TestConcurrentToolExecution:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
         flushed = []
+        progress_events = []
+        agent.tool_result_summaries_enabled = True
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
 
         def fake_handle(name, args, task_id, **kwargs):
             if args.get("q") == "slow":
@@ -2995,6 +3193,45 @@ class TestConcurrentToolExecution:
         assert [batch[-1]["tool_call_id"] for batch in flushed] == ["c1", "c2"]
         assert "fast-result" in flushed[0][-1]["content"]
         assert "timed out after" in flushed[1][-1]["content"]
+        completed_events = [event for event in progress_events if event[0] == "tool.completed"]
+        assert len(completed_events) == 2
+        timeout_event = next(event for event in completed_events if event[2]["tool_call_id"] == "c2")
+        assert timeout_event[2]["status"] == "timeout"
+        assert timeout_event[2]["is_error"] is True
+        assert "timed out after" in timeout_event[2]["summary"]
+        assert messages[1]["_tool_activity"]["status"] == "timeout"
+
+    def test_concurrent_keyboard_interrupt_preserves_cancelled_activity_status(self, agent):
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "cancel"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "finish"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        progress_events = []
+        agent.tool_result_summaries_enabled = True
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
+
+        def fake_handle(name, args, task_id, **kwargs):
+            if args.get("q") == "cancel":
+                raise KeyboardInterrupt
+            return "finished"
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=fake_handle),
+            patch("run_agent._set_interrupt"),
+        ):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        c1_events = [event for event in progress_events if event[2].get("tool_call_id") == "c1"]
+        assert [(event[0], event[2]["status"]) for event in c1_events] == [
+            ("tool.started", "running"),
+            ("tool.completed", "cancelled"),
+        ]
+        assert c1_events[-1][2]["is_error"] is True
+        assert "cancelled" in c1_events[-1][2]["summary"]
+        assert messages[0]["_tool_activity"]["status"] == "cancelled"
 
     def test_concurrent_timeout_prefers_late_real_result_over_timeout_message(self, agent, monkeypatch):
         """A worker that finishes in the window between the deadline snapshot
@@ -3100,10 +3337,37 @@ class TestConcurrentToolExecution:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         assert starts == [("c1", "web_search", {"query": "hello"})]
-        assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
+        assert completes == [("c1", "web_search", {"query": "hello"}, None)]
+        assert messages[-1]["content"] == '{"success": true}'
 
-    def test_sequential_browser_type_callbacks_redact_api_key(self, agent):
-        secret = "sk-proj-ABCD1234567890EFGH"
+    def test_sequential_presentation_callbacks_never_receive_raw_result(self, agent):
+        marker = "PRIVATE_OUTPUT_CALLBACK_xzx_7e9"
+        tool_call = _mock_tool_call(
+            name="terminal",
+            arguments='{"command":"printf secret"}',
+            call_id="c-private",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        callbacks = []
+        agent.tool_result_summaries_enabled = True
+        agent.tool_complete_callback = (
+            lambda tool_call_id, function_name, function_args, display_result, **metadata:
+            callbacks.append((tool_call_id, function_name, function_args, display_result, metadata))
+        )
+        agent.tool_progress_callback = (
+            lambda event, name, preview, args, **metadata:
+            callbacks.append((event, name, preview, args, metadata))
+        )
+
+        with patch("run_agent.handle_function_call", return_value=marker):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert marker not in repr(callbacks)
+        assert messages[-1]["content"] == marker
+
+    def test_sequential_browser_type_callbacks_omit_typed_text(self, agent):
+        secret = "SENTINEL_BROWSER_TYPED_SECRET_f991"
         tool_call = _mock_tool_call(
             name="browser_type",
             arguments=json.dumps({"ref": "@apikey", "text": secret}),
@@ -3118,13 +3382,81 @@ class TestConcurrentToolExecution:
         agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
         agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
 
-        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "omitted"}'):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
-        assert starts[0][2]["text"].startswith("sk-pro")
-        assert completes[0][2]["text"].startswith("sk-pro")
-        assert progress[0][2].startswith("sk-pro")
+        assert starts[0][2] == {"ref": "@apikey"}
+        assert completes[0][2] == {"ref": "@apikey"}
+        assert progress[0][3] == {"ref": "@apikey"}
         assert secret not in repr(starts + completes + progress)
+
+    def test_sequential_malformed_args_remain_presentation_silent(self, agent):
+        malformed = _mock_tool_call(
+            name="web_search",
+            arguments='{"query":',
+            call_id="bad",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[malformed])
+        messages = []
+        progress_events = []
+        starts = []
+        completes = []
+        agent.tool_reasons_enabled = True
+        agent.tool_result_summaries_enabled = True
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
+        agent.tool_start_callback = lambda *args, **kwargs: starts.append((args, kwargs))
+        agent.tool_complete_callback = lambda *args, **kwargs: completes.append((args, kwargs))
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")) as dispatch:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        dispatch.assert_not_called()
+        assert progress_events == []
+        assert starts == []
+        assert completes == []
+        assert len(messages) == 1
+        assert messages[0]["tool_call_id"] == "bad"
+        assert "Invalid tool arguments" in messages[0]["content"]
+        assert messages[0]["_tool_activity"]["status"] == "failed"
+        assert messages[0]["_tool_activity"]["is_error"] is True
+
+    def test_concurrent_malformed_args_remain_presentation_silent(self, agent):
+        malformed = _mock_tool_call(
+            name="web_search",
+            arguments='{"query":',
+            call_id="bad",
+        )
+        valid = _mock_tool_call(
+            name="web_search",
+            arguments='{"query":"good"}',
+            call_id="good",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[malformed, valid])
+        messages = []
+        progress_events = []
+        agent.tool_reasons_enabled = True
+        agent.tool_result_summaries_enabled = True
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, kwargs))
+        )
+
+        with patch("run_agent.handle_function_call", return_value='{"ok": true}') as dispatch:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        dispatch.assert_called_once()
+        assert [event for event in progress_events if event[2].get("tool_call_id") == "bad"] == []
+        assert [(event[0], event[2]["status"]) for event in progress_events] == [
+            ("tool.started", "running"),
+            ("tool.completed", "completed"),
+        ]
+        assert messages[0]["tool_call_id"] == "bad"
+        assert "Invalid tool arguments" in messages[0]["content"]
+        assert messages[0]["_tool_activity"]["status"] == "failed"
+        assert messages[0]["_tool_activity"]["is_error"] is True
 
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
@@ -3145,10 +3477,11 @@ class TestConcurrentToolExecution:
         ]
         assert len(completes) == 2
         assert {entry[0] for entry in completes} == {"c1", "c2"}
-        assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
+        assert {entry[3] for entry in completes} == {None}
+        assert {entry["content"] for entry in messages[-2:]} == {'{"id":1}', '{"id":2}'}
 
-    def test_concurrent_browser_type_callbacks_redact_api_key(self, agent):
-        secret = "sk-proj-ABCD1234567890EFGH"
+    def test_concurrent_browser_type_callbacks_omit_typed_text(self, agent):
+        secret = "SENTINEL_BROWSER_TYPED_SECRET_f991"
         tc = _mock_tool_call(
             name="browser_type",
             arguments=json.dumps({"ref": "@apikey", "text": secret}),
@@ -3163,12 +3496,12 @@ class TestConcurrentToolExecution:
         agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
         agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
 
-        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "omitted"}'):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
-        assert starts[0][2]["text"].startswith("sk-pro")
-        assert completes[0][2]["text"].startswith("sk-pro")
-        assert progress[0][2].startswith("sk-pro")
+        assert starts[0][2] == {"ref": "@apikey"}
+        assert completes[0][2] == {"ref": "@apikey"}
+        assert progress[0][3] == {"ref": "@apikey"}
         assert secret not in repr(starts + completes + progress)
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
@@ -3226,11 +3559,14 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
 
-    def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
-        """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""
-        tool_call = _mock_tool_call(name="write_file",
-                                    arguments='{"path":"test.txt","content":"hello"}',
-                                    call_id="c1")
+    def test_sequential_blocked_tool_skips_execution_but_emits_sanitized_activity(self, agent, monkeypatch):
+        """Blocked tools stay non-executing while their sanitized lifecycle remains visible."""
+        content_sentinel = "RAW_WRITE_FILE_CONTENT_SENTINEL_7b1df8"
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments=json.dumps({"path": "test.txt", "content": content_sentinel}),
+            call_id="c1",
+        )
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
         messages = []
 
@@ -3242,18 +3578,102 @@ class TestConcurrentToolExecution:
         agent._checkpoint_mgr.ensure_checkpoint = MagicMock(
             side_effect=AssertionError("checkpoint should not run")
         )
+        agent.tool_result_summaries_enabled = True
 
         starts = []
-        agent.tool_start_callback = lambda *a: starts.append(a)
+        completes = []
+        progress_events = []
+        agent.tool_start_callback = lambda *args, **kwargs: starts.append((args, kwargs))
+        agent.tool_complete_callback = lambda *args, **kwargs: completes.append((args, kwargs))
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, args, kwargs))
+        )
 
         with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
-        assert starts == []
+        assert len(starts) == 1
+        assert starts[0][0][:2] == ("c1", "write_file")
+        assert starts[0][0][2] == {"path": "test.txt"}
+        assert starts[0][1]["status"] == "running"
+        assert len(completes) == 1
+        assert completes[0][0][:2] == ("c1", "write_file")
+        assert completes[0][0][2] == {"path": "test.txt"}
+        assert completes[0][0][3] == completes[0][1]["summary"]
+        assert completes[0][1]["status"] == "blocked"
+        assert completes[0][1]["is_error"] is True
+        assert [event[2] for event in progress_events] == [
+            {"path": "test.txt"},
+            None,
+        ]
+        assert [(event[0], event[3]["status"]) for event in progress_events] == [
+            ("tool.started", "running"),
+            ("tool.completed", "blocked"),
+        ]
+        assert content_sentinel not in repr((starts, completes, progress_events))
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+        assert messages[0]["_tool_activity"]["status"] == "blocked"
+
+    def test_sequential_blocked_callbacks_hide_typed_and_plugin_payloads(self, agent, monkeypatch):
+        """Supported tool callbacks expose target metadata without arbitrary payload text."""
+        typed_sentinel = "SENTINEL_TYPED_CALLBACK_f991"
+        plugin_sentinel = "SENTINEL_PLUGIN_CALLBACK_f991"
+        tool_calls = [
+            _mock_tool_call(
+                name="browser_type",
+                arguments=json.dumps({"ref": "@e1", "text": typed_sentinel}),
+                call_id="typed-1",
+            ),
+            _mock_tool_call(
+                name="custom_plugin",
+                arguments=json.dumps({"path": "safe.txt", "content": plugin_sentinel}),
+                call_id="plugin-1",
+            ),
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        agent.tool_reasons_enabled = True
+        agent._tool_reason_tool_names = {"browser_type", "custom_plugin"}
+        agent.valid_tool_names.update({"browser_type", "custom_plugin"})
+
+        starts = []
+        completes = []
+        progress_events = []
+        agent.tool_start_callback = lambda *args, **kwargs: starts.append((args, kwargs))
+        agent.tool_complete_callback = lambda *args, **kwargs: completes.append((args, kwargs))
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, args, kwargs))
+        )
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        start_args = {entry[0][0]: entry[0][2] for entry in starts}
+        complete_args = {entry[0][0]: entry[0][2] for entry in completes}
+        progress_args = {
+            entry[3]["tool_call_id"]: entry[2]
+            for entry in progress_events
+            if entry[0] == "tool.started"
+        }
+        expected = {
+            "typed-1": {"ref": "@e1"},
+            "plugin-1": {"path": "safe.txt"},
+        }
+        assert start_args == expected
+        assert complete_args == expected
+        assert progress_args == expected
+        assert typed_sentinel not in repr((starts, completes, progress_events))
+        assert plugin_sentinel not in repr((starts, completes, progress_events))
 
     def test_sequential_blocked_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Blocked pre_tool_call decisions still terminate observer tool spans."""
@@ -3283,6 +3703,106 @@ class TestConcurrentToolExecution:
         assert post_call[1]["status"] == "blocked"
         assert post_call[1]["error_type"] == "plugin_block"
         assert post_call[1]["error_message"] == "Blocked by policy"
+
+    def test_sequential_blocked_completion_interrupt_does_not_double_terminal_hook(self, agent, monkeypatch):
+        """A callback interrupt after block finalization must not re-close the hook as cancelled."""
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"test.txt","content":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+        interrupted = False
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+
+        def interrupt_once(event_type, name=None, preview=None, args=None, **kwargs):
+            nonlocal interrupted
+            if event_type == "tool.completed" and not interrupted:
+                interrupted = True
+                raise KeyboardInterrupt
+
+        agent.tool_progress_callback = interrupt_once
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            with pytest.raises(KeyboardInterrupt):
+                agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_calls = [call for call in hook_calls if call[0] == "post_tool_call"]
+        assert len(post_calls) == 1
+        assert post_calls[0][1]["status"] == "blocked"
+        assert post_calls[0][1]["error_type"] == "plugin_block"
+
+    @pytest.mark.parametrize("interrupt_callback", ["progress", "complete"])
+    def test_sequential_registry_completion_interrupt_does_not_double_terminal_hook(
+        self,
+        agent,
+        monkeypatch,
+        interrupt_callback,
+    ):
+        """A callback interrupt after registry finalization must not re-close the hook as cancelled."""
+        tool_call = _mock_tool_call(
+            name="web_search",
+            arguments='{"query":"auth lifecycle"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+        progress_events = []
+        complete_events = []
+
+        def capture_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return []
+
+        def registry_dispatch(*args, **kwargs):
+            capture_hook(
+                "post_tool_call",
+                tool_name="web_search",
+                tool_call_id="c1",
+                status="ok",
+                result='{"ok":true}',
+            )
+            return '{"ok":true}'
+
+        def progress_callback(event_type, name=None, preview=None, args=None, **kwargs):
+            progress_events.append((event_type, kwargs.get("status")))
+            if interrupt_callback == "progress" and event_type == "tool.completed":
+                raise KeyboardInterrupt
+
+        def complete_callback(*args, **kwargs):
+            complete_events.append((args, kwargs))
+            if interrupt_callback == "complete":
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", capture_hook)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        agent.tool_progress_callback = progress_callback
+        agent.tool_complete_callback = complete_callback
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=registry_dispatch),
+            patch("run_agent._set_interrupt"),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_calls = [call for call in hook_calls if call[0] == "post_tool_call"]
+        assert len(post_calls) == 1
+        assert post_calls[0][1]["status"] == "ok"
+        assert all(status != "cancelled" for _, status in progress_events)
+        assert len(complete_events) == (0 if interrupt_callback == "progress" else 1)
 
     def test_sequential_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Sequential built-in tool paths should also close observer tool spans."""
@@ -3486,10 +4006,13 @@ class TestConcurrentToolExecution:
         notify.assert_not_called()
 
     def test_concurrent_blocked_write_skips_checkpoint(self, agent, monkeypatch):
-        """Concurrent path: blocked write_file should not trigger checkpoint."""
-        tc1 = _mock_tool_call(name="write_file",
-                              arguments='{"path":"test.txt","content":"hello"}',
-                              call_id="c1")
+        """Concurrent blocked writes skip execution but retain sanitized activity."""
+        content_sentinel = "RAW_WRITE_FILE_CONTENT_SENTINEL_7b1df8"
+        tc1 = _mock_tool_call(
+            name="write_file",
+            arguments=json.dumps({"path": "test.txt", "content": content_sentinel}),
+            call_id="c1",
+        )
         tc2 = _mock_tool_call(name="read_file",
                               arguments='{"path":"other.py"}',
                               call_id="c2")
@@ -3502,6 +4025,16 @@ class TestConcurrentToolExecution:
         )
 
         agent._checkpoint_mgr.enabled = True
+        agent.tool_result_summaries_enabled = True
+        starts = []
+        completes = []
+        progress_events = []
+        agent.tool_start_callback = lambda *args, **kwargs: starts.append((args, kwargs))
+        agent.tool_complete_callback = lambda *args, **kwargs: completes.append((args, kwargs))
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, args, kwargs))
+        )
 
         def fake_handle(name, args, task_id, **kwargs):
             return f"result_{name}"
@@ -3511,6 +4044,81 @@ class TestConcurrentToolExecution:
                 agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         cp_mock.assert_not_called()
+        blocked_starts = [event for event in starts if event[0][0] == "c1"]
+        blocked_completes = [event for event in completes if event[0][0] == "c1"]
+        blocked_events = [event for event in progress_events if event[3].get("tool_call_id") == "c1"]
+        assert len(blocked_starts) == 1
+        assert blocked_starts[0][0][2] == {"path": "test.txt"}
+        assert len(blocked_completes) == 1
+        assert blocked_completes[0][0][2] == {"path": "test.txt"}
+        assert [event[2] for event in blocked_events] == [
+            {"path": "test.txt"},
+            None,
+        ]
+        assert [(event[0], event[3]["status"]) for event in blocked_events] == [
+            ("tool.started", "running"),
+            ("tool.completed", "blocked"),
+        ]
+        assert blocked_events[-1][3]["is_error"] is True
+        assert content_sentinel not in repr((blocked_starts, blocked_completes, blocked_events))
+        assert messages[0]["_tool_activity"]["status"] == "blocked"
+
+    def test_concurrent_blocked_callbacks_hide_typed_and_plugin_payloads(self, agent, monkeypatch):
+        """Concurrent callbacks preserve safe targets without typed or plugin payload text."""
+        typed_sentinel = "SENTINEL_TYPED_CALLBACK_f991"
+        plugin_sentinel = "SENTINEL_PLUGIN_CALLBACK_f991"
+        tool_calls = [
+            _mock_tool_call(
+                name="browser_type",
+                arguments=json.dumps({"ref": "@e1", "text": typed_sentinel}),
+                call_id="typed-1",
+            ),
+            _mock_tool_call(
+                name="custom_plugin",
+                arguments=json.dumps({"path": "safe.txt", "content": plugin_sentinel}),
+                call_id="plugin-1",
+            ),
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=tool_calls)
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        agent.tool_reasons_enabled = True
+        agent._tool_reason_tool_names = {"browser_type", "custom_plugin"}
+        agent.valid_tool_names.update({"browser_type", "custom_plugin"})
+
+        starts = []
+        completes = []
+        progress_events = []
+        agent.tool_start_callback = lambda *args, **kwargs: starts.append((args, kwargs))
+        agent.tool_complete_callback = lambda *args, **kwargs: completes.append((args, kwargs))
+        agent.tool_progress_callback = (
+            lambda event_type, name=None, preview=None, args=None, **kwargs:
+            progress_events.append((event_type, name, args, kwargs))
+        )
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        start_args = {entry[0][0]: entry[0][2] for entry in starts}
+        complete_args = {entry[0][0]: entry[0][2] for entry in completes}
+        progress_args = {
+            entry[3]["tool_call_id"]: entry[2]
+            for entry in progress_events
+            if entry[0] == "tool.started"
+        }
+        expected = {
+            "typed-1": {"ref": "@e1"},
+            "plugin-1": {"path": "safe.txt"},
+        }
+        assert start_args == expected
+        assert complete_args == expected
+        assert progress_args == expected
+        assert typed_sentinel not in repr((starts, completes, progress_events))
+        assert plugin_sentinel not in repr((starts, completes, progress_events))
 
     def test_concurrent_blocked_patch_skips_checkpoint(self, agent, monkeypatch):
         """Concurrent path: blocked patch should not trigger checkpoint."""
@@ -3689,7 +4297,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
 
         inline_names = self._extract_dispatch_chain_names(
-            tool_executor.execute_tool_calls_sequential
+            tool_executor._execute_tool_calls_sequential_impl
         )
         assert inline_names, (
             "Could not find the dispatch chain (anchored on "
@@ -3719,7 +4327,7 @@ class TestAgentRuntimePostHookOwnershipSync:
             agent_runtime_helpers.invoke_tool
         )
         inline_names = self._extract_dispatch_chain_names(
-            tool_executor.execute_tool_calls_sequential
+            tool_executor._execute_tool_calls_sequential_impl
         )
         assert invoke_tool_names == inline_names, (
             "Static `function_name == \"...\"` branches diverged between "

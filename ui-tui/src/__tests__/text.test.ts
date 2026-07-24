@@ -36,6 +36,23 @@ describe('buildToolTrailLine', () => {
     expect(parseToolTrailResultLine(line)).toEqual({ call: 'Read File("x") (0.9s)', detail: '', mark: '✓' })
     expect(splitToolDuration('Read File("x") (0.9s)')).toEqual({ label: 'Read File("x")', duration: ' (0.9s)' })
   })
+
+  it('composes reason first and target to result second', () => {
+    const line = buildToolTrailLine(
+      'read_file',
+      'src/auth.ts',
+      false,
+      'read_file: 8 lines',
+      0.94,
+      'Inspect the current auth flow'
+    )
+
+    expect(parseToolTrailResultLine(line)).toEqual({
+      call: 'Read File · Inspect the current auth flow (0.9s)',
+      detail: 'src/auth.ts → 8 lines',
+      mark: '✓'
+    })
+  })
 })
 
 describe('buildVerboseToolTrailLine', () => {
@@ -54,6 +71,25 @@ describe('buildVerboseToolTrailLine', () => {
     expect(parseToolTrailResultLine(line)).toEqual({
       call: 'Terminal("npm test") (1.3s)',
       detail: 'Args:\n{\n  "cmd": "npm test"\n}\nResult:\nfirst line\nsecond :: line',
+      mark: '✓'
+    })
+  })
+
+  it('keeps the reason-first narrative above expanded raw details', () => {
+    const line = buildVerboseToolTrailLine(
+      'terminal',
+      'npm test',
+      false,
+      1.25,
+      '{ "cmd": "npm test" }',
+      'raw test output',
+      'Verify the auth flow',
+      'terminal: 24 tests passed'
+    )
+
+    expect(parseToolTrailResultLine(line)).toEqual({
+      call: 'Terminal · Verify the auth flow (1.3s)',
+      detail: 'npm test → 24 tests passed\nArgs:\n{ "cmd": "npm test" }\nResult:\nraw test output',
       mark: '✓'
     })
   })

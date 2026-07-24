@@ -4,6 +4,7 @@ import asyncio
 import gc
 import warnings
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_complete_cb,
     make_tool_progress_cb,
 )
 
@@ -127,6 +129,138 @@ class TestToolProgressCallback:
             assert "terminal" not in tool_call_ids
 
 
+    def test_activity_metadata_uses_stable_id_and_reaches_completion(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events._send_update"), \
+             patch("acp_adapter.events.build_tool_start") as mock_start, \
+             patch("acp_adapter.events.build_tool_complete") as mock_complete:
+            progress_cb(
+                "tool.started",
+                "terminal",
+                "$ pytest",
+                {"command": "pytest"},
+                tool_call_id="call-activity-1",
+                reason="Run focused verification",
+            )
+            progress_cb(
+                "tool.completed",
+                "terminal",
+                None,
+                None,
+                tool_call_id="call-activity-1",
+                summary="terminal: exit 0 in 0.4s",
+                status="success",
+                is_error=False,
+            )
+            step_cb(1, [{"name": "terminal", "result": "PRIVATE_OUTPUT_NEVER_PRESENTED"}])
+
+        mock_start.assert_called_once_with(
+            "call-activity-1",
+            "terminal",
+            {"command": "pytest"},
+            edit_diff=None,
+            reason="Run focused verification",
+        )
+        assert mock_complete.call_args.kwargs["summary"] == "terminal: exit 0 in 0.4s"
+        assert mock_complete.call_args.kwargs["result"] is None
+
+
+    def test_completion_callback_uses_exact_stable_id_and_canonical_metadata(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["call-1", "call-2"])}
+        tool_call_meta = {
+            "call-1": {"args": {"command": "one"}, "snapshot": None},
+            "call-2": {"args": {"command": "two"}, "snapshot": None},
+        }
+        cb = make_tool_complete_cb(
+            mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+        )
+
+        from agent.tool_executor import _call_tool_callback
+
+        with patch("acp_adapter.events._send_update"), patch(
+            "acp_adapter.events.build_tool_complete"
+        ) as mock_complete:
+            _call_tool_callback(
+                cb,
+                (
+                    "call-2",
+                    "terminal",
+                    {"command": "display-two"},
+                    "PRIVATE_OUTPUT_NEVER_PRESENTED",
+                ),
+                tool_call_id="call-2",
+                reason="Run second command",
+                summary="terminal: exit 7",
+                status="failed",
+                is_error=True,
+                duration_seconds=0.4,
+            )
+
+        mock_complete.assert_called_once_with(
+            "call-2",
+            "terminal",
+            result=None,
+            function_args={"command": "display-two"},
+            snapshot=None,
+            summary="terminal: exit 7",
+            status="failed",
+            is_error=True,
+        )
+        assert list(tool_call_ids["terminal"]) == ["call-1"]
+        assert "call-2" not in tool_call_meta
+
+    def test_codex_app_server_bridge_correlates_acp_lifecycle(self, mock_conn, event_loop_fixture):
+        from agent.codex_runtime import make_codex_app_server_event_bridge
+
+        tool_call_ids = {}
+        tool_call_meta = {}
+        progress_cb = make_tool_progress_cb(
+            mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+        )
+        complete_cb = make_tool_complete_cb(
+            mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+        )
+        agent = SimpleNamespace(
+            tool_progress_callback=progress_cb,
+            tool_start_callback=None,
+            tool_complete_callback=complete_cb,
+            tool_reasons_enabled=True,
+            tool_result_summaries_enabled=True,
+        )
+        bridge = make_codex_app_server_event_bridge(agent)
+        item = {
+            "type": "commandExecution",
+            "id": "codex-tool-1",
+            "command": "pwd",
+            "cwd": "/tmp",
+        }
+
+        with patch("acp_adapter.events._send_update"), patch(
+            "acp_adapter.events.build_tool_start"
+        ) as mock_start, patch("acp_adapter.events.build_tool_complete") as mock_complete:
+            bridge({"method": "item/started", "params": {"item": item}})
+            bridge({
+                "method": "item/completed",
+                "params": {"item": dict(item, aggregatedOutput="/tmp\n", exitCode=0)},
+            })
+
+        expected_id = "codex_exec_codex-tool-1"
+        assert mock_start.call_args.args[0] == expected_id
+        assert mock_complete.call_args.args[0] == expected_id
+        assert mock_complete.call_args.kwargs["status"] == "completed"
+        assert mock_complete.call_args.kwargs["is_error"] is False
+        assert mock_complete.call_args.kwargs["summary"].startswith("exec_command:")
+        assert tool_call_ids == {}
+        assert tool_call_meta == {}
+
+
 # ---------------------------------------------------------------------------
 # Thinking callback
 # ---------------------------------------------------------------------------
@@ -213,8 +347,8 @@ class TestStepCallback:
         assert "read_file" not in tool_call_ids
         mock_rcts.assert_called_once()
 
-    def test_result_passed_to_build_tool_complete(self, mock_conn, event_loop_fixture):
-        """Tool result from prev_tools dict is forwarded to build_tool_complete."""
+    def test_result_not_passed_to_build_tool_complete(self, mock_conn, event_loop_fixture):
+        """Legacy step fallback must not forward raw output to ACP presentation."""
         from collections import deque
 
         tool_call_ids = {"terminal": deque(["tc-xyz789"])}
@@ -228,11 +362,10 @@ class TestStepCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            # Provide a result string in the tool info dict
-            cb(1, [{"name": "terminal", "result": '{"output": "hello"}'}])
+            cb(1, [{"name": "terminal", "result": "PRIVATE_OUTPUT_NEVER_PRESENTED"}])
 
         mock_btc.assert_called_once_with(
-            "tc-xyz789", "terminal", result='{"output": "hello"}', function_args=None, snapshot=None
+            "tc-xyz789", "terminal", result=None, function_args=None, snapshot=None
         )
 
     def test_none_result_passed_through(self, mock_conn, event_loop_fixture):
@@ -254,7 +387,7 @@ class TestStepCallback:
 
         mock_btc.assert_called_once_with("tc-aaa", "web_search", result=None, function_args=None, snapshot=None)
 
-    def test_step_callback_passes_arguments_and_snapshot(self, mock_conn, event_loop_fixture):
+    def test_step_callback_uses_only_safe_start_arguments_and_snapshot(self, mock_conn, event_loop_fixture):
         from collections import deque
 
         tool_call_ids = {"write_file": deque(["tc-write"])}
@@ -269,13 +402,13 @@ class TestStepCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            cb(1, [{"name": "write_file", "result": '{"bytes_written": 23}', "arguments": {"path": "diff-test.txt"}}])
+            cb(1, [{"name": "write_file", "result": "PRIVATE_RESULT", "arguments": {"path": "PRIVATE_RAW_ARG"}}])
 
         mock_btc.assert_called_once_with(
             "tc-write",
             "write_file",
-            result='{"bytes_written": 23}',
-            function_args={"path": "diff-test.txt"},
+            result=None,
+            function_args={"path": "fallback.txt"},
             snapshot="snap",
         )
 
@@ -297,37 +430,31 @@ class TestStepCallback:
         }
         mock_send.assert_called_once()
 
-    def test_todo_completion_emits_native_plan_update_after_tool_completion(self, mock_conn, event_loop_fixture):
+    def test_legacy_todo_completion_does_not_emit_raw_plan_arguments(self, mock_conn, event_loop_fixture):
         from collections import deque
 
         tool_call_ids = {"todo": deque(["tc-todo"])}
         loop = event_loop_fixture
         cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
-        todo_result = (
-            '{"todos":['
-            '{"id":"inspect","content":"Inspect ACP","status":"completed"},'
-            '{"id":"patch","content":"Patch renderer","status":"in_progress"},'
-            '{"id":"old","content":"Drop stale task","status":"cancelled"}'
-            '],"summary":{"total":3}}'
-        )
+        todos = [
+            {
+                "id": "inspect",
+                "content": "ARBITRARY_RAW_MARKER authorization=Bearer CREDENTIAL_SHAPED_MARKER",
+                "status": "completed",
+            },
+        ]
 
         with patch("acp_adapter.events._send_update") as mock_send:
-            cb(1, [{"name": "todo", "result": todo_result}])
+            cb(
+                1,
+                [{"name": "todo", "args": {"todos": todos}, "result": "PRIVATE_TODO_RESULT"}],
+            )
 
         updates = [call.args[3] for call in mock_send.call_args_list]
-        assert [getattr(update, "session_update", None) for update in updates] == [
-            "tool_call_update",
-            "plan",
-        ]
-        plan = updates[1]
-        assert isinstance(plan, AgentPlanUpdate)
-        assert [entry.content for entry in plan.entries] == [
-            "Inspect ACP",
-            "Patch renderer",
-            "[cancelled] Drop stale task",
-        ]
-        assert [entry.status for entry in plan.entries] == ["completed", "in_progress", "completed"]
-        assert [entry.priority for entry in plan.entries] == ["medium", "medium", "medium"]
+        assert [getattr(update, "session_update", None) for update in updates] == ["tool_call_update"]
+        assert "ARBITRARY_RAW_MARKER" not in repr(updates)
+        assert "CREDENTIAL_SHAPED_MARKER" not in repr(updates)
+        assert "PRIVATE_TODO_RESULT" not in repr(updates)
 
     def test_todo_plan_update_parses_json_with_trailing_hint(self):
         result = '{"todos":[{"id":"ship","content":"Ship ACP plan","status":"pending"}]}\n\n[Hint: persisted]'

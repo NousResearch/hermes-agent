@@ -198,6 +198,268 @@ class FakeAgent:
         }
 
 
+class ToolActivityAgent:
+    last_init_kwargs = None
+
+    def __init__(self, **kwargs):
+        type(self).last_init_kwargs = dict(kwargs)
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb(
+            "tool.started",
+            "terminal",
+            "pwd",
+            {},
+            tool_call_id="call-1",
+            reason="Inspect the current directory",
+        )
+        time.sleep(0.35)
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            tool_call_id="call-1",
+            reason="Inspect the current directory",
+            summary="terminal: exit 0 in 0.4s",
+            status="completed",
+            is_error=False,
+            duration_seconds=0.4,
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class TerminalStatusToolActivityAgent:
+    """Emit terminal statuses whose explicit status must override is_error=False."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        calls = (
+            ("timeout-call", "timeout"),
+            ("cancelled-call", "cancelled"),
+        )
+        for call_id, status in calls:
+            cb(
+                "tool.started",
+                "terminal",
+                f"printf {status}",
+                {"command": f"printf {status}"},
+                tool_call_id=call_id,
+                reason=f"Exercise {status} status",
+            )
+        for call_id, status in calls:
+            cb(
+                "tool.completed",
+                "terminal",
+                None,
+                None,
+                tool_call_id=call_id,
+                reason=f"Exercise {status} status",
+                summary=f"terminal: {status}",
+                status=status,
+                is_error=False,
+                duration_seconds=0.1,
+            )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class DelegatedToolActivityAgent:
+    """Two child tools reuse a call ID but retain independent commands."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        calls = (
+            ({"task_index": 0}, "printf child-a", "Inspect child A", "child A completed"),
+            ({"subagent_id": "child-b"}, "printf child-b", "Inspect child B", "child B completed"),
+        )
+        for identity, command, reason, _summary in calls:
+            cb(
+                "subagent.tool",
+                "terminal",
+                command,
+                {"command": command},
+                tool_call_id="shared-call",
+                reason=reason,
+                **identity,
+            )
+        time.sleep(0.35)
+        for identity, _command, reason, summary in reversed(calls):
+            cb(
+                "subagent.tool.completed",
+                "terminal",
+                None,
+                None,
+                tool_call_id="shared-call",
+                reason=reason,
+                summary=f"terminal: {summary}",
+                status="completed",
+                is_error=False,
+                duration_seconds=0.2,
+                **identity,
+            )
+        time.sleep(1.7)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class ConcurrentToolActivityAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb("tool.started", "terminal", "one", {}, tool_call_id="call-1", reason="Run first command")
+        cb("tool.started", "terminal", "two", {}, tool_call_id="call-2", reason="Run second command")
+        time.sleep(0.35)
+        cb(
+            "tool.completed", "terminal", None, None,
+            tool_call_id="call-2", reason="Run second command",
+            summary="terminal: second completed", status="completed", is_error=False,
+        )
+        cb(
+            "tool.completed", "terminal", None, None,
+            tool_call_id="call-1", reason="Run first command",
+            summary="terminal: first completed", status="completed", is_error=False,
+        )
+        time.sleep(1.7)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SameTargetToolActivityAgent:
+    """Two correlated calls whose legacy preview is intentionally identical."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        target = "/tmp/shared.py"
+        cb("tool.started", "patch", target, {}, tool_call_id="call-1", reason="Apply first edit")
+        cb("tool.started", "patch", target, {}, tool_call_id="call-2", reason="Apply second edit")
+        cb(
+            "tool.completed", "patch", None, None,
+            tool_call_id="call-1", reason="Apply first edit",
+            summary="patch: first applied", status="completed", is_error=False,
+        )
+        cb(
+            "tool.completed", "patch", None, None,
+            tool_call_id="call-2", reason="Apply second edit",
+            summary="patch: second applied", status="completed", is_error=False,
+        )
+        time.sleep(1.7)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SameBatchToolActivityAgent:
+    """Two correlated calls with the same tool, target, reason, and outcome."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        target = "/tmp/shared.py"
+        reason = "Apply matching edit"
+        for call_id in ("call-1", "call-2"):
+            cb("tool.started", "patch", target, {}, tool_call_id=call_id, reason=reason)
+        time.sleep(1.7)
+        for call_id in ("call-1", "call-2"):
+            cb(
+                "tool.completed", "patch", None, None,
+                tool_call_id=call_id, reason=reason,
+                summary="patch: applied", status="completed", is_error=False,
+            )
+        time.sleep(1.7)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class TruncatedTargetToolActivityAgent:
+    """Distinct full targets whose bounded display previews are identical."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        reason = "Apply matching edit"
+        prefix = "/same/long/prefix/over/forty/characters/"
+        targets = (f"{prefix}a.py", f"{prefix}b.py")
+        for index, target in enumerate(targets, 1):
+            cb(
+                "tool.started",
+                "patch",
+                target,
+                {"path": target},
+                tool_call_id=f"call-{index}",
+                reason=reason,
+            )
+        time.sleep(1.7)
+        for index in range(1, 3):
+            cb(
+                "tool.completed", "patch", None, None,
+                tool_call_id=f"call-{index}", reason=reason,
+                summary="patch: applied", status="completed", is_error=False,
+            )
+        time.sleep(1.7)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SameBatchThenCommentaryAgent:
+    """Matching completions race with the next assistant content bubble."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        target = "/tmp/shared.py"
+        reason = "Apply matching edit"
+        for call_id in ("call-1", "call-2"):
+            cb("tool.started", "patch", target, {}, tool_call_id=call_id, reason=reason)
+        time.sleep(0.35)
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("Both matching calls completed.", already_streamed=False)
+        time.sleep(0.1)
+        for call_id in ("call-1", "call-2"):
+            cb(
+                "tool.completed", "patch", None, None,
+                tool_call_id=call_id, reason=reason,
+                summary="patch: applied", status="completed", is_error=False,
+            )
+        time.sleep(1.7)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class ThinkingAgent:
     """Agent that emits _thinking scratch text (no tool calls).
 
@@ -393,6 +655,490 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     ]
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_tool_activity_reason_and_summary_replace_the_same_editable_progress_line(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    stream_events = importlib.import_module("gateway.stream_events")
+    real_chunk = stream_events.ToolCallChunk
+    real_finished = stream_events.ToolCallFinished
+    normalized = []
+
+    def capture_chunk(**kwargs):
+        event = real_chunk(**kwargs)
+        normalized.append(event)
+        return event
+
+    def capture_finished(**kwargs):
+        event = real_finished(**kwargs)
+        normalized.append(event)
+        return event
+
+    monkeypatch.setattr(stream_events, "ToolCallChunk", capture_chunk)
+    monkeypatch.setattr(stream_events, "ToolCallFinished", capture_finished)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-activity-edit",
+        session_key="agent:main:telegram:dm:123",
+    )
+
+    assert result["final_response"] == "done"
+    assert ToolActivityAgent.last_init_kwargs["tool_reasons_enabled"] is True
+    assert ToolActivityAgent.last_init_kwargs["tool_result_summaries_enabled"] is True
+    assert len(adapter.sent) == 1
+    from agent.display import get_tool_emoji
+
+    terminal_emoji = get_tool_emoji("terminal")
+    started_lines = adapter.sent[0]["content"].splitlines()
+    assert started_lines == [
+        f"{terminal_emoji} **terminal** · Inspect the current directory",
+        "  pwd · running",
+    ]
+    assert "✓" not in adapter.sent[0]["content"]
+    assert "✗" not in adapter.sent[0]["content"]
+    assert adapter.edits
+    final_lines = adapter.edits[-1]["content"].splitlines()
+    assert final_lines == [
+        f"{terminal_emoji} **terminal** · Inspect the current directory",
+        "  pwd · 0.4s",
+    ]
+    assert "terminal:" not in adapter.edits[-1]["content"]
+    assert "exit 0" not in adapter.edits[-1]["content"]
+    assert len(normalized) == 2
+    assert isinstance(normalized[0], real_chunk)
+    assert isinstance(normalized[1], real_finished)
+    assert normalized[0].tool_call_id == normalized[1].tool_call_id == "call-1"
+    assert normalized[0].reason == normalized[1].reason == "Inspect the current directory"
+    assert normalized[1].summary == "terminal: exit 0 in 0.4s"
+    assert not hasattr(normalized[1], "result")
+
+
+@pytest.mark.asyncio
+async def test_terminal_status_overrides_false_is_error_in_gateway_completion(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalStatusToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    stream_events = importlib.import_module("gateway.stream_events")
+    real_finished = stream_events.ToolCallFinished
+    completed = []
+
+    def capture_finished(**kwargs):
+        event = real_finished(**kwargs)
+        completed.append(event)
+        return event
+
+    monkeypatch.setattr(stream_events, "ToolCallFinished", capture_finished)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+
+    await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="terminal-status", chat_type="dm"),
+        session_id="sess-terminal-status",
+        session_key="agent:main:telegram:dm:terminal-status",
+    )
+
+    assert [(event.status, event.is_error, event.ok) for event in completed] == [
+        ("timeout", False, False),
+        ("cancelled", False, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delegated_terminal_activity_retains_commands_and_namespaces_child_ids(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = DelegatedToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    stream_events = importlib.import_module("gateway.stream_events")
+    real_chunk = stream_events.ToolCallChunk
+    real_finished = stream_events.ToolCallFinished
+    normalized = []
+
+    def capture_chunk(**kwargs):
+        event = real_chunk(**kwargs)
+        normalized.append(event)
+        return event
+
+    def capture_finished(**kwargs):
+        event = real_finished(**kwargs)
+        normalized.append(event)
+        return event
+
+    monkeypatch.setattr(stream_events, "ToolCallChunk", capture_chunk)
+    monkeypatch.setattr(stream_events, "ToolCallFinished", capture_finished)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+
+    await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="delegated", chat_type="dm"),
+        session_id="sess-delegated",
+        session_key="agent:main:telegram:dm:delegated",
+    )
+
+    assert adapter.edits
+    final_progress = adapter.edits[-1]["content"]
+    ordered_fragments = (
+        "Inspect child A",
+        "printf child-a",
+        "child A completed",
+        "Inspect child B",
+        "printf child-b",
+        "child B completed",
+    )
+    positions = [final_progress.index(fragment) for fragment in ordered_fragments]
+    assert positions == sorted(positions)
+    assert final_progress.count("shared-call") == 0
+    normalized_ids = [event.tool_call_id for event in normalized]
+    assert normalized_ids.count("subagent:0:shared-call") == 2
+    assert normalized_ids.count("subagent:child-b:shared-call") == 2
+    assert "subagent:child:shared-call" not in normalized_ids
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_name_activity_updates_by_stable_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ConcurrentToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+
+    await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="same-name", chat_type="dm"),
+        session_id="sess-same-name",
+        session_key="agent:main:telegram:dm:same-name",
+    )
+
+    assert adapter.edits
+    final_progress = adapter.edits[-1]["content"]
+    first_reason = final_progress.index("Run first command")
+    first_summary = final_progress.index("first completed")
+    second_reason = final_progress.index("Run second command")
+    second_summary = final_progress.index("second completed")
+    assert first_reason < first_summary < second_reason < second_summary
+
+
+@pytest.mark.asyncio
+async def test_same_target_activity_does_not_legacy_dedup_distinct_call_ids(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = SameTargetToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+
+    await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="same-target", chat_type="dm"),
+        session_id="sess-same-target",
+        session_key="agent:main:telegram:dm:same-target",
+    )
+
+    assert adapter.edits
+    final_progress = adapter.edits[-1]["content"]
+    assert "Apply first edit" in final_progress
+    assert "first applied" in final_progress
+    assert "Apply second edit" in final_progress
+    assert "second applied" in final_progress
+    assert "Editing /tmp/shared.py" not in final_progress
+    assert "(×2)" not in final_progress
+
+
+@pytest.mark.asyncio
+async def test_same_tool_target_and_reason_batches_visually_without_losing_ids(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = SameBatchToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+
+    await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="same-batch", chat_type="dm"),
+        session_id="sess-same-batch",
+        session_key="agent:main:telegram:dm:same-batch",
+    )
+
+    assert adapter.sent
+    initial_progress = adapter.sent[0]["content"]
+    assert "Apply matching edit" in initial_progress
+    assert "Editing /tmp/shared.py" not in initial_progress
+
+    assert adapter.edits
+    final_progress = adapter.edits[-1]["content"]
+    from agent.display import get_tool_emoji
+
+    assert final_progress.splitlines() == [
+        f"{get_tool_emoji('patch')} **patch** ×2 · Apply matching edit",
+        "  /tmp/shared.py · applied",
+    ]
+    assert final_progress.count("Apply matching edit") == 1
+    assert "(×2)" not in final_progress
+    assert "patch:" not in final_progress
+    assert "Editing /tmp/shared.py" not in final_progress
+
+
+@pytest.mark.asyncio
+async def test_distinct_full_targets_do_not_batch_when_display_previews_match(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", TruncatedTargetToolActivityAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+
+    await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="distinct-targets", chat_type="dm"),
+        session_id="sess-distinct-targets",
+        session_key="agent:main:telegram:dm:distinct-targets",
+    )
+
+    assert adapter.edits
+    final_progress = adapter.edits[-1]["content"]
+    assert final_progress.count("Apply matching edit") == 2
+    assert "×2" not in final_progress
+
+
+@pytest.mark.asyncio
+async def test_matching_completion_edits_running_card_before_commentary_reset(monkeypatch, tmp_path):
+    """A delayed completion for a running card must not become a second card.
+
+    The next assistant commentary can land before completion callbacks while
+    Telegram's edit throttle is waiting.  The completion must still edit the
+    existing activity message; the content-boundary reset only applies to
+    later tool activity.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SameBatchThenCommentaryAgent,
+        session_id="sess-batch-commentary-race",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "tool_progress_grouping": "accumulate",
+                "tool_reasons": True,
+                "tool_result_summaries": True,
+                "interim_assistant_messages": True,
+            }
+        },
+        chat_id="batch-commentary-race",
+        chat_type="dm",
+        thread_id="",
+    )
+
+    assert result["final_response"] == "done"
+    activity_sends = [call for call in adapter.sent if "**patch**" in call["content"]]
+    assert len(activity_sends) == 1, "running and completed states must share one message"
+    assert any(call["content"] == "Both matching calls completed." for call in adapter.sent)
+    terminal_edits = [
+        call for call in adapter.edits if "  /tmp/shared.py · applied" in call["content"]
+    ]
+    assert terminal_edits, "the running activity message was never finalized"
+    final_progress = terminal_edits[-1]["content"]
+    assert final_progress.count("Apply matching edit") == 1
+    assert final_progress.count("  /tmp/shared.py · applied") == 1
+    assert "**patch** ×2" in final_progress
+
+
+@pytest.mark.asyncio
+async def test_tool_activity_is_completion_only_on_non_editing_platforms(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = NonEditingProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"tool_reasons": True, "tool_result_summaries": True, "tool_progress": "all"}},
+    )
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="456", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-activity-final",
+        session_key="agent:main:telegram:dm:456",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.edits == []
+    assert len(adapter.sent) == 1
+    assert "Inspect the current directory" in adapter.sent[0]["content"]
+    assert "  pwd · 0.4s" in adapter.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adapter_type", "activity_config", "expected", "unexpected"),
+    [
+        (
+            ProgressCaptureAdapter,
+            {"tool_reasons": True, "tool_result_summaries": False},
+            "Inspect the current directory",
+            "terminal: exit 0 in 0.4s",
+        ),
+        (
+            NonEditingProgressCaptureAdapter,
+            {"tool_reasons": False, "tool_result_summaries": True},
+            "0.4s",
+            "Inspect the current directory",
+        ),
+    ],
+)
+async def test_tool_activity_still_delivers_completion_when_normal_progress_is_off(
+    monkeypatch, tmp_path, adapter_type, activity_config, expected, unexpected
+):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolActivityAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = adapter_type()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {**activity_config, "tool_progress": "off"}},
+    )
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="789", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-activity-progress-off",
+        session_key="agent:main:telegram:dm:789",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert expected in adapter.sent[0]["content"]
+    assert unexpected not in adapter.sent[0]["content"]
+    assert "Running pwd" not in adapter.sent[0]["content"]
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio
@@ -1653,6 +2399,105 @@ class TerminalCommandAgent:
         # Let the async progress task drain the queue and send before returning.
         time.sleep(0.35)
         return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class TerminalActivityCommandAgent:
+    """Emits a correlated terminal lifecycle with the legacy command payload."""
+
+    CMD = TerminalCommandAgent.CMD
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb(
+            "tool.started",
+            "terminal",
+            self.CMD,
+            {"command": self.CMD},
+            tool_call_id="terminal-preview-1",
+            reason="Exercise the terminal code preview",
+        )
+        time.sleep(0.35)
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            tool_call_id="terminal-preview-1",
+            reason="Exercise the terminal code preview",
+            summary="terminal: exit 0 in 0.4s",
+            status="completed",
+            is_error=False,
+            duration_seconds=0.4,
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_structured_terminal_activity_reuses_fenced_command_preview(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalActivityCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "display": {
+                "tool_progress": "all",
+                "tool_reasons": True,
+                "tool_result_summaries": True,
+            }
+        },
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"),
+        session_id="sess-structured-terminal-code-block",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    from agent.display import get_tool_emoji
+
+    expected_header = (
+        f"{get_tool_emoji('terminal')} **terminal** · Exercise the terminal code preview"
+    )
+    assert result["final_response"] == "done"
+    assert adapter.sent[0]["content"].splitlines() == [
+        expected_header,
+        "```",
+        "set -euo pipefail ...",
+        "```",
+        "  running",
+    ]
+    expected_completed_header = (
+        f"{get_tool_emoji('terminal')} **terminal** · Exercise the terminal code preview · 0.4s"
+    )
+    assert adapter.edits[-1]["content"].splitlines() == [
+        expected_completed_header,
+        "```",
+        "set -euo pipefail ...",
+        "```",
+    ]
+    assert "node --version" not in adapter.edits[-1]["content"]
+    assert "exit 0" not in adapter.edits[-1]["content"]
 
 
 @pytest.mark.asyncio

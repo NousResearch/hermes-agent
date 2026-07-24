@@ -19,7 +19,7 @@ import {
   compactPreview,
   estimateTokensRough,
   fmtK,
-  formatToolCall,
+  formatToolNarrative,
   parseToolTrailResultLine,
   pick,
   splitToolDuration,
@@ -862,22 +862,35 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const tool of tools) {
-    const label = formatToolCall(tool.name, tool.context || '')
+    const label = formatToolNarrative(tool.name, tool.context || '', tool.reason)
+    const targetDetail = tool.reason && tool.context && tool.context !== tool.reason ? tool.context : ''
 
     groups.push({
       color: t.color.text,
       key: tool.id,
       label,
-      details: tool.verboseArgs
-        ? [
-            {
-              color: t.color.muted,
-              content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
-              dimColor: true,
-              key: `${tool.id}-args`
-            }
-          ]
-        : [],
+      details: [
+        ...(targetDetail
+          ? [
+              {
+                color: t.color.muted,
+                content: targetDetail,
+                dimColor: true,
+                key: `${tool.id}-target`
+              }
+            ]
+          : []),
+        ...(tool.verboseArgs
+          ? [
+              {
+                color: t.color.muted,
+                content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
+                dimColor: true,
+                key: `${tool.id}-args`
+              }
+            ]
+          : [])
+      ],
       content: (
         <>
           <Spinner color={t.color.tool} variant="tool" /> {label}

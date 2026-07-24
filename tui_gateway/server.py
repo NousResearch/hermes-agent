@@ -25,6 +25,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from agent.tool_activity import redact_activity_args, redact_activity_text
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -3391,6 +3392,30 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
     return name == "clarify"
 
 
+def _clarify_result_for_ui(result: object) -> dict[str, object] | None:
+    """Return only the redacted clarify fields required by interactive clients."""
+    value = result
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return None
+    if not isinstance(value, dict):
+        return None
+
+    safe: dict[str, object] = {}
+    for key in ("question", "user_response", "error"):
+        item = value.get(key)
+        if isinstance(item, str):
+            safe[key] = redact_activity_text(item)
+    choices = value.get("choices_offered")
+    if isinstance(choices, list):
+        safe["choices_offered"] = [
+            redact_activity_text(item) for item in choices if isinstance(item, str)
+        ]
+    return safe or None
+
+
 def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
     if worker:
@@ -4388,7 +4413,15 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text}{suffix}" if text else None
 
 
-def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
+def _on_tool_start(
+    sid: str,
+    tool_call_id: str,
+    name: str,
+    args: dict,
+    *,
+    reason: str | None = None,
+    status: str | None = None,
+):
     session = _sessions.get(sid)
     if session is not None:
         try:
@@ -4400,57 +4433,80 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         except Exception:
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+    args = redact_activity_args(args)
+    reason = redact_activity_text(reason) if reason is not None else None
     if _tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name):
         payload = {
             "tool_id": tool_call_id,
+            "tool_call_id": tool_call_id,
             "name": name,
             "context": _tool_ctx(name, args),
         }
+        if reason:
+            payload["reason"] = reason
+        if status:
+            payload["status"] = status
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:
                 payload["args_text"] = args_text
-        # tool.complete is the source of truth for todos (full list from the
-        # tool result). args.todos here may be a partial merge update.
+        # tool.complete is the source of truth for todos. The executor supplies
+        # the full current list in presentation-safe args; raw results are never
+        # parsed at this boundary.
         _emit("tool.start", sid, payload)
 
 
-def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
-    payload = {"tool_id": tool_call_id, "name": name, "args": args}
+def _on_tool_complete(
+    sid: str,
+    tool_call_id: str,
+    name: str,
+    args: dict,
+    result: str | None,
+    *,
+    summary: str | None = None,
+    status: str | None = None,
+    is_error: bool | None = None,
+    duration_seconds: float | None = None,
+):
+    args = redact_activity_args(args)
+    summary = redact_activity_text(summary) if summary is not None else None
+    payload = {"tool_id": tool_call_id, "tool_call_id": tool_call_id, "name": name, "args": args}
     session = _sessions.get(sid)
     snapshot = None
     started_at = None
     if session is not None:
         snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None)
         started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None)
-    duration_s = time.time() - started_at if started_at else None
+    duration_s = duration_seconds if duration_seconds is not None else (time.time() - started_at if started_at else None)
     if duration_s is not None:
         payload["duration_s"] = duration_s
-    try:
-        payload["result"] = json.loads(result)
-    except Exception:
-        payload["result"] = result
-    summary = _tool_summary(name, result, duration_s)
+        payload["duration_seconds"] = duration_s
     if summary:
         payload["summary"] = summary
-    if _session_verbose(sid):
-        result_text = _tool_result_text(result)
-        if result_text:
-            payload["result_text"] = result_text
+    if status:
+        payload["status"] = status
+    if is_error is not None:
+        payload["is_error"] = is_error
+    if name == "clarify":
+        clarify_result = _clarify_result_for_ui(result)
+        if clarify_result is not None:
+            payload["result"] = clarify_result
     if name == "todo":
-        try:
-            data = json.loads(result)
-            if isinstance(data, dict) and isinstance(data.get("todos"), list):
-                payload["todos"] = data.get("todos")
-        except Exception:
-            pass
+        todos = args.get("todos") if isinstance(args, dict) else None
+        if isinstance(todos, list):
+            payload["todos"] = todos
     try:
         from agent.display import render_edit_diff_with_delta
 
         rendered: list[str] = []
+        safe_success_result = (
+            '{"success":true}'
+            if is_error is False or (is_error is None and status == "completed")
+            else None
+        )
         if render_edit_diff_with_delta(
             name,
-            result,
+            safe_success_result,
             function_args=args,
             snapshot=snapshot,
             print_fn=rendered.append,
@@ -4596,12 +4652,18 @@ def _on_tool_progress(
             payload["tool_name"] = str(name)
         if preview:
             payload["text"] = str(preview)
+        for str_key in ("tool_call_id", "call_id", "reason"):
+            if _kwargs.get(str_key):
+                payload[str_key] = str(_kwargs[str_key])
+        if _kwargs.get("is_error") is not None:
+            payload["is_error"] = bool(_kwargs["is_error"])
         if _kwargs.get("status"):
             payload["status"] = str(_kwargs["status"])
         if _kwargs.get("summary"):
             payload["summary"] = str(_kwargs["summary"])
-        if _kwargs.get("duration_seconds") is not None:
-            payload["duration_seconds"] = float(_kwargs["duration_seconds"])
+        duration_value = _kwargs.get("duration_seconds", _kwargs.get("duration"))
+        if duration_value is not None:
+            payload["duration_seconds"] = float(duration_value)
         if preview and event_type == "subagent.tool":
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)
@@ -4665,7 +4727,10 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         return
     csid = live[0]
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault(
+            child_key,
+            {"seq": 0, "open_tool": None, "open_tools": {}, "started": False},
+        )
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
@@ -4684,21 +4749,58 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             if text := str(payload.get("text") or ""):
                 _emit("message.delta", csid, {"text": f"{text}\n"})
         elif event_type == "subagent.tool":
-            if st["open_tool"]:
-                _emit("tool.complete", csid, st["open_tool"])
             st["seq"] += 1
+            explicit_tool_id = payload.get("tool_call_id") or payload.get("call_id")
+            tool_id = str(explicit_tool_id or f"submirror:{child_key}:{st['seq']}")
             tool = {
                 "name": str(payload.get("tool_name") or "tool"),
-                "tool_id": f"submirror:{child_key}:{st['seq']}",
+                "tool_id": tool_id,
                 "args": {},
+                "status": "running",
             }
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
+            if reason := str(payload.get("reason") or ""):
+                tool["reason"] = reason
+            st.setdefault("open_tools", {})[tool_id] = tool
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
+        elif event_type == "subagent.tool.completed":
+            explicit_tool_id = payload.get("tool_call_id") or payload.get("call_id")
+            open_tools = st.setdefault("open_tools", {})
+            tool = None
+            if explicit_tool_id is not None:
+                tool = open_tools.pop(str(explicit_tool_id), None)
+            else:
+                completed_name = str(payload.get("tool_name") or "tool")
+                for pending_id, pending_tool in list(open_tools.items()):
+                    if str(pending_tool.get("name") or "tool") == completed_name:
+                        tool = open_tools.pop(pending_id)
+                        break
+            # Completion-only/replayed events must not create orphaned cards.
+            if tool is None:
+                return
+            tool.update(
+                {
+                    "status": str(payload.get("status") or "completed"),
+                    "summary": str(payload.get("summary") or ""),
+                    "is_error": bool(payload.get("is_error")),
+                    "duration_seconds": payload.get("duration_seconds"),
+                }
+            )
+            _emit("tool.complete", csid, tool)
+            current = st.get("open_tool")
+            if isinstance(current, dict) and current.get("tool_id") == tool.get("tool_id"):
+                st["open_tool"] = next(reversed(open_tools.values()), None)
         elif event_type == "subagent.complete":
-            if st["open_tool"]:
+            open_tools = list(st.setdefault("open_tools", {}).values())
+            emitted_ids = {str(tool.get("tool_id") or "") for tool in open_tools}
+            for tool in open_tools:
+                _emit("tool.complete", csid, tool)
+            st["open_tools"].clear()
+            if st["open_tool"] and str(st["open_tool"].get("tool_id") or "") not in emitted_ids:
                 _emit("tool.complete", csid, st["open_tool"])
+            st["open_tool"] = None
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
             _child_mirrors.pop(child_key, None)
@@ -4706,11 +4808,24 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 def _agent_cbs(sid: str) -> dict:
     callbacks = {
-        "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
-            sid, tc_id, name, args
+        "tool_start_callback": lambda tc_id, name, args, **metadata: _on_tool_start(
+            sid,
+            tc_id,
+            name,
+            args,
+            reason=metadata.get("reason"),
+            status=metadata.get("status"),
         ),
-        "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(
-            sid, tc_id, name, args, result
+        "tool_complete_callback": lambda tc_id, name, args, result, **metadata: _on_tool_complete(
+            sid,
+            tc_id,
+            name,
+            args,
+            result,
+            summary=metadata.get("summary"),
+            status=metadata.get("status"),
+            is_error=metadata.get("is_error"),
+            duration_seconds=metadata.get("duration_seconds"),
         ),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs
@@ -5052,7 +5167,11 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
-        "platform": "tui",
+        "platform": getattr(agent, "platform", None) or "tui",
+        "tool_reasons_enabled": bool(getattr(agent, "tool_reasons_enabled", False)),
+        "tool_result_summaries_enabled": bool(
+            getattr(agent, "tool_result_summaries_enabled", False)
+        ),
         "session_db": _get_db(),
         "fallback_model": _agent_fallback_model(agent),
     }
@@ -5129,29 +5248,12 @@ def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_cha
     return trimmed
 
 
-def _preview_tool_result_preview(name: str, result: str) -> str:
-    try:
-        data = json.loads(result)
-    except Exception:
-        return ""
-
-    if not isinstance(data, dict):
-        return ""
-
-    if name == "terminal":
-        output = str(data.get("output") or "").strip()
-        exit_code = data.get("exit_code")
-        if output:
-            return output[-1200:]
-        if data.get("session_id"):
-            return f"Background process started: {data.get('session_id')}"
-        if exit_code is not None:
-            return f"terminal exited with code {exit_code}"
-
-    return str(data.get("error") or "").strip()[:1200]
-
-
-def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
+def _preview_restart_callbacks(
+    parent: str,
+    task_id: str,
+    *,
+    show_summaries: bool = False,
+) -> dict:
     started_at: dict[str, float] = {}
 
     def progress(message: str, level: str = "info") -> None:
@@ -5164,13 +5266,28 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         ctx = _tool_ctx(name, args)
         progress(f"Running {name}{f': {ctx}' if ctx else ''}")
 
-    def tool_complete(tool_call_id: str, name: str, _args: dict, result: str) -> None:
-        duration_s = time.time() - started_at.get(tool_call_id, time.time())
-        summary = _tool_summary(name, result, duration_s) or f"Finished {name}{f' in {_fmt_tool_duration(duration_s)}' if duration_s else ''}"
-        output = _preview_tool_result_preview(name, result)
-        progress(summary + (f"\n{output}" if output else ""))
+    def tool_complete(
+        tool_call_id: str,
+        name: str,
+        _args: dict,
+        _result: str,
+        **metadata,
+    ) -> None:
+        started_at.pop(tool_call_id, None)
+        if not show_summaries:
+            return
+        summary = metadata.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            from agent.tool_activity import redact_activity_text
+
+            progress(redact_activity_text(summary))
 
     def tool_progress(event_type: str, name: str | None = None, preview: str | None = None, **_kwargs) -> None:
+        # Structured completion owns the optional summary. Suppress the legacy
+        # generic completion event so disabling summaries cannot synthesize a
+        # fallback completion line (and enabling them cannot duplicate one).
+        if event_type == "tool.completed":
+            return
         if preview:
             progress(str(preview))
         elif name:
@@ -5499,6 +5616,16 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    from gateway.display_config import resolve_display_setting
+    _activity_platform = _resolve_agent_platform(platform_override)
+    _tool_reasons_enabled = is_truthy_value(
+        resolve_display_setting(cfg, _activity_platform, "tool_reasons", False),
+        default=False,
+    )
+    _tool_result_summaries_enabled = is_truthy_value(
+        resolve_display_setting(cfg, _activity_platform, "tool_result_summaries", False),
+        default=False,
+    )
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -5535,7 +5662,9 @@ def _make_agent(
         provider_sort=_pr.get("sort"),
         provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"),
-        platform=_resolve_agent_platform(platform_override),
+        platform=_activity_platform,
+        tool_reasons_enabled=_tool_reasons_enabled,
+        tool_result_summaries_enabled=_tool_result_summaries_enabled,
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
@@ -12102,6 +12231,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    if session is None:
+        return _err(rid, 4011, "session not found")
 
     url = str(params.get("url") or "").strip()
     cwd = str(params.get("cwd") or "").strip()
@@ -12177,9 +12308,18 @@ def _(rid, params: dict) -> dict:
                 parent,
                 {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
             )
+            parent_agent = session.get("agent")
+            if parent_agent is None:
+                raise RuntimeError("parent session agent is unavailable")
             result = AIAgent(
-                **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
-                **_preview_restart_callbacks(parent, task_id),
+                **_ephemeral_preview_agent_kwargs(parent_agent, task_id),
+                **_preview_restart_callbacks(
+                    parent,
+                    task_id,
+                    show_summaries=bool(
+                        getattr(parent_agent, "tool_result_summaries_enabled", False)
+                    ),
+                ),
             ).run_conversation(
                 user_message=prompt,
                 task_id=task_id,

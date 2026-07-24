@@ -172,6 +172,60 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+@pytest.mark.parametrize(
+    ("global_value", "platform_value", "expected"),
+    [
+        (False, True, True),
+        (True, False, False),
+    ],
+)
+def test_cli_activity_flags_honor_platform_override(
+    monkeypatch, global_value, platform_value, expected
+):
+    import copy
+
+    cli = _import_cli()
+    config = copy.deepcopy(cli.CLI_CONFIG)
+    display = dict(config.get("display") or {})
+    display.update(
+        {
+            "tool_reasons": global_value,
+            "tool_result_summaries": global_value,
+            "platforms": {
+                **dict(display.get("platforms") or {}),
+                "cli": {
+                    "tool_reasons": platform_value,
+                    "tool_result_summaries": platform_value,
+                },
+            },
+        }
+    )
+    config["display"] = display
+    monkeypatch.setattr(cli, "CLI_CONFIG", config)
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "env/config",
+        },
+    )
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+
+    assert shell._init_agent() is True
+    assert shell.agent.kwargs["tool_reasons_enabled"] is expected
+    assert shell.agent.kwargs["tool_result_summaries_enabled"] is expected
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

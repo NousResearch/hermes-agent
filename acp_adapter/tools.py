@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 import acp
+from agent.tool_activity import redact_activity_args, redact_activity_text
 from acp.schema import (
     ToolCallLocation,
     ToolCallStart,
@@ -1046,6 +1047,7 @@ def build_tool_start(
     arguments: Dict[str, Any],
     *,
     edit_diff: Any = None,
+    reason: str | None = None,
 ) -> ToolCallStart:
     """Create a ToolCallStart event for the given hermes tool invocation.
 
@@ -1057,9 +1059,11 @@ def build_tool_start(
     ``get_cute_tool_message`` in ``agent/display.py``, wrapped for the same
     reason on the CLI side.
     """
+    arguments = redact_activity_args(arguments)
+    reason = redact_activity_text(reason) if reason is not None else None
     try:
         return _build_tool_start(
-            tool_call_id, tool_name, arguments, edit_diff=edit_diff
+            tool_call_id, tool_name, arguments, edit_diff=edit_diff, reason=reason
         )
     except Exception as exc:  # noqa: BLE001 — a tool-call render must never abort the turn
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
@@ -1076,10 +1080,13 @@ def _build_tool_start(
     arguments: Dict[str, Any],
     *,
     edit_diff: Any = None,
+    reason: str | None = None,
 ) -> ToolCallStart:
     """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
     kind = get_tool_kind(tool_name)
     title = build_tool_title(tool_name, arguments)
+    if reason:
+        title = f"{title} — {reason}"
     locations = extract_locations(arguments)
 
     if tool_name == "patch":
@@ -1308,25 +1315,31 @@ def build_tool_complete(
     result: Optional[str] = None,
     function_args: Optional[Dict[str, Any]] = None,
     snapshot: Any = None,
+    summary: str | None = None,
+    status: str | None = None,
+    is_error: bool | None = None,
 ) -> ToolCallProgress:
-    """Create a ToolCallUpdate (progress) event for a completed tool call."""
+    """Create a display-safe completion event.
+
+    ``result`` is accepted for legacy failure classification only.  It must
+    never be copied into ACP ``content`` or ``raw_output``: raw tool output is
+    model/history data, not presentation data.  The optional ``summary`` has
+    already passed through Hermes' activity sanitizer and is the sole text
+    allowed on the completion card.
+    """
     kind = get_tool_kind(tool_name)
-    if tool_name == "web_extract":
-        error_text = _format_web_extract_result(result)
-        content = [_text(error_text)] if error_text else None
+    content = [_text(redact_activity_text(summary))] if summary is not None else None
+    normalized_status = str(status or "").strip().lower()
+    if is_error is None and not normalized_status:
+        failed = _tool_result_failed(result, tool_name)
     else:
-        content = _build_tool_complete_content(
-            tool_name,
-            result,
-            function_args=function_args,
-            snapshot=snapshot,
-        )
+        failed = bool(is_error) or normalized_status in {"error", "failed", "blocked", "cancelled", "timeout"}
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,
-        status="failed" if _tool_result_failed(result, tool_name) else "completed",
+        status="failed" if failed else "completed",
         content=content,
-        raw_output=None if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result) else result,
+        raw_output=None,
     )
 
 

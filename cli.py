@@ -4303,7 +4303,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
-        self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
+        self._pending_tool_info: dict = {}  # function_name -> list of args for stacked scrollback
+        self._pending_tool_reasons: dict = {}  # function_name -> FIFO display-safe reasons
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
         self._command_blocks_input = False
@@ -11082,15 +11083,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 stored_args = stored.pop(0) if stored else {}
                 if stored is not None and not stored:
                     del self._pending_tool_info[function_name]
+                stored_reasons = self._pending_tool_reasons.get(function_name)
+                stored_reason = stored_reasons.pop(0) if stored_reasons else ""
+                if stored_reasons is not None and not stored_reasons:
+                    del self._pending_tool_reasons[function_name]
+                reason = kwargs.get("reason") or stored_reason
                 # "new" mode: skip consecutive repeats of the same tool
                 if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
                     self._invalidate()
                     return
                 self._last_scrollback_tool = function_name
                 try:
-                    from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    summary = kwargs.get("summary")
+                    if summary:
+                        from agent.display import get_tool_emoji
+                        emoji = get_tool_emoji(function_name)
+                        if reason:
+                            _cprint(f"  {emoji} {reason}")
+                        marker = "✗" if is_error else "✓"
+                        _cprint(f"  {marker} {summary}")
+                    else:
+                        from agent.display import get_cute_tool_message
+                        line = get_cute_tool_message(
+                            function_name,
+                            stored_args,
+                            duration,
+                            result=kwargs.get("result"),
+                        )
+                        _cprint(f"  {line}")
                 except Exception:
                     pass
                 # First-touch onboarding: on the first tool in this process
@@ -11125,7 +11145,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(function_name)
-            label = preview or function_name
+            reason = kwargs.get("reason") or ""
+            label = reason or preview or function_name
             from agent.display import get_tool_preview_max_len
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
@@ -11136,6 +11157,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {}
             )
+            self._pending_tool_reasons.setdefault(function_name, []).append(reason)
             self._invalidate()
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):

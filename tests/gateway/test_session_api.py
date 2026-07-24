@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -167,6 +168,66 @@ async def test_session_crud_and_message_history(adapter, session_db):
         deleted = await delete_resp.json()
         assert deleted == {"object": "hermes.session.deleted", "id": session_id, "deleted": True}
         assert session_db.get_session(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_session_history_projects_safe_tool_activity_without_raw_tool_data(adapter, session_db):
+    session_id = session_db.create_session("privacy-session", "api_server")
+    session_db.append_message(
+        session_id,
+        "assistant",
+        "",
+        tool_calls=[
+            {
+                "id": "call-private",
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "arguments": '{"command":"PRIVATE_ARGUMENT_MARKER"}',
+                },
+            }
+        ],
+    )
+    session_db.append_message(
+        session_id,
+        "tool",
+        "PRIVATE_RESULT_MARKER",
+        tool_call_id="call-private",
+        tool_name="terminal",
+        tool_activity={
+            "reason": "Check the working directory",
+            "summary": "terminal: completed",
+            "status": "completed",
+            "is_error": False,
+            "duration_seconds": 0.2,
+        },
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    wire = json.dumps(payload)
+    assert "PRIVATE_ARGUMENT_MARKER" not in wire
+    assert "PRIVATE_RESULT_MARKER" not in wire
+    assistant_message, tool_message = payload["data"]
+    assert assistant_message["tool_calls"] == [
+        {
+            "id": "call-private",
+            "type": "function",
+            "function": {"name": "terminal"},
+        }
+    ]
+    assert tool_message["content"] == "terminal: completed"
+    assert tool_message["_tool_activity"] == {
+        "reason": "Check the working directory",
+        "summary": "terminal: completed",
+        "status": "completed",
+        "is_error": False,
+        "duration_seconds": 0.2,
+    }
 
 
 @pytest.mark.asyncio
@@ -338,6 +399,61 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_redacts_tool_activity_at_sse_boundary(adapter, session_db):
+    session_id = session_db.create_session("stream-private", "api_server")
+
+    async def fake_run(**kwargs):
+        callback = kwargs["tool_progress_callback"]
+        callback(
+            "tool.started",
+            tool_name="terminal",
+            preview="authorization=Bearer PREVIEW_CREDENTIAL_MARKER",
+            args={
+                "command": "authorization=Bearer COMMAND_CREDENTIAL_MARKER",
+                "authorization": "Bearer ARG_CREDENTIAL_MARKER",
+            },
+            tool_call_id="call_private",
+            reason="authorization=Bearer REASON_CREDENTIAL_MARKER",
+            status="running",
+        )
+        callback(
+            "tool.completed",
+            tool_name="terminal",
+            preview="authorization=Bearer COMPLETION_PREVIEW_CREDENTIAL_MARKER",
+            args={"command": "authorization=Bearer COMPLETION_ARG_CREDENTIAL_MARKER"},
+            tool_call_id="call_private",
+            summary="authorization=Bearer SUMMARY_CREDENTIAL_MARKER",
+            status="completed",
+            is_error=False,
+        )
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "run it"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    assert "event: tool.started" in body
+    assert "event: tool.completed" in body
+    for marker in (
+        "PREVIEW_CREDENTIAL_MARKER",
+        "COMMAND_CREDENTIAL_MARKER",
+        "ARG_CREDENTIAL_MARKER",
+        "REASON_CREDENTIAL_MARKER",
+        "COMPLETION_PREVIEW_CREDENTIAL_MARKER",
+        "COMPLETION_ARG_CREDENTIAL_MARKER",
+        "SUMMARY_CREDENTIAL_MARKER",
+    ):
+        assert marker not in body
+    assert "[REDACTED]" in body
 
 
 @pytest.mark.asyncio

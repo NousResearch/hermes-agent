@@ -28,6 +28,12 @@ export interface CountMetric {
 }
 
 export interface ToolView {
+  activity?: string
+  activityDetail?: string
+  activityLabel?: string
+  activityReason?: string
+  activitySummary?: string
+  activityTarget?: string
   countLabel?: string
   detail: string
   detailLabel: string

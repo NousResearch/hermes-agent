@@ -53,7 +53,13 @@ def test_writer_event_lines_append_in_order_and_flush_immediately():
     w = LiveTranscriptWriter("deleg_order", 1, "goal")
     w.assistant_text("I'll inspect the repo first.")
     w.tool_start("terminal", "ls -la /tmp")
-    w.tool_result("terminal", result="file1\nfile2", duration=1.234, is_error=False)
+    w.tool_result(
+        "terminal",
+        result="file1\nfile2",
+        duration=1.234,
+        is_error=False,
+        summary="terminal: 2 lines",
+    )
     w.thinking("hmm, next step")
     # No close() needed: every event is flushed on write.
     lines = w.path.read_text(encoding="utf-8").splitlines()
@@ -61,7 +67,7 @@ def test_writer_event_lines_append_in_order_and_flush_immediately():
     joined = "\n".join(body)
     assert "assistant" in joined and "I'll inspect the repo first." in joined
     assert "-> terminal(ls -la /tmp)" in joined
-    assert "terminal ok 1.2s: file1 file2" in joined
+    assert "terminal ok 1.2s: terminal: 2 lines" in joined
     assert "hmm, next step" in joined
     # Ordering: assistant before tool before result before think
     idx = {k: joined.index(k) for k in ("I'll inspect", "-> terminal", "terminal ok", "hmm,")}
@@ -71,7 +77,7 @@ def test_writer_event_lines_append_in_order_and_flush_immediately():
 def test_writer_truncates_long_text_with_elision_note():
     w = LiveTranscriptWriter("deleg_trunc", 0, "g")
     w.assistant_text("x" * 5000)
-    w.tool_result("web_search", result="y" * 5000)
+    w.tool_result("web_search", result="PRIVATE_RESULT_MARKER", summary="y" * 5000)
     text = w.path.read_text(encoding="utf-8")
     assert "…(+" in text  # elision marker present
     # No line carries the full 5000 chars
@@ -140,9 +146,15 @@ def test_observe_maps_child_callback_events_to_lines():
     w.observe("subagent.start", preview="kick off the goal")
     w.observe("_thinking", "first line of thinking")
     w.observe("reasoning.available", "_thinking", "deep reasoning text", None)
-    w.observe("tool.started", "terminal", "ls /tmp", {"command": "ls /tmp"})
-    w.observe("tool.completed", "terminal", None, None,
-              duration=0.5, is_error=False, result="ok output")
+    w.observe(
+        "tool.started", "terminal", "ls /tmp", {"command": "ls /tmp"},
+        reason="Inspect temporary files",
+    )
+    w.observe(
+        "tool.completed", "terminal", None, None,
+        duration=0.5, is_error=False, result="ok output",
+        summary="terminal: exit 0 in 0.5s",
+    )
     w.observe("subagent.text", preview="final reply ")
     w.observe("subagent.text", preview="streamed in parts")
     w.observe("subagent.complete", preview="short", status="completed",
@@ -151,18 +163,46 @@ def test_observe_maps_child_callback_events_to_lines():
     assert "kick off the goal" in text
     assert "first line of thinking" in text
     assert "deep reasoning text" in text
-    assert "-> terminal(ls /tmp)" in text
-    assert "terminal ok 0.5s: ok output" in text
+    assert "-> terminal(ls /tmp) — Inspect temporary files" in text
+    assert "terminal ok 0.5s: terminal: exit 0 in 0.5s" in text
     assert "final reply streamed in parts" in text
     assert "status=completed" in text
     assert "did the thing" in text
 
 
-def test_observe_marks_tool_errors():
+def test_observe_error_result_marks_error():
     w = LiveTranscriptWriter("deleg_err", 0, "g")
     w.observe("tool.completed", "web_search", None, None,
               is_error=True, result="Error: boom")
     assert "web_search ERROR" in w.path.read_text(encoding="utf-8")
+
+
+def test_tool_completion_never_falls_back_to_raw_result_and_resanitizes_summary():
+    w = LiveTranscriptWriter("deleg_private_result", 0, "g")
+    w.observe(
+        "tool.completed",
+        "terminal",
+        None,
+        None,
+        result="PRIVATE_RESULT_MARKER authorization=Bearer RESULT_CREDENTIAL_MARKER",
+        duration=0.4,
+    )
+    w.observe(
+        "tool.completed",
+        "read_file",
+        None,
+        None,
+        result="SECOND_PRIVATE_RESULT_MARKER",
+        summary="authorization=Bearer SUMMARY_CREDENTIAL_MARKER",
+    )
+
+    body = w.path.read_text(encoding="utf-8")
+    assert "terminal ok 0.4s" in body
+    assert "PRIVATE_RESULT_MARKER" not in body
+    assert "RESULT_CREDENTIAL_MARKER" not in body
+    assert "SECOND_PRIVATE_RESULT_MARKER" not in body
+    assert "SUMMARY_CREDENTIAL_MARKER" not in body
+    assert "read_file ok: authorization=" in body
 
 
 def test_finalize_records_budget_exhaustion_and_errors():
@@ -358,6 +398,13 @@ def test_delegate_task_background_dispatch_includes_live_transcripts(monkeypatch
     monkeypatch.setattr(dt, "_run_single_child", slow_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: _CREDS)
 
+    completion_events = []
+    monkeypatch.setattr(
+        process_registry.completion_queue,
+        "put",
+        lambda event: completion_events.append(event),
+    )
+
     out = json.loads(dt.delegate_task(
         goal="bg goal", background=True, parent_agent=parent,
     ))
@@ -375,15 +422,23 @@ def test_delegate_task_background_dispatch_includes_live_transcripts(monkeypatch
         assert live.parent.name == out["delegation_id"]
     finally:
         gate.set()
-        # Drain the completion so it can't leak into other tests.
+        # Capture this delegation's producer event directly. A live gateway may
+        # legitimately consume the process-global queue, so draining it here
+        # would race the owner and make this test order-dependent.
         deadline = time.time() + 30
         evt = None
         while time.time() < deadline:
-            try:
-                evt = process_registry.completion_queue.get(timeout=0.5)
+            evt = next(
+                (
+                    event
+                    for event in completion_events
+                    if event.get("delegation_id") == out["delegation_id"]
+                ),
+                None,
+            )
+            if evt is not None:
                 break
-            except Exception:
-                continue
+            time.sleep(0.01)
         ad._reset_for_tests()
 
     assert evt is not None
@@ -440,8 +495,16 @@ def test_child_progress_events_land_in_live_log(monkeypatch):
         cb = child.tool_progress_callback
         cb("_thinking", "planning the work")
         cb("tool.started", "terminal", "echo hi", {"command": "echo hi"})
-        cb("tool.completed", "terminal", None, None,
-           duration=0.2, is_error=False, result="hi")
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=0.2,
+            is_error=False,
+            result="hi",
+            summary="terminal: 1 line",
+        )
         return _fake_run(task_index, goal)
 
     monkeypatch.setattr(dt, "_build_child_agent", make_child)
@@ -452,7 +515,7 @@ def test_child_progress_events_land_in_live_log(monkeypatch):
     text = Path(out["live_transcripts"][0]).read_text(encoding="utf-8")
     assert "planning the work" in text
     assert "-> terminal(echo hi)" in text
-    assert "terminal ok 0.2s: hi" in text
+    assert "terminal ok 0.2s: terminal: 1 line" in text
     assert text.index("planning") < text.index("-> terminal") < text.index("terminal ok")
 
 
@@ -490,7 +553,7 @@ if __name__ == "__main__":
 # These transcripts land under ``cache/delegation``, which delegate_tool mounts
 # READ-ONLY into remote terminal backends — so a line written here is readable
 # from inside the sandbox. The rendered events are exactly the secret-bearing
-# surfaces (tool args, tool results, streamed assistant text), and every other
+# surfaces (tool args, completion summaries, streamed assistant text), and every other
 # sink for that data already routes through the canonical redactor.
 
 _BEARER = "sk-ant-api03-" + "R" * 24
@@ -511,7 +574,7 @@ def test_tool_args_are_redacted_before_hitting_disk():
     assert "terminal" in body, "redaction must not gut the operational detail"
 
 
-def test_tool_results_are_redacted_before_hitting_disk():
+def test_raw_tool_results_are_omitted_before_hitting_disk():
     w = LiveTranscriptWriter("deleg_redact_result", 0, "g")
     w.observe(
         "tool.completed",
@@ -524,7 +587,8 @@ def test_tool_results_are_redacted_before_hitting_disk():
     body = w.path.read_text(encoding="utf-8")
     assert _ENV_KEY not in body
     assert _AWS not in body
-    assert "OPENAI_API_KEY" in body, "key NAMES stay — only the values are masked"
+    assert "OPENAI_API_KEY" not in body
+    assert "terminal ok 0.4s" in body
 
 
 def test_streamed_assistant_text_is_redacted():
@@ -600,12 +664,13 @@ def test_redaction_covers_every_helper_via_the_event_chokepoint():
     assert _ENV_KEY not in body, "a write path escaped the redactor"
 
 
-def test_benign_transcript_content_is_untouched():
-    """Redaction must not mangle ordinary transcript text."""
+def test_benign_activity_content_is_untouched_while_raw_results_are_omitted():
+    """Keep operational context, but never persist raw tool output."""
     w = LiveTranscriptWriter("deleg_redact_benign", 0, "refactor the parser")
     w.observe("tool.started", "read_file", "src/parser.py", None)
     w.observe("tool.completed", "read_file", None, None, result="def parse(x): ...", duration=1.5)
     body = w.path.read_text(encoding="utf-8")
     assert "src/parser.py" in body
-    assert "def parse(x)" in body
+    assert "def parse(x)" not in body
+    assert "read_file ok 1.5s" in body
     assert "refactor the parser" in body

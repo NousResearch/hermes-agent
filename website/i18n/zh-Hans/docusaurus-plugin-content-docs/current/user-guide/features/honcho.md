@@ -1,6 +1,6 @@
 ---
 sidebar_position: 99
-title: "Honcho Memory"
+title: "Honcho 记忆"
 description: "通过 Honcho 实现 AI 原生持久记忆——辩证推理、多智能体用户建模与深度个性化"
 ---
 

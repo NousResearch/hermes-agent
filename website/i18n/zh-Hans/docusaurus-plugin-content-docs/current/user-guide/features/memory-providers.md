@@ -1,6 +1,6 @@
 ---
 sidebar_position: 4
-title: "Memory Providers"
+title: "内存提供者（Memory Providers）"
 description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory"
 ---
 

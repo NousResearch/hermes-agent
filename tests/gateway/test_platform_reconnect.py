@@ -1017,3 +1017,227 @@ class TestFatalHandoffCancellationProof:
 
         assert runner._exit_with_failure is True
         assert runner.stop.await_count == 1
+
+
+# ── _ensure_reconnect_watcher_running ──────────────────────────────────
+
+
+class TestEnsureReconnectWatcherRunning:
+    """Verify _ensure_reconnect_watcher_running respawns the watcher when dead."""
+
+    @pytest.mark.asyncio
+    async def test_reconnect_watcher_alive_does_nothing(self):
+        """Task is alive => no-op."""
+        runner = _make_runner()
+        runner._running = True
+        runner._background_tasks = set()
+
+        async def _dummy():
+            await asyncio.sleep(3600)
+
+        runner._reconnect_watcher_task = asyncio.create_task(_dummy())
+        runner._background_tasks.add(runner._reconnect_watcher_task)
+
+        old_task = runner._reconnect_watcher_task
+        runner._ensure_reconnect_watcher_running()
+
+        # Same task, not replaced
+        assert runner._reconnect_watcher_task is old_task
+        assert not runner._reconnect_watcher_task.done()
+
+        old_task.cancel()
+        try:
+            await old_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_reconnect_watcher_dead_respawns(self):
+        """Watcher is done => respawn."""
+        runner = _make_runner()
+        runner._running = True
+        runner._background_tasks = set()
+        runner._reconnect_watcher_task = asyncio.create_task(asyncio.sleep(0))
+        await runner._reconnect_watcher_task  # let it finish
+
+        assert runner._reconnect_watcher_task.done()
+
+        runner._ensure_reconnect_watcher_running()
+
+        assert runner._reconnect_watcher_task is not None
+        assert not runner._reconnect_watcher_task.done()
+        assert runner._reconnect_watcher_task in runner._background_tasks
+
+        runner._reconnect_watcher_task.cancel()
+        try:
+            await runner._reconnect_watcher_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_reconnect_watcher_not_running_respawns(self):
+        """No task at all => creates one."""
+        runner = _make_runner()
+        runner._running = True
+        runner._background_tasks = set()
+        runner._reconnect_watcher_task = None
+
+        runner._ensure_reconnect_watcher_running()
+
+        assert runner._reconnect_watcher_task is not None
+        assert not runner._reconnect_watcher_task.done()
+        assert runner._reconnect_watcher_task in runner._background_tasks
+
+        runner._reconnect_watcher_task.cancel()
+        try:
+            await runner._reconnect_watcher_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_not_running_noop(self):
+        """_running is False => no-op."""
+        runner = _make_runner()
+        runner._running = False
+        runner._reconnect_watcher_task = None
+        runner._ensure_reconnect_watcher_running()
+        assert runner._reconnect_watcher_task is None
+
+
+# ── _handle_adapter_fatal_error calls _ensure_reconnect_watcher ────────
+
+
+class TestFatalErrorCallsEnsureWatcher:
+    """Verify _handle_adapter_fatal_error calls _ensure_reconnect_watcher_running."""
+
+    @pytest.mark.asyncio
+    async def test_retryable_fatal_error_calls_ensure_watcher(self):
+        """A retryable fatal error queues the platform AND ensures watcher is alive."""
+        runner = _make_runner()
+        runner._running = True
+        runner._background_tasks = set()
+        runner._failed_platforms = {}
+        runner._fatal_handler_tasks = set()
+        runner._reconnect_watcher_task = asyncio.create_task(asyncio.sleep(0))
+        # Let the dummy watcher finish so _ensure_reconnect_watcher_running
+        # detects it's dead and respawns.
+        await runner._reconnect_watcher_task
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: platform_config}
+        )
+
+        adapter = StubAdapter(
+            platform=Platform.TELEGRAM,
+            succeed=False,
+            fatal_error="network outage",
+            fatal_retryable=True,
+        )
+        # Pre-set fatal error attributes so the handler can read them
+        # without going through connect() (#70344).
+        adapter._set_fatal_error(
+            "NETWORK_ERROR", "network outage", retryable=True
+        )
+        # Populate adapters so the impl pops it and queues for reconnect
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        call_count = {"ensure": 0}
+
+        def tracking_ensure():
+            call_count["ensure"] += 1
+
+        with patch.object(
+            runner,
+            "_ensure_reconnect_watcher_running",
+            side_effect=tracking_ensure,
+        ):
+            await runner._handle_adapter_fatal_error(adapter)
+
+        assert Platform.TELEGRAM in runner._failed_platforms
+        assert call_count["ensure"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_nonretryable_fatal_error_does_not_call_ensure(self):
+        """A non-retryable error must NOT queue the platform or call the watcher."""
+        runner = _make_runner()
+        runner._running = True
+        runner._background_tasks = set()
+        runner._failed_platforms = {}
+        runner._fatal_handler_tasks = set()
+        runner._reconnect_watcher_task = None
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: platform_config}
+        )
+
+        adapter = StubAdapter(
+            platform=Platform.TELEGRAM,
+            succeed=False,
+            fatal_error="bad token",
+            fatal_retryable=False,
+        )
+        # Pre-set fatal error attributes so the handler can read them
+        # without going through connect() (#70344).
+        adapter._set_fatal_error(
+            "AUTH_FAILED", "bad token", retryable=False
+        )
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        ensure_called = False
+
+        def noop_ensure():
+            nonlocal ensure_called
+            ensure_called = True
+
+        with patch.object(runner, "_ensure_reconnect_watcher_running", side_effect=noop_ensure):
+            await runner._handle_adapter_fatal_error(adapter)
+
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert not ensure_called
+
+
+# ── _connect_adapter_with_timeout detach-on-timeout ────────────────────
+
+
+class TestConnectAdapterDetachOnTimeout:
+    """Verify _connect_adapter_with_timeout uses the detach pattern."""
+
+    @pytest.mark.asyncio
+    async def test_connect_timed_out_raises_timeouterror(self):
+        """A connect() that never finishes must raise TimeoutError."""
+        runner = _make_runner()
+
+        adapter = StubAdapter(succeed=True)
+
+        async def _slow_connect(**kwargs):
+            await asyncio.sleep(3600)  # never finishes
+
+        with patch.object(adapter, "connect", side_effect=_slow_connect):
+            with patch.object(
+                runner, "_platform_connect_timeout_secs", return_value=0.01
+            ):
+                with pytest.raises(TimeoutError, match="timed out"):
+                    await runner._connect_adapter_with_timeout(
+                        adapter, Platform.TELEGRAM
+                    )
+
+        # After the TimeoutError, the slow connect coroutine should have been
+        # cancelled and detached, so the event loop can move on.
+        await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_connect_success_returns_true(self):
+        """A successful connect returns True."""
+        runner = _make_runner()
+        adapter = StubAdapter(succeed=True)
+
+        with patch.object(
+            runner, "_platform_connect_timeout_secs", return_value=30.0
+        ):
+            result = await runner._connect_adapter_with_timeout(
+                adapter, Platform.TELEGRAM
+            )
+
+        assert result is True

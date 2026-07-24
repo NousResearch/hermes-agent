@@ -534,12 +534,19 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    ahead_count="0",
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
 ):
-    """Build a subprocess.run side_effect for cmd_update tests."""
+    """Build a subprocess.run side_effect for cmd_update tests.
+
+    ``ahead_count`` is what the hard-reset guard's ``rev-list --count
+    origin/<branch>..HEAD`` probe reports — the number of local commits a
+    hard reset would discard. Default "0" keeps the legacy reset-path tests
+    on the safe branch (no local commits → reset proceeds).
+    """
     recorded = []
 
     def side_effect(cmd, **kwargs):
@@ -554,6 +561,10 @@ def _make_update_side_effect(
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
+            # ``origin/<branch>..HEAD`` → ahead probe (guard); ``HEAD..origin``
+            # → the "are there updates?" behind count.
+            if "..HEAD" in joined:
+                return SimpleNamespace(stdout=f"{ahead_count}\n", stderr="", returncode=0)
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "--ff-only" in joined:
             if ff_only_fails:
@@ -573,11 +584,12 @@ def _make_update_side_effect(
 
 
 def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+    """When --ff-only fails (diverged history) AND there are no local commits
+    to lose, update resets to origin/{branch}."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
-    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True, ahead_count="0")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     hermes_main.cmd_update(SimpleNamespace())
@@ -588,6 +600,80 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
+
+
+# ---------------------------------------------------------------------------
+# Hard-reset guard: ff-only fallback must NOT silently discard local commits
+# (auto-updater hard-reset incident, 2026-06-08). When local commits exist or
+# a git operation is mid-flight, the update refuses instead of resetting —
+# unless the user explicitly opted into discarding via
+# updates.non_interactive_local_changes=discard.
+# ---------------------------------------------------------------------------
+
+def test_cmd_update_refuses_reset_when_local_commits_would_be_lost(monkeypatch, tmp_path, capsys):
+    """ff-only fails AND local branch is ahead → refuse, do NOT reset --hard."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True, ahead_count="2")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert reset_calls == [], "guard must not run a destructive reset"
+
+    out = capsys.readouterr().out
+    assert "Refusing to hard-reset" in out
+    assert "2 local commit(s)" in out
+    assert "remain in the reflog" in out
+
+
+def test_cmd_update_refuses_reset_when_git_operation_in_progress(monkeypatch, tmp_path, capsys):
+    """ff-only fails AND a merge is mid-flight → refuse, do NOT reset --hard."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    # Simulate an in-progress merge in the mocked .git dir.
+    (tmp_path / ".git" / "MERGE_HEAD").write_text("deadbeef\n")
+
+    # ahead_count=0, so only the op-in-progress check can trip the guard.
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True, ahead_count="0")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert reset_calls == []
+
+    out = capsys.readouterr().out
+    assert "Refusing to hard-reset" in out
+    assert "merge" in out
+
+
+def test_cmd_update_discard_mode_resets_despite_local_commits(monkeypatch, tmp_path, capsys):
+    """With updates.non_interactive_local_changes=discard, an explicit opt-in,
+    the reset proceeds even though local commits exist — but the loss is logged."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_config, "load_config",
+        lambda *a, **kw: {"updates": {"non_interactive_local_changes": "discard"}},
+    )
+
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True, ahead_count="3")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    # gateway=True → non-interactive, so the discard setting is honored.
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert len(reset_calls) == 1
+    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+
+    out = capsys.readouterr().out
+    assert "discarding per" in out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):

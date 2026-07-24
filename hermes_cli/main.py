@@ -4737,6 +4737,68 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
         return None
 
 
+def _detect_git_operation_in_progress(project_root: Path) -> str | None:
+    """Return a human label if a merge/rebase/cherry-pick/revert/bisect is in
+    progress, or another git process holds ``index.lock`` — else ``None``.
+
+    A destructive ``git reset --hard`` while one of these is mid-flight would
+    compound the mess (and racing another git process on the same index can
+    corrupt it), so the update path must refuse rather than barge in.
+    """
+    git_dir = project_root / ".git"
+    # Worktrees and submodules use a ``.git`` *file* pointing at the real dir.
+    if git_dir.is_file():
+        try:
+            text = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            text = ""
+        if text.startswith("gitdir:"):
+            candidate = Path(text.split(":", 1)[1].strip())
+            git_dir = candidate if candidate.is_absolute() else (project_root / candidate)
+    markers = [
+        ("a merge", git_dir / "MERGE_HEAD"),
+        ("a rebase", git_dir / "rebase-merge"),
+        ("a rebase", git_dir / "rebase-apply"),
+        ("a cherry-pick", git_dir / "CHERRY_PICK_HEAD"),
+        ("a revert", git_dir / "REVERT_HEAD"),
+        ("a bisect", git_dir / "BISECT_LOG"),
+        ("another git process (index.lock present)", git_dir / "index.lock"),
+    ]
+    for label, path in markers:
+        try:
+            if path.exists():
+                return label
+        except OSError:
+            continue
+    return None
+
+
+def _count_local_ahead_commits(git_cmd, project_root: Path, branch: str) -> int | None:
+    """Commits reachable from HEAD but not from ``origin/<branch>``.
+
+    A non-zero count means a hard reset to ``origin/<branch>`` would move the
+    branch ref past — and orphan — local commits that were never pushed
+    (uncommitted work is handled separately by the autostash). Returns
+    ``None`` if the count can't be determined; callers must treat unknown as
+    unsafe.
+    """
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-list", "--count", f"origin/{branch}..HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -11077,8 +11139,51 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                # force-pushed or rebased). Uncommitted work is already stashed,
+                # but a hard reset to origin/<branch> ALSO moves the branch ref
+                # past any local commits that were never pushed, silently
+                # orphaning them (recoverable only via reflog). Fail closed:
+                # refuse to auto-reset when local commits would be lost or a git
+                # operation is mid-flight, unless the user explicitly opted into
+                # discarding local divergence (updates.non_interactive_local_changes
+                # = discard). See the auto-updater hard-reset incident, 2026-06-08.
+                op_in_progress = _detect_git_operation_in_progress(PROJECT_ROOT)
+                ahead = _count_local_ahead_commits(git_cmd, PROJECT_ROOT, branch)
+                if op_in_progress is not None:
+                    unsafe_reason = f"{op_in_progress} is in progress"
+                elif ahead is None:
+                    unsafe_reason = "the local commit state could not be determined"
+                elif ahead > 0:
+                    unsafe_reason = (
+                        f"{ahead} local commit(s) on '{branch}' are not on "
+                        f"origin/{branch} and a hard reset would discard them"
+                    )
+                else:
+                    unsafe_reason = None
+
+                if unsafe_reason is not None and not discard_local_changes:
+                    print(f"✗ Refusing to hard-reset to origin/{branch}: {unsafe_reason}.")
+                    print("  No data was discarded — local commits remain in the reflog.")
+                    print("  Resolve deliberately, then re-run `hermes update`:")
+                    print(f"    cd {PROJECT_ROOT}")
+                    print(f"    git log --oneline origin/{branch}..HEAD   # what's local-only")
+                    print(f"    git rebase origin/{branch}                # replay on top, OR")
+                    print(f"    git reset --hard origin/{branch}          # discard (only if sure)")
+                    if auto_stash_ref is not None:
+                        print(f"  Stashed local changes preserved at: {auto_stash_ref}")
+                        print("  Restore them after resolving with: git stash apply")
+                    sys.exit(1)
+
+                if unsafe_reason is not None:
+                    # discard_local_changes is True — an explicit opt-in to throw
+                    # local divergence away. Make the loss visible in the log.
+                    print(
+                        f"  ⚠ {unsafe_reason}; discarding per "
+                        f"updates.non_interactive_local_changes=discard"
+                    )
+
+                # ff-only failed — local and remote have diverged. Local commits
+                # (if any) were confirmed safe to discard above; reset to match.
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )

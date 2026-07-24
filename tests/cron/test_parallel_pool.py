@@ -83,7 +83,7 @@ class TestRunningJobGuard:
 
         dispatched = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -95,6 +95,56 @@ class TestRunningJobGuard:
 
         sched._running_job_ids.discard("guard-job")
         sched._shutdown_parallel_pool()
+
+
+    def test_fire_claim_is_acquired_only_when_executor_worker_starts(self, monkeypatch):
+        """Queue wait must not consume the durable claim TTL."""
+        import cron.scheduler as sched
+
+        sched._running_job_ids.clear()
+        job = {
+            "id": "queued-job",
+            "name": "queued",
+            "prompt": "test",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+        submitted = []
+        claim_calls = []
+
+        class DeferredPool:
+            def submit(self, callback):
+                future = concurrent.futures.Future()
+                submitted.append((callback, future))
+                return future
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "_get_parallel_pool", lambda _workers: DeferredPool())
+        monkeypatch.setattr(
+            sched,
+            "create_execution",
+            lambda *_a, **_kw: {"id": "execution-1"},
+        )
+        monkeypatch.setattr(
+            sched,
+            "claim_job_for_fire",
+            lambda job_id, **kwargs: claim_calls.append((job_id, kwargs))
+            or {**job, "fire_claim": {"by": "worker-owner", "at": "now"}},
+        )
+        monkeypatch.setattr(sched, "run_one_job", lambda *_a, **_kw: True)
+
+        assert sched.tick(verbose=False, sync=False) == 1
+        assert claim_calls == []
+        assert len(submitted) == 1
+
+        callback, future = submitted[0]
+        result = callback()
+        future.set_result(result)
+
+        assert claim_calls == [("queued-job", {"return_job": True})]
+        assert "queued-job" not in sched._running_job_ids
 
 
 class TestSyncMode:
@@ -116,7 +166,7 @@ class TestSyncMode:
         ]
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -152,7 +202,7 @@ class TestSyncMode:
             return True, "out", "resp", None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -206,7 +256,7 @@ class TestSequentialPool:
             return True, "out", "resp", None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -248,7 +298,7 @@ class TestSequentialPool:
 
         dispatched = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)

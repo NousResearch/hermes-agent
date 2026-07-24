@@ -11,6 +11,7 @@ Covers the cron/scheduler.py primitives directly:
     result AFTER its tool was already killed out from under it
 """
 
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -23,9 +24,11 @@ def _reset_scheduler_state():
     import cron.scheduler as sched
 
     sched._running_job_ids.clear()
+    sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
     yield
     sched._running_job_ids.clear()
+    sched._running_fire_owners.clear()
     sched._interrupted_job_ids.clear()
 
 
@@ -72,8 +75,11 @@ class TestMarkRunningJobsInterrupted:
         import cron.scheduler as sched
 
         sched._running_job_ids.update({"job-1", "job-2"})
+        sched._running_fire_owners.update(
+            {"job-1": {object(): "owner-1"}, "job-2": {object(): "owner-2"}}
+        )
 
-        with patch("cron.scheduler.mark_job_run") as mock_mark:
+        with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             marked = sched.mark_running_jobs_interrupted("gateway shutdown (final-cleanup)")
 
         assert sorted(marked) == ["job-1", "job-2"]
@@ -84,6 +90,7 @@ class TestMarkRunningJobsInterrupted:
             # success must be False -- an interrupted run is never "ok".
             assert c.args[1] is False
             assert "gateway shutdown" in c.args[2]
+            assert c.kwargs["expected_fire_owner"] in {"owner-1", "owner-2"}
 
     def test_sets_interrupted_flag_for_consumption_by_run_one_job(self):
         import cron.scheduler as sched
@@ -102,15 +109,106 @@ class TestMarkRunningJobsInterrupted:
         import cron.scheduler as sched
 
         sched._running_job_ids.update({"job-1", "job-2"})
+        sched._running_fire_owners.update(
+            {"job-1": {object(): "owner-1"}, "job-2": {object(): "owner-2"}}
+        )
 
         def _side_effect(job_id, success, reason, **kwargs):
             if job_id == "job-1":
                 raise OSError("disk full")
+            return True
 
         with patch("cron.scheduler.mark_job_run", side_effect=_side_effect):
             marked = sched.mark_running_jobs_interrupted("shutdown")
 
         assert marked == ["job-2"]
+
+    def test_stale_shutdown_cannot_clear_replacement_owner(self, tmp_path):
+        import cron.jobs as jobs
+        import cron.scheduler as sched
+
+        profile_home = tmp_path / "profile"
+        profile_home.mkdir()
+        with jobs.use_cron_store(profile_home):
+            created = jobs.create_job(prompt="x", schedule="every 5m", name="owned")
+            claimed = jobs.claim_job_for_fire(created["id"], force=True, return_job=True)
+            stale_owner = claimed["fire_claim"]["by"]
+            original_status = claimed["last_status"]
+            replacement_claim = {
+                "at": "2026-07-12T12:30:00+00:00",
+                "by": "replacement-owner",
+            }
+            replacement = {**claimed, "fire_claim": replacement_claim}
+            jobs.save_jobs([replacement])
+
+            sched._running_job_ids.add(created["id"])
+            sched._running_fire_owners[created["id"]] = {object(): stale_owner}
+            marked = sched.mark_running_jobs_interrupted("shutdown")
+            refreshed = jobs.get_job(created["id"])
+
+        assert marked == []
+        assert refreshed["fire_claim"] == replacement_claim
+        assert refreshed["last_status"] == original_status
+
+
+class TestRunningFireOwnerRegistry:
+    def test_run_one_job_registers_owner_only_while_active(self):
+        import cron.scheduler as sched
+
+        job = {
+            "id": "owned-job",
+            "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner-1"},
+        }
+
+        def _observe_registry(current_job, run):
+            assert list(sched._running_fire_owners[current_job["id"]].values()) == [
+                "owner-1"
+            ]
+            return True
+
+        with patch("cron.scheduler._run_with_fire_claim_heartbeat", side_effect=_observe_registry):
+            assert sched.run_one_job(job) is True
+
+        assert job["id"] not in sched._running_fire_owners
+
+    def test_shutdown_sees_all_concurrent_direct_fire_owners(self, monkeypatch):
+        """Direct entry points and replacement owners share one token registry."""
+        import cron.scheduler as sched
+
+        entered = threading.Barrier(3)
+        release = threading.Event()
+        marked_owners: list[str] = []
+
+        def hold_run(_job, _run):
+            entered.wait(timeout=2)
+            release.wait(timeout=2)
+            return True
+
+        def mark(_job_id, _success, _reason, *, expected_fire_owner):
+            marked_owners.append(expected_fire_owner)
+            return True
+
+        monkeypatch.setattr(sched, "_run_with_fire_claim_heartbeat", hold_run)
+        monkeypatch.setattr(sched, "mark_job_run", mark)
+
+        jobs = [
+            {"id": "same-job", "fire_claim": {"by": "old-owner"}},
+            {"id": "same-job", "fire_claim": {"by": "replacement-owner"}},
+        ]
+        threads = [threading.Thread(target=sched.run_one_job, args=(job,)) for job in jobs]
+        for thread in threads:
+            thread.start()
+        entered.wait(timeout=2)
+
+        assert sched.get_running_job_ids() == frozenset({"same-job"})
+        assert sched.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
+        assert set(marked_owners) == {"old-owner", "replacement-owner"}
+
+        release.set()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+        assert "same-job" not in sched.get_running_job_ids()
 
 
 class TestIsInterrupted:

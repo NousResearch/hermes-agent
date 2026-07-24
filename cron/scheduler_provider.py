@@ -19,6 +19,7 @@ selected via the `cron.provider` config key (empty = built-in).
 """
 from __future__ import annotations
 
+import inspect
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
@@ -88,7 +89,23 @@ class CronScheduler(ABC):
 
         return recover_interrupted_executions()
 
-    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
+    @property
+    def supports_force_fire(self) -> bool:
+        """Whether ``fire_due`` accepts the additive ``force`` keyword.
+
+        Signature detection keeps providers written before ``force`` was added
+        source-compatible. Providers accepting ``**kwargs`` are compatible.
+        """
+        return provider_supports_force_fire(self)
+
+    def fire_due(
+        self,
+        job_id: str,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        force: bool = False,
+    ) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
 
@@ -97,26 +114,46 @@ class CronScheduler(ABC):
         ``run_one_job`` body. Built-in never calls this (it has its own tick
         loop); an external provider routes its inbound fire here.
 
-        Returns True if THIS caller claimed and ran the job, False if the claim
-        was lost (another machine/retry won it) or the job no longer exists.
+        Returns True if THIS caller claimed and processed the attempt, even if
+        the job itself failed. Returns False only if the claim was lost
+        (another machine/retry won it) or the job no longer exists.
         """
-        from cron.jobs import claim_job_for_fire, get_job
+        from cron.jobs import claim_job_for_fire
         from cron.executions import create_execution
         from cron.scheduler import run_one_job
 
-        if not claim_job_for_fire(job_id):
+        claim_kwargs = {"return_job": True}
+        if force:
+            claim_kwargs["force"] = True
+        claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
+        if not isinstance(claimed_job, dict):
             return False  # another machine already claimed this fire
-        job = get_job(job_id)
-        if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        job["execution_id"] = create_execution(job_id, source=self.name)["id"]
-        return run_one_job(job, adapters=adapters, loop=loop)
+        claimed_job["execution_id"] = create_execution(job_id, source=self.name)["id"]
+        run_one_job(claimed_job, adapters=adapters, loop=loop)
+        return True
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):
         arm missing one-shots, cancel orphaned ones, re-arm changed times.
         Built-in: no-op."""
         return None
+
+
+def provider_supports_force_fire(provider: Any) -> bool:
+    """Return whether a provider can safely receive ``fire_due(force=...)``."""
+    try:
+        parameters = inspect.signature(provider.fire_due).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == "force"
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        )
+        for parameter in parameters
+    )
 
 
 def resolve_cron_scheduler() -> "CronScheduler":

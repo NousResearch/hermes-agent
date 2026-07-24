@@ -95,6 +95,30 @@ export function resolveLoginStrategy(statusBody: any, opts: { forceEmbedded?: bo
 }
 
 /**
+ * Pick a native-PKCE provider only when the gateway advertises exactly one
+ * redirect-based provider. Mixed password + OAuth deployments need this
+ * explicit name because the server cannot auto-select from multiple session
+ * providers. Multiple redirect providers remain ambiguous and intentionally
+ * fall back to the embedded chooser.
+ */
+export function selectNativeLoginProvider(body: any): string | undefined {
+  const providers = Array.isArray(body?.providers) ? body.providers : []
+
+  const redirectProviders = providers
+    .filter(
+      (provider: any) =>
+        provider &&
+        typeof provider === 'object' &&
+        provider.supports_password === false &&
+        typeof provider.name === 'string' &&
+        provider.name.trim()
+    )
+    .map((provider: any) => provider.name.trim())
+
+  return redirectProviders.length === 1 ? redirectProviders[0] : undefined
+}
+
+/**
  * Build the gateway `/auth/native/authorize` URL the system browser opens.
  * `redirectUri` is the desktop's loopback callback (127.0.0.1:<port>/...).
  * `provider` is optional — omitted lets the gateway pick when it has exactly

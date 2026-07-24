@@ -22,6 +22,7 @@ import {
   parseLoopbackCallback,
   parseTokenResponse,
   resolveLoginStrategy,
+  selectNativeLoginProvider,
   statusSupportsNativeFlow,
   tokenNeedsRefresh
 } from './native-oauth'
@@ -82,6 +83,33 @@ test('resolveLoginStrategy picks native only when advertised and not forced', ()
   assert.equal(resolveLoginStrategy(legacy), 'embedded')
   // A user/env override can pin the legacy flow even on a capable gateway.
   assert.equal(resolveLoginStrategy(gated, { forceEmbedded: true }), 'embedded')
+})
+
+test('selectNativeLoginProvider picks the sole redirect provider from a mixed gateway', () => {
+  assert.equal(
+    selectNativeLoginProvider({
+      providers: [
+        { name: 'basic', supports_password: true },
+        { name: 'nous', supports_password: false }
+      ]
+    }),
+    'nous'
+  )
+})
+
+test('selectNativeLoginProvider leaves ambiguous or malformed provider lists to the login chooser', () => {
+  assert.equal(
+    selectNativeLoginProvider({
+      providers: [
+        { name: 'nous', supports_password: false },
+        { name: 'other-oauth', supports_password: false }
+      ]
+    }),
+    undefined
+  )
+  assert.equal(selectNativeLoginProvider({ providers: [{ name: 'basic', supports_password: true }] }), undefined)
+  assert.equal(selectNativeLoginProvider({ providers: [{ name: 'nous' }] }), undefined)
+  assert.equal(selectNativeLoginProvider(null), undefined)
 })
 
 // --- URL building ---

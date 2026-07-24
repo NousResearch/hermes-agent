@@ -2734,12 +2734,15 @@ def estimate_tokens_rough(text: str) -> int:
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only).
 
-    Image parts (base64 PNG/JPEG) are counted as a flat ~1500 tokens per
-    image — the Anthropic pricing model — instead of counting raw base64
-    character length. Without this, a single ~1MB screenshot would be
-    estimated at ~250K tokens and trigger premature context compression.
+    Image parts (base64 PNG/JPEG) are counted as a flat ~4000 tokens per
+    image instead of counting raw base64 character length. Without this, a
+    single ~1MB screenshot would be estimated at ~250K tokens and trigger
+    premature context compression.  The previous value of 1500 matched
+    Claude Code's flat-rate pricing but underestimated multimodal local
+    models (llama.cpp mmproj) where a 1920x1080 screenshot can cost
+    3000-6000 real prompt tokens.  4000 is the midpoint of that range.
     """
-    _IMAGE_TOKEN_COST = 1500
+    _IMAGE_TOKEN_COST = 4000
     text_tokens = 0
     image_tokens = 0
     for msg in messages:

@@ -541,8 +541,10 @@ _CHARS_PER_TOKEN = 4
 # dimensions (Anthropic ≈ width×height/750, GPT-4o up to ~1700 for
 # high-detail 2048×2048, Gemini 258/tile), but 1600 is a realistic ceiling
 # that keeps compression budgeting honest for multi-image conversations.
-# Matches Claude Code's IMAGE_TOKEN_ESTIMATE constant.
-_IMAGE_TOKEN_ESTIMATE = 1600
+# Previously matched Claude Code's flat-rate 1600 but underestimated
+# multimodal local models (llama.cpp mmproj) where a 1920x1080 screenshot
+# costs 3000-6000 real prompt tokens.  4000 is the midpoint of that range.
+_IMAGE_TOKEN_ESTIMATE = 4000
 # Same figure expressed in the char-budget currency the rest of the
 # compressor speaks in.  Used when accumulating message "content length"
 # for tail-cut decisions.

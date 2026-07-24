@@ -166,6 +166,16 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPa
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 _CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
 
+# Unix root-level directories that, when appearing as the first segment of a
+# relative path, signal a likely absolute path missing its leading "/".
+# E.g. "home/user/dev/notes/x.md" when cwd is "/home/user/dev" — the model
+# intended "/home/user/dev/notes/x.md" but the leading "/" was dropped.
+_CWD_SHAPED_ROOT_DIRS: frozenset[str] = frozenset({
+    "home", "Users", "tmp", "var", "etc", "opt", "root",
+    "mnt", "media", "srv", "boot", "dev", "proc", "sys",
+    "run", "usr", "bin", "sbin", "lib", "lib64",
+})
+
 
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
     """Best-effort terminal backend type for path-resolution decisions."""
@@ -394,7 +404,54 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+
+    base_dir = _resolve_base_dir(task_id, container_paths=False)
+
+    # ── Detect cwd-shaped relative paths ──────────────────────────
+    # Small / quantised models sometimes emit an absolute path missing
+    # its leading "/" — e.g. "home/user/dev/notes/x.md" when cwd is
+    # "/home/user/dev".  Without this guard the path silently resolves
+    # to a doubled tree like "/home/user/dev/home/user/dev/notes/x.md".
+    try:
+        base_relative = str(base_dir.relative_to("/"))
+    except ValueError:
+        base_relative = ""
+    p_str = str(p)
+    first_segment = p.parts[0] if p.parts else ""
+
+    if base_relative and (
+        p_str == base_relative
+        or p_str.startswith(base_relative + "/")
+    ):
+        # Path starts with the cwd's relative form — almost certainly an
+        # absolute path that lost its leading "/".  Correct it.
+        corrected = Path("/") / p
+        logger.warning(
+            "write_file: relative path %r looks like an absolute path "
+            "missing its leading '/'.  Treating as %r instead of resolving "
+            "relative to cwd %r.",
+            p_str, str(corrected), str(base_dir),
+        )
+        return corrected.resolve()
+
+    if first_segment in _CWD_SHAPED_ROOT_DIRS:
+        # Broader heuristic: relative path starts with a known Unix
+        # root directory ("home/...", "etc/...", "var/...").  Try
+        # prepending "/" and use the result if it exists on disk or
+        # its parent exists; otherwise fall through to normal resolution.
+        corrected = Path("/") / p
+        try:
+            if corrected.exists() or corrected.parent.exists():
+                logger.warning(
+                    "write_file: relative path %r starts with root-level "
+                    "directory %r — treating as absolute path %r.",
+                    p_str, first_segment, str(corrected),
+                )
+                return corrected.resolve()
+        except OSError:
+            pass
+
+    resolved = base_dir / p
     return resolved.resolve()
 
 

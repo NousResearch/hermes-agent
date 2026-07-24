@@ -334,6 +334,9 @@ def _jobs_lock():
                 # in-process-only protection (still held via _jobs_file_lock).
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
                                "proceeding with in-process lock only", e)
+                if lock_fd is not None:
+                    lock_fd.close()
+                    lock_fd = None
             try:
                 yield
             finally:

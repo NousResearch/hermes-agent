@@ -666,3 +666,101 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+def test_dialog_tasks_ref_stored_and_retained_auto_dismiss(
+    chrome_cdp, supervisor_registry
+):
+    """``_dialog_tasks`` holds a strong ref to the auto-handle background task
+    so the GC does not emit "Task was destroyed but it is pending!" warnings.
+
+    Regression test for PR #64887.
+    """
+    from tools.browser_supervisor import DIALOG_POLICY_AUTO_DISMISS
+
+    cdp_url, _port = chrome_cdp
+    sv = supervisor_registry.get_or_start(
+        task_id="pytest-task-ref-dismiss",
+        cdp_url=cdp_url,
+        dialog_policy=DIALOG_POLICY_AUTO_DISMISS,
+    )
+
+    # _dialog_tasks should start empty.
+    assert len(sv._dialog_tasks) == 0, "task set not empty before any dialog"
+
+    _fire_on_page(
+        cdp_url,
+        "setTimeout(() => alert('PYTEST-TASK-REF-DISMISS'), 50)",
+    )
+
+    # Give the supervisor a moment to receive the dialog event and spawn
+    # the background task.  The auto-handle task makes a CDP round-trip
+    # (``Page.handleJavaScriptDialog``), so there is a small window where
+    # the ref is alive in the set.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if len(sv._dialog_tasks) > 0:
+            break
+        time.sleep(0.05)
+    assert len(sv._dialog_tasks) > 0, (
+        "expected _dialog_tasks to hold at least one task ref "
+        "while the auto-dismiss handler is in flight"
+    )
+
+    # Wait for the handler to finish — the done callback should remove it.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if len(sv._dialog_tasks) == 0:
+            break
+        time.sleep(0.05)
+    assert len(sv._dialog_tasks) == 0, (
+        "_dialog_tasks was not cleared after the auto-handle task completed"
+    )
+
+    # Final sanity — no pending dialogs left behind.
+    snap = sv.snapshot()
+    assert snap.pending_dialogs == ()
+
+
+def test_dialog_tasks_ref_stored_and_retained_auto_accept(
+    chrome_cdp, supervisor_registry
+):
+    """Same as ``test_dialog_tasks_ref_stored_and_retained_auto_dismiss``
+    but with the auto_accept policy (a different code path in
+    ``_on_dialog_opening``).
+    """
+    from tools.browser_supervisor import DIALOG_POLICY_AUTO_ACCEPT
+
+    cdp_url, _port = chrome_cdp
+    sv = supervisor_registry.get_or_start(
+        task_id="pytest-task-ref-accept",
+        cdp_url=cdp_url,
+        dialog_policy=DIALOG_POLICY_AUTO_ACCEPT,
+    )
+
+    assert len(sv._dialog_tasks) == 0
+
+    _fire_on_page(
+        cdp_url,
+        "setTimeout(() => alert('PYTEST-TASK-REF-ACCEPT'), 50)",
+    )
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if len(sv._dialog_tasks) > 0:
+            break
+        time.sleep(0.05)
+    assert len(sv._dialog_tasks) > 0, (
+        "expected _dialog_tasks to hold at least one task ref "
+        "while the auto-accept handler is in flight"
+    )
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if len(sv._dialog_tasks) == 0:
+            break
+        time.sleep(0.05)
+    assert len(sv._dialog_tasks) == 0
+
+    snap = sv.snapshot()
+    assert snap.pending_dialogs == ()

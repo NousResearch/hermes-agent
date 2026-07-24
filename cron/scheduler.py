@@ -4009,7 +4009,10 @@ def tick(
     except (OSError, IOError):
         logger.debug("Tick skipped — another instance holds the lock")
         if lock_fd is not None:
-            lock_fd.close()
+            try:
+                lock_fd.close()
+            except (OSError, IOError):
+                pass
         return 0
 
     try:
@@ -4222,17 +4225,35 @@ def tick(
 
         return sum(_results)
     finally:
-        if fcntl:
+<<<<<<< ours
+        if lock_fd is not None:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                if fcntl:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    except (OSError, IOError):
+                        pass
+                elif msvcrt:
+                    try:
+                        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError):
+                        pass
             except (OSError, IOError):
                 pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+=======
+        if lock_fd is not None and not lock_fd.closed:
+            if fcntl:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            elif msvcrt:
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
+>>>>>>> theirs
+            lock_fd.close()
 
 
 if __name__ == "__main__":

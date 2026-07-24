@@ -2428,6 +2428,42 @@ class TestBoundedInteractiveState:
         assert f"id-{INTERACTIVE_STATE_CACHE_SIZE + 9}" in cache
 
 
+class TestConvertToOpus:
+    """_convert_to_opus ffmpeg subprocess, timeout, and error handling."""
+
+    @pytest.mark.asyncio
+    async def test_ffmpeg_timeout_returns_none(self, monkeypatch):
+        """When ffmpeg hangs, asyncio.wait_for raises TimeoutError and
+        _convert_to_opus returns None (caller falls back to MP3 attachment).
+
+        Regression test for the fix that wraps proc.communicate() in
+        asyncio.wait_for(..., timeout=60). Without the timeout, a stuck
+        ffmpeg process would block the event loop indefinitely.
+        """
+        import gateway.platforms.whatsapp_cloud as wp
+
+        # Pretend ffmpeg is on PATH so the method attempts conversion.
+        monkeypatch.setattr(wp, "_FFMPEG_PATH", "/usr/bin/ffmpeg")
+        adapter = _make_adapter()
+
+        # Mock subprocess so no real process is spawned.
+        proc = MagicMock()
+        proc.communicate = AsyncMock()  # coroutine that never resolves
+        proc.returncode = None
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        )
+
+        # Simulate the timeout: wait_for raises TimeoutError.
+        async def _raise_timeout(*_a, **_kw):
+            raise asyncio.TimeoutError()
+        monkeypatch.setattr(asyncio, "wait_for", _raise_timeout)
+
+        result = await adapter._convert_to_opus("/tmp/test.mp3")
+        assert result is None
+
+
 class TestMediaIdValidation:
     @pytest.mark.asyncio
     async def test_traversal_media_id_refused(self):

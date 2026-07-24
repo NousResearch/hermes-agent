@@ -924,10 +924,13 @@ class S6ServiceManager:
     def is_running(self, name: str) -> bool:
         """True iff ``s6-svstat`` reports the service as up."""
         import subprocess
-        result = subprocess.run(
-            [f"{_S6_BIN_DIR}/s6-svstat", str(self.scandir / name)],
-            capture_output=True, text=True, timeout=5,
-        )
+        try:
+            result = subprocess.run(
+                [f"{_S6_BIN_DIR}/s6-svstat", str(self.scandir / name)],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
         return result.returncode == 0 and "up " in result.stdout
 
     # -- runtime registration ---------------------------------------------

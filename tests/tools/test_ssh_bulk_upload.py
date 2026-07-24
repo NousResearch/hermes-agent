@@ -452,6 +452,42 @@ class TestSSHBulkUpload:
 
         mock_tar.kill.assert_called_once()
         mock_ssh.kill.assert_called_once()
+        # Regression: wait() must be called with a timeout to prevent
+        # indefinite blocking after kill (#63979)
+        mock_tar.wait.assert_called_once_with(timeout=10)
+        mock_ssh.wait.assert_called_once_with(timeout=10)
+
+    def test_ssh_spawn_failure_tar_wait_with_timeout(self, mock_env, tmp_path):
+        """Exception during SSH Popen must kill tar with timeout on wait()."""
+        f1 = tmp_path / "u.txt"
+        f1.write_text("u")
+        files = [(str(f1), "/home/testuser/.hermes/skills/u.txt")]
+
+        mock_tar = MagicMock()
+        mock_tar.stdout = MagicMock()
+        mock_tar.returncode = None
+        mock_tar.poll.return_value = None
+
+        call_count = [0]
+
+        def make_proc(cmd, **kwargs):
+            if call_count[0] == 0:
+                call_count[0] += 1
+                # First Popen call (tar) succeeds
+                return mock_tar
+            # Second Popen call (ssh) raises
+            raise OSError("connection refused")
+
+        with patch.object(subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0)), \
+             patch.object(subprocess, "Popen", side_effect=make_proc):
+            with pytest.raises(OSError, match="connection refused"):
+                mock_env._ssh_bulk_upload(files)
+
+        mock_tar.kill.assert_called_once()
+        # The tar proc must be waited on with a timeout after a kill
+        # when SSH fails to spawn (#63979)
+        mock_tar.wait.assert_called_once_with(timeout=10)
 
 
 class TestSSHBulkUploadWiring:

@@ -1304,6 +1304,31 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(media_types, [])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_post_message_understands_style_lists(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            message_type="post",
+            content=(
+                '{"zh_cn":{"content":[['
+                '{"tag":"text","text":"bold","style":["bold"]},'
+                '{"tag":"text","text":" and "},'
+                '{"tag":"text","text":"gone","style":["lineThrough"]}'
+                ']]}}'
+            ),
+            message_id="om_post_styles",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertEqual(text, "**bold** and ~~gone~~")
+        self.assertEqual(msg_type.value, "text")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_with_rich_elements_does_not_drop_content(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -2911,6 +2936,109 @@ class TestAdapterBehavior(unittest.TestCase):
         payload = json.loads(captured["request"].request_body.content)
         elements = payload["zh_cn"]["content"][0]
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_reply_uses_native_post_elements_for_markdown(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_markdown_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "## 双语摘要\n"
+            "✅ **已入库 Shared Intel**\n"
+            "🔗 [查看 Base 记录](https://example.com/base/rec)\n"
+            "Use `code`."
+        )
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                    reply_to="om_parent",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(
+            rows[0],
+            [{"tag": "text", "text": "双语摘要", "style": ["bold"]}],
+        )
+        self.assertEqual(
+            rows[1][1],
+            {"tag": "text", "text": "已入库 Shared Intel", "style": ["bold"]},
+        )
+        self.assertEqual(
+            rows[2][1],
+            {"tag": "a", "text": "查看 Base 记录", "href": "https://example.com/base/rec"},
+        )
+        self.assertEqual(rows[3][1], {"tag": "text", "text": "code", "style": ["code"]})
+        self.assertNotIn('"tag": "md"', captured["request"].request_body.content)
+        self.assertNotIn("**已入库", captured["request"].request_body.content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_thread_metadata_reply_uses_native_post_elements_for_markdown(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_markdown_thread_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="**状态**：完成",
+                    metadata={
+                        "thread_id": "omt-thread",
+                        "reply_to_message_id": "om_trigger",
+                    },
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_trigger")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(
+            payload["zh_cn"]["content"][0][0],
+            {"tag": "text", "text": "状态", "style": ["bold"]},
+        )
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):

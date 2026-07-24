@@ -73,3 +73,56 @@ async def test_cancel_background_tasks_awaits_pending_text_batch_before_clearing
     assert task.done()
     assert adapter._pending_text_batch_tasks == {}
     assert adapter._pending_text_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_cancel_background_tasks_drains_discord_typing_tasks():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    cancelled = asyncio.Event()
+
+    async def typing_loop():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    task = asyncio.create_task(typing_loop())
+    await asyncio.sleep(0)
+    adapter._typing_tasks["chat"] = task
+
+    await adapter.cancel_background_tasks()
+
+    assert cancelled.is_set()
+    assert task.cancelled()
+    assert adapter._typing_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_disconnect_drains_discord_typing_tasks(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    cancelled = asyncio.Event()
+
+    async def typing_loop():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    task = asyncio.create_task(typing_loop())
+    await asyncio.sleep(0)
+    adapter._typing_tasks["chat"] = task
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(adapter, "_cancel_liveness_task", noop)
+    monkeypatch.setattr(adapter, "_cancel_bot_task", noop)
+    monkeypatch.setattr(adapter, "_release_platform_lock", lambda: None)
+
+    await adapter.disconnect()
+
+    assert cancelled.is_set()
+    assert task.cancelled()
+    assert adapter._typing_tasks == {}

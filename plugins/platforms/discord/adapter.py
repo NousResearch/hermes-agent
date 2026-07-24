@@ -52,7 +52,7 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
-
+_DISCORD_STARTUP_CATCHUP_STATE_FILENAME = "discord_startup_catchup_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
@@ -226,7 +226,11 @@ async def _wait_for_ready_or_bot_exit(
             exc = bot_task.exception()
             if exc is not None:
                 raise exc
-            if not ready_task.done():
+            # A bot may finish immediately after on_ready sets the event,
+            # before the separately scheduled wait task has run. Check the
+            # event itself to avoid treating that valid ordering as startup
+            # failure.
+            if not ready_event.is_set():
                 raise RuntimeError("Discord bot task exited before ready")
         await ready_task
     finally:
@@ -308,6 +312,109 @@ class _DiscordNonConversationalMessageTracker:
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
+
+
+class _DiscordStartupCatchupTracker:
+    """Persist per-channel startup catch-up checkpoints across restarts.
+
+    A global bounded message-ID list is not enough for durable at-most-once
+    delivery: evicting a still-relevant ID makes it eligible for replay after
+    restart. Discord snowflakes are ordered, so retain one durable high-water
+    checkpoint per channel instead.
+    """
+
+    def __init__(self):
+        self._state = self._load()
+
+    def _state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR / _DISCORD_STARTUP_CATCHUP_STATE_FILENAME
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                checkpoints = data.get("channel_checkpoints", {})
+                if not isinstance(checkpoints, dict):
+                    checkpoints = {}
+                # Keep legacy IDs only for the one-way format migration. New
+                # progress is never recorded in a globally-evictable list.
+                legacy_ids = data.get(
+                    "legacy_processed_message_ids", data.get("processed_message_ids", [])
+                )
+                if not isinstance(legacy_ids, list):
+                    legacy_ids = []
+                for channel_id in data.get("initialized_channels", []):
+                    checkpoints.setdefault(str(channel_id), None)
+                return {
+                    "channel_checkpoints": {
+                        str(channel_id): str(message_id) if message_id is not None else None
+                        for channel_id, message_id in checkpoints.items()
+                    },
+                    "legacy_processed_message_ids": [str(item) for item in legacy_ids],
+                }
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.debug("[%s] Failed to load Discord startup catch-up state", "Discord")
+        return {"channel_checkpoints": {}, "legacy_processed_message_ids": []}
+
+    def _save(self, state: dict) -> bool:
+        try:
+            atomic_json_write(self._state_path(), state, indent=None)
+            return True
+        except Exception:
+            logger.debug("[%s] Failed to save Discord startup catch-up state", "Discord", exc_info=True)
+            return False
+
+    def initialized(self, channel_id: str) -> bool:
+        return str(channel_id) in self._state["channel_checkpoints"]
+
+    def mark_initialized(self, channel_id: str, high_water_message_id: Optional[str]) -> bool:
+        key = str(channel_id)
+        if key in self._state["channel_checkpoints"]:
+            return True
+        state = {
+            **self._state,
+            "channel_checkpoints": {
+                **self._state["channel_checkpoints"],
+                key: str(high_water_message_id) if high_water_message_id is not None else None,
+            },
+        }
+        if not self._save(state):
+            return False
+        self._state = state
+        return True
+
+    def processed(self, channel_id: str, message_id: str) -> bool:
+        key = str(message_id)
+        if key in self._state["legacy_processed_message_ids"]:
+            return True
+        checkpoint = self._state["channel_checkpoints"].get(str(channel_id))
+        if checkpoint is None:
+            return False
+        try:
+            return int(key) <= int(checkpoint)
+        except (TypeError, ValueError):
+            return key == checkpoint
+
+    def mark_processed(self, channel_id: str, message_id: str) -> bool:
+        channel_key = str(channel_id)
+        key = str(message_id)
+        if self.processed(channel_key, key):
+            return True
+        state = {
+            **self._state,
+            "channel_checkpoints": {
+                **self._state["channel_checkpoints"],
+                channel_key: key,
+            },
+        }
+        if not self._save(state):
+            return False
+        self._state = state
+        return True
 
 
 def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
@@ -973,6 +1080,16 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
+        self._startup_catchup = _DiscordStartupCatchupTracker()
+        # Live messages wait for the initial catch-up scan on each connection,
+        # so a newer live snowflake cannot advance a channel checkpoint past
+        # older missed history still waiting to be replayed.
+        self._startup_catchup_complete = asyncio.Event()
+        self._startup_catchup_complete.set()
+        # Incremented for every on_ready cycle. A post-connect task only owns
+        # the barrier generation that created it, so a stale task cannot
+        # unblock live messages during a later reconnect.
+        self._startup_catchup_generation = 0
         # Last truncated mid-stream preview delivered per (chat_id, message_id).
         # Once an oversized streaming edit saturates at the 2000-char preview
         # cap, every subsequent progressive edit truncates to the SAME text;
@@ -1199,20 +1316,56 @@ class DiscordAdapter(BasePlatformAdapter):
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
 
+                # discord.py invokes on_ready again after an internal gateway
+                # reconnect while both events may still be set from the prior
+                # connection. Arm the live-message barrier before the first
+                # await so a message arriving during username resolution
+                # cannot advance its durable checkpoint ahead of catch-up.
+                adapter_self._startup_catchup_generation += 1
+                catchup_generation = adapter_self._startup_catchup_generation
+                adapter_self._ready_event.clear()
+                adapter_self._startup_catchup_complete.clear()
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
+                # A later on_ready may have started while username resolution
+                # yielded. This stale handler must not publish readiness or
+                # replace the newer generation's post-connect task.
+                if catchup_generation != adapter_self._startup_catchup_generation:
+                    return
                 adapter_self._ready_event.set()
 
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(
-                    adapter_self._run_post_connect_initialization()
+                    adapter_self._run_post_connect_initialization(catchup_generation)
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
+                # Block until _resolve_allowed_usernames has swapped
+                # any raw usernames in DISCORD_ALLOWED_USERS for numeric
+                # IDs (otherwise on_message's author.id lookup can miss).
+                if not adapter_self._ready_event.is_set():
+                    try:
+                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+                # asyncio.Event.set() releases waiters permanently. A reconnect
+                # can arm a newer generation and clear this shared event before
+                # a waiter released by the older generation resumes. Keep
+                # waiting until the generation captured for this wait still
+                # owns a set catch-up barrier.
+                while True:
+                    catchup_generation = adapter_self._startup_catchup_generation
+                    await adapter_self._startup_catchup_complete.wait()
+                    if (
+                        catchup_generation == adapter_self._startup_catchup_generation
+                        and adapter_self._startup_catchup_complete.is_set()
+                    ):
+                        break
                 await adapter_self._dispatch_discord_message(message)
 
             @self._client.event
@@ -1874,11 +2027,28 @@ class DiscordAdapter(BasePlatformAdapter):
         if interval > 0:
             await asyncio.sleep(interval)
 
-    async def _run_post_connect_initialization(self) -> None:
+    async def _run_post_connect_initialization(self, catchup_generation: Optional[int] = None) -> None:
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
+            if (
+                catchup_generation is None
+                or catchup_generation == self._startup_catchup_generation
+            ):
+                self._startup_catchup_complete.set()
             return
         try:
+            try:
+                await self._catch_up_missed_mentions()
+            finally:
+                # Do not make live traffic wait for slash command sync. A
+                # failed catch-up still unblocks it after preserving whatever
+                # durable state was safely written. A stale reconnect task
+                # does not own a newer generation's barrier.
+                if (
+                    catchup_generation is None
+                    or catchup_generation == self._startup_catchup_generation
+                ):
+                    self._startup_catchup_complete.set()
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
@@ -5924,6 +6094,142 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _discord_startup_catchup(self) -> bool:
+        configured = self.config.extra.get("startup_catchup")
+        if configured is not None:
+            return str(configured).lower() not in {"false", "0", "no", "off"}
+        return os.getenv("DISCORD_STARTUP_CATCHUP", "true").lower() in {"true", "1", "yes"}
+
+    def _discord_startup_catchup_limit(self) -> int:
+        configured = self.config.extra.get("startup_catchup_limit")
+        try:
+            return max(1, min(int(configured if configured is not None else os.getenv("DISCORD_STARTUP_CATCHUP_LIMIT", "50")), 200))
+        except (TypeError, ValueError):
+            return 50
+
+    def _admit_discord_message(self, message: DiscordMessage) -> Tuple[bool, bool]:
+        """Apply the complete live-message admission gate.
+
+        Startup catch-up calls this shared gate before dispatching historical
+        events, so replayed traffic cannot bypass live bot, authorization, or
+        multi-agent mention policy.
+        """
+        if not self._client or message.author == self._client.user:
+            return False, False
+        if getattr(message, "type", None) not in {discord.MessageType.default, discord.MessageType.reply}:
+            return False, False
+        role_authorized = False
+        if getattr(message.author, "bot", False):
+            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            if allow_bots == "none":
+                return False, False
+            if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+                return False, False
+            if self._discord_bots_require_inline_mention() and not self._self_is_raw_mentioned(message):
+                return False, False
+        else:
+            message_guild = getattr(message, "guild", None)
+            is_dm = isinstance(message.channel, discord.DMChannel) or message_guild is None
+            channel_ids = None
+            if not is_dm:
+                channel_ids = {str(message.channel.id)}
+                parent_id = self._get_parent_channel_id(message.channel)
+                if parent_id:
+                    channel_ids.add(parent_id)
+            if not self._is_allowed_user(
+                str(message.author.id), message.author, guild=message_guild,
+                is_dm=is_dm, channel_ids=channel_ids,
+            ):
+                self._warn_if_fail_closed_default()
+                return False, False
+            role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
+
+        raw_self_mention = self._self_is_explicitly_mentioned(message)
+        if not isinstance(message.channel, discord.DMChannel) and (message.mentions or raw_self_mention):
+            other_bots_mentioned = any(
+                getattr(mentioned, "bot", False) and mentioned != self._client.user
+                for mentioned in message.mentions
+            )
+            if other_bots_mentioned and not raw_self_mention:
+                return False, False
+            ignore_no_mention = os.getenv("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
+            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
+                free_channels = self._discord_free_response_channels()
+                channel_keys = self._discord_channel_keys(
+                    message, self._get_parent_channel_id(message.channel)
+                )
+                if "*" not in free_channels and not (channel_keys & free_channels):
+                    return False, False
+        return True, role_authorized
+
+    async def _dispatch_discord_message(self, message: DiscordMessage) -> bool:
+        """Durably dispatch live and catch-up traffic through one message gate.
+
+        Returns ``False`` only when an admitted message cannot be checkpointed.
+        Callers use that signal to avoid advancing a channel past an event that
+        could not be made durable.
+        """
+        admitted, role_authorized = self._admit_discord_message(message)
+        if not admitted:
+            return True
+
+        channel_id = str(getattr(getattr(message, "channel", None), "id", ""))
+        message_id = str(getattr(message, "id", ""))
+        if not channel_id or not message_id:
+            logger.warning("[%s] Refusing Discord dispatch without a durable channel checkpoint", self.name)
+            return False
+        if self._startup_catchup.processed(channel_id, message_id):
+            return True
+        # Persist before dispatch for both live and historical traffic. This
+        # makes a process crash or adapter restart unable to replay a turn.
+        if not self._startup_catchup.mark_processed(channel_id, message_id):
+            return False
+        # Discord RESUME can replay an event while startup history catches up.
+        # The durable write above happens before either path can await, so the
+        # per-channel checkpoint provides the common high-water race barrier.
+        # Keep the short-lived cache for events deliberately pre-marked by
+        # auto-thread setup, without poisoning retries after a failed write.
+        if self._dedup.is_duplicate(message_id):
+            return True
+        await self._handle_message(message, role_authorized=role_authorized)
+        return True
+
+    async def _catch_up_missed_mentions(self) -> None:
+        """Boundedly replay unseen post-checkpoint channel events exactly once."""
+        if not self._client or not self._discord_startup_catchup():
+            return
+        limit = self._discord_startup_catchup_limit()
+        channels = []
+        for guild in getattr(self._client, "guilds", []) or []:
+            channels.extend(getattr(guild, "text_channels", []) or [])
+            channels.extend(getattr(guild, "threads", []) or [])
+        for channel in channels:
+            channel_id = str(getattr(channel, "id", ""))
+            if not channel_id:
+                continue
+            try:
+                messages = [message async for message in channel.history(
+                    limit=limit, before=_Snowflake((1 << 63) - 1), oldest_first=True,
+                )]
+            except discord.Forbidden:
+                logger.debug("[%s] Missing permissions for startup catch-up in %s", self.name, channel_id)
+                continue
+            except Exception as exc:
+                logger.warning("[%s] Startup catch-up history fetch failed for %s: %s", self.name, channel_id, exc)
+                continue
+            if not self._startup_catchup.initialized(channel_id):
+                high_water_message_id = str(messages[-1].id) if messages else None
+                self._startup_catchup.mark_initialized(channel_id, high_water_message_id)
+                continue
+            for message in messages:
+                message_id = str(getattr(message, "id", ""))
+                if not message_id or self._startup_catchup.processed(channel_id, message_id):
+                    continue
+                if not await self._dispatch_discord_message(message):
+                    # Do not advance to a later message when the shared
+                    # dispatch protocol could not checkpoint this one.
+                    break
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -6113,7 +6419,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     if mid:
                         seen_ids.add(mid)
 
-            if not collected and not reply_collected:
+            starter_collected: List[str] = []
+            if is_thread_channel:
+                parent = getattr(channel, "parent", None)
+                # Forum posts are threads, but ForumChannel itself has no
+                # fetch_message(). Their starter must be fetched through the
+                # thread. Text-channel threads retain the parent-first path.
+                starter_sources = (channel, parent) if self._is_forum_parent(parent) else (parent, channel)
+                for starter_source in starter_sources:
+                    fetch_message = getattr(starter_source, "fetch_message", None)
+                    if not callable(fetch_message):
+                        continue
+                    try:
+                        starter = await fetch_message(int(getattr(channel, "id", 0)))
+                        line = _keep(starter)
+                        if line is not None and str(getattr(starter, "id", "")) not in seen_ids:
+                            starter_collected.append(line)
+                        break
+                    except discord.Forbidden:
+                        logger.debug("[%s] Missing permissions to fetch thread starter", self.name)
+                        break
+                    except Exception as exc:
+                        logger.debug("[%s] Failed to fetch thread starter: %s", self.name, exc)
+
+            if not collected and not reply_collected and not starter_collected:
                 return ""
 
             # channel.history returns newest-first; reverse each window for
@@ -6135,6 +6464,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     "[Context around the replied-to message]\n"
                     + "\n".join(line for _id, line in reply_collected)
                 )
+            if starter_collected:
+                blocks.append("[Thread starter message]\n" + "\n".join(starter_collected))
             if collected:
                 blocks.append(
                     "[Recent channel messages]\n"
@@ -9437,6 +9768,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
         os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    if "startup_catchup" in discord_cfg and not os.getenv("DISCORD_STARTUP_CATCHUP"):
+        os.environ["DISCORD_STARTUP_CATCHUP"] = str(discord_cfg["startup_catchup"]).lower()
+    scl = discord_cfg.get("startup_catchup_limit")
+    if scl is not None and not os.getenv("DISCORD_STARTUP_CATCHUP_LIMIT"):
+        os.environ["DISCORD_STARTUP_CATCHUP_LIMIT"] = str(scl)
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
     # these YAML keys only override when set and let users opt back

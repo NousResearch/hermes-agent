@@ -41,10 +41,12 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-# Reuse the exact result shape the bitwarden source returns so
-# hermes_cli.env_loader can consume both providers identically.
+# FetchResult lives in _cache (not bitwarden) so this module does not
+# inherit bitwarden's cryptography dependency.  When cryptography is
+# broken/stale, only BitwardenSource should fail — CommandSource must
+# still register. (#70697)
+from agent.secret_sources._cache import FetchResult
 from agent.secret_sources.base import ErrorKind, SecretSource
-from agent.secret_sources.bitwarden import FetchResult
 
 __all__ = [
     "FetchResult",

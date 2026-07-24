@@ -23,7 +23,22 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from agent.secret_sources import bitwarden as bw
+# Lazy import: bitwarden depends on the `cryptography` package, which may
+# be broken/stale after an upgrade. Importing at module level crashes the
+# entire CLI startup (#70697). The _bw() helper defers the import to the
+# first call so that `hermes` (without a secrets subcommand) and other
+# secret sources still work.
+_bw_module = None
+
+
+def _bw():
+    global _bw_module
+    if _bw_module is None:
+        from agent.secret_sources import bitwarden as _b
+        _bw_module = _b
+    return _bw_module
+
+
 from hermes_cli.config import (
     get_env_path,
     load_config,
@@ -101,9 +116,15 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     disable = sub.add_parser("disable", help="Turn off the Bitwarden integration")
     disable.set_defaults(func=cmd_disable)
 
+    # _BWS_VERSION is read at parser-build time; guard so a broken
+    # cryptography import doesn't crash `hermes` entirely (#70697).
+    try:
+        _bws_ver = _bw()._BWS_VERSION
+    except Exception:
+        _bws_ver = "unknown"
     install = sub.add_parser(
         "install",
-        help=f"Download and verify the pinned bws binary (v{bw._BWS_VERSION})",
+        help=f"Download and verify the pinned bws binary (v{_bws_ver})",
     )
     install.add_argument(
         "--force",
@@ -135,10 +156,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
     console.print()
     console.print("[bold]Step 1[/bold]  Install the bws CLI")
     try:
-        binary = bw.find_bws(install_if_missing=False)
+        binary = _bw().find_bws(install_if_missing=False)
         if binary is None:
             console.print("  No bws on PATH — downloading…")
-            binary = bw.install_bws()
+            binary = _bw().install_bws()
         version = _bws_version(binary)
         console.print(f"  [green]✓[/green] {binary}  ({version})")
     except Exception as exc:  # noqa: BLE001
@@ -255,7 +276,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     step_num = 5 if not (args.project_id and args.project_id.strip()) else 4
     console.print(f"[bold]Step {step_num}[/bold]  Test fetch")
     try:
-        secrets, warnings = bw.fetch_bitwarden_secrets(
+        secrets, warnings = _bw().fetch_bitwarden_secrets(
             access_token=token,
             project_id=project_id,
             binary=binary,
@@ -318,7 +339,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     server_url = str(bw_cfg.get("server_url", "") or "").strip()
     token = os.environ.get(token_env, "").strip()
     token_set = bool(token)
-    binary = bw.find_bws(install_if_missing=False)
+    binary = _bw().find_bws(install_if_missing=False)
     token_validation, validation_messages = _token_validation_status(
         enabled=enabled,
         binary=binary,
@@ -402,7 +423,7 @@ def cmd_token(args: argparse.Namespace) -> int:
         )
 
     if not args.no_verify:
-        binary = bw.find_bws(install_if_missing=True)
+        binary = _bw().find_bws(install_if_missing=True)
         if binary is None:
             console.print(
                 "[red]bws binary not available — cannot verify.  "
@@ -433,7 +454,7 @@ def cmd_token(args: argparse.Namespace) -> int:
     os.environ[token_env] = token
     # Old cached pulls are keyed on the previous token's fingerprint; drop
     # them so the next startup fetches fresh with the new credential.
-    bw.clear_caches()
+    _bw().clear_caches()
     console.print(
         f"[green]✓[/green] stored in {get_env_path()} as {token_env}.  "
         "Takes effect on the next Hermes invocation."
@@ -472,7 +493,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     server_url = str(bw_cfg.get("server_url", "") or "").strip()
 
     try:
-        secrets, warnings = bw.fetch_bitwarden_secrets(
+        secrets, warnings = _bw().fetch_bitwarden_secrets(
             access_token=token,
             project_id=project_id,
             use_cache=False,
@@ -540,7 +561,7 @@ def cmd_disable(args: argparse.Namespace) -> int:
 def cmd_install(args: argparse.Namespace) -> int:
     console = Console()
     try:
-        path = bw.install_bws(force=bool(args.force))
+        path = _bw().install_bws(force=bool(args.force))
         console.print(f"[green]✓[/green] {path}  ({_bws_version(path)})")
         return 0
     except Exception as exc:  # noqa: BLE001

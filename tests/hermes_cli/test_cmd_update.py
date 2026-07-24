@@ -499,6 +499,52 @@ class TestCmdUpdateBranchFallback:
                 "(no capture_output) so postinstall progress is visible"
             )
 
+    @pytest.mark.parametrize("desktop_launched", [False, True])
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_rebuilds_desktop_only_after_app_has_launched(
+        self, mock_run, mock_which, mock_args, tmp_path, desktop_launched
+    ):
+        """Build output alone must not opt a machine into future rebuilds.
+
+        ``hermes update`` creates ``dist`` and ``release`` itself, so treating
+        those artifacts as proof that the desktop is in use makes the gate
+        self-perpetuating on headless machines. Electron's userData directory
+        is only created after the app has actually launched.
+        """
+        from hermes_cli import main as hm
+
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        packaged_executable = tmp_path / "desktop-app"
+        userdata = tmp_path / "Hermes"
+        if desktop_launched:
+            userdata.mkdir()
+
+        with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_refresh_active_lazy_features"), \
+             patch.object(hm, "_update_node_dependencies", return_value=[]), \
+             patch.object(hm, "_build_web_ui"), \
+             patch.object(
+                 hm, "_desktop_packaged_executable", return_value=packaged_executable
+             ), \
+             patch.object(hm, "_resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch(
+                 "hermes_cli.gui_uninstall.desktop_userdata_dir", return_value=userdata
+             ):
+            cmd_update(mock_args)
+
+        desktop_builds = [
+            call
+            for call in mock_run.call_args_list
+            if call.args
+            and "desktop" in call.args[0]
+            and "--build-only" in call.args[0]
+        ]
+        assert len(desktop_builds) == int(desktop_launched)
+
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(

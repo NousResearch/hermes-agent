@@ -572,6 +572,77 @@ describe('upsertToolPart', () => {
     expect(summaries).toEqual(['Did 5 searches', 'Did 5 searches'])
   })
 
+  it('reconciles image generation updates with the same prompt when event IDs differ', () => {
+    const started = upsertToolPart(
+      [],
+      {
+        args: { prompt: 'Draw a cat astronaut' },
+        name: 'image_generate',
+        tool_id: 'image-start'
+      },
+      'running'
+    )
+
+    const progressed = upsertToolPart(
+      started,
+      {
+        args: { prompt: 'Draw a cat astronaut' },
+        name: 'image_generate',
+        tool_id: 'image-progress'
+      },
+      'running'
+    )
+
+    const imageParts = progressed.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'image_generate'
+    )
+
+    expect(imageParts).toHaveLength(1)
+    expect(imageParts[0]?.toolCallId).toBe('image-progress')
+  })
+
+  it('reconciles a name-only generating event with the identified tool start', () => {
+    const generating = upsertToolPart([], { name: 'image_generate' }, 'running')
+
+    const started = upsertToolPart(
+      generating,
+      {
+        args: { prompt: 'Draw a cat astronaut' },
+        name: 'image_generate',
+        tool_id: 'image-start'
+      },
+      'running'
+    )
+
+    const imageParts = started.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'image_generate'
+    )
+
+    expect(imageParts).toHaveLength(1)
+    expect(imageParts[0]?.toolCallId).toBe('image-start')
+    expect(imageParts[0]?.args).toMatchObject({ prompt: 'Draw a cat astronaut' })
+  })
+
+  it('keeps parallel image generations with different prompts distinct', () => {
+    const startedCat = upsertToolPart(
+      [],
+      { args: { prompt: 'Draw a cat astronaut' }, name: 'image_generate', tool_id: 'image-cat' },
+      'running'
+    )
+
+    const startedDog = upsertToolPart(
+      startedCat,
+      { args: { prompt: 'Draw a dog astronaut' }, name: 'image_generate', tool_id: 'image-dog' },
+      'running'
+    )
+
+    const imageParts = startedDog.filter(part => part.type === 'tool-call' && part.toolName === 'image_generate')
+
+    expect(imageParts).toHaveLength(2)
+  })
+
   it('pairs a terminal completion with its context-only start when event IDs differ', () => {
     const started = upsertToolPart(
       [],

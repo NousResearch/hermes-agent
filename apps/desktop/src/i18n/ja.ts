@@ -890,6 +890,12 @@ export const ja = defineLocale({
       messages: count => `${count} 件のメッセージ`,
       restored: '復元しました',
       deleteConfirm: title => `"${title}" を完全に削除しますか？この操作は元に戻せません。`,
+      autoArchiveTitle: '古いチャットを自動アーカイブ',
+      autoArchiveDesc:
+        'しばらく操作していないチャットを自動的にアーカイブします。ピン留めしたチャットはアーカイブされず、削除もされません。アーカイブされたチャットはここに移動します。',
+      autoArchiveDaysLabel: 'アーカイブまでの日数',
+      autoArchiveDaysUnit: '日間操作なし',
+      autoArchiveFailed: '自動アーカイブを更新できませんでした',
       defaultDirTitle: 'デフォルトのプロジェクトディレクトリ',
       defaultDirDesc:
         '別のフォルダーを選択しない限り、新しいセッションはこのフォルダーで開始します。未設定の場合はホームディレクトリが使用されます。',

@@ -173,6 +173,100 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["host_path"] == str(skills_dir)
 
+    def test_sanitized_mount_lifecycle_is_stable(self, tmp_path):
+        """Repeated calls to get_skills_directory_mount() with symlinks must:
+        - Return the same stable host path and inode (no directory recreation).
+        - Correctly synchronize added/modified files in-place.
+        - Delete files that are removed from the source.
+        - Skip symlinks entirely.
+        - Handle file ↔ directory type transitions without crashing.
+        - Remove any symlinks found in the destination.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        
+        # 1. Setup initial files with a dummy file that we mock as a symlink
+        (skills_dir / "file1.txt").write_text("content1")
+        (skills_dir / "link.txt").write_text("mocked-symlink")
+
+        # Mock Path.is_symlink to treat link.txt as a symlink
+        original_is_symlink = Path.is_symlink
+        def mock_is_symlink(self_path):
+            if self_path.name == "link.txt":
+                return True
+            return original_is_symlink(self_path)
+
+        # Mock os.readlink to return a dummy target for link.txt
+        original_readlink = os.readlink
+        def mock_readlink(path):
+            if Path(path).name == "link.txt":
+                return "mocked-target"
+            return original_readlink(path)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "is_symlink", mock_is_symlink), \
+             patch("os.readlink", mock_readlink):
+            mounts1 = get_skills_directory_mount()
+            assert len(mounts1) >= 1
+            host_path1 = mounts1[0]["host_path"]
+            
+            # Verify file1 exists but mocked symlink is skipped
+            assert (Path(host_path1) / "file1.txt").exists()
+            assert (Path(host_path1) / "file1.txt").read_text() == "content1"
+            assert not (Path(host_path1) / "link.txt").exists()
+
+            # 2. Modify files (add file2.txt, delete file1.txt)
+            (skills_dir / "file2.txt").write_text("content2")
+            (skills_dir / "file1.txt").unlink()
+
+            mounts2 = get_skills_directory_mount()
+            assert len(mounts2) >= 1
+            host_path2 = mounts2[0]["host_path"]
+
+            # Path and inode must remain stable
+            assert host_path1 == host_path2
+            assert os.stat(host_path1).st_ino == os.stat(host_path2).st_ino
+            
+            # Synchronization updates
+            assert (Path(host_path2) / "file2.txt").exists()
+            assert (Path(host_path2) / "file2.txt").read_text() == "content2"
+            assert not (Path(host_path2) / "file1.txt").exists()
+            assert not (Path(host_path2) / "link.txt").exists()
+
+            # 3. Type transitions: file2.txt (file) → directory, add beta/ then remove it next round
+            (skills_dir / "file2.txt").unlink()
+            (skills_dir / "file2.txt").mkdir()
+            (skills_dir / "file2.txt" / "SKILL.md").write_text("# skill")
+            (skills_dir / "beta").mkdir()
+            (skills_dir / "beta" / "child.txt").write_text("child")
+
+            mounts3 = get_skills_directory_mount()
+            host_path3 = mounts3[0]["host_path"]
+
+            assert host_path1 == host_path3
+            assert os.stat(host_path1).st_ino == os.stat(host_path3).st_ino
+            # file→dir: file2.txt is now a directory with SKILL.md inside
+            assert (Path(host_path3) / "file2.txt").is_dir()
+            assert (Path(host_path3) / "file2.txt" / "SKILL.md").read_text() == "# skill"
+
+            # 4. Reverse: file2.txt (dir) → file, beta (dir) → removed
+            import shutil
+            shutil.rmtree(skills_dir / "file2.txt")
+            (skills_dir / "file2.txt").write_text("flat again")
+            shutil.rmtree(skills_dir / "beta")
+
+            mounts4 = get_skills_directory_mount()
+            host_path4 = mounts4[0]["host_path"]
+
+            assert host_path1 == host_path4
+            assert os.stat(host_path1).st_ino == os.stat(host_path4).st_ino
+            # dir→file: file2.txt is a file again
+            assert (Path(host_path4) / "file2.txt").is_file()
+            assert (Path(host_path4) / "file2.txt").read_text() == "flat again"
+            assert not (Path(host_path4) / "beta").exists()
+
+
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):

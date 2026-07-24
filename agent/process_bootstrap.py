@@ -142,6 +142,27 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return proxy
 
 
+_DEFAULT_AGENT_KEEPALIVE_EXPIRY_S = 300.0
+
+
+def _get_agent_keepalive_expiry() -> float:
+    """Return ``keepalive_expiry`` for the agent's HTTP pool.
+
+    Reads ``HERMES_HTTPX_KEEPALIVE_EXPIRY`` env var; falls back to
+    ``_DEFAULT_AGENT_KEEPALIVE_EXPIRY_S`` (300 s — generous enough for
+    Cloudflare/OpenRouter streaming, #67012).
+    """
+    raw = os.environ.get("HERMES_HTTPX_KEEPALIVE_EXPIRY", "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_AGENT_KEEPALIVE_EXPIRY_S
+
+
 def build_keepalive_http_client(
     base_url: str = "",
     *,
@@ -157,11 +178,14 @@ def build_keepalive_http_client(
     applied. Mirrors ``AIAgent._build_keepalive_http_client``.
 
     Connection lifecycle is managed at the HTTP pool layer
-    (``keepalive_expiry=20.0`` reaps idle connections before reverse proxies'
-    typical 30-60 s timeouts) instead of the former custom
-    ``socket_options`` transport, which broke streaming behind reverse
-    proxies (#54049, #12952) and stalled TLS handshakes by stripping
-    ``TCP_NODELAY``.
+    (``keepalive_expiry``, default 300.0 s, reaps idle connections before
+    reverse-proxy timeouts) instead of the former custom ``socket_options``
+    transport, which broke streaming behind reverse proxies (#54049,
+    #12952) and stalled TLS handshakes by stripping ``TCP_NODELAY``.
+
+    The default 300 s accommodates Cloudflare/OpenRouter (100–600 s proxy
+    timeout, #67012) while still preventing unbounded CLOSE-WAIT
+    accumulation.  Override via ``HERMES_HTTPX_KEEPALIVE_EXPIRY`` env var.
 
     ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
     vision, web_extract, title generation, etc.) honor the same per-provider
@@ -177,7 +201,7 @@ def build_keepalive_http_client(
         limits = httpx.Limits(
             max_keepalive_connections=20,
             max_connections=100,
-            keepalive_expiry=20.0,
+            keepalive_expiry=_get_agent_keepalive_expiry(),
         )
         # Generous read=None for SSE streaming endpoints.
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)
@@ -223,5 +247,6 @@ __all__ = [
     "_install_safe_stdio",
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
+    "_get_agent_keepalive_expiry",
     "build_keepalive_http_client",
 ]

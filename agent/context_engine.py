@@ -210,6 +210,123 @@ class ContextEngine(ABC):
         """
         return messages, 0
 
+    # -- Optional: per-turn context selection (distinct from compression) --
+
+    def select_context(
+        self,
+        request_messages: List[Dict[str, Any]],
+        *,
+        conversation_messages: List[Dict[str, Any]] = None,
+        incoming_message: Dict[str, Any] = None,
+        budget_tokens: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Optionally choose/replace the context for THIS request, pre-generation.
+
+        Called every turn after the request message list is assembled and
+        before it is dispatched to the provider — independent of
+        ``should_compress()``. This lets an engine *select* which context
+        enters the prompt (retrieval, topic routing, role/branch switching)
+        rather than *shrink* context that is already there. The two verbs are
+        orthogonal:
+
+          - ``compress()``      : context is too long  -> make it shorter.
+          - ``select_context()``: this turn belongs to a different context
+                                  -> use that one instead.
+
+        Without this hook, engines that need per-turn access to the message
+        list have to force ``should_compress()`` to return ``True`` so that
+        ``compress()`` is invoked every turn purely as a callback — which
+        conflates selection with compression and degrades behaviour when the
+        engine's backend is unavailable. ``select_context()`` removes the need
+        for that workaround.
+
+        The returned list is request-only: it replaces the messages sent to
+        the provider for this single call and MUST NOT be treated as persisted
+        transcript state. The conversation history in the session DB is left
+        untouched, so nothing leaks across turns. Return ``None`` to leave the
+        request unchanged.
+
+        Unlike the ``pre_llm_call`` plugin hook (which appends to the user
+        message and intentionally never rewrites the list, to preserve the
+        cache prefix), ``select_context()`` may *replace* the message list.
+
+        Ordering / cache contract: the host runs this hook **before** prompt
+        cache-control and **before** every request sanitizer (orphaned-tool
+        cleanup, thinking-only/role normalization, whitespace/JSON
+        normalization). So (a) whatever the hook returns still passes through
+        the same validation as any request — a malformed replacement cannot
+        reach the provider — and (b) prompt-cache stability (an AGENTS.md
+        invariant) is preserved: the default no-op leaves the request
+        byte-identical, so cache behaviour is unchanged for the built-in
+        compressor and any non-implementing engine. An engine that *does*
+        replace the list changes its own cache prefix by definition; that is
+        the engine's concern, and cache-control breakpoints are re-derived on
+        the selected list. The hook is evaluated per provider request (so it
+        re-runs on retries within a turn), consistent with "select the context
+        for THIS request".
+
+        Args:
+            request_messages: The assembled request message list (system
+                prompt + history + any ephemeral prefill), in OpenAI format.
+            conversation_messages: The unmodified persisted conversation
+                history, for reference only (do not mutate).
+            incoming_message: The current turn's user message, if available.
+            budget_tokens: The active model's context length, or 0 if unknown.
+
+        Default returns ``None`` (no-op) — zero impact on the built-in
+        compressor or any existing engine.
+        """
+        return None
+
+    def on_turn_complete(
+        self,
+        messages: List[Dict[str, Any]],
+        usage: Dict[str, Any] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Observe a finished user turn (post-turn ingestion / observation).
+
+        Called from the standard turn-finalization path once the assistant/tool
+        loop completes, with the finalized in-memory transcript snapshot. This
+        is the complement to ``select_context()``: selection happens *before*
+        the request, while observation happens *after* the turn. It lets an
+        engine ingest, index, summarize, or update routing / topic / session
+        state from what actually happened — so the next ``select_context()``
+        can act on it.
+
+        Coverage: this fires from the normal finalization seam. Some abnormal
+        early-return paths in the loop (e.g. a content-policy block or a
+        provider terminal failure) persist and return without routing through
+        finalization, and therefore do not currently emit this hook. Treat it
+        as a best-effort post-turn observation for completed turns, not a
+        guaranteed callback for every possible early exit; unifying all
+        terminal paths behind one finalization seam is a separate follow-up.
+
+        Together the two hooks remove the need to abuse ``should_compress()`` /
+        ``compress()`` as a generic per-turn callback just to observe history,
+        and they cover the case where a turn finishes and there may be no next
+        request from which to infer the previous turn.
+
+        ``messages`` is a shallow copy and should be treated as read-only:
+        return values are ignored and this hook must not rely on transcript
+        mutation for persistence. ``kwargs`` may include ``turn_id``,
+        ``task_id``, ``api_call_count``, ``interrupted``, ``failed``, and
+        ``turn_exit_reason``.
+
+        ``usage`` carries the completed turn's canonical token usage (the same
+        dict shape passed to ``update_from_response`` — ``prompt_tokens`` /
+        ``completion_tokens`` / ``total_tokens`` plus the canonical
+        ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
+        ``cache_write_tokens`` / ``reasoning_tokens`` buckets) so an engine can
+        weigh how large/expensive the selected context actually was when
+        deciding the next ``select_context()``. It is ``None`` on finalized
+        turns that never reached a provider response (e.g. interrupt); engines
+        must treat it as optional.
+
+        Default is a no-op.
+        """
+        return None
+
     # -- Optional: pre-flight check ----------------------------------------
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:

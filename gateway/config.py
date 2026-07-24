@@ -431,6 +431,11 @@ class HomeChannel:
     chat_id: str
     name: str  # Human-readable name for display
     thread_id: Optional[str] = None
+    # Authenticated logical-target provenance observed by a platform adapter.
+    # Relay egress re-attaches these values, but the connector remains the
+    # authorization boundary and resolves them against its authoritative stores.
+    user_id: Optional[str] = None
+    scope_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -440,6 +445,10 @@ class HomeChannel:
         }
         if self.thread_id:
             result["thread_id"] = self.thread_id
+        if self.user_id:
+            result["user_id"] = self.user_id
+        if self.scope_id:
+            result["scope_id"] = self.scope_id
         return result
     
     @classmethod
@@ -449,7 +458,28 @@ class HomeChannel:
             chat_id=str(data["chat_id"]),
             name=data.get("name", "Home"),
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
+            user_id=str(data["user_id"]) if data.get("user_id") else None,
+            scope_id=str(data["scope_id"]) if data.get("scope_id") else None,
         )
+
+
+def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
+    """Persist a logical home without falsely enabling a Relay-fronted adapter."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+    platform_config = platforms.setdefault(home.platform.value, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[home.platform.value] = platform_config
+    if enabled_if_new:
+        platform_config.setdefault("enabled", True)
+    platform_config["home_channel"] = home.to_dict()
+    save_config(config)
 
 
 @dataclass
@@ -1942,12 +1972,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # send Slack messages can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
     slack_home = getenv("SLACK_HOME_CHANNEL")
-    if slack_home and Platform.SLACK in config.platforms:
-        config.platforms[Platform.SLACK].home_channel = HomeChannel(
+    if slack_home:
+        slack_config = config.platforms.setdefault(
+            Platform.SLACK,
+            PlatformConfig(enabled=False),
+        )
+        existing_home = slack_config.home_channel
+        same_home = existing_home is not None and existing_home.chat_id == slack_home
+        slack_config.home_channel = HomeChannel(
             platform=Platform.SLACK,
             chat_id=slack_home,
             name=getenv("SLACK_HOME_CHANNEL_NAME", ""),
             thread_id=getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
+            user_id=existing_home.user_id if existing_home and same_home else None,
+            scope_id=existing_home.scope_id if existing_home and same_home else None,
         )
     
     # Signal

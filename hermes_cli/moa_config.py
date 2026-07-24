@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 from copy import deepcopy
 from typing import Any
 
@@ -19,6 +20,8 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
     "provider": "openrouter",
     "model": "anthropic/claude-opus-4.8",
 }
+
+DEFAULT_MOA_REFERENCE_TIMEOUT: float | None = None
 
 
 def _default_reference_models() -> list[dict[str, Any]]:
@@ -39,6 +42,33 @@ def _coerce_float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_reference_timeout(value: Any) -> float | None:
+    """Return a finite positive advisor timeout, or None to inherit.
+
+    ``None`` (the default) means "no per-preset override": the reference
+    fan-out inherits the ``auxiliary.moa_reference.timeout`` config value
+    (900s by default) via ``call_llm``'s own resolution, exactly like every
+    other auxiliary task. An explicit finite positive per-preset value is
+    honored as-is — no artificial cap, since long-thinking advisor models
+    legitimately run far beyond five minutes.
+    """
+    if value is None or value == "" or isinstance(value, bool):
+        return DEFAULT_MOA_REFERENCE_TIMEOUT
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MOA_REFERENCE_TIMEOUT
+    if not math.isfinite(timeout) or timeout <= 0:
+        return DEFAULT_MOA_REFERENCE_TIMEOUT
+    return timeout
+
+
+def _coerce_degraded_reference_policy(value: Any) -> str:
+    """Normalize failed-advisor disclosure policy; unknown values fail loud."""
+    policy = str(value or "loud").strip().lower()
+    return policy if policy in {"loud", "silent"} else "loud"
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -78,9 +108,10 @@ def _coerce_fanout(value: Any) -> str:
     ``every_n:<N>`` (N >= 2). The ``every_n`` cadence also accepts the mapping
     form ``{mode: every_n, n: N}`` from hand-edited YAML and normalizes it to
     the canonical string, so the rest of the pipeline (presets, flattened
-    view, runtime) only ever sees one shape. ``every_n:1`` means "run every
-    iteration" and collapses to ``per_iteration``; anything unparseable falls
-    back to ``per_iteration`` (the tolerant-read contract of this module).
+    view, runtime) only ever sees one shape. ``every_n:1`` semantically means
+    "run every iteration" and collapses to ``per_iteration``; anything
+    unparseable falls back to ``user_turn`` (the default — cheapest cadence;
+    see #67199).
     """
     if isinstance(value, dict):
         # Mapping form: {mode: every_n, n: 3}. Non-every_n mapping modes fall
@@ -88,7 +119,9 @@ def _coerce_fanout(value: Any) -> str:
         mode = str(value.get("mode") or "").strip().lower()
         if mode == "every_n":
             n = _coerce_int(value.get("n"), 0)
-            return f"every_n:{n}" if n >= 2 else "per_iteration"
+            if n >= 2:
+                return f"every_n:{n}"
+            return "per_iteration" if n == 1 else "user_turn"
         value = mode
     mode = str(value or "").strip().lower()
     if mode in {"per_iteration", "user_turn"}:
@@ -98,7 +131,9 @@ def _coerce_fanout(value: Any) -> str:
         n = _coerce_int(rest.strip(), 0) if sep else 0
         if n >= 2:
             return f"every_n:{n}"
-    return "per_iteration"
+        if n == 1:
+            return "per_iteration"
+    return "user_turn"
 
 
 def coerce_privacy_filter(value: Any) -> str:
@@ -266,9 +301,11 @@ def _default_preset() -> dict[str, Any]:
         # matching single-model agent behavior.
         "reference_temperature": None,
         "aggregator_temperature": None,
+        "reference_timeout": DEFAULT_MOA_REFERENCE_TIMEOUT,
+        "degraded_reference_policy": "loud",
         "max_tokens": 4096,
         "reference_max_tokens": None,
-        "fanout": "per_iteration",
+        "fanout": "user_turn",
         "enabled": True,
     }
 
@@ -302,6 +339,10 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "aggregator": aggregator,
         "reference_temperature": _coerce_float_or_none(raw.get("reference_temperature")),
         "aggregator_temperature": _coerce_float_or_none(raw.get("aggregator_temperature")),
+        "reference_timeout": _coerce_reference_timeout(raw.get("reference_timeout")),
+        "degraded_reference_policy": _coerce_degraded_reference_policy(
+            raw.get("degraded_reference_policy")
+        ),
         "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
         # Optional cap on how much each reference ADVISOR may generate per turn.
         # None (default) = uncapped: advisors write full-length advice, matching
@@ -312,16 +353,18 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # judgement, so capping roughly halves per-turn wall time. Does NOT cap
         # the acting aggregator (its output is the user-visible answer).
         "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
-        # When the reference fan-out runs. "per_iteration" (default) re-runs
-        # the advisors whenever the advisory view changes — i.e. every tool
-        # iteration, so advice tracks live task state. "user_turn" runs the
-        # advisors ONCE per user turn (the original MoA shape): the
-        # aggregator gets their upfront plan-level advice, then acts alone
-        # for the rest of the tool loop. "every_n:<N>" (N >= 2) is the middle
-        # ground: advisors run on the first iteration of each user turn and
-        # every Nth tool iteration after it; in-between iterations reuse the
-        # cached guidance from the last advisor run. Also accepts the mapping
-        # form {mode: every_n, n: N}, normalized to the canonical string.
+        # When the reference fan-out runs. "user_turn" (default) runs the
+        # advisors ONCE per user turn (the original MoA shape, and the
+        # cheapest cadence — #67199): the aggregator gets their upfront
+        # plan-level advice, then acts alone for the rest of the tool loop.
+        # "per_iteration" re-runs the advisors whenever the advisory view
+        # changes — i.e. every tool iteration, so advice tracks live task
+        # state at the cost of multiplying advisor spend by tool-loop depth.
+        # "every_n:<N>" (N >= 2) is the middle ground: advisors run on the
+        # first iteration of each user turn and every Nth tool iteration
+        # after it; in-between iterations reuse the cached guidance from the
+        # last advisor run. Also accepts the mapping form
+        # {mode: every_n, n: N}, normalized to the canonical string.
         "fanout": _coerce_fanout(raw.get("fanout")),
     }
 
@@ -367,9 +410,11 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "aggregator": deepcopy(active["aggregator"]),
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
+        "reference_timeout": active["reference_timeout"],
+        "degraded_reference_policy": active["degraded_reference_policy"],
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
-        "fanout": active.get("fanout", "per_iteration"),
+        "fanout": active.get("fanout", "user_turn"),
         "enabled": active["enabled"],
         # MoA-level (not per-preset) toggles ride at the top level alongside
         # save_traces. privacy_filter: '' (off, default) | 'display' | 'full'

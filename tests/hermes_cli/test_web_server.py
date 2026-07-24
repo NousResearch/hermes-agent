@@ -880,6 +880,8 @@ class TestWebServerEndpoints:
             "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
             "reference_temperature": 0.6,
             "aggregator_temperature": 0.4,
+            "reference_timeout": 44.5,
+            "degraded_reference_policy": "silent",
             "max_tokens": 4096,
             "enabled": True,
         }
@@ -897,6 +899,41 @@ class TestWebServerEndpoints:
         assert all(s.get("enabled", True) is True for s in saved_refs)
         agg = cfg["moa"]["aggregator"]
         assert {"provider": agg["provider"], "model": agg["model"]} == payload["aggregator"]
+        assert cfg["moa"]["reference_timeout"] == 44.5
+        assert cfg["moa"]["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()
+        assert returned["reference_timeout"] == 44.5
+        assert returned["degraded_reference_policy"] == "silent"
+
+    def test_put_moa_models_persists_reference_failure_controls_per_preset(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "review",
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"}
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                    "reference_timeout": 87.5,
+                    "degraded_reference_policy": "silent",
+                }
+            },
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 200
+        saved = load_config()["moa"]["presets"]["review"]
+        assert saved["reference_timeout"] == 87.5
+        assert saved["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()["presets"]["review"]
+        assert returned["reference_timeout"] == 87.5
+        assert returned["degraded_reference_policy"] == "silent"
 
     def test_put_moa_models_rejects_half_filled_slot_with_422(self):
         """#64156: a mid-edit autosave (provider picked, model empty) used to be
@@ -1290,6 +1327,34 @@ class TestWebServerEndpoints:
             "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"userPeerAliases": "{not json"}},
         ).status_code == 400
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"reference_timeout": True},
+            {"reference_timeout": False},
+            {"reference_timeout": "nan"},
+            {"reference_timeout": "inf"},
+            {"presets": {"review": {"reference_timeout": True}}},
+            {"presets": {"review": {"reference_timeout": "-inf"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_reference_timeout(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"degraded_reference_policy": "verbose"},
+            {"presets": {"review": {"degraded_reference_policy": "verbose"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_degraded_reference_policy(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
 
     # ── GET /api/media (remote image display) ───────────────────────────
 
@@ -1812,6 +1877,82 @@ class TestWebServerEndpoints:
 
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
+
+    def test_patch_session_pins_and_exempts_from_auto_archive(self):
+        """PATCH pinned=true sets the keep flag; a pinned stale session is
+        spared by the auto-archive sweep while an unpinned one is hidden."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        old = _time.time() - 30 * 86400
+        db = SessionDB()
+        try:
+            for sid in ("keep-me", "drop-me"):
+                db.create_session(session_id=sid, source="cli")
+                db.append_message(session_id=sid, role="user", content="hi")
+                db._conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?", (old, sid)
+                )
+                db._conn.execute(
+                    "UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, sid)
+                )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/keep-me", json={"pinned": True})
+        assert resp.status_code == 200
+        assert resp.json()["pinned"] is True
+
+        db = SessionDB()
+        try:
+            archived = db.archive_stale_sessions(3)
+        finally:
+            db.close()
+
+        assert archived == 1
+        listed = self.client.get("/api/sessions").json()["sessions"]
+        ids = {s["id"] for s in listed}
+        assert "keep-me" in ids  # pinned -> spared
+        assert "drop-me" not in ids  # unpinned + stale -> archived
+
+    def test_list_triggers_config_gated_auto_archive(self):
+        """With sessions.auto_archive on, listing sessions opportunistically
+        sweeps stale ones (the Desktop `hermes serve` code path)."""
+        import time as _time
+
+        import hermes_cli.web_server as ws
+        from hermes_state import SessionDB
+
+        old = _time.time() - 30 * 86400
+        db = SessionDB()
+        try:
+            db.create_session(session_id="stale-serve", source="cli")
+            db.append_message(session_id="stale-serve", role="user", content="hi")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?", (old, "stale-serve")
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (old, "stale-serve"),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        # Reset the in-process throttle so the trigger actually evaluates config.
+        ws._last_auto_archive_check.clear()
+
+        # The helper imports load_config lazily from hermes_cli.config; patch there.
+        cfg = {"sessions": {"auto_archive": True, "auto_archive_days": 3, "min_interval_hours": 0}}
+        try:
+            with patch("hermes_cli.config.load_config", return_value=cfg):
+                listed = self.client.get("/api/sessions").json()["sessions"]
+        finally:
+            ws._last_auto_archive_check.clear()
+
+        assert all(s["id"] != "stale-serve" for s in listed)
 
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows
@@ -4753,6 +4894,18 @@ class TestBuildSchemaFromConfig:
         assert "ask" not in options, "stale option 'ask' should not appear"
         assert "yolo" not in options, "stale option 'yolo' should not appear"
         assert "deny" not in options, "stale option 'deny' should not appear"
+
+    def test_proxy_schema_warns_dashboard_users_about_lifecycle(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA["proxy.enabled"]
+        assert entry["category"] == "security"
+        assert "Docker-only" in entry["description"]
+        assert "hermes egress setup" in entry["description"]
+
+        source_entry = CONFIG_SCHEMA["proxy.credential_source"]
+        assert source_entry["type"] == "select"
+        assert source_entry["options"] == ["env", "bitwarden"]
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config

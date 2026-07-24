@@ -672,8 +672,14 @@ def test_slot_max_tokens_absent_by_default():
 # --- fanout cadence normalization (every_n) ---
 
 
-def test_fanout_defaults_to_per_iteration():
+def test_fanout_defaults_to_user_turn():
+    # Default is the cheapest cadence (#67199): advisors once per user turn.
     cfg = normalize_moa_config({})
+    assert cfg["fanout"] == "user_turn"
+
+
+def test_fanout_per_iteration_still_selectable():
+    cfg = normalize_moa_config({"fanout": "per_iteration"})
     assert cfg["fanout"] == "per_iteration"
 
 
@@ -689,14 +695,15 @@ def test_fanout_every_n_mapping_form_normalized_to_string():
 
 
 def test_fanout_every_n_degenerate_n_falls_back():
-    # n=1 means "every iteration" — that IS per_iteration; n=0 / negative /
-    # garbage must never produce a broken cadence string.
+    # n=1 means "every iteration" — that semantically IS per_iteration;
+    # n=0 / negative / garbage is unparseable and falls to the default
+    # cadence (user_turn, the cheapest — #67199).
     assert normalize_moa_config({"fanout": "every_n:1"})["fanout"] == "per_iteration"
-    assert normalize_moa_config({"fanout": "every_n:0"})["fanout"] == "per_iteration"
-    assert normalize_moa_config({"fanout": "every_n:-2"})["fanout"] == "per_iteration"
-    assert normalize_moa_config({"fanout": "every_n:x"})["fanout"] == "per_iteration"
-    assert normalize_moa_config({"fanout": "every_n"})["fanout"] == "per_iteration"
-    assert normalize_moa_config({"fanout": {"mode": "every_n"}})["fanout"] == "per_iteration"
+    assert normalize_moa_config({"fanout": "every_n:0"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": "every_n:-2"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": "every_n:x"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": "every_n"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": {"mode": "every_n"}})["fanout"] == "user_turn"
 
 
 def test_fanout_every_n_round_trips_through_normalize():
@@ -738,3 +745,32 @@ def test_privacy_filter_round_trips_through_normalize():
     assert normalize_moa_config(once)["privacy_filter"] == "display"
     full = normalize_moa_config({"privacy_filter": "full"})
     assert normalize_moa_config(full)["privacy_filter"] == "full"
+
+
+def test_reference_failure_controls_are_normalized_per_preset_and_flattened():
+    cfg = normalize_moa_config(
+        _preset(reference_timeout="120.5", degraded_reference_policy="silent")
+    )
+
+    preset = cfg["presets"]["p"]
+    assert preset["reference_timeout"] == 120.5
+    assert preset["degraded_reference_policy"] == "silent"
+    assert cfg["reference_timeout"] == 120.5
+    assert cfg["degraded_reference_policy"] == "silent"
+
+
+@pytest.mark.parametrize("value", [None, "", 0, -1, "bad"])
+def test_reference_timeout_invalid_values_fall_back_to_default(value):
+    # None = inherit auxiliary.moa_reference.timeout (no per-preset override).
+    assert resolve_moa_preset(_preset(reference_timeout=value), "p")["reference_timeout"] is None
+
+
+def test_reference_timeout_is_uncapped_and_unknown_policy_is_loud():
+    preset = resolve_moa_preset(
+        _preset(reference_timeout=9999, degraded_reference_policy="wat"), "p"
+    )
+
+    # Explicit per-preset values are honored as-is — long-thinking advisor
+    # models legitimately run beyond any fixed cap.
+    assert preset["reference_timeout"] == 9999.0
+    assert preset["degraded_reference_policy"] == "loud"

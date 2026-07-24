@@ -134,14 +134,16 @@ Leave it unset (or `0`/blank) to keep the prior uncapped behavior.
 
 ### Advisor cadence with `fanout`
 
-By default the advisors re-run on **every tool iteration** (`fanout:
-per_iteration`), so their advice always tracks the latest tool results — at
-the cost of multiplying advisor latency and spend by the number of tool calls
-in a turn. Two alternative cadences trade freshness for speed:
+By default the advisors run **once per user turn** (`fanout: user_turn`) —
+they synthesize plan-level advice on the first message of the turn, then the
+acting aggregator works through the rest of the tool loop alone. This is the
+cheapest cadence: advisor cost does not multiply with the number of tool
+calls in a turn. Two alternative cadences trade cost for advice freshness:
 
-- `fanout: user_turn` — advisors run **once per user turn**; every tool
-  iteration after that reuses the same upfront advice (the original MoA
-  shape: synthesize a plan, then let the acting model work).
+- `fanout: per_iteration` — advisors re-run on **every tool iteration**, so
+  their advice always tracks the latest tool results — at the cost of
+  multiplying advisor latency and spend by the number of tool calls in a
+  turn.
 - `fanout: every_n:3` — the middle ground: advisors run on the **first**
   iteration of each user turn and then every **3rd** tool iteration (any
   `N >= 2` works). Iterations in between reuse the cached guidance from the
@@ -154,17 +156,24 @@ in a turn. Two alternative cadences trade freshness for speed:
 ```yaml
 moa:
   presets:
-    fast:
+    fresh:
       reference_models:
         - provider: openrouter
           model: anthropic/claude-opus-4.8
       aggregator:
         provider: openrouter
         model: openai/gpt-5.5
-      fanout: every_n:3   # advisors refresh every 3rd tool iteration
+      fanout: per_iteration   # advisors refresh on every tool iteration
 ```
 
-Unknown or malformed values fall back to `per_iteration`.
+Unknown or malformed values fall back to `user_turn`.
+
+:::note Default change
+Prior to July 2026 the default cadence was `per_iteration`. The default is
+now `user_turn` — the cheapest, lowest-impact cadence — until per-mode
+benchmarks justify a costlier default. Presets that want per-step advising
+back set `fanout: per_iteration` explicitly.
+:::
 
 ### Privacy filter for advisor outputs
 

@@ -194,6 +194,44 @@ class TestSessionLifecycle:
         child = db.get_session("child")
         assert child["git_branch"] == "feature-x"
 
+    def test_child_session_inherits_profile_name_from_parent(self, db):
+        """A parented child born without profile_name (compression rotation,
+        /branch) must inherit its parent's owning profile — otherwise the
+        lineage silently migrates to the launch/default profile in unified
+        session lists (the cross-profile session-jump bug)."""
+        db.create_session(session_id="parent", source="cli", profile_name="ai-engineer")
+        # Rotation path: parent is ended with 'compression' BEFORE the child
+        # row is created (agent/conversation_compression.py).
+        db.end_session("parent", "compression")
+
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        assert db.get_session("child")["profile_name"] == "ai-engineer"
+
+    def test_child_session_explicit_profile_name_is_not_overwritten(self, db):
+        """Inheritance only fills NULLs — an explicit profile_name on the
+        child is never clobbered by the parent's."""
+        db.create_session(session_id="parent", source="cli", profile_name="ai-engineer")
+
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent",
+            profile_name="other",
+        )
+
+        assert db.get_session("child")["profile_name"] == "other"
+
+    def test_multi_generation_lineage_inherits_profile_name(self, db):
+        """profile_name survives a compress-then-branch chain (root -> rotation
+        child -> branch tip) — the exact lineage that used to land on default."""
+        db.create_session(session_id="root", source="cli", profile_name="ai-engineer")
+        db.end_session("root", "compression")
+
+        db.create_session(session_id="gen1", source="cli", parent_session_id="root")
+        db.create_session(session_id="gen2", source="cli", parent_session_id="gen1")
+
+        assert db.get_session("gen1")["profile_name"] == "ai-engineer"
+        assert db.get_session("gen2")["profile_name"] == "ai-engineer"
+
     def test_compression_child_inherits_gateway_origin_columns(self, db):
         """A compression fork's child inherits gateway routing metadata
         (session_key/chat_id/...) from the ended parent, so a crash before
@@ -6449,6 +6487,133 @@ class TestSessionArchive:
         assert both == {"live", "hidden"}
         assert db.session_count(include_archived=True) == 2
 
+
+class TestSessionPinAndStaleArchive:
+    """Pin as a durable keep flag + last-activity-based stale auto-archive."""
+
+    def _pinned(self, db, sid):
+        row = db._conn.execute(
+            "SELECT pinned FROM sessions WHERE id = ?", (sid,)
+        ).fetchone()
+        return row["pinned"] if row is not None else None
+
+    def _make_idle(self, db, sid, *, days_idle, source="cli"):
+        """A session whose latest activity was ``days_idle`` days ago."""
+        db.create_session(session_id=sid, source=source)
+        db.append_message(session_id=sid, role="user", content=f"msg {sid}")
+        old = time.time() - days_idle * 86400
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (old, sid))
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, sid)
+        )
+        db._conn.commit()
+
+    # ── pin flag ──────────────────────────────────────────────────────────
+    def test_set_session_pinned_roundtrip(self, db):
+        db.create_session(session_id="s1", source="cli")
+        assert db.set_session_pinned("s1", True) is True
+        assert self._pinned(db, "s1") == 1
+        assert db.set_session_pinned("s1", False) is True
+        assert self._pinned(db, "s1") == 0
+
+    def test_set_session_pinned_missing_row(self, db):
+        assert db.set_session_pinned("nope", True) is False
+
+    def test_pin_propagates_across_compression_lineage(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.end_session("root", end_reason="compression")
+        db.create_session(session_id="tip", source="cli", parent_session_id="root")
+
+        # Pinning the surfaced tip pins the compressed-away root too.
+        assert db.set_session_pinned("tip", True) is True
+        assert self._pinned(db, "root") == 1
+        assert self._pinned(db, "tip") == 1
+
+    # ── stale archive ─────────────────────────────────────────────────────
+    def test_archives_only_sessions_idle_past_threshold(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        self._make_idle(db, "fresh", days_idle=1)
+
+        assert db.archive_stale_sessions(3) == 1
+        assert db.get_session("stale")["archived"] == 1
+        assert db.get_session("fresh")["archived"] == 0
+
+    def test_recency_uses_last_activity_not_creation(self, db):
+        # Created long ago, but a message landed today -> not stale.
+        db.create_session(session_id="old_but_active", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - 60 * 86400, "old_but_active"),
+        )
+        db._conn.commit()
+        db.append_message(
+            session_id="old_but_active", role="user", content="fresh activity"
+        )
+
+        assert db.archive_stale_sessions(3) == 0
+        assert db.get_session("old_but_active")["archived"] == 0
+
+    def test_pinned_sessions_are_spared(self, db):
+        self._make_idle(db, "keep", days_idle=10)
+        db.set_session_pinned("keep", True)
+
+        assert db.archive_stale_sessions(3) == 0
+        assert db.get_session("keep")["archived"] == 0
+        # Opting out of the pin guard sweeps it.
+        assert db.archive_stale_sessions(3, exclude_pinned=False) == 1
+        assert db.get_session("keep")["archived"] == 1
+
+    def test_already_archived_is_idempotent(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        assert db.archive_stale_sessions(3) == 1
+        assert db.archive_stale_sessions(3) == 0
+
+    def test_stale_tip_archives_whole_compression_chain(self, db):
+        # A compressed-away root is never a candidate on its own (its live
+        # continuation may be fresh); the tip drives the decision and archives
+        # the chain as a unit.
+        db.create_session(session_id="root", source="cli")
+        db.end_session("root", end_reason="compression")
+        db.create_session(session_id="tip", source="cli", parent_session_id="root")
+        old = time.time() - 9 * 86400
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id IN ('root', 'tip')", (old,)
+        )
+        db._conn.commit()
+
+        assert db.archive_stale_sessions(3) == 1  # one candidate (the tip)
+        assert db.get_session("root")["archived"] == 1
+        assert db.get_session("tip")["archived"] == 1
+
+    def test_non_positive_threshold_archives_nothing(self, db):
+        self._make_idle(db, "stale", days_idle=100)
+        assert db.archive_stale_sessions(-1) == 0
+        assert db.get_session("stale")["archived"] == 0
+
+    # ── throttled wrapper ─────────────────────────────────────────────────
+    def test_maybe_auto_archive_runs_then_throttles(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        first = db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        assert first["skipped"] is False
+        assert first["archived"] == 1
+        assert db.get_meta("last_auto_archive") is not None
+
+        # A newly-stale session within the interval is left untouched.
+        self._make_idle(db, "stale2", days_idle=5)
+        second = db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        assert second["skipped"] is True
+        assert second["archived"] == 0
+        assert db.get_session("stale2")["archived"] == 0
+
+    def test_maybe_auto_archive_reruns_after_interval(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        db.set_meta("last_auto_archive", str(time.time() - 48 * 3600))
+
+        self._make_idle(db, "stale2", days_idle=5)
+        result = db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        assert result["skipped"] is False
+        assert result["archived"] == 1
 
 
 class TestSessionIdSearch:

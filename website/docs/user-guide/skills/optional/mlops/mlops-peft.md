@@ -1,14 +1,14 @@
 ---
-title: "Peft Fine Tuning — Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods"
+title: "Peft Fine Tuning — Fine-tune large LLMs with LoRA on limited GPU memory"
 sidebar_label: "Peft Fine Tuning"
-description: "Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods"
+description: "Fine-tune large LLMs with LoRA on limited GPU memory"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Peft Fine Tuning
 
-Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods. Use when fine-tuning large models (7B-70B) with limited GPU memory, when you need to train &lt;1% of parameters with minimal accuracy loss, or for multi-adapter serving. HuggingFace's official library integrated with transformers ecosystem.
+Fine-tune large LLMs with LoRA on limited GPU memory.
 
 ## Skill metadata
 

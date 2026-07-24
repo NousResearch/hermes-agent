@@ -1101,10 +1101,87 @@ def test_references_run_in_parallel(monkeypatch):
     assert out[0][1] == "resp-p1"
 
 
-def _ref_config(home):
+def test_references_parallel_without_agent_is_unaffected(monkeypatch):
+    """No agent passed (the pre-fix call shape) must behave exactly as
+    before: block until every reference completes, no interrupt check."""
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    # Poll interval shorter than the reference's own sleep so the assertion
+    # below would catch a regression that waits a whole poll cycle extra.
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    def slow_call_llm(**kwargs):
+        time.sleep(0.2)
+        return _response(f"resp-{kwargs['provider']}")
+
+    monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
+
+    refs = [{"provider": "p1", "model": "ok"}]
+    out = moa_loop._run_references_parallel(
+        refs, [{"role": "user", "content": "hi"}],
+    )
+
+    assert out[0][1] == "resp-p1"
+
+
+def test_references_parallel_interrupt_aborts_wait(monkeypatch):
+    """A user interrupt mid-fanout must stop the wait instead of blocking
+    until every reference (including a wedged one) finishes or times out on
+    its own — mirroring the interrupt check agent.tool_executor already
+    applies to its own concurrent tool batch."""
+    import threading
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    fake_agent = SimpleNamespace(_interrupt_requested=False)
+    release_wedged = threading.Event()
+
+    def fake_call_llm(**kwargs):
+        if kwargs["provider"] == "fast":
+            # Simulate the interrupt arriving right after the fast reference
+            # finishes, while the wedged one is still in flight.
+            fake_agent._interrupt_requested = True
+            return _response("fast output")
+        # "wedged" — never returns within the test unless released, standing
+        # in for a reference whose own (possibly very long) timeout hasn't
+        # elapsed yet.
+        release_wedged.wait(timeout=5)
+        return _response("should not be observed")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    refs = [
+        {"provider": "fast", "model": "m1"},
+        {"provider": "wedged", "model": "m2"},
+    ]
+    try:
+        start = time.monotonic()
+        out = moa_loop._run_references_parallel(
+            refs, [{"role": "user", "content": "hi"}], agent=fake_agent,
+        )
+        elapsed = time.monotonic() - start
+
+        # Must return promptly once interrupted, not block for the wedged
+        # reference's full (5s test-simulated) duration.
+        assert elapsed < 2.0, f"interrupt did not abort the wait (took {elapsed:.2f}s)"
+        assert out[0][1] == "fast output"
+        assert "interrupted" in out[1][1]
+    finally:
+        release_wedged.set()  # don't leak a blocked thread past the test
+
+
+def _ref_config(home, fanout: str | None = None):
     home.mkdir()
+    fanout_line = f"\n      fanout: {fanout}" if fanout else ""
     (home / "config.yaml").write_text(
-        """
+        f"""
 moa:
   default_preset: review
   presets:
@@ -1116,7 +1193,7 @@ moa:
           model: anthropic/claude-opus-4.8
       aggregator:
         provider: openrouter
-        model: anthropic/claude-opus-4.8
+        model: anthropic/claude-opus-4.8{fanout_line}
 """.strip(),
         encoding="utf-8",
     )
@@ -1158,13 +1235,15 @@ def test_moa_facade_emits_reference_then_aggregating(monkeypatch, tmp_path):
 def test_moa_facade_reruns_references_on_new_tool_result(monkeypatch, tmp_path):
     """References re-run when a new tool result advances the task state.
 
-    The agent loop calls create() once per tool-loop iteration. References must
-    judge the LATEST state, so a new tool result is a cache MISS and re-runs the
-    references — but a redundant create() call with the SAME state is a cache
-    HIT (no re-run, no re-emit), so we don't fire on a pure no-op re-call.
+    Pins fanout: per_iteration explicitly (the default became user_turn,
+    #67199). In this mode the agent loop calls create() once per tool-loop
+    iteration and references must judge the LATEST state, so a new tool
+    result is a cache MISS and re-runs the references — but a redundant
+    create() call with the SAME state is a cache HIT (no re-run, no
+    re-emit), so we don't fire on a pure no-op re-call.
     """
     home = tmp_path / ".hermes"
-    _ref_config(home)
+    _ref_config(home, fanout="per_iteration")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     ref_runs = []
@@ -1865,3 +1944,726 @@ def test_prepared_aggregator_preserves_reasoning_config(monkeypatch):
     )
 
     assert captured["reasoning_config"] == expected_reasoning
+
+
+
+def test_reference_filtering_preserves_accounting_triples():
+    from agent.moa_loop import (
+        _RefAccounting,
+        _failed_reference_labels,
+        _successful_references,
+    )
+    from agent.usage_pricing import CanonicalUsage
+
+    good_accounting = _RefAccounting(CanonicalUsage(input_tokens=7), 0.07)
+    failed_accounting = _RefAccounting(CanonicalUsage(input_tokens=5), 0.05)
+    outputs = [
+        ("good-model", "useful advice", good_accounting),
+        ("bad-model", "[failed: raw provider secret]", failed_accounting),
+    ]
+
+    successful = _successful_references(outputs)
+    assert successful == [outputs[0]]
+    assert successful[0][2] is good_accounting
+    assert _failed_reference_labels(outputs) == ["bad-model"]
+
+
+def test_reference_filtering_excludes_recursion_guard_skips():
+    """[skipped: …] recursion-guard notes are internal sentinels, not advice —
+    they must be filtered out of the aggregator prompt like [failed: …]."""
+    from agent.moa_loop import (
+        _RefAccounting,
+        _failed_reference_labels,
+        _is_failed_reference,
+        _successful_references,
+    )
+    from agent.usage_pricing import CanonicalUsage
+
+    outputs = [
+        ("good-model", "useful advice", _RefAccounting(CanonicalUsage())),
+        (
+            "moa:nested",
+            "[skipped: MoA presets cannot recursively reference MoA]",
+            _RefAccounting(CanonicalUsage()),
+        ),
+    ]
+
+    assert _is_failed_reference(outputs[1][1])
+    assert _successful_references(outputs) == [outputs[0]]
+    assert _failed_reference_labels(outputs) == ["moa:nested"]
+
+
+def test_aggregate_moa_context_sanitizes_failed_reference_and_forwards_timeout(monkeypatch):
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    outputs = [
+        ("good-model", "useful advice", moa_loop._RefAccounting(CanonicalUsage())),
+        (
+            "bad-model",
+            "[failed: HTTP 401 key=super-secret]",
+            moa_loop._RefAccounting(CanonicalUsage()),
+        ),
+    ]
+    fanout_kwargs = {}
+    aggregator_calls = []
+
+    def fake_fanout(*args, **kwargs):
+        fanout_kwargs.update(kwargs)
+        return outputs
+
+    def fake_call_llm(**kwargs):
+        aggregator_calls.append(kwargs)
+        return _response("synthesized guidance")
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    result = moa_loop.aggregate_moa_context(
+        user_prompt="review this",
+        api_messages=[{"role": "user", "content": "review this"}],
+        reference_models=[
+            {"provider": "openrouter", "model": "good-model"},
+            {"provider": "openrouter", "model": "bad-model"},
+        ],
+        aggregator={"provider": "openrouter", "model": "aggregator"},
+        reference_timeout=17.5,
+        degraded_reference_policy="loud",
+    )
+
+    assert fanout_kwargs["reference_timeout"] == 17.5
+    private_prompt = aggregator_calls[0]["messages"][0]["content"]
+    assert "useful advice" in private_prompt
+    assert "super-secret" not in private_prompt
+    assert "Reference models unavailable: bad-model" in private_prompt
+    assert "super-secret" not in result
+
+
+def test_moa_facade_sanitizes_failures_without_breaking_accounting(monkeypatch, tmp_path):
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_timeout: 19
+      degraded_reference_policy: silent
+      reference_models:
+        - provider: openrouter
+          model: good-model
+        - provider: openrouter
+          model: bad-model
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    outputs = [
+        (
+            "good-model",
+            "useful advice",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=7), 0.07),
+        ),
+        (
+            "bad-model",
+            "[failed: HTTP 401 key=super-secret]",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=5), 0.05),
+        ),
+    ]
+    fanout_kwargs = {}
+    aggregator_calls = []
+
+    def fake_fanout(*args, **kwargs):
+        fanout_kwargs.update(kwargs)
+        return outputs
+
+    def fake_call_llm(**kwargs):
+        aggregator_calls.append(kwargs)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "review this"}], tools=[])
+
+    assert fanout_kwargs["reference_timeout"] == 19.0
+    private_prompt = str(aggregator_calls[0]["messages"])
+    assert "useful advice" in private_prompt
+    assert "super-secret" not in private_prompt
+    assert "Reference models unavailable" not in private_prompt
+    usage, cost = facade.consume_reference_usage()
+    assert usage.input_tokens == 12
+    assert cost == pytest.approx(0.12)
+    assert facade._pending_trace["reference_outputs"] == outputs
+
+
+def test_run_reference_forwards_configured_timeout(monkeypatch):
+    from agent import moa_loop
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot["model"]},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *args, **kwargs: SimpleNamespace(
+            amount_usd=None, status="unavailable", source=None
+        ),
+    )
+
+    label, text, accounting = moa_loop._run_reference(
+        {"provider": "openrouter", "model": "advisor"},
+        [{"role": "user", "content": "review"}],
+        reference_timeout=23.5,
+    )
+
+    assert (label, text) == ("openrouter:advisor", "advice")
+    assert calls[0]["timeout"] == 23.5
+    assert isinstance(accounting, moa_loop._RefAccounting)
+
+
+def test_aggregate_skips_aggregator_when_all_references_failed(monkeypatch):
+    """When every reference returns [failed: …], the aggregator is skipped entirely."""
+    from agent.moa_loop import aggregate_moa_context
+
+    call_count = {"n": 0}
+
+    def fake_call_llm(**kwargs):
+        call_count["n"] += 1
+        if kwargs["task"] == "moa_reference":
+            raise RuntimeError("provider down key=super-secret")
+        raise AssertionError("aggregator should not be called when all references fail")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    result = aggregate_moa_context(
+        user_prompt="do something",
+        api_messages=[{"role": "user", "content": "do something"}],
+        reference_models=[
+            {"provider": "openai", "model": "gpt-4"},
+            {"provider": "anthropic", "model": "claude-opus"},
+        ],
+        aggregator={"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    )
+
+    # The aggregator LLM call was never made.
+    assert call_count["n"] == 2  # only the two reference calls
+    # The result carries a sanitized unavailability notice (never raw
+    # provider error text) so the main agent can still act.
+    assert "all reference models failed" in result
+    assert "Reference models unavailable" in result
+    assert "super-secret" not in result
+
+
+def test_aggregate_skips_aggregator_when_all_references_skipped(monkeypatch):
+    """References that are skipped (MoA recursion guard) also trigger the early return."""
+    from agent.moa_loop import aggregate_moa_context
+
+    def fake_call_llm(**kwargs):
+        raise AssertionError("aggregator should not be called when all references are skipped")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    # Both reference models are "moa" — they hit the recursion guard and are
+    # returned as "[skipped: …]" without calling call_llm at all.
+    result = aggregate_moa_context(
+        user_prompt="do something",
+        api_messages=[{"role": "user", "content": "do something"}],
+        reference_models=[
+            {"provider": "moa", "model": "preset-a"},
+            {"provider": "moa", "model": "preset-b"},
+        ],
+        aggregator={"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    )
+
+    assert "all reference models failed" in result
+    assert "Reference models unavailable" in result
+
+
+def _facade_all_failed_fixture(monkeypatch, tmp_path, policy):
+    """Common scaffolding: a 'review' preset whose references ALL fail."""
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"""
+moa:
+  default_preset: review
+  presets:
+    review:
+      degraded_reference_policy: {policy}
+      reference_models:
+        - provider: openrouter
+          model: bad-model-a
+        - provider: openrouter
+          model: bad-model-b
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    outputs = [
+        (
+            "bad-model-a",
+            "[failed: HTTP 401 key=super-secret]",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=5), 0.05),
+        ),
+        (
+            "bad-model-b",
+            "[failed: timeout after 900s]",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=3), 0.03),
+        ),
+    ]
+    aggregator_calls = []
+
+    def fake_call_llm(**kwargs):
+        aggregator_calls.append(kwargs)
+        return _response("aggregator acted alone")
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", lambda *a, **k: outputs)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+    return moa_loop, outputs, aggregator_calls
+
+
+def test_moa_facade_acts_aggregator_alone_when_all_references_fail_loud(
+    monkeypatch, tmp_path
+):
+    """Facade path (MoAChatCompletions.create): when every reference fails,
+    the aggregator acts alone — no 'use the reference responses below'
+    guidance wrapping a wall of failure sentinels. Under the loud policy the
+    sanitized unavailability notice is still disclosed."""
+    moa_loop, outputs, aggregator_calls = _facade_all_failed_fixture(
+        monkeypatch, tmp_path, "loud"
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    response = facade.create(
+        messages=[{"role": "user", "content": "review this"}], tools=[]
+    )
+
+    # The aggregator still acted (it IS the acting model)…
+    assert len(aggregator_calls) == 1
+    prompt = str(aggregator_calls[0]["messages"])
+    # …but got no failure sentinels or raw provider error text…
+    assert "[failed:" not in prompt
+    assert "super-secret" not in prompt
+    assert "Use the reference responses below" not in prompt
+    # …only the sanitized loud-policy notice.
+    assert "Reference models unavailable" in prompt
+    assert "bad-model-a" in prompt
+    # Accounting for the failed fan-out is still folded into the turn.
+    usage, cost = facade.consume_reference_usage()
+    assert usage.input_tokens == 8
+    assert cost == pytest.approx(0.08)
+    assert response.choices[0].message.content == "aggregator acted alone"
+
+
+def test_moa_facade_acts_aggregator_alone_when_all_references_fail_silent(
+    monkeypatch, tmp_path
+):
+    """Silent policy: all-failed turns attach no reference guidance at all."""
+    moa_loop, _outputs, aggregator_calls = _facade_all_failed_fixture(
+        monkeypatch, tmp_path, "silent"
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "review this"}], tools=[])
+
+    assert len(aggregator_calls) == 1
+    prompt = str(aggregator_calls[0]["messages"])
+    assert "[failed:" not in prompt
+    assert "Reference models unavailable" not in prompt
+    assert "Mixture of Agents reference context" not in prompt
+
+
+def test_interrupted_but_completed_reference_keeps_real_accounting(monkeypatch):
+    """A reference that finishes between the interrupt check and the reap
+    must keep its REAL output and accounting — the call billed."""
+    from concurrent.futures import wait as real_wait
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    fake_agent = SimpleNamespace(_interrupt_requested=True)
+
+    def fake_call_llm(**kwargs):
+        return _response_with_usage("slowish output", prompt=11, completion=4)
+
+    # Force the exact race: the wait loop reports the future as still
+    # pending (so the interrupt path is taken) even though the underlying
+    # call has already completed — the reap must then hit the done() branch
+    # and keep the real result instead of writing a placeholder.
+    def fake_wait(pending, timeout=None):
+        real_wait(pending)  # let the call actually finish (it billed)
+        return set(), set(pending)  # report it as still pending
+
+    monkeypatch.setattr(moa_loop, "_futures_wait", fake_wait)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    out = moa_loop._run_references_parallel(
+        [{"provider": "slowish", "model": "m1"}],
+        [{"role": "user", "content": "hi"}],
+        agent=fake_agent,
+    )
+
+    # The completed call's real output + usage must survive the reap.
+    assert out[0][1] == "slowish output"
+    acct = out[0][2]
+    assert isinstance(acct, moa_loop._RefAccounting)
+    assert acct.usage.input_tokens == 11
+
+
+def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch):
+    """A reference still in flight at interrupt time gets a placeholder in
+    the results, but its eventual REAL accounting must reach the sink."""
+    import threading
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    fake_agent = SimpleNamespace(_interrupt_requested=False)
+    release = threading.Event()
+    sink_calls = []
+    sink_seen = threading.Event()
+
+    def sink(label, accounting):
+        sink_calls.append((label, accounting))
+        sink_seen.set()
+
+    def fake_call_llm(**kwargs):
+        if kwargs["provider"] == "fast":
+            fake_agent._interrupt_requested = True
+            return _response("fast output")
+        # wedged: blocks past the interrupt, completes later.
+        release.wait(timeout=5)
+        return _response_with_usage("late output", prompt=21, completion=2)
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    out = moa_loop._run_references_parallel(
+        [
+            {"provider": "fast", "model": "m1"},
+            {"provider": "wedged", "model": "m2"},
+        ],
+        [{"role": "user", "content": "hi"}],
+        agent=fake_agent,
+        late_accounting_sink=sink,
+    )
+
+    # The wedged slot returned a placeholder with zeroed accounting…
+    assert out[1][1] == moa_loop._INTERRUPTED_REFERENCE_NOTE
+    assert out[1][2].usage.input_tokens == 0
+
+    # …then completes late; its real billed usage must reach the sink.
+    release.set()
+    assert sink_seen.wait(timeout=5), "late accounting sink never called"
+    label, acct = sink_calls[0]
+    assert "wedged" in label
+    assert acct.usage.input_tokens == 21
+
+
+def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_path):
+    """An interrupted fan-out is a partial snapshot — caching it would replay
+    placeholder notes on every later iteration of the turn. The facade must
+    leave the cache empty so the next create() re-runs the references, and
+    a late-completing reference's real spend must land in pending usage."""
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: advisor
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    interrupted_outputs = [
+        (
+            "openrouter:advisor",
+            moa_loop._INTERRUPTED_REFERENCE_NOTE,
+            moa_loop._RefAccounting(CanonicalUsage()),
+        )
+    ]
+
+    def fake_fanout(*args, **kwargs):
+        return list(interrupted_outputs)
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **k: _response("acted"))
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "go"}], tools=[])
+
+    # Interrupted results must not be cached as this state's advice.
+    assert facade._ref_cache_key is None
+    assert facade._ref_cache_outputs == []
+
+    # A late completion depositing real spend is picked up by consume().
+    facade._record_late_reference_accounting(
+        "openrouter:advisor",
+        moa_loop._RefAccounting(CanonicalUsage(input_tokens=33), 0.42),
+    )
+    usage, cost = facade.consume_reference_usage()
+    assert usage.input_tokens == 33
+    assert cost == pytest.approx(0.42)
+    # And consume() drained it — no double count.
+    usage2, cost2 = facade.consume_reference_usage()
+    assert usage2.input_tokens == 0
+    assert cost2 is None
+
+
+class _CountingCtxLen:
+    """Stub for get_model_context_length that counts resolutions."""
+
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls += 1
+        if isinstance(self.value, Exception):
+            raise self.value
+        return self.value
+
+
+def _trim(messages, *, window=1000, reserve=None, cache=None, counting=None,
+          monkeypatch=None):
+    from agent import model_metadata, moa_loop
+
+    stub = counting or _CountingCtxLen(window)
+    monkeypatch.setattr(model_metadata, "get_model_context_length", stub)
+    return moa_loop._trim_messages_for_reference(
+        messages,
+        {"provider": "openrouter", "model": "small-window"},
+        {"provider": "openrouter", "model": "small-window"},
+        reserve_output_tokens=reserve,
+        context_length_cache=cache,
+    )
+
+
+def _advisory_view(n_pairs, chunk="x" * 400):
+    """A text-only advisory view: system + n user/assistant pairs + trailing user."""
+    msgs = [{"role": "system", "content": "advisory system prompt"}]
+    for i in range(n_pairs):
+        msgs.append({"role": "user", "content": f"u{i} {chunk}"})
+        msgs.append({"role": "assistant", "content": f"a{i} {chunk}"})
+    msgs.append({"role": "user", "content": "judge the state above"})
+    return msgs
+
+
+def test_reference_trim_untouched_when_within_window(monkeypatch):
+    msgs = _advisory_view(2)
+    out = _trim(list(msgs), window=10_000_000, monkeypatch=monkeypatch)
+    assert out == msgs
+
+
+def test_reference_trim_drops_oldest_and_keeps_invariants(monkeypatch):
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    msgs = _advisory_view(30)
+    out = _trim(list(msgs), window=4000, reserve=100, monkeypatch=monkeypatch)
+
+    # Something was dropped and it fits the (window*0.9 - reserve) budget…
+    assert len(out) < len(msgs)
+    # System prompt survives at index 0.
+    assert out[0]["role"] == "system"
+    # User-first after the system prompt — never assistant-first.
+    assert out[1]["role"] == "user"
+    # Trailing synthetic user turn survives.
+    assert out[-1] == msgs[-1]
+    # Oldest frames were the ones dropped: the kept body is a contiguous
+    # suffix of the original body.
+    assert out[1:] == msgs[len(msgs) - len(out) + 1:]
+
+
+def test_reference_trim_estimates_after_system_prompt(monkeypatch):
+    """The advisory system prompt counts against the budget: a view that fits
+    without it but not with it must still be trimmed."""
+    from agent import model_metadata, moa_loop
+
+    msgs = _advisory_view(6)
+    body_tokens = model_metadata.estimate_messages_tokens_rough(msgs[1:])
+    total_tokens = model_metadata.estimate_messages_tokens_rough(msgs)
+    assert total_tokens > body_tokens
+
+    # Pick a window where (body fits) but (system+body does not):
+    # budget = window*0.9 - reserve(100) must sit between the two.
+    window = int((body_tokens + (total_tokens - body_tokens) / 2 + 100) / 0.9)
+    out = _trim(list(msgs), window=window, reserve=100, monkeypatch=monkeypatch)
+    assert len(out) < len(msgs)
+    assert out[0]["role"] == "system"
+
+
+def test_reference_trim_reserves_output_tokens(monkeypatch):
+    """With a huge output reserve the budget shrinks and forces a trim that
+    a reserve-less estimate would not need."""
+    msgs = _advisory_view(10)
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    total = estimate_messages_tokens_rough(msgs)
+    window = int((total + 500) / 0.9)  # fits easily with a small reserve
+    out_small = _trim(list(msgs), window=window, reserve=100, monkeypatch=monkeypatch)
+    assert out_small == msgs
+    out_big = _trim(list(msgs), window=window, reserve=total, monkeypatch=monkeypatch)
+    assert len(out_big) < len(msgs)
+
+
+def test_reference_trim_unresolvable_window_is_a_noop(monkeypatch):
+    msgs = _advisory_view(3)
+    stub = _CountingCtxLen(RuntimeError("metadata down"))
+    out = _trim(list(msgs), counting=stub, monkeypatch=monkeypatch)
+    assert out == msgs
+
+
+def test_reference_trim_context_length_cache_hits_once(monkeypatch):
+    """A shared per-turn cache resolves each (provider, model) window once."""
+    cache = {}
+    stub = _CountingCtxLen(10_000_000)
+    msgs = _advisory_view(2)
+    for _ in range(4):
+        _trim(list(msgs), cache=cache, counting=stub, monkeypatch=monkeypatch)
+    assert stub.calls == 1
+    assert cache == {("openrouter", "small-window"): 10_000_000}
+
+
+def test_reference_trim_caches_resolution_failures(monkeypatch):
+    """A failing metadata source is probed once, not per reference call."""
+    cache = {}
+    stub = _CountingCtxLen(RuntimeError("metadata down"))
+    msgs = _advisory_view(2)
+    for _ in range(3):
+        out = _trim(list(msgs), cache=cache, counting=stub, monkeypatch=monkeypatch)
+        assert out == msgs
+    assert stub.calls == 1
+    assert cache == {("openrouter", "small-window"): None}
+
+
+def test_run_reference_trims_oversized_view_before_calling(monkeypatch):
+    """End-to-end: _run_reference sends a trimmed request for a small-window
+    model instead of letting the provider 400."""
+    from agent import model_metadata, moa_loop
+
+    sent = {}
+
+    def fake_call_llm(**kwargs):
+        sent.update(kwargs)
+        return _response_with_usage("advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot["model"]},
+    )
+    monkeypatch.setattr(
+        model_metadata, "get_model_context_length", lambda **k: 3000
+    )
+
+    view = _advisory_view(40)[1:]  # advisory view has no system prompt
+    label, text, _acct = moa_loop._run_reference(
+        {"provider": "openrouter", "model": "small-window"},
+        view,
+        max_tokens=200,
+    )
+
+    assert text == "advice"
+    sent_messages = sent["messages"]
+    # System prompt was prepended and survived the trim.
+    assert sent_messages[0]["role"] == "system"
+    # The request actually shrank.
+    assert len(sent_messages) < len(view) + 1
+    # And ends with the synthetic trailing user turn.
+    assert sent_messages[-1]["role"] == "user"
+
+
+def test_render_tool_calls_tolerates_namespace_shapes():
+    """SDK-shaped (SimpleNamespace) tool_call entries must render their real
+    function name+args, not degrade to '[called tool: tool]'."""
+    from agent.moa_loop import _render_tool_calls
+
+    ns_call = SimpleNamespace(
+        function=SimpleNamespace(name="web_search", arguments='{"query": "x"}')
+    )
+    dict_call = {"function": {"name": "read_file", "arguments": '{"path": "y"}'}}
+    mixed = _render_tool_calls([ns_call, dict_call])
+
+    assert '[called tool: web_search({"query": "x"})]' in mixed
+    assert '[called tool: read_file({"path": "y"})]' in mixed
+
+    # Dict entry with a namespace-shaped nested function also renders.
+    hybrid = {"function": SimpleNamespace(name="terminal", arguments=None)}
+    assert _render_tool_calls([hybrid]) == "[called tool: terminal]"
+
+    # Degenerate shapes still fall back safely.
+    assert _render_tool_calls([SimpleNamespace()]) == "[called tool: tool]"

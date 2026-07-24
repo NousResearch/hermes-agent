@@ -3592,11 +3592,19 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     def prepare_tts_text(self, text: str) -> str:
-        """Prepare text for TTS. Override to filter tool output, code, etc.
+        """Prepare a spoken script for TTS.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Auto-TTS should not feed raw chat Markdown or compact symbols to the
+        speech provider.  It should receive a transcript-like script: headings
+        and bullets flattened into sentence pauses, and units like ``°C``
+        expanded to words such as ``degrees Celsius``.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            return prepare_spoken_text(text, max_chars=4000)
+        except Exception:
+            # Keep auto-TTS best-effort if the normalizer ever fails.
+            return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(
         self,
@@ -5247,6 +5255,12 @@ class BasePlatformAdapter(ABC):
                 _tts_caption_delivered = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
+                        # Caption eligibility and payload stay on the ORIGINAL
+                        # reply text. The spoken script is for synthesis only:
+                        # normalization can shrink a long reply below the
+                        # 1024-char caption limit, and captioning that spoken
+                        # form would suppress the full formatted reply the
+                        # user is meant to receive as a separate message.
                         telegram_tts_caption = None
                         if (
                             self.platform == Platform.TELEGRAM

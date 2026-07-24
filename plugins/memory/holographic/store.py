@@ -325,10 +325,25 @@ class MemoryStore:
                 params.append(new_trust)
 
             params.append(fact_id)
-            self._conn.execute(
-                f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
-                params,
-            )
+            try:
+                self._conn.execute(
+                    f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
+                    params,
+                )
+            except sqlite3.IntegrityError:
+                # content carries a UNIQUE constraint. Updating one fact's
+                # content to text another fact already holds would otherwise
+                # raise an opaque "UNIQUE constraint failed: facts.content" and
+                # silently drop the *entire* update — including the tags, trust,
+                # and category changes batched into the same statement. add_fact
+                # dedupes this collision on insert; an update has no safe row to
+                # merge into, so report the conflict with an actionable message
+                # instead of leaving the requested correction unapplied.
+                self._conn.rollback()
+                raise ValueError(
+                    f"cannot update fact {fact_id}: another fact already has "
+                    "this exact content"
+                ) from None
             self._conn.commit()
 
             # If content changed, re-extract entities

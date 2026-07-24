@@ -162,9 +162,10 @@ function openFilePreviewTarget(target: PreviewTarget) {
   selectRightRailTab(id)
 }
 
-// Manual/file-browser opens are "peeking at a file" → source view in the file
-// pane. Tool/explicit-link opens are runnable artifacts → live preview pane.
-function isFilePreviewSource(source: PreviewRecordSource): boolean {
+// File-pane opens get the source-text view (peeking at a file). Other sources
+// that route through the file tab system (explicit-link from assistant) get
+// the rendered preview view.
+function isSourceViewSource(source: PreviewRecordSource): boolean {
   return source === 'file-browser' || source === 'manual'
 }
 
@@ -173,13 +174,16 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
     return target
   }
 
-  return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
+  return { ...target, renderMode: isSourceViewSource(source) ? 'source' : 'preview' }
 }
 
+// Route file-kind targets through the file tab system so each distinct file
+// gets its own tab (new file = new tab; same file URL replaces in place).
+// tool-result is kept on the legacy single-target path to avoid auto-spamming
+// tabs from background tool output.
 function tryOpenFilePreview(target: PreviewTarget, source: PreviewRecordSource): boolean {
-  if (target.kind !== 'file' || !isFilePreviewSource(source)) {
-    return false
-  }
+  if (target.kind !== 'file') return false
+  if (source === 'tool-result') return false
 
   openFilePreviewTarget(previewTargetForSource(target, source))
 

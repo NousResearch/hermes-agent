@@ -123,6 +123,45 @@ describe('preview store', () => {
     expect($previewTarget.get()).toEqual(withRenderMode(preview, 'preview'))
   })
 
+  it('routes explicit-link previews through file tabs instead of legacy target', () => {
+    const a = previewTarget('/work/plan.md')
+    const b = previewTarget('/work/script.md')
+
+    setCurrentSessionPreviewTarget(a, 'explicit-link')
+
+    expect($filePreviewTabs.get()).toHaveLength(1)
+    expect($filePreviewTarget.get()).toEqual(withRenderMode(a, 'preview'))
+    expect($previewTarget.get()).toBeNull()
+
+    setCurrentSessionPreviewTarget(b, 'explicit-link')
+
+    expect($filePreviewTabs.get()).toHaveLength(2)
+    expect($filePreviewTabs.get().map(tab => tab.target.url)).toEqual([
+      'file:///work/plan.md',
+      'file:///work/script.md'
+    ])
+    expect($filePreviewTarget.get()).toEqual(withRenderMode(b, 'preview'))
+  })
+
+  it('re-selects existing tab when explicit-link opens same file again', () => {
+    const target = previewTarget('/work/plan.md')
+
+    setCurrentSessionPreviewTarget(target, 'explicit-link')
+    setCurrentSessionPreviewTarget(target, 'explicit-link')
+
+    expect($filePreviewTabs.get()).toHaveLength(1)
+    expect($filePreviewTarget.get()).toEqual(withRenderMode(target, 'preview'))
+  })
+
+  it('keeps tool-result on legacy single-target path', () => {
+    const target = previewTarget('/work/output.html')
+
+    setCurrentSessionPreviewTarget(target, 'tool-result')
+
+    expect($filePreviewTabs.get()).toHaveLength(0)
+    expect($previewTarget.get()).toEqual(withRenderMode(target, 'preview'))
+  })
+
   it('keeps file tabs when a live preview opens', () => {
     const file = previewTarget('/work/file.html')
     const live = previewTarget('/work/live.html')

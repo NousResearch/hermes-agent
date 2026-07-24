@@ -474,4 +474,56 @@ __all__ = [
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
     "_sanitize_structure_non_ascii",
+    "strip_empty_content_assistant_tool_calls",
 ]
+
+
+def strip_empty_content_assistant_tool_calls(messages: list) -> list:
+    """Return a NEW list with assistant messages whose content is empty
+    AND whose tool_calls is non-empty removed.
+
+    Some providers (#63200 — DeepSeek strict mode, and any OpenAI-compatible
+    API that enforces the 'assistant tool_calls must be followed by tool
+    messages for every tool_call_id' invariant) reject the request when
+    an assistant turn arrives with ``content=""`` and ``tool_calls=[...]``
+    but the very next message is NOT one of the required tool results.
+    Hermes can produce such messages in two paths:
+
+    1. Codex Responses streaming — ``codex_responses_adapter.py`` emits
+       ``{"role": "assistant", "content": ""}`` as the required following
+       item for a reasoning-only turn (line ~486). If that turn also
+       produced tool_calls, the persisted message has both empty content
+       and tool_calls.
+    2. Reasoning-only tool-call turns — the model streams reasoning
+       + tool_calls without any visible content. ``build_assistant_message``
+       at ``chat_completion_helpers.py:893`` writes the dict with
+       ``_san_content=""`` and ``tool_calls=[...]`` because the model
+       genuinely produced no visible content.
+
+    The fix: callers pass the outgoing API copy and use the returned list.
+    The original ``messages`` reference is NEVER mutated. Callers must
+    do ``api_messages = strip_empty_content_assistant_tool_calls(api_messages)``
+    (or assign back) — the function does not mutate the input. This is
+    the safer contract for a pre-API filter (it's the opposite of
+    ``_sanitize_messages_surrogates`` which mutates in place; the two
+    styles coexist for historical reasons and callers must read each
+    function's docstring).
+
+    NOTE: this is NOT a substitute for closing an interrupted
+    tool-call sequence — that's a different bug (Gemini/Claude reject
+    ``tool → user`` alternation). See
+    :func:`close_interrupted_tool_sequence` for that fix.
+    """
+    if not isinstance(messages, list):
+        return []
+    return [
+        msg
+        for msg in messages
+        if not (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and msg.get("content") in ("", None)
+            and isinstance(msg.get("tool_calls"), list)
+            and msg["tool_calls"]
+        )
+    ]

@@ -384,6 +384,7 @@ export const ko: Translations = {
     resetScopeToast: "{scope}이(가) 기본값으로 재설정되었습니다 — 검토 후 저장하여 적용하세요",
     rawYaml: "원본 YAML 설정",
     searchResults: "검색 결과",
+    searchPlaceholder: "설정 필드 검색...",
     fields: "개 필드",
     noFieldsMatch: '"{query}"와(과) 일치하는 필드가 없습니다',
     configSaved: "설정이 저장되었습니다",

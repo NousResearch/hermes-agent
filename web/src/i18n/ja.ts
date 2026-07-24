@@ -384,6 +384,7 @@ export const ja: Translations = {
     resetScopeToast: "{scope} をデフォルトにリセットしました — 確認して保存してください",
     rawYaml: "生の YAML 設定",
     searchResults: "検索結果",
+    searchPlaceholder: "設定フィールドを検索...",
     fields: "フィールド{s}",
     noFieldsMatch: '"{query}" に一致するフィールドはありません',
     configSaved: "設定を保存しました",

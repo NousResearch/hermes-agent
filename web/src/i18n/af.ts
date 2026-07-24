@@ -385,6 +385,7 @@ export const af: Translations = {
     resetScopeToast: "{scope} teruggestel na verstek — kontroleer en Stoor om te behou",
     rawYaml: "Rou YAML-konfigurasie",
     searchResults: "Soekresultate",
+    searchPlaceholder: "Soek konfigurasievelde...",
     fields: "veld{s}",
     noFieldsMatch: 'Geen velde stem ooreen met "{query}" nie',
     configSaved: "Konfigurasie gestoor",

@@ -393,6 +393,7 @@ export const ga: Translations = {
     resetScopeToast: "{scope} athshocraithe chuig réamhshocruithe — athbhreithnigh agus Sábháil chun é a choinneáil",
     rawYaml: "Cumraíocht YAML amh",
     searchResults: "Torthaí cuardaigh",
+    searchPlaceholder: "Cuardaigh réimsí cumraíochta...",
     fields: "réims{s}",
     noFieldsMatch: 'Níl aon réimsí ag teacht le "{query}"',
     configSaved: "Cumraíocht sábháilte",

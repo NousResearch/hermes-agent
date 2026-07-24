@@ -384,6 +384,7 @@ export const zhHant: Translations = {
     resetScopeToast: "{scope}已重設為預設值 — 請檢視並儲存以套用",
     rawYaml: "原始 YAML 設定",
     searchResults: "搜尋結果",
+    searchPlaceholder: "搜尋設定欄位...",
     fields: "個欄位",
     noFieldsMatch: '沒有符合「{query}」的欄位',
     configSaved: "設定已儲存",

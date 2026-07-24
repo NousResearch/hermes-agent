@@ -9,6 +9,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -85,6 +86,8 @@ from tools.approval import (
 
 logger = logging.getLogger(__name__)
 
+_SKILL_INVOCATION_RE = re.compile(r'^\[IMPORTANT: The user has invoked the "([^"]+)" (skill(?: bundle)?),')
+
 try:
     from hermes_cli import __version__ as HERMES_VERSION
 except Exception:
@@ -109,6 +112,24 @@ _TEXT_RESOURCE_MIME_TYPES = {
     "application/toml",
     "application/sql",
 }
+
+
+def _display_user_text_for_persistence(user_text: str) -> str:
+    """Return user-facing prompt text for session previews and titles."""
+    try:
+        from agent.skill_commands import extract_user_instruction_from_skill_message
+    except Exception:
+        return user_text or "[Image attachment]"
+
+    clean_text = extract_user_instruction_from_skill_message(user_text)
+    if clean_text:
+        return clean_text
+
+    match = _SKILL_INVOCATION_RE.match(user_text or "")
+    if match:
+        return f"{match.group(1)} {match.group(2)}"
+
+    return user_text or "[Image attachment]"
 
 
 def _resource_display_name(uri: str, name: str | None = None, title: str | None = None) -> str:
@@ -1494,6 +1515,7 @@ class HermesACPAgent(acp.Agent):
                 await self._conn.session_update(session_id, update)
             return PromptResponse(stop_reason="end_turn")
 
+        display_user_text = _display_user_text_for_persistence(user_text)
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
         conn = self._conn
@@ -1624,7 +1646,7 @@ class HermesACPAgent(acp.Agent):
                     user_message=user_content,
                     conversation_history=state.history,
                     task_id=session_id,
-                    persist_user_message=user_text or "[Image attachment]",
+                    persist_user_message=display_user_text,
                 )
                 return result
             except Exception as e:
@@ -1735,7 +1757,7 @@ class HermesACPAgent(acp.Agent):
                 maybe_auto_title(
                     self.session_manager._get_db(),
                     session_id,
-                    user_text,
+                    display_user_text,
                     final_response,
                     state.history,
                     main_runtime={

@@ -337,6 +337,25 @@ class TestApproveAndCheckSession:
         approve_session(key, "rm")
         assert is_approved(key, "rm") is True
 
+    def test_clear_gateway_sessions_for_platform_only_clears_matching_platform(self):
+        qq_key = "agent:main:qqbot:dm:user-1"
+        slack_key = "agent:main:slack:dm:user-2"
+        for key in (qq_key, slack_key):
+            approval_module.clear_session(key)
+        approval_module._pending[qq_key] = {"command": "rm -rf /tmp/a"}
+        approval_module._pending[slack_key] = {"command": "rm -rf /tmp/b"}
+        approval_module.approve_session(qq_key, "rm")
+        approval_module.approve_session(slack_key, "rm")
+
+        cleared = approval_module.clear_gateway_sessions_for_platform("qqbot")
+
+        assert cleared == 1
+        assert qq_key not in approval_module._pending
+        assert qq_key not in approval_module._session_approved
+        assert slack_key in approval_module._pending
+        assert slack_key in approval_module._session_approved
+        approval_module.clear_session(slack_key)
+
 
 class TestSessionKeyContext:
     def test_context_session_key_overrides_process_env(self):

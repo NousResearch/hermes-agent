@@ -1339,6 +1339,61 @@ class TestAdapterInteractionDispatch:
             "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u:deny"}},
         })
 
+    def test_dm_session_key_authorizes_matching_operator(self):
+        """QQ DM approval buttons use ``dm`` session keys and must authorize like c2c."""
+        adapter = self._make_adapter()
+        event = SimpleNamespace(
+            operator_openid="dm-user",
+            group_openid="",
+            guild_id="",
+        )
+
+        assert adapter._is_authorized_interaction_for_session(
+            event,
+            "agent:main:qqbot:dm:dm-user",
+        ) is True
+
+    def test_dm_session_key_rejects_different_operator(self):
+        adapter = self._make_adapter()
+        event = SimpleNamespace(
+            operator_openid="other-user",
+            group_openid="",
+            guild_id="",
+        )
+
+        assert adapter._is_authorized_interaction_for_session(
+            event,
+            "agent:main:qqbot:dm:dm-user",
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_websocket_disconnect_clears_qqbot_gateway_approvals(self):
+        """A QQ reconnect boundary cancels stale approval waits before retrying."""
+        from gateway.platforms.qqbot.adapter import QQCloseError
+
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        async def raise_close_once():
+            raise QQCloseError(4009, "Session timed out")
+
+        async def stop_after_reconnect(_backoff_idx):
+            adapter._running = False
+            return True
+
+        adapter._read_events = raise_close_once  # type: ignore[assignment]
+        adapter._reconnect = stop_after_reconnect  # type: ignore[assignment]
+        adapter._mark_transport_disconnected = mock.Mock()  # type: ignore[assignment]
+        adapter._fail_pending = mock.Mock()  # type: ignore[assignment]
+
+        with mock.patch(
+            "tools.approval.clear_gateway_sessions_for_platform",
+            create=True,
+        ) as clear_platform:
+            await adapter._listen_loop()
+
+        clear_platform.assert_called_once_with("qqbot")
+
 
 # ---------------------------------------------------------------------------
 # Quoted-message handling (message_type=103 → msg_elements)

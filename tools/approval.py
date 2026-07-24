@@ -2156,6 +2156,39 @@ def clear_session(session_key: str) -> None:
         entry.event.set()
 
 
+def _session_key_platform(session_key: str) -> str:
+    """Return the gateway platform segment from a canonical session key."""
+    parts = str(session_key or "").split(":")
+    if len(parts) >= 4 and parts[0] == "agent" and parts[1] == "main":
+        return parts[2]
+    return ""
+
+
+def clear_gateway_sessions_for_platform(platform: str) -> int:
+    """Cancel approval state for all gateway sessions belonging to *platform*.
+
+    Messaging adapters call this at transport/session boundaries so dangerous
+    command approval waits tied to an old connection do not linger until timeout
+    after the platform reconnects.
+    """
+    platform = str(platform or "").strip()
+    if not platform:
+        return 0
+    with _lock:
+        keys = {
+            key for key in (
+                set(_pending)
+                | set(_session_approved)
+                | set(_session_yolo)
+                | set(_gateway_queues)
+            )
+            if _session_key_platform(key) == platform
+        }
+    for key in keys:
+        clear_session(key)
+    return len(keys)
+
+
 def is_session_yolo_enabled(session_key: str) -> bool:
     """Return True when YOLO bypass is enabled for a specific session."""
     if not session_key:

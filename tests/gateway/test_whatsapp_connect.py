@@ -591,6 +591,8 @@ class TestHttpSessionLifecycle:
             ["taskkill", "/PID", "12345", "/T"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         mock_proc.terminate.assert_not_called()

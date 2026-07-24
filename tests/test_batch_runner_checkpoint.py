@@ -172,6 +172,10 @@ class TestBatchWorkerResumeBehavior:
         }
 
         monkeypatch.setattr("batch_runner._process_single_prompt", lambda *args, **kwargs: prompt_result)
+        monkeypatch.setattr(
+            "batch_runner._get_batch_worker_runtime",
+            lambda _config: {"model": "test-model"},
+        )
 
         result = _process_batch_worker((
             1,

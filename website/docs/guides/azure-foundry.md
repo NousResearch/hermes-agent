@@ -189,7 +189,7 @@ azure-foundry (Microsoft Entra ID):
 ### Limitations
 
 - **Anthropic-style endpoints use an httpx event hook.** The Anthropic Python SDK does not accept a callable `auth_token` natively (≤ 0.86.0). Hermes installs a request event hook on a custom `httpx.Client` that mints a fresh JWT per outbound request and rewrites `Authorization: Bearer <jwt>`. This is functionally equivalent to the OpenAI SDK's native `Callable[[], str]` contract but adds one indirection layer. If the Anthropic SDK adds first-class callable-auth support in a future release, Hermes will switch to it transparently.
-- **Batch jobs and `multiprocessing.Pool`.** The Entra token provider is a closure that cannot be pickled across process boundaries. `batch_runner.py` automatically drops the callable from the worker config and lets each worker process rebuild its own provider from `config.yaml` — no user action required, but each worker pays one chain walk at startup.
+- **Batch jobs and `multiprocessing.Pool`.** The Entra token provider is a closure that cannot be pickled across process boundaries. `batch_runner.py` automatically drops the callable from the worker config and lets each worker process rebuild its own provider from `config.yaml` — no user action required. Each worker pays one chain walk on its first prompt, then reuses that in-process provider for subsequent batches.
 - **No bearer JWT persistence in `auth.json`.** Hermes does not duplicate `azure-identity`'s internal token cache; cold starts walk the credential chain on first inference.
 
 ## Configuration (written to `config.yaml`)

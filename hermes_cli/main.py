@@ -9959,7 +9959,7 @@ def _ensure_fhs_path_guard() -> None:
         if not cfg.is_file():
             continue
         try:
-            existing = cfg.read_text(errors="replace")
+            existing = cfg.read_text(errors="replace", encoding="utf-8")
         except OSError:
             continue
         # Idempotency: skip if any uncommented PATH= line already references
@@ -12535,7 +12535,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if gateway_mode:
                     _exit_code_path = get_hermes_home() / ".update_exit_code"
                     try:
-                        _exit_code_path.write_text("1")
+                        _exit_code_path.write_text("1", encoding="utf-8")
                     except OSError:
                         pass
             _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)

@@ -373,6 +373,34 @@ FOOTGUNS: list[Footgun] = [
             and _is_likely_subprocess_call(line)
         ),
     ),
+    Footgun(
+        name="bare Path.read_text()/write_text() without encoding=",
+        # Match ``.read_text(`` / ``.write_text(`` when the same line does
+        # not pass ``encoding=``. Multi-line calls where encoding= sits on
+        # a later line are handled by the post_filter's lookahead-free
+        # heuristic accepting a small false-negative rate — the AST guard
+        # test in tests/gateway/test_gateway_utf8_encoding.py catches the
+        # gateway/adapters exactly, and this rule catches the common
+        # single-line form everywhere else.
+        pattern=re.compile(r"\.(read_text|write_text)\s*\("),
+        message=(
+            "Path.read_text()/write_text() without encoding= uses "
+            "locale.getpreferredencoding() — cp936/cp1252 on Windows — "
+            "so UTF-8 content (config JSON, session state, skills) "
+            "crashes with UnicodeDecodeError or writes mojibake. "
+            "See issue #37423 and the #71014 / read_text campaign."
+        ),
+        fix='path.read_text(encoding="utf-8") / path.write_text(data, encoding="utf-8")',
+        post_filter=lambda m, line: (
+            "encoding=" not in line
+            and "encoding =" not in line
+            and not _looks_like_string_literal(line, m)
+            # Skip calls that continue onto the next line — the closing
+            # paren isn't on this line, so encoding= may follow. AST-level
+            # enforcement for those lives in the gateway guard test.
+            and line.rstrip().endswith(")")
+        ),
+    ),
 ]
 
 

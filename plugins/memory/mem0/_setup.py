@@ -228,7 +228,7 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
         except Exception:
             pass
     existing.update(data)
-    config_path.write_text(json.dumps(existing, indent=2) + "\n")
+    config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -248,7 +248,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text())
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -369,7 +369,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text())
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 

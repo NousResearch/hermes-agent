@@ -1,0 +1,63 @@
+version: 1
+enabled: false
+
+telegram:
+  chat_id: ""
+  curator_env: "~/.hermes/profiles/memory-curator/.env"
+  enabled: false
+
+agents:
+  - name: "헤헤"
+    db_path: "~/.hermes/state.db"
+  - name: "헤코"
+    db_path: "~/.hermes/profiles/codex-test/state.db"
+  - name: "헤클"
+    db_path: "~/.hermes/profiles/heclaude-test/state.db"
+
+episode:
+  quiet_minutes: 10
+  max_gap_minutes: 30
+  minimum_agents: 2
+  minimum_messages: 4
+  maximum_messages: 10000
+  timestamp_bucket_seconds: 3
+  initial_lookback_minutes: 240
+
+analysis:
+  provider: ""
+  model: ""
+  max_input_chars: 100000
+  chunk_chars: 30000
+  max_output_tokens: 10000
+  prompt_version: "v2.0.0"
+
+archive:
+  local_spool: "~/.hermes/hegi/archive"
+  nas_root: ""
+  sync_when_available: true
+  markdown: true
+  json: true
+
+memory:
+  enabled: true
+  read_server: "memory-forest-read"
+  search_tool: ""
+  draft_server: "memory-forest-curator-draft"
+  draft_tool: ""
+  auto_commit: false
+  auto_draft: false
+  require_professor_approval: true
+  professor_user_ids: []
+
+daemon:
+  poll_seconds: 60
+
+reports:
+  telegram: true
+
+v3:
+  enabled: false
+v4:
+  enabled: false
+v5:
+  enabled: false

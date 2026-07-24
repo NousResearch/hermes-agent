@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HEGI v2 Configuration",
+  "type": "object",
+  "required": ["version", "enabled", "telegram", "agents", "episode", "archive", "memory"],
+  "properties": {
+    "version": {"const": 1},
+    "enabled": {"type": "boolean"},
+    "telegram": {
+      "type": "object",
+      "required": ["chat_id", "enabled"],
+      "properties": {
+        "chat_id": {"type": "string"},
+        "curator_env": {"type": "string"},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "agents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "db_path"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "db_path": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "properties": {
+        "auto_commit": {"const": false},
+        "auto_draft": {"const": false},
+        "require_professor_approval": {"const": true}
+      }
+    }
+  }
+}

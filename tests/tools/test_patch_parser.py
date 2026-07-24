@@ -254,6 +254,74 @@ class TestAdditionOnlyHunks:
         assert file_ops.written.endswith("def new_func():\n    return True\n")
         assert "existing = True" in file_ops.written
 
+    def test_addition_only_hunk_then_dependent_hunk_applies(self):
+        """A later hunk that targets text inserted by an earlier addition-only
+        hunk must apply: validation has to simulate the insertion, otherwise the
+        dependent hunk is validated against pre-insert content and wrongly
+        rejected (no files modified)."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
++y = 2
+@@ y = 2 @@
+-y = 2
++y = 3
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        assert len(ops[0].hunks) == 2
+
+        class FakeFileOps:
+            written = None
+            def read_file_raw(self, path):
+                return SimpleNamespace(content="x = 1\n", error=None)
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True, result.error
+        assert "y = 3" in file_ops.written
+        assert "x = 1" in file_ops.written
+
+    def test_addition_only_hunk_creating_ambiguity_rejected_at_validation(self):
+        """If an addition-only hunk duplicates text a later hunk searches for,
+        the ambiguity must be caught during validation (before any write), not
+        surface as an 'inconsistent state' apply failure."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
+@@ def main @@
++    return val
+@@ def main @@
+-    return val
++    return other
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops[0].hunks) == 2
+
+        class FakeFileOps:
+            written = None
+            def read_file_raw(self, path):
+                return SimpleNamespace(
+                    content="def main():\n    return val\n",
+                    error=None,
+                )
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is False
+        # Caught up front: no write attempted, no "inconsistent state" warning.
+        assert file_ops.written is None
+        assert "validation failed" in result.error
+        assert "no files were modified" in result.error
+
 
 class TestReadFileRaw:
     """Bug 1 regression tests — files > 2000 lines and lines > 2000 chars."""

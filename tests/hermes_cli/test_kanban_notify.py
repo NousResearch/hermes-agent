@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -24,6 +25,13 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
     kb.init_db()
     return home
+
+
+def test_notifier_artifact_delivery_defaults_to_enabled():
+    """Kanban completion notifications preserve their historical uploads by default."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["kanban"].get("notify_artifacts") is True
 
 
 @pytest.mark.asyncio
@@ -584,6 +592,78 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     assert any("q3-revenue.png" in p for p in images_uploaded), images_uploaded
     # The PDF rode the document path.
     assert any("report.pdf" in p for p in documents_uploaded), documents_uploaded
+
+
+@pytest.mark.asyncio
+async def test_notifier_skips_artifact_uploads_when_disabled(kanban_home, tmp_path, monkeypatch):
+    """A disabled artifact setting keeps the completion message but skips uploads."""
+    import hermes_cli.kanban_db as kb
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True, "notify_artifacts": False}},
+    )
+
+    chart_path = tmp_path / "q3-revenue.png"
+    chart_path.write_bytes(b"PNG-fake-bytes")
+    report_path = tmp_path / "report.pdf"
+    report_path.write_bytes(b"%PDF-fake")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="render q3 chart", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+    finally:
+        conn.close()
+
+    import os
+    os.environ["HERMES_KANBAN_TASK"] = tid
+    try:
+        out = kt._handle_complete({
+            "summary": "rendered the chart",
+            "artifacts": [str(chart_path), str(report_path)],
+        })
+    finally:
+        os.environ.pop("HERMES_KANBAN_TASK", None)
+    assert json.loads(out)["ok"] is True
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    fake_adapter.name = "telegram"
+
+    async def _send(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    fake_adapter.send_multiple_images = AsyncMock()
+    fake_adapter.send_document = AsyncMock()
+    fake_adapter.send_video = AsyncMock()
+    from gateway.platforms.base import BasePlatformAdapter
+    fake_adapter.extract_local_files = BasePlatformAdapter.extract_local_files
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    original_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await original_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_awaited_once()
+    fake_adapter.send_multiple_images.assert_not_awaited()
+    fake_adapter.send_document.assert_not_awaited()
+    fake_adapter.send_video.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -370,6 +370,103 @@ async def test_send_home_channel_startup_notification_ignores_false_send_result(
     adapter.send.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_retries_transient_failure(
+    tmp_path, monkeypatch
+):
+    """Startup delivery waits out Telegram's initial send-path health gate."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    sleep = AsyncMock()
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", sleep)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(
+        side_effect=[
+            SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            ),
+            SendResult(success=True, message_id="online"),
+        ]
+    )
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    assert adapter.send.await_count == 2
+    sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_notification_retry_respects_zero_wait_budget(monkeypatch):
+    """A persistently degraded adapter cannot hold gateway startup forever."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            error="send_path_degraded",
+            retryable=True,
+        )
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", sleep)
+
+    result = await runner._send_lifecycle_message_with_retry(
+        adapter,
+        "home-42",
+        "Gateway online",
+        max_wait=0,
+    )
+
+    assert result is not None
+    assert result.success is False
+    adapter.send.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_notification_preserves_markers_after_transient_send_failure(
+    tmp_path, monkeypatch
+):
+    """The watcher must be able to retry once the platform send path heals."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    pending = tmp_path / ".update_pending.json"
+    pending.write_text(json.dumps({"platform": "telegram", "chat_id": "42"}))
+    (tmp_path / ".update_exit_code").write_text("0")
+    (tmp_path / ".update_output.txt").write_text("Update complete")
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            error="send_path_degraded",
+            retryable=True,
+        )
+    )
+
+    notified = await runner._send_update_notification()
+
+    assert notified is False
+    assert pending.exists()
+    assert (tmp_path / ".update_exit_code").exists()
+    assert (tmp_path / ".update_output.txt").exists()
+
+    adapter.send.return_value = SendResult(success=True, message_id="update-done")
+    notified = await runner._send_update_notification()
+
+    assert notified is True
+    assert not pending.exists()
+    assert not (tmp_path / ".update_pending.claimed.json").exists()
+    assert not (tmp_path / ".update_exit_code").exists()
+    assert not (tmp_path / ".update_output.txt").exists()
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 

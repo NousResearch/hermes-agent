@@ -154,6 +154,13 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
+export function resolveNewSessionProfile(
+  newChatProfile: string | null = $newChatProfile.get(),
+  activeGatewayProfile: string = $activeGatewayProfile.get()
+): string {
+  return newChatProfile ?? normalizeProfileKey(activeGatewayProfile)
+}
+
 // Bumped whenever the open session should be dropped for a fresh new-session
 // draft: a profile switch/create (below), or deleting the project that owns the
 // currently-open session (store/projects). The chat controller subscribes and

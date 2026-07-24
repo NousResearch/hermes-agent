@@ -12,7 +12,7 @@ import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { ensureGatewayProfile, resolveNewSessionProfile } from '@/store/profile'
 import {
   beginSessionMutation,
   endSessionMutation,
@@ -168,7 +168,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     provider: $currentProvider.get().trim()
   }
 
-  const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+  const profile = resolveNewSessionProfile()
   await ensureGatewayProfile(profile)
 
   return {

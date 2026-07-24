@@ -79,6 +79,7 @@ export const af: Translations = {
       plugins: "Inproppe",
       sessions: "Sessies",
       skills: "Vaardighede",
+    system: "System",
     },
     modelToolsSheetSubtitle: "& gereedskap",
     modelToolsSheetTitle: "Model",

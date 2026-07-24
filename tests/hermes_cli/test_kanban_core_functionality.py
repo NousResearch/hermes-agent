@@ -2354,7 +2354,8 @@ def test_unblock_invariant_recovery(kanban_home):
         leaked_run_id = kb.latest_run(conn, tid).id
         # Force the bad state.
         conn.execute(
-            "UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,),
+            "UPDATE tasks SET status = 'blocked', worker_pid = 4242 WHERE id = ?",
+            (tid,),
         )
         conn.commit()
         # current_run_id is still set; run is still open.
@@ -2366,9 +2367,13 @@ def test_unblock_invariant_recovery(kanban_home):
         task = kb.get_task(conn, tid)
         assert task.status == "ready"
         assert task.current_run_id is None
+        assert task.claim_lock is None
+        assert task.claim_expires is None
+        assert task.worker_pid is None
         leaked = kb.get_run(conn, leaked_run_id)
         assert leaked.outcome == "reclaimed"
         assert leaked.ended_at is not None
+        assert kb.claim_task(conn, tid, claimer="replacement-worker") is not None
     finally:
         conn.close()
 

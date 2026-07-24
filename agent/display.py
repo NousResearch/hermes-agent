@@ -551,8 +551,9 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     preview = _oneline(str(value))
     if not preview:
         return None
-    if max_len > 0 and len(preview) > max_len:
-        preview = preview[:max_len - 3] + "..."
+    # Route through _truncate_preview so the max_len <= 3 guard is applied
+    # consistently (a bare `[:max_len - 3]` slice goes negative for 1-3).
+    preview = _truncate_preview(preview, max_len)
     return preview
 
 
@@ -1333,15 +1334,18 @@ def _get_cute_tool_message(
         s = str(s)
         if _tool_preview_max_len == 0:
             return s  # no limit
-        limit = _tool_preview_max_len
-        return (s[:limit-3] + "...") if len(s) > limit else s
+        return _truncate_preview(s, _tool_preview_max_len)
 
     def _path(p, n=35):
         p = str(p)
         if _tool_preview_max_len == 0:
             return p  # no limit
         limit = _tool_preview_max_len
-        return ("..." + p[-(limit-3):]) if len(p) > limit else p
+        if len(p) <= limit:
+            return p
+        if limit <= 3:
+            return "." * limit
+        return "..." + p[-(limit - 3):]
 
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""

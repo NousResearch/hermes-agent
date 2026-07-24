@@ -159,6 +159,43 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_human_gate_requires_reason_without_misleading_comment(
+    kanban_home, monkeypatch
+):
+    monkeypatch.setenv("HERMES_PROFILE", "chief")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approve exact SHA",
+            assignee="worker",
+            initial_status="blocked",
+        )
+
+    failed = kc.run_slash(f"unblock {tid}")
+    assert "requires --reason authorization" in failed
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.list_comments(conn, tid) == []
+
+    reason = "User approved exact SHA abc123"
+    succeeded = kc.run_slash(f"unblock --reason '{reason}' {tid}")
+    assert f"Unblocked {tid}: {reason}" in succeeded
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+        comments = kb.list_comments(conn, tid)
+        assert [comment.body for comment in comments] == [f"UNBLOCK: {reason}"]
+        authorization = next(
+            event
+            for event in kb.list_events(conn, tid)
+            if event.kind == "human_gate_authorized"
+        )
+        assert authorization.payload is not None
+        assert authorization.payload["actor"] == "chief"
+        assert authorization.payload["reason"] == reason
+        assert isinstance(authorization.payload["task_fingerprint"], str)
+        assert len(authorization.payload["task_fingerprint"]) == 64
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

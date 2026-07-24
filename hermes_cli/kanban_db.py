@@ -2770,6 +2770,35 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _lookup_idempotent_task(
+    conn: sqlite3.Connection,
+    idempotency_key: str,
+    *,
+    require_human_gate: bool,
+) -> Optional[str]:
+    """Return the existing task for a key, rejecting unsafe gate reuse.
+
+    Older databases can contain duplicate keys because the lookup historically
+    ran only before the write transaction. A blocked create must not return one
+    gate while another task for the same logical operation remains runnable.
+    """
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "ORDER BY created_at DESC, rowid DESC",
+        (idempotency_key,),
+    ).fetchall()
+    if not rows:
+        return None
+    if require_human_gate and any(
+        not _is_human_gate(conn, row["id"]) for row in rows
+    ):
+        raise ValueError(
+            "idempotency_key already belongs to a task that is not a human gate"
+        )
+    return rows[0]["id"]
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2989,20 +3018,18 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast path — return existing non-archived task.
+    # There is no DB-level UNIQUE constraint (migration complexity), so this
+    # early lookup is an optimization. It is repeated under BEGIN IMMEDIATE
+    # below so concurrent creators cannot insert duplicate logical operations.
     if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
+        existing_id = _lookup_idempotent_task(
+            conn,
+            idempotency_key,
+            require_human_gate=initial_status == "blocked",
+        )
+        if existing_id is not None:
+            return existing_id
 
     now = int(time.time())
 
@@ -3031,9 +3058,17 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
-                # Determine task status from parent status, unless the caller
-                # parks it directly in blocked for human-ops review or in
-                # triage for a specifier.
+                if idempotency_key:
+                    existing_id = _lookup_idempotent_task(
+                        conn,
+                        idempotency_key,
+                        require_human_gate=initial_status == "blocked",
+                    )
+                    if existing_id is not None:
+                        return existing_id
+                # Resolve parent statuses while the write lock is held. The
+                # caller can instead park the task directly in blocked for
+                # human review or in triage for a specifier.
                 if initial_status == "blocked":
                     task_status = "blocked"
                     if parents:
@@ -3141,6 +3176,26 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if task_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "human_gate_created",
+                        {"source": "initial_status"},
+                    )
+                    # Keep the established blocked lifecycle event as well as
+                    # the dedicated authorization marker. Gateway notifications
+                    # and stale-block diagnostics intentionally key off this
+                    # event rather than inferring lifecycle from task.status.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial-status: created-blocked",
+                            "source": "create_task",
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3857,6 +3912,163 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def _event_payload_object(raw: object) -> Optional[dict]:
+    """Decode an event payload only when it is a JSON object."""
+    if not isinstance(raw, (str, bytes, bytearray)):
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _human_gate_task_fingerprint(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Hash the execution-relevant task definition for gate authorization.
+
+    Runtime state (status, claims, timestamps, counters) is deliberately
+    excluded. A later edit to what will execute, where it will execute, or
+    which profile will execute it invalidates the recorded authorization.
+    """
+    row = conn.execute(
+        """
+        SELECT title, body, assignee, workspace_kind, workspace_path,
+               branch_name, project_id, tenant, max_runtime_seconds,
+               workflow_template_id, current_step_key, skills,
+               model_override, max_retries, goal_mode, goal_max_turns,
+               session_id
+        FROM tasks WHERE id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    parents = [
+        parent["parent_id"]
+        for parent in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? "
+            "ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+    ]
+    definition = {key: row[key] for key in row.keys()}
+    definition["parents"] = parents
+    canonical = json.dumps(
+        definition,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _valid_human_gate_authorization(
+    payload: Optional[dict],
+    *,
+    task_fingerprint: Optional[str],
+) -> bool:
+    """Return whether an authorization matches current task content."""
+    if payload is None:
+        return False
+    actor = payload.get("actor")
+    reason = payload.get("reason")
+    recorded_fingerprint = payload.get("task_fingerprint")
+    return (
+        isinstance(actor, str)
+        and bool(actor.strip())
+        and isinstance(reason, str)
+        and bool(reason.strip())
+        and isinstance(task_fingerprint, str)
+        and isinstance(recorded_fingerprint, str)
+        and secrets.compare_digest(recorded_fingerprint, task_fingerprint)
+    )
+
+
+def _human_gate_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[bool, bool]:
+    """Return ``(is_gate, authorized_for_current_content)``.
+
+    New gates emit ``human_gate_created``. Legacy gates are recognized from
+    the existing ``created`` payload's ``status='blocked'`` so the fix is
+    fail-closed without a data migration. Authorization only counts when a
+    later event contains non-empty ``actor`` / ``reason`` fields and the
+    fingerprint of the current execution-relevant task definition. A malformed
+    or stale later authorization resets a prior valid attempt so ambiguous
+    audit history cannot make a gate runnable.
+    """
+    rows = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN "
+        "('created', 'human_gate_created', 'human_gate_authorized') "
+        "ORDER BY id",
+        (task_id,),
+    ).fetchall()
+    is_gate = False
+    authorized = False
+    for row in rows:
+        kind = row["kind"]
+        payload = _event_payload_object(row["payload"])
+        if kind == "human_gate_created":
+            # The event kind itself is the explicit marker. Even a damaged
+            # marker payload must fail closed as a pending gate.
+            is_gate = True
+            authorized = False
+        elif kind == "created":
+            status = payload.get("status") if payload is not None else None
+            from_decompose_of = (
+                payload.get("from_decompose_of") if payload is not None else None
+            )
+            is_decompose_creation = (
+                isinstance(from_decompose_of, str)
+                and bool(from_decompose_of.strip())
+            )
+            if status == "blocked":
+                is_gate = True
+                authorized = False
+            elif status is None and is_decompose_creation:
+                # Auto-decompose historically emitted created events with
+                # provenance but no status. Those records are legitimate
+                # todo creations, not ambiguous initial-status human gates.
+                # New events include status explicitly; keep this branch for
+                # existing boards that predate that fix.
+                if is_gate:
+                    authorized = False
+            elif not isinstance(status, str) or status not in VALID_STATUSES:
+                # Normal task creation always records a canonical status. A
+                # malformed/unknown legacy creation record is ambiguous, so
+                # treat it as a pending gate instead of failing open.
+                is_gate = True
+                authorized = False
+            elif is_gate:
+                # Duplicate or contradictory creation history is ambiguous.
+                authorized = False
+        elif kind == "human_gate_authorized" and is_gate:
+            # The latest attempt after the marker decides the state. Invalid
+            # JSON, non-object payloads, wrong types and blanks all fail closed.
+            authorized = _valid_human_gate_authorization(
+                payload,
+                task_fingerprint=_human_gate_task_fingerprint(conn, task_id),
+            )
+    return is_gate, authorized
+
+
+def _is_human_gate(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether a task was created as an initial-status human gate."""
+    is_gate, _authorized = _human_gate_state(conn, task_id)
+    return is_gate
+
+
+def _has_unresolved_human_gate(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True while a human gate lacks current-content authorization."""
+    is_gate, authorized = _human_gate_state(conn, task_id)
+    return is_gate and not authorized
+
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
@@ -3937,6 +4149,11 @@ def recompute_ready(
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if _has_unresolved_human_gate(conn, task_id):
+                # Initial-status blocked cards are explicit human gates. Parent
+                # completion must never make them runnable; only an audited
+                # authorization through unblock_task may resolve the gate.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -4002,6 +4219,20 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if _has_unresolved_human_gate(conn, task_id):
+            # Defense in depth: even if a buggy/manual writer flipped a gate
+            # to ready, claiming fails closed and restores blocked.
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'blocked' "
+                "WHERE id = ? AND status = 'ready'",
+                (task_id,),
+            )
+            if cur.rowcount:
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {"reason": "human_gate_not_authorized"},
+                )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4131,6 +4362,21 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if _has_unresolved_human_gate(conn, task_id):
+            # Review is another runnable lane. Apply the same fail-closed
+            # defense as claim_task so a buggy/manual review transition
+            # cannot bypass an unresolved initial-status human gate.
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'blocked' "
+                "WHERE id = ? AND status = 'review'",
+                (task_id,),
+            )
+            if cur.rowcount:
+                _append_event(
+                    conn, task_id, "claim_rejected",
+                    {"reason": "human_gate_not_authorized"},
+                )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -5613,44 +5859,49 @@ def promote_task(
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
-    row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
-    if row is None:
-        return False, f"task {task_id} not found"
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return False, f"task {task_id} not found"
 
-    cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
-        return False, (
-            f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
-        )
-
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?",
-            (task_id,),
-        ).fetchall()
-        unsatisfied = [
-            p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
-        ]
-        if unsatisfied:
+        cur_status = row["status"]
+        if cur_status not in ("todo", "blocked"):
             return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
+                f"task {task_id} is {cur_status!r}; promote only applies to "
+                f"'todo' or 'blocked'"
+            )
+        if _has_unresolved_human_gate(conn, task_id):
+            return False, (
+                "human gate is not authorized; use unblock --reason with an "
+                "affirmative authorization record"
             )
 
-    if dry_run:
-        return True, None
+        if not force:
+            parents = conn.execute(
+                "SELECT t.id, t.status FROM tasks t "
+                "JOIN task_links l ON l.parent_id = t.id "
+                "WHERE l.child_id = ?",
+                (task_id,),
+            ).fetchall()
+            unsatisfied = [
+                p["id"] for p in parents
+                if p["status"] not in ("done", "archived")
+            ]
+            if unsatisfied:
+                return False, (
+                    f"unsatisfied parent dependencies: "
+                    f"{', '.join(unsatisfied)} (use --force to override)"
+                )
 
-    with write_txn(conn):
+        if dry_run:
+            return True, None
+
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')",
-            (task_id,),
+            "WHERE id = ? AND status = ?",
+            (task_id, cur_status),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
@@ -5664,8 +5915,18 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    actor: Optional[str] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
+
+    Initial-status blocked cards are human gates. They require non-empty
+    ``actor`` and ``reason`` values, which are persisted as an affirmative
+    ``human_gate_authorized`` event before the task becomes runnable.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -5675,7 +5936,20 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     state) holds for the rest of this function's lifetime.
     """
     now = int(time.time())
+    normalized_actor = actor.strip() if isinstance(actor, str) else ""
+    normalized_reason = reason.strip() if isinstance(reason, str) else ""
     with write_txn(conn):
+        human_gate = _has_unresolved_human_gate(conn, task_id)
+        task_fingerprint = (
+            _human_gate_task_fingerprint(conn, task_id) if human_gate else None
+        )
+        if human_gate:
+            if (
+                not normalized_actor
+                or not normalized_reason
+                or task_fingerprint is None
+            ):
+                return False
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
@@ -5723,6 +5997,17 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        if human_gate:
+            _append_event(
+                conn,
+                task_id,
+                "human_gate_authorized",
+                {
+                    "actor": normalized_actor,
+                    "reason": normalized_reason,
+                    "task_fingerprint": task_fingerprint,
+                },
+            )
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
@@ -5979,7 +6264,11 @@ def decompose_triage_task(
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {
+                    "by": author or "decomposer",
+                    "from_decompose_of": task_id,
+                    "status": "todo",
+                },
             )
             child_ids.append(new_id)
 
@@ -7926,10 +8215,14 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     the warning still fires in degraded environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
+    rows = [
+        row for row in rows
+        if not _has_unresolved_human_gate(conn, row["id"])
+    ]
     if not rows:
         return False
     try:
@@ -7952,10 +8245,14 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     should have spawned a review agent.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = 'review' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
+    rows = [
+        row for row in rows
+        if not _has_unresolved_human_gate(conn, row["id"])
+    ]
     if not rows:
         return False
     try:
@@ -8285,6 +8582,8 @@ def _dispatch_once_locked(
                     )
             continue
         if dry_run:
+            if _has_unresolved_human_gate(conn, row["id"]):
+                continue
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
@@ -8385,6 +8684,8 @@ def _dispatch_once_locked(
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
+            if _has_unresolved_human_gate(conn, row["id"]):
+                continue
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)

@@ -492,6 +492,28 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_patch_status_only_cannot_authorize_initial_human_gate(client):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approve exact SHA",
+            assignee="worker",
+            initial_status="blocked",
+        )
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 409
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert not any(
+            event.kind == "human_gate_authorized"
+            for event in kb.list_events(conn, tid)
+        )
+
+
 def test_patch_schedule_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

@@ -9,7 +9,9 @@ Direct-SQL setup is used to construct that state deterministically.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -157,6 +159,52 @@ def test_promote_blocked_task_works(conn):
     )
     assert ok and err is None
     assert kb.get_task(conn, tid).status == "ready"
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("force", [False, True])
+def test_promote_revalidates_human_gate_inside_write_transaction(
+    kanban_home, monkeypatch, dry_run, force
+):
+    with kb.connect() as conn, kb.connect() as marker_conn:
+        child, _ = _stuck_todo(conn, parents_done=True)
+        original_write_txn = kb.write_txn
+        marker_inserted = False
+
+        @contextmanager
+        def inject_marker_before_write_txn(target_conn):
+            nonlocal marker_inserted
+            if not marker_inserted:
+                marker_conn.execute(
+                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                    "VALUES (?, 'human_gate_created', NULL, ?)",
+                    (child, int(time.time())),
+                )
+                marker_conn.commit()
+                marker_inserted = True
+            with original_write_txn(target_conn):
+                yield
+
+        monkeypatch.setattr(kb, "write_txn", inject_marker_before_write_txn)
+        ok, err = kb.promote_task(
+            conn,
+            child,
+            actor="tester",
+            reason="recovery",
+            force=force,
+            dry_run=dry_run,
+        )
+
+        assert marker_inserted
+        assert ok is False
+        assert err is not None and "not authorized" in err
+        task = kb.get_task(conn, child)
+        assert task is not None and task.status == "todo"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events "
+            "WHERE task_id = ? AND kind = 'promoted_manual'",
+            (child,),
+        ).fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------

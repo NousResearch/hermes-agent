@@ -4,6 +4,7 @@ from the triage column. LLM-free by design.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -166,6 +167,50 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
     assert any(ev.kind == "decomposed" for ev in events)
+
+
+def test_decompose_created_event_records_explicit_todo_status(kanban_home):
+    with kb.connect() as conn:
+        root = _create_triage(conn)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orch",
+            children=[{"title": "child"}],
+            author="decomposer",
+            auto_promote=False,
+        )
+        assert child_ids is not None
+        created = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'created'",
+            (child_ids[0],),
+        ).fetchone()
+
+    assert created is not None
+    assert json.loads(created["payload"])["status"] == "todo"
+
+
+def test_historical_decompose_created_event_without_status_is_not_a_gate(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        child = kb.create_task(conn, title="historical decomposed child")
+        conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (child,))
+        conn.execute(
+            "UPDATE task_events SET payload = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            (
+                json.dumps({"by": "decomposer", "from_decompose_of": "t_parent"}),
+                child,
+            ),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 1
+        task = kb.get_task(conn, child)
+        assert task is not None and task.status == "ready"
+        assert kb.claim_task(conn, child, claimer="worker") is not None
 
 
 def test_decompose_children_inherit_dir_workspace(kanban_home):

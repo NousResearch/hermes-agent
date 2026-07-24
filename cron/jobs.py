@@ -475,6 +475,44 @@ def _secure_file(path: Path):
         pass
 
 
+def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
+    """Restore a rewritten file's previous owner (POSIX, privileged writer only).
+
+    The atomic-write pattern (mkstemp + replace) makes the rewritten file owned
+    by the *writer's* euid. When a root shell runs a state-writing cron CLI
+    command (``docker exec hermes hermes cron create ...`` — ``docker exec``
+    defaults to root) against a store owned by the unprivileged gateway user,
+    the replace flips ``jobs.json`` to ``root:root`` mode 600 and the gateway's
+    ticker (uid 1000) is silently locked out of every subsequent tick (#68483).
+
+    Root can always hand ownership back, so do exactly that: when the euid is 0
+    and the pre-replace owner differs, chown the new file to the previous
+    uid/gid. Unprivileged writers are a no-op (their own rewrite already heals
+    a root-owned file back to their uid, and they couldn't chown anyway).
+    No-op on Windows. Best-effort: a failure must never break the save.
+    """
+    if before is None or os.name != "posix":
+        return
+    geteuid = getattr(os, "geteuid", None)
+    getegid = getattr(os, "getegid", None)
+    if geteuid is None or getegid is None:
+        return
+    try:
+        euid = geteuid()
+        if euid != 0:
+            return  # unprivileged writer — nothing to (or we could) restore
+        if (before.st_uid, before.st_gid) == (euid, getegid()):
+            return  # already ours before the rewrite — nothing changed
+        os.chown(path, before.st_uid, before.st_gid)
+    except OSError as e:
+        logger.warning(
+            "Could not restore ownership of %s to uid=%s gid=%s after rewrite: %s "
+            "— if the gateway runs as a different user, its cron ticker may now "
+            "be locked out (see issue #68483).",
+            path, before.st_uid, before.st_gid, e,
+        )
+
+
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()
@@ -867,6 +905,64 @@ def get_ticker_success_age() -> Optional[float]:
     return _epoch_file_age(store.cron_dir / "ticker_last_success")
 
 
+def record_ticker_error(message: str) -> None:
+    """Persist the most recent tick failure so other processes can surface it.
+
+    The ticker thread lives inside the gateway process; ``hermes cron
+    status``/``list`` run in a separate process and previously could only
+    infer "ticks may be failing" from marker staleness, with no clue WHY.
+    A root-owned ``jobs.json`` (#68483) failed every tick for ~14h with the
+    reason visible only in the gateway's errors.log. Writing the last error
+    next to the heartbeat markers gives the CLI something concrete to show.
+
+    Best-effort: a write failure must never disrupt the tick loop.
+    """
+    store = _current_cron_store()
+    path = store.cron_dir / "ticker_last_error"
+    try:
+        ensure_dirs()
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), suffix=".tmp", prefix=".terr_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"{time.time()}\n{message.strip()}\n")
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def clear_ticker_error() -> None:
+    """Remove the last-tick-error marker after a successful tick. Best-effort."""
+    store = _current_cron_store()
+    try:
+        (store.cron_dir / "ticker_last_error").unlink()
+    except OSError:
+        pass
+
+
+def get_ticker_last_error() -> Optional[str]:
+    """Return the most recent recorded tick error message, or None."""
+    store = _current_cron_store()
+    try:
+        raw = (store.cron_dir / "ticker_last_error").read_text(encoding="utf-8")
+    except Exception:
+        return None
+    lines = raw.splitlines()
+    if len(lines) < 2:
+        return None
+    message = "\n".join(lines[1:]).strip()
+    return message or None
+
+
 # =============================================================================
 # Job CRUD Operations
 # =============================================================================
@@ -927,6 +1023,19 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
+    # Snapshot the current owner BEFORE the atomic replace so a privileged
+    # writer (root CLI in Docker) can hand ownership back to the gateway user
+    # afterwards instead of locking its ticker out (#68483). When the file is
+    # being created for the first time, inherit the cron dir's owner — in the
+    # Docker image that is the PUID/PGID gateway user who must be able to
+    # read the store on the next tick.
+    try:
+        _stat_before = os.stat(jobs_file)
+    except OSError:
+        try:
+            _stat_before = os.stat(jobs_file.parent)
+        except OSError:
+            _stat_before = None
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -935,6 +1044,7 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
             os.fsync(f.fileno())
         atomic_replace(tmp_path, jobs_file)
         _secure_file(jobs_file)
+        _preserve_file_ownership(jobs_file, _stat_before)
     except BaseException:
         try:
             os.unlink(tmp_path)

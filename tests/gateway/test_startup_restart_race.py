@@ -130,6 +130,46 @@ def patch_startup_side_effects(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_startup_schedules_restart_notification_without_waiting(
+    tmp_path, monkeypatch
+):
+    """A temporarily blocked lifecycle delivery must not hold startup open."""
+    patch_startup_side_effects(monkeypatch, tmp_path)
+    (tmp_path / ".restart_notify.json").write_text(
+        '{"platform":"telegram","chat_id":"42"}'
+    )
+    runner = make_startup_runner(tmp_path)
+    runner.config.platforms.pop(Platform.SLACK)
+    runner._create_adapter = MagicMock(
+        return_value=StartupRaceAdapter(Platform.TELEGRAM)
+    )
+    release_notification = asyncio.Event()
+    notification_task = None
+
+    async def _blocked_notification():
+        nonlocal notification_task
+        notification_task = asyncio.current_task()
+        await release_notification.wait()
+
+    runner._send_restart_notification = AsyncMock(
+        side_effect=_blocked_notification
+    )
+
+    result = await asyncio.wait_for(runner.start(), timeout=3)
+
+    assert result is True
+    runner._send_restart_notification.assert_awaited_once()
+    assert notification_task in runner._background_tasks
+
+    release_notification.set()
+    await asyncio.sleep(0)
+    tasks = list(runner._background_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_startup_aborts_when_restart_requested_before_start(tmp_path, monkeypatch):
     patch_startup_side_effects(monkeypatch, tmp_path)
     runner = make_startup_runner(tmp_path)

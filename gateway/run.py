@@ -78,6 +78,11 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Telegram's polling verifier allows 60s before recovery. Keep lifecycle
+# delivery alive through one additional reconnect window without blocking startup.
+_RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS = 180.0
+_RESTART_NOTIFICATION_RETRY_BASE_DELAY_SECS = 1.0
+_RESTART_NOTIFICATION_RETRY_MAX_DELAY_SECS = 30.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
@@ -8371,14 +8376,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Notify the chat that initiated /restart that the gateway is back.
         chat_restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
-        # Capture, before _send_restart_notification() unlinks the marker,
+        # Capture, before the background delivery can unlink the marker,
         # whether this process booted from a chat-originated /restart. Used as
         # a one-shot signal by the /restart redelivery guard so a missing
         # dedup marker only suppresses a /restart when we KNOW we just came out
         # of a restart cycle (see _is_stale_restart_redelivery).
         if chat_restart_notification_pending:
             self._booted_from_restart = True
-        await self._send_restart_notification()
+            # Delivery can be temporarily refused while an adapter finishes
+            # reconnecting (Telegram reports this as retryable
+            # ``send_path_degraded``). Run the bounded retry loop in the
+            # background so lifecycle delivery never blocks gateway startup.
+            self._spawn_supervised(
+                self._send_restart_notification,
+                "restart_notification",
+                restart=False,
+            )
 
         # Broadcast a lightweight "gateway is back" message to configured home
         # channels only for non-chat planned restarts (terminal/SIGUSR1/service
@@ -17014,13 +17027,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return True
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
-        """Notify the chat that initiated /restart that the gateway is back."""
+        """Notify the chat that initiated /restart that the gateway is back.
+
+        A retryable ``SendResult`` means the adapter knows no message was
+        delivered and a later attempt is safe. Keep the durable marker while
+        backing off so a shutdown during that wait leaves the obligation for
+        the next process. Permanent failures and bounded retry exhaustion
+        consume the marker to avoid stale notifications on unrelated boots.
+        A newer marker supersedes this task and is never consumed by it.
+        """
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
 
+        cleanup_marker = True
+        marker_payload = None
         try:
-            data = json.loads(notify_path.read_text())
+            marker_payload = notify_path.read_text()
+            data = json.loads(marker_payload)
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
@@ -17031,14 +17055,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
-            if not adapter:
-                logger.debug(
-                    "Restart notification skipped: %s adapter not connected",
-                    platform_str,
-                )
-                return None
-
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -17047,43 +17063,141 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
-            metadata = self._thread_metadata_for_target(
-                platform,
-                chat_id,
-                thread_id,
-                chat_type=chat_type,
-                reply_to_message_id=message_id,
-                adapter=adapter,
-            )
-            result = await adapter.send(
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
-            # adapter.send() catches provider errors (e.g. "Chat not found")
-            # and returns SendResult(success=False) rather than raising, so
-            # we must inspect the result before claiming success — otherwise
-            # the log line is misleading and hides real delivery failures.
-            if result is not None and getattr(result, "success", True) is False:
+            deadline = time.monotonic() + _RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS
+            delay = _RESTART_NOTIFICATION_RETRY_BASE_DELAY_SECS
+            attempt = 0
+
+            while True:
+                shutdown_event = getattr(self, "_shutdown_event", None)
+                if (
+                    getattr(self, "_running", True) is False
+                    or (
+                        shutdown_event is not None
+                        and shutdown_event.is_set()
+                    )
+                ):
+                    cleanup_marker = False
+                    return None
+
+                adapter = self.adapters.get(platform)
+                if adapter is None:
+                    error = f"{platform_str} adapter not connected"
+                    retryable = True
+                    retry_after = None
+                else:
+                    metadata = self._thread_metadata_for_target(
+                        platform,
+                        chat_id,
+                        thread_id,
+                        chat_type=chat_type,
+                        reply_to_message_id=message_id,
+                        adapter=adapter,
+                    )
+                    result = await adapter.send(
+                        str(chat_id),
+                        "♻ Gateway restarted successfully. Your session continues.",
+                        metadata=_non_conversational_metadata(
+                            metadata,
+                            platform=platform,
+                        ),
+                    )
+                    # adapter.send() catches provider errors (e.g. "Chat not
+                    # found") and returns SendResult(success=False) rather than
+                    # raising, so inspect the result before claiming success.
+                    if result is None or getattr(result, "success", True) is not False:
+                        logger.info(
+                            "Sent restart notification to %s:%s",
+                            platform_str,
+                            chat_id,
+                        )
+                        return (
+                            str(platform_str),
+                            str(chat_id),
+                            str(thread_id) if thread_id else None,
+                        )
+                    error = getattr(result, "error", "send returned success=False")
+                    retryable = bool(getattr(result, "retryable", False))
+                    retry_after = getattr(result, "retry_after", None)
+
+                if not retryable:
+                    logger.warning(
+                        "Restart notification to %s:%s was not delivered: %s",
+                        platform_str,
+                        chat_id,
+                        error,
+                    )
+                    return None
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "Restart notification to %s:%s was not delivered after "
+                        "%.0fs of retrying: %s",
+                        platform_str,
+                        chat_id,
+                        _RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS,
+                        error,
+                    )
+                    return None
+
+                try:
+                    requested_delay = max(0.0, float(retry_after or 0.0))
+                except (TypeError, ValueError):
+                    requested_delay = 0.0
+                if requested_delay > remaining:
+                    logger.warning(
+                        "Restart notification to %s:%s was not delivered; "
+                        "provider retry delay %.1fs exceeds the %.1fs remaining budget: %s",
+                        platform_str,
+                        chat_id,
+                        requested_delay,
+                        remaining,
+                        error,
+                    )
+                    return None
+
+                sleep_for = min(max(delay, requested_delay), remaining)
+                attempt += 1
                 logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s",
+                    "Restart notification to %s:%s was deferred: %s; "
+                    "retrying in %.1fs (attempt %d)",
                     platform_str,
                     chat_id,
-                    getattr(result, "error", "send returned success=False"),
+                    error,
+                    sleep_for,
+                    attempt,
                 )
-                return None
-
-            logger.info(
-                "Sent restart notification to %s:%s",
-                platform_str,
-                chat_id,
-            )
-            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
+                # Cancellation during this safe pre-send backoff must leave the
+                # marker for the replacement process. Once the wait completes,
+                # the next send attempt owns normal ambiguous-send cleanup.
+                cleanup_marker = False
+                await asyncio.sleep(sleep_for)
+                cleanup_marker = True
+                delay = min(
+                    delay * 2,
+                    _RESTART_NOTIFICATION_RETRY_MAX_DELAY_SECS,
+                )
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if cleanup_marker:
+                try:
+                    marker_is_current = (
+                        marker_payload is None
+                        or notify_path.read_text() == marker_payload
+                    )
+                    if marker_is_current:
+                        notify_path.unlink(missing_ok=True)
+                    else:
+                        logger.info(
+                            "Preserving newer restart notification marker after "
+                            "earlier delivery attempt"
+                        )
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    logger.warning("Restart notification marker cleanup failed: %s", e)
 
     async def _send_home_channel_startup_notifications(
         self,

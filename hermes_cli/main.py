@@ -2367,7 +2367,23 @@ def _pin_kanban_board_env() -> None:
     mid-turn, so the same chat sees its tool calls hit board A while its shell
     calls hit board B (#20074). Pinning at chat boot mirrors what the
     dispatcher already does for spawned workers.
+
+    Set ``kanban.allow_session_board_switch: true`` in config.yaml to opt out
+    of session-locking — the env var will NOT be pinned and a mid-session
+    ``kanban boards switch`` takes effect immediately. This is useful when a
+    single session needs to operate across multiple boards (e.g. delegating
+    subagents to different boards).
     """
+    # Config opt-out: skip pinning entirely, allow dynamic board switching.
+    try:
+        from hermes_cli.config import load_config
+
+        kanban_cfg = load_config().get("kanban") or {}
+        if kanban_cfg.get("allow_session_board_switch"):
+            return
+    except Exception:
+        pass
+    # Already pinned (e.g. dispatcher-spawned worker) — don't overwrite.
     if os.environ.get("HERMES_KANBAN_BOARD"):
         return
     try:

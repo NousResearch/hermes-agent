@@ -73,3 +73,83 @@ def test_pin_swallows_resolution_failures(monkeypatch):
     main_mod._pin_kanban_board_env()
 
     assert "HERMES_KANBAN_BOARD" not in main_mod.os.environ
+
+
+def test_pin_skips_when_allow_session_board_switch_true(monkeypatch):
+    """When kanban.allow_session_board_switch is true, the env var is not pinned."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"allow_session_board_switch": True}},
+    )
+    main_mod = importlib.import_module("hermes_cli.main")
+
+    import hermes_cli.kanban_db as kdb
+
+    def _explode():
+        raise AssertionError("get_current_board must not be called when config opt-out is set")
+
+    monkeypatch.setattr(kdb, "get_current_board", _explode)
+
+    main_mod._pin_kanban_board_env()
+
+    assert "HERMES_KANBAN_BOARD" not in main_mod.os.environ
+
+
+def test_pin_skips_when_allow_session_board_switch_true_even_with_env_set(monkeypatch):
+    """Config opt-out takes priority — skips even when HERMES_KANBAN_BOARD is pre-set."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"allow_session_board_switch": True}},
+    )
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "preset-by-dispatcher")
+    main_mod = importlib.import_module("hermes_cli.main")
+
+    import hermes_cli.kanban_db as kdb
+
+    def _explode():
+        raise AssertionError("get_current_board must not be called when config opt-out is set")
+
+    monkeypatch.setattr(kdb, "get_current_board", _explode)
+
+    main_mod._pin_kanban_board_env()
+    # Should NOT have been overwritten — config opt-out means we leave it alone
+    assert main_mod.os.environ.get("HERMES_KANBAN_BOARD") == "preset-by-dispatcher"
+
+
+def test_pin_does_not_skip_when_allow_session_board_switch_false(monkeypatch):
+    """When kanban.allow_session_board_switch is false or absent, the env var is pinned."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"allow_session_board_switch": False}},
+    )
+    main_mod = importlib.import_module("hermes_cli.main")
+
+    import hermes_cli.kanban_db as kdb
+    monkeypatch.setattr(kdb, "get_current_board", lambda: "space")
+
+    main_mod._pin_kanban_board_env()
+
+    assert main_mod.os.environ.get("HERMES_KANBAN_BOARD") == "space"
+
+
+def test_set_current_board_updates_env(monkeypatch, tmp_path):
+    """set_current_board() writes the file AND updates HERMES_KANBAN_BOARD."""
+    import sys
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sys.modules.pop("hermes_cli.kanban_db", None)
+
+    import hermes_cli.kanban_db as kdb
+
+    slug = "test-board"
+    old_env = os.environ.get("HERMES_KANBAN_BOARD")
+    os.environ.pop("HERMES_KANBAN_BOARD", None)
+    try:
+        kdb.set_current_board(slug)
+        assert os.environ.get("HERMES_KANBAN_BOARD") == slug
+        assert (tmp_path / "kanban" / "current").read_text().strip() == slug
+    finally:
+        if old_env is not None:
+            os.environ["HERMES_KANBAN_BOARD"] = old_env
+        else:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)

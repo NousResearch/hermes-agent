@@ -486,7 +486,11 @@ def get_current_board() -> str:
 def set_current_board(slug: str) -> Path:
     """Persist ``slug`` as the active board. Returns the file written.
 
-    Writes ``<root>/kanban/current``. The caller should validate the slug
+    Writes ``<root>/kanban/current`` **and** updates the in-process
+    ``HERMES_KANBAN_BOARD`` env var so the current session picks up the
+    change immediately — without this, a stale env var from the dispatcher
+    would shadow the file-based switch until the next CLI restart.
+    The caller should validate the slug
     exists first (via :func:`board_exists`) — this function does not —
     so that ``hermes kanban boards switch <typo>`` returns an error
     instead of silently pointing at nothing.
@@ -498,6 +502,7 @@ def set_current_board(slug: str) -> Path:
     path = current_board_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(normed + "\n", encoding="utf-8")
+    os.environ["HERMES_KANBAN_BOARD"] = normed
     return path
 
 

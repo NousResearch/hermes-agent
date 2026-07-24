@@ -1706,6 +1706,51 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            # ── OpenAI Codex OAuth usage-limit guard ───────────────────
+            # Codex OAuth plan limits are account/window based. If another
+            # Hermes session already recorded ``usage_limit_reached``, skip the
+            # API call instead of amplifying retries across CLI, gateway, cron,
+            # and auxiliary tasks.
+            if agent.provider == "openai-codex":
+                try:
+                    from agent.codex_rate_guard import (
+                        codex_rate_limit_remaining,
+                        format_remaining as _fmt_codex_remaining,
+                    )
+
+                    _codex_remaining = codex_rate_limit_remaining(model=agent.model)
+                    if _codex_remaining is not None and _codex_remaining > 0:
+                        _codex_msg = (
+                            "Codex OAuth usage limit active — "
+                            f"resets in {_fmt_codex_remaining(_codex_remaining)}."
+                        )
+                        agent._buffer_vprint(f"⏳ {_codex_msg} Trying fallback...")
+                        agent._buffer_status(f"⏳ {_codex_msg}")
+                        if agent._try_activate_fallback():
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            continue
+                        agent._flush_status_buffer()
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": (
+                                f"⏳ {_codex_msg}\n\n"
+                                "No voy a reintentar automáticamente porque "
+                                "cada intento fallido también puede consumir "
+                                "límite. Probá de nuevo después del reset."
+                            ),
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": _codex_msg,
+                        }
+                except ImportError:
+                    pass
+                except Exception:
+                    pass  # Never let rate guard break the agent loop
+
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -2960,6 +3005,13 @@ def run_conversation(
                         clear_nous_rate_limit()
                     except Exception:
                         pass
+                if agent.provider == "openai-codex":
+                    try:
+                        from agent.codex_rate_guard import clear_codex_rate_limit
+
+                        clear_codex_rate_limit(model=agent.model)
+                    except Exception:
+                        pass
                 agent._touch_activity(f"API call #{api_call_count} completed")
                 break  # Success, exit retry loop
 
@@ -4044,6 +4096,25 @@ def run_conversation(
                     # Upstream capacity 429: fall through to normal
                     # retry logic.  A different model (or the same
                     # model a moment later) will typically succeed.
+
+                if (
+                    is_rate_limited
+                    and agent.provider == "openai-codex"
+                    and classified.reason == FailoverReason.rate_limit
+                    and not recovered_with_pool
+                ):
+                    try:
+                        from agent.codex_rate_guard import record_codex_rate_limit
+
+                        _err_resp = getattr(api_error, "response", None)
+                        _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
+                        record_codex_rate_limit(
+                            headers=_err_hdrs,
+                            error_context=error_context,
+                            model=agent.model,
+                        )
+                    except Exception:
+                        pass
 
                 is_payload_too_large = (
                     classified.reason == FailoverReason.payload_too_large

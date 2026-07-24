@@ -917,6 +917,27 @@ class _CodexCompletionsAdapter:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
 
+        try:
+            from agent.codex_rate_guard import (
+                codex_rate_limit_remaining,
+                format_remaining as _format_codex_remaining,
+            )
+
+            _remaining = codex_rate_limit_remaining(model=model)
+            if _remaining is not None and _remaining > 0:
+                err = RuntimeError(
+                    "Codex OAuth usage limit active — "
+                    f"resets in {_format_codex_remaining(_remaining)}"
+                )
+                setattr(err, "status_code", 429)
+                raise err
+        except RuntimeError:
+            raise
+        except Exception:
+            # Guard is best-effort only; never let its own state parsing break
+            # auxiliary work.
+            pass
+
         # Separate system/instructions from replayable conversation messages,
         # then route the rest through the SINGLE shared chat->Responses
         # converter used by the main agent transport
@@ -1208,6 +1229,12 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc
+            try:
+                from agent.codex_rate_guard import record_codex_rate_limit_from_exception
+
+                record_codex_rate_limit_from_exception(exc, model=model)
+            except Exception:
+                pass
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:

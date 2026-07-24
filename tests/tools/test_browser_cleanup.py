@@ -65,6 +65,83 @@ class TestBrowserCleanup:
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
 
+    def test_explicit_session_forwards_verified_daemon_start_guard(self, tmp_path):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": None,
+        }
+        socket_dir = tmp_path / "agent-browser-sess-1"
+        socket_dir.mkdir()
+        (socket_dir / "sess-1.pid").write_text("12345")
+
+        with (
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True}),
+            patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)),
+            patch("gateway.status._pid_exists", side_effect=[True, False]),
+            patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=777),
+            patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as terminate,
+            patch("tools.browser_tool._reap_session_chromium"),
+            patch("tools.browser_tool._remove_browser_socket_dir_if_safe") as remove_socket,
+        ):
+            browser_tool.cleanup_browser("task-1")
+
+        terminate.assert_called_once_with(12345, expected_start=777)
+        remove_socket.assert_called_once_with(str(socket_dir), "sess-1")
+
+    def test_explicit_session_preserves_metadata_when_daemon_unverifiable(self, tmp_path):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": None,
+        }
+        socket_dir = tmp_path / "agent-browser-sess-1"
+        socket_dir.mkdir()
+        (socket_dir / "sess-1.pid").write_text("12345")
+
+        with (
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True}),
+            patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)),
+            patch("gateway.status._pid_exists", return_value=True),
+            patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=None),
+            patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as terminate,
+            patch("tools.browser_tool._reap_session_chromium"),
+            patch("tools.browser_tool._remove_browser_socket_dir_if_safe") as remove_socket,
+        ):
+            browser_tool.cleanup_browser("task-1")
+
+        terminate.assert_not_called()
+        remove_socket.assert_not_called()
+        assert socket_dir.exists()
+
+    def test_explicit_session_preserves_metadata_when_daemon_survives(self, tmp_path):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": None,
+        }
+        socket_dir = tmp_path / "agent-browser-sess-1"
+        socket_dir.mkdir()
+        (socket_dir / "sess-1.pid").write_text("12345")
+
+        with (
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True}),
+            patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)),
+            patch("gateway.status._pid_exists", side_effect=[True, True]),
+            patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=777),
+            patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as terminate,
+            patch("tools.browser_tool._reap_session_chromium"),
+            patch("tools.browser_tool._remove_browser_socket_dir_if_safe") as remove_socket,
+        ):
+            browser_tool.cleanup_browser("task-1")
+
+        terminate.assert_called_once_with(12345, expected_start=777)
+        remove_socket.assert_not_called()
+        assert socket_dir.exists()
+
     def test_cleanup_camofox_managed_persistence_skips_close(self):
         """When camofox mode + managed persistence, soft_cleanup fires instead of close."""
         browser_tool = self.browser_tool
@@ -130,10 +207,18 @@ class TestBrowserCleanup:
         browser_tool._session_last_activity["task-2"] = 2.0
         browser_tool._recording_sessions.update({"task-1", "task-2"})
 
-        with patch("tools.browser_tool.cleanup_all_browsers") as mock_cleanup_all:
+        with (
+            patch("tools.browser_tool.cleanup_all_browsers") as mock_cleanup_all,
+            patch("tools.browser_tool._reap_orphaned_browser_chromes") as mock_chrome_reaper,
+            patch("tools.browser_tool._reap_orphaned_browser_sessions") as mock_daemon_reaper,
+        ):
             browser_tool._emergency_cleanup_all_sessions()
 
         mock_cleanup_all.assert_called_once_with()
+        mock_chrome_reaper.assert_called_once_with(
+            min_age_seconds=browser_tool.BROWSER_SESSION_INACTIVITY_TIMEOUT
+        )
+        mock_daemon_reaper.assert_called_once_with()
         assert browser_tool._active_sessions == {}
         assert browser_tool._session_last_activity == {}
         assert browser_tool._recording_sessions == set()

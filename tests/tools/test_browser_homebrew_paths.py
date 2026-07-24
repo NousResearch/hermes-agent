@@ -290,9 +290,11 @@ class TestRunBrowserCommandPathConstruction:
 
         assert captured_cmd is not None
         assert captured_cmd[0] == browser_path
-        assert captured_cmd[1:5] == [
+        assert captured_cmd[1:7] == [
             "--session",
             "test-session",
+            "--profile",
+            str(tmp_path / "agent-browser-test-session" / "agent-browser-chrome-test-session"),
             "--json",
             "navigate",
         ]
@@ -350,9 +352,11 @@ class TestRunBrowserCommandPathConstruction:
         assert len(captured_cmd) >= 2
         assert captured_cmd[0].endswith("npx") or captured_cmd[0] == "npx"
         assert captured_cmd[1] == "agent-browser"
-        assert captured_cmd[2:6] == [
+        assert captured_cmd[2:8] == [
             "--session",
             "test-session",
+            "--profile",
+            str(tmp_path / "agent-browser-test-session" / "agent-browser-chrome-test-session"),
             "--json",
             "navigate",
         ]

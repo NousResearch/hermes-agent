@@ -195,6 +195,33 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
 
+    def test_plugin_skill_supports_targeted_section_retrieval(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(
+            tmp_path,
+            content="""---
+name: writing-plans
+description: writing plans desc
+---
+
+# Plugin Skill
+
+## First
+First detail.
+
+## Second
+Second detail.
+""",
+        )
+        result = json.loads(skill_view("superpowers:writing-plans", section_slug="second"))
+
+        assert result["success"] is True
+        assert result["retrieval_mode"] == "section"
+        assert result["section"]["slug"] == "second"
+        assert "Second detail" in result["content"]
+        assert "First detail" not in result["content"]
+
     def test_invalid_namespace_returns_error(self, tmp_path):
         from tools.skills_tool import skill_view
 

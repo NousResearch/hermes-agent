@@ -761,10 +761,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
-                logger.debug("Failed to read skill file %s: %s", skill_md, e)
+                logger.warning("Failed to read skill file %s: %s", skill_md, e)
                 continue
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True
                 )
                 continue

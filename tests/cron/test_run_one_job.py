@@ -67,15 +67,40 @@ def test_run_one_job_success_sequence(monkeypatch):
 
 
 def test_run_one_job_silent_skips_delivery(monkeypatch):
-    """A [SILENT] final response saves output + marks the run but does NOT
-    deliver."""
-    calls = _patch_pipeline(monkeypatch, silent_marker_in="[SILENT]")
+    """Exact cron silence tokens save output + mark the run but do NOT deliver."""
+    for idx, token in enumerate(
+        (
+            "[SILENT]",
+            "SILENT",
+            "NO_REPLY",
+            "NO REPLY",
+            ">>>NO_REPLY<<<",
+            "NO_CHANGES",
+            "NO CHANGES",
+            ">>>NO_CHANGES<<<",
+            "FIRST_RUN",
+            "FIRST RUN",
+            "HEARTBEAT_OK",
+            "HEARTBEAT OK",
+        )
+    ):
+        calls = _patch_pipeline(monkeypatch, silent_marker_in=token)
 
-    s.run_one_job({"id": "j3", "name": "t"})
+        s.run_one_job({"id": f"j3-{idx}", "name": "t"})
+
+        kinds = [c[0] for c in calls]
+        assert "run_job" in kinds and "save" in kinds and "mark" in kinds
+        assert "deliver" not in kinds, token
+
+
+def test_run_one_job_prose_mentioning_legacy_token_still_delivers(monkeypatch):
+    """Legacy no-op tokens suppress only as whole/line-response markers."""
+    calls = _patch_pipeline(monkeypatch, final="Use NO_CHANGES when idle.")
+
+    s.run_one_job({"id": "j3-prose", "name": "t"})
 
     kinds = [c[0] for c in calls]
-    assert "run_job" in kinds and "save" in kinds and "mark" in kinds
-    assert "deliver" not in kinds
+    assert "deliver" in kinds
 
 
 def test_run_one_job_empty_response_is_soft_failure(monkeypatch):

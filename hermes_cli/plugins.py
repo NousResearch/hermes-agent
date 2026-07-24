@@ -1172,6 +1172,22 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    # -- RPC registration ----------------------------------------------------
+
+    def register_rpc(self, method_name: str, handler: Callable) -> None:
+        """Register a JSON-RPC method for gateway/Desktop plugin use.
+
+        Plugins call this to expose ``method_name`` through the gateway's
+        WebSocket JSON-RPC transport so the Desktop GUI can invoke it via
+        ``host.request(method_name, params)``.
+        """
+        if not method_name or not isinstance(method_name, str):
+            raise ValueError("RPC method name must be a non-empty string")
+        if not callable(handler):
+            raise TypeError("RPC handler must be callable")
+        self._manager._rpc_methods[method_name] = handler
+        logger.debug("Plugin %s registered RPC method: %s", self.manifest.name, method_name)
+
     # -- middleware registration -------------------------------------------
 
     def register_middleware(self, kind: str, callback: Callable) -> None:
@@ -1271,6 +1287,9 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Plugin-registered JSON-RPC methods for the gateway.
+        # Maps method_name → handler(rid, params) → dict.
+        self._rpc_methods: Dict[str, Callable] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -1293,6 +1312,7 @@ class PluginManager:
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
+            self._rpc_methods.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
@@ -2074,6 +2094,19 @@ def has_middleware(kind: str) -> bool:
 def has_hook(hook_name: str) -> bool:
     """Return True when a hook has registered callbacks."""
     return get_plugin_manager().has_hook(hook_name)
+
+
+def get_plugin_rpc_methods() -> Dict[str, Callable]:
+    """Return JSON-RPC methods registered by plugins.
+
+    Returns a copy so callers can mutate it without affecting the registry.
+    """
+    return dict(get_plugin_manager()._rpc_methods)
+
+
+def get_plugin_rpc_method_names() -> Set[str]:
+    """Return the set of RPC method names currently registered by plugins."""
+    return set(get_plugin_manager()._rpc_methods.keys())
 
 
 _thread_tool_whitelist = threading.local()

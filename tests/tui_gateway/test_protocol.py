@@ -60,6 +60,65 @@ def test_unknown_method(server):
     assert resp["error"]["code"] == -32601
 
 
+def test_plugin_rpc_is_discovered_in_fresh_gateway_process(server, monkeypatch):
+    """The first gateway request discovers plugins before dispatching RPC."""
+    handler = lambda rid, params: server._ok(rid, {"from_plugin": params["value"]})
+    manager = types.SimpleNamespace(_rpc_methods={"sample.echo": handler})
+    calls = []
+
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: calls.append("discover"))
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    server._plugin_rpc_names = set()
+    server._methods.pop("sample.echo", None)
+
+    response = server.handle_request({
+        "id": "plugin", "method": "sample.echo", "params": {"value": 7},
+    })
+
+    assert response["result"] == {"from_plugin": 7}
+    assert calls == ["discover"]
+
+
+def test_builtin_rpc_method_has_precedence_over_plugin(server, monkeypatch):
+    """A plugin must not replace an existing gateway RPC handler."""
+    builtin = lambda rid, params: server._ok(rid, {"source": "builtin"})
+    plugin = lambda rid, params: server._ok(rid, {"source": "plugin"})
+    manager = types.SimpleNamespace(_rpc_methods={"sample.builtin": plugin})
+
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    monkeypatch.setitem(server._methods, "sample.builtin", builtin)
+    server._builtin_rpc_names.add("sample.builtin")
+    server._plugin_rpc_names = set()
+
+    response = server.handle_request({"id": "builtin", "method": "sample.builtin", "params": {}})
+
+    assert response["result"] == {"source": "builtin"}
+    assert "sample.builtin" not in server._plugin_rpc_names
+
+
+def test_plugin_rpc_reload_replaces_and_removes_handlers(server, monkeypatch):
+    """Reload reconciliation replaces handlers and removes disabled plugin RPCs."""
+    first = lambda rid, params: server._ok(rid, {"version": 1})
+    second = lambda rid, params: server._ok(rid, {"version": 2})
+    manager = types.SimpleNamespace(_rpc_methods={"sample.reload": first})
+
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    server._plugin_rpc_names = set()
+    server._methods.pop("sample.reload", None)
+
+    assert server.handle_request({"id": "first", "method": "sample.reload", "params": {}})["result"] == {"version": 1}
+
+    manager._rpc_methods = {"sample.reload": second}
+    assert server.handle_request({"id": "second", "method": "sample.reload", "params": {}})["result"] == {"version": 2}
+
+    manager._rpc_methods = {}
+    response = server.handle_request({"id": "removed", "method": "sample.reload", "params": {}})
+    assert response["error"]["code"] == -32601
+    assert "sample.reload" not in server._plugin_rpc_names
+
+
 def test_ok_envelope(server):
     assert server._ok("r1", {"x": 1}) == {
         "jsonrpc": "2.0", "id": "r1", "result": {"x": 1},

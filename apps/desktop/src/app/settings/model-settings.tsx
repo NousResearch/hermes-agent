@@ -234,12 +234,16 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setLoading(true)
     setError('')
 
+    // Load auxiliary config independently — fast config-file read that must
+    // not block on provider connectivity checks (e.g. minimax-cn timeout).
+    getAuxiliaryModels().then(setAuxiliary).catch(() => {})
+
     try {
-      const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
-        getGlobalModelInfo(),
-        getGlobalModelOptions(),
-        getAuxiliaryModels(),
-        getMoaModels().catch(() => null)
+      const [modelInfo, modelOptions, moaModels, cfg] = await Promise.all([
+        getGlobalModelInfo().catch(() => null),
+        getGlobalModelOptions().catch(() => null),
+        getMoaModels().catch(() => null),
+        getHermesConfigRecord()
       ])
 
       if (profileEpoch.current !== epoch) {
@@ -257,7 +261,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         setSelectedModel(prev => prev || modelInfo.model)
       }
 
-      setAuxiliary(auxiliaryModels)
       setMoa(moaModels)
 
       if (moaModels) {
@@ -724,9 +727,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     }
   }, [mainModel, refresh])
 
-  if (loading && !mainModel) {
-    return <ModelSettingsSkeleton />
-  }
+  if (loading && !mainModel && !auxiliary) {
+    return <LoadingState label={m.loading} />
 
   return (
     <div className="grid gap-6">

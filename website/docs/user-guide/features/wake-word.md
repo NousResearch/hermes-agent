@@ -125,6 +125,28 @@ wake_word:
 The small English KWS model (~13 MB) downloads once on first use. Each
 profile can set its own phrase — "hey \<profile\>" for every profile you run.
 
+### Waking a specific profile (desktop)
+
+With the sherpa engine, ONE listener can wake ANY profile. Every profile
+whose config has `wake_word.enabled: true` is enrolled automatically; its
+phrase defaults to `hey <profile name>` when unset. Say a profile's phrase
+and the desktop app live-switches to that profile, opens a fresh session
+there, and starts hands-free voice:
+
+- "hey hermes" → default profile
+- "hey coder" → the `coder` profile
+- "hey trader" → the `trader` profile
+
+Set `wake_word.profile_routing: false` on the listener's profile to opt out
+and listen only for its own phrase. The CLI and TUI are single-profile
+processes: a wake phrase belonging to another profile prints the switch
+command (`hermes -p <profile>`) instead of routing.
+
+Names are matched acoustically by their English subword sounds: two-word
+phrases with distinct, 2+ syllable names work best. Very short names, heavy
+non-English phonology, or two profiles with similar-sounding names will
+degrade accuracy — tune per-profile `sensitivity` if needed.
+
 ### Option B — openWakeWord (free, trained model)
 
 Name a built-in model (`hey_jarvis`, `alexa`, `hey_mycroft`, …), or train a

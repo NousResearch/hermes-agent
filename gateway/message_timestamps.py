@@ -13,11 +13,22 @@ from typing import Any, Optional, Tuple
 
 
 # Current gateway format: [Tue 2026-04-28 13:40:53 CEST]
+#
+# The timezone token must allow internal spaces. ``format_message_timestamp``
+# builds the suffix from ``strftime("%Z")``, which on POSIX returns a short
+# abbreviation (``CEST``) but on Windows returns the full descriptive name with
+# spaces (``Pacific Daylight Time``) whenever no IANA timezone is configured and
+# the code falls back to the system zone via ``astimezone()``. A space-free
+# token only matched the POSIX shape, so a prefix this module formatted on
+# Windows could never be stripped again -- breaking the strip/render idempotence
+# and accumulating ``[timestamp] [timestamp] ...`` prefixes. Match one or more
+# space-separated tokens so the parser recognises every name the formatter can
+# emit. The closing ``]`` bounds the match, so it never runs past the prefix.
 _HUMAN_TIMESTAMP_RE = re.compile(
     r"^\[(?P<dow>[A-Z][a-z]{2}) "
     r"(?P<date>\d{4}-\d{2}-\d{2}) "
     r"(?P<time>\d{2}:\d{2}:\d{2})"
-    r"(?: (?P<tz>[A-Za-z0-9_+\-/:]+))?\]\s*"
+    r"(?: (?P<tz>[A-Za-z0-9_+\-/:]+(?: [A-Za-z0-9_+\-/:]+)*))?\]\s*"
 )
 
 # Older gateway format: [2026-04-13T17:02:06+0200] or [+02:00]

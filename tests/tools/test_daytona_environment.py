@@ -15,10 +15,11 @@ def _make_exec_response(result="", exit_code=0):
     return SimpleNamespace(result=result, exit_code=exit_code)
 
 
-def _make_sandbox(sandbox_id="sb-123", state="started"):
+def _make_sandbox(sandbox_id="sb-123", state="started", labels=None):
     sb = MagicMock()
     sb.id = sandbox_id
     sb.state = state
+    sb.labels = labels or {}
     sb.process.exec.return_value = _make_exec_response()
     return sb
 
@@ -37,7 +38,9 @@ def _patch_daytona_imports(monkeypatch):
 
     daytona_mod = _types.ModuleType("daytona")
     daytona_mod.Daytona = MagicMock
-    daytona_mod.CreateSandboxFromImageParams = MagicMock
+    daytona_mod.CreateSandboxFromImageParams = MagicMock(
+        name="CreateSandboxFromImageParams"
+    )
     daytona_mod.DaytonaError = type("DaytonaError", (Exception,), {})
     daytona_mod.Resources = MagicMock(name="Resources")
     daytona_mod.SandboxState = _SandboxState
@@ -70,6 +73,7 @@ def make_env(daytona_sdk, monkeypatch):
         sandbox=None,
         get_side_effect=None,
         list_return=None,
+        delete_side_effect=None,
         home_dir="/root",
         persistent=True,
         **kwargs,
@@ -80,6 +84,8 @@ def make_env(daytona_sdk, monkeypatch):
 
         mock_client = MagicMock()
         mock_client.create.return_value = sandbox
+        if delete_side_effect is not None:
+            mock_client.delete.side_effect = delete_side_effect
 
         if get_side_effect is not None:
             mock_client.get.side_effect = get_side_effect
@@ -142,28 +148,185 @@ class TestCwdResolution:
 # ---------------------------------------------------------------------------
 
 class TestPersistence:
-    def test_persistent_resumes_via_get(self, make_env):
+    def test_persistent_recreates_unlabeled_named_sandbox(self, make_env, caplog):
         existing = _make_sandbox(sandbox_id="sb-existing")
-        existing.process.exec.return_value = _make_exec_response(result="/root")
-        env = make_env(get_side_effect=lambda name: existing, persistent=True,
-                       task_id="mytask")
-        existing.start.assert_called_once()
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=lambda name: existing,
+            persistent=True,
+            task_id="mytask",
+        )
+
+        existing.start.assert_not_called()
         env._mock_client.get.assert_called_once_with("hermes-mytask")
+        env._mock_client.delete.assert_called_once_with(existing)
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
+        assert "hermes-mytask" in caplog.text
+
+    def test_persistent_resumes_matching_image_via_get(self, make_env):
+        existing = _make_sandbox(
+            sandbox_id="sb-existing",
+            labels={"hermes_image": "test-image:latest"},
+        )
+        existing.process.exec.return_value = _make_exec_response(result="/root")
+
+        env = make_env(
+            get_side_effect=lambda name: existing,
+            persistent=True,
+            task_id="mytask",
+        )
+
+        existing.start.assert_called_once()
+        env._mock_client.delete.assert_not_called()
         env._mock_client.create.assert_not_called()
 
-    def test_persistent_resumes_legacy_via_list(self, make_env, daytona_sdk):
+    def test_persistent_recreates_named_sandbox_when_image_changed(self, make_env):
+        stale = _make_sandbox(
+            sandbox_id="sb-stale",
+            labels={"hermes_image": "old-image:latest"},
+        )
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=lambda name: stale,
+            persistent=True,
+            task_id="mytask",
+        )
+
+        stale.start.assert_not_called()
+        env._mock_client.delete.assert_called_once_with(stale)
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
+
+    def test_persistent_recreates_named_sandbox_when_start_fails(self, make_env):
+        existing = _make_sandbox(
+            sandbox_id="sb-existing",
+            labels={"hermes_image": "test-image:latest"},
+        )
+        existing.start.side_effect = RuntimeError("start failed")
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=lambda name: existing,
+            persistent=True,
+            task_id="mytask",
+        )
+
+        existing.start.assert_called_once()
+        env._mock_client.delete.assert_not_called()
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
+
+    def test_persistent_fails_closed_when_stale_delete_fails(
+        self, make_env, daytona_sdk, caplog
+    ):
+        stale = _make_sandbox(
+            sandbox_id="sb-stale",
+            labels={"hermes_image": "old-image:latest"},
+        )
+
+        with pytest.raises(RuntimeError, match="delete failed"):
+            make_env(
+                get_side_effect=lambda name: stale,
+                persistent=True,
+                task_id="mytask",
+                delete_side_effect=RuntimeError("delete failed"),
+            )
+
+        assert "refusing to create replacement" in caplog.text
+        assert "hermes-mytask" in caplog.text
+        daytona_sdk.Daytona.return_value.create.assert_not_called()
+
+    def test_persistent_recreates_unlabeled_legacy_sandbox(
+        self, make_env, daytona_sdk
+    ):
         legacy = _make_sandbox(sandbox_id="sb-legacy")
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            list_return=iter([legacy]),
+            persistent=True,
+            task_id="mytask",
+        )
+
+        legacy.start.assert_not_called()
+        env._mock_client.list.assert_called_once_with(
+            labels={"hermes_task_id": "mytask"}, limit=1)
+        env._mock_client.delete.assert_called_once_with(legacy)
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
+
+    def test_persistent_resumes_matching_image_via_legacy_lookup(
+        self, make_env, daytona_sdk
+    ):
+        legacy = _make_sandbox(
+            sandbox_id="sb-legacy",
+            labels={"hermes_image": "test-image:latest"},
+        )
         legacy.process.exec.return_value = _make_exec_response(result="/root")
+
         env = make_env(
             get_side_effect=daytona_sdk.DaytonaError("not found"),
             list_return=iter([legacy]),
             persistent=True,
             task_id="mytask",
         )
+
         legacy.start.assert_called_once()
-        env._mock_client.list.assert_called_once_with(
-            labels={"hermes_task_id": "mytask"}, limit=1)
+        env._mock_client.delete.assert_not_called()
         env._mock_client.create.assert_not_called()
+
+    def test_persistent_recreates_legacy_sandbox_when_start_fails(
+        self, make_env, daytona_sdk
+    ):
+        legacy = _make_sandbox(
+            sandbox_id="sb-legacy",
+            labels={"hermes_image": "test-image:latest"},
+        )
+        legacy.start.side_effect = RuntimeError("start failed")
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            list_return=iter([legacy]),
+            persistent=True,
+            task_id="mytask",
+        )
+
+        legacy.start.assert_called_once()
+        env._mock_client.delete.assert_not_called()
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
+
+    def test_persistent_recreates_legacy_lookup_when_image_changed(
+        self, make_env, daytona_sdk
+    ):
+        stale = _make_sandbox(
+            sandbox_id="sb-legacy-stale",
+            labels={"hermes_image": "old-image:latest"},
+        )
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            list_return=iter([stale]),
+            persistent=True,
+            task_id="mytask",
+        )
+
+        stale.start.assert_not_called()
+        env._mock_client.delete.assert_called_once_with(stale)
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
 
     def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):
         env = make_env(
@@ -177,6 +340,11 @@ class TestPersistence:
         env._mock_client.get.assert_called_with("hermes-mytask")
         env._mock_client.list.assert_called_with(
             labels={"hermes_task_id": "mytask"}, limit=1)
+        create_kwargs = daytona_sdk.CreateSandboxFromImageParams.call_args.kwargs
+        assert create_kwargs["labels"] == {
+            "hermes_task_id": "mytask",
+            "hermes_image": "test-image:latest",
+        }
 
     def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)
@@ -200,6 +368,28 @@ class TestCleanup:
         env = make_env(persistent=False)
         sb = env._sandbox
         env.cleanup()
+        env._mock_client.delete.assert_called_once_with(sb)
+
+    def test_force_remove_deletes_persistent_sandbox(self, make_env):
+        env = make_env(persistent=True)
+        sb = env._sandbox
+
+        env.cleanup(force_remove=True)
+
+        sb.stop.assert_not_called()
+        env._mock_client.delete.assert_called_once_with(sb)
+
+    def test_cleanup_vm_forwards_force_remove(self, make_env, monkeypatch):
+        from tools import terminal_tool
+
+        env = make_env(persistent=True)
+        sb = env._sandbox
+        monkeypatch.setitem(terminal_tool._active_environments, "daytona-task", env)
+        monkeypatch.setitem(terminal_tool._last_activity, "daytona-task", 0.0)
+
+        terminal_tool.cleanup_vm("daytona-task", force_remove=True)
+
+        sb.stop.assert_not_called()
         env._mock_client.delete.assert_called_once_with(sb)
 
     def test_cleanup_idempotent(self, make_env):

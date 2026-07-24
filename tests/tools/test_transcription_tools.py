@@ -425,6 +425,73 @@ class TestTranscribeLocalCommand:
         assert result["transcript"] == "hello from local command"
         assert result["provider"] == "local_command"
 
+    def test_command_fallback_quotes_placeholder_by_context(
+        self, monkeypatch, tmp_path
+    ):
+        """Regression: local command placeholders must be rendered by quote
+        context, not with raw ``shlex.quote``.
+
+        ``shlex.quote`` is POSIX-only and always adds its own single quotes, so
+        a template that already wraps ``{input_path}`` in quotes ends up with
+        doubled quotes and the path splits into two shell arguments; on Windows
+        the single quotes also break every path (cmd.exe treats them
+        literally). ``_render_command_stt_template`` renders by context
+        (``subprocess.list2cmdline`` on Windows), keeping a spaced path a single
+        argument.
+        """
+        import shlex
+
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+
+        # {input_path} sits INSIDE single quotes in the template.
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper '{input_path}' --model {model} --output_dir {output_dir}",
+        )
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "en")
+
+        spaced_input = str(tmp_path / "my audio.wav")
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        captured = {}
+
+        def fake_run(cmd, *args, **kwargs):
+            captured["cmd"] = cmd
+            (out_dir / "out.txt").write_text("ok\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._prepare_local_audio",
+            lambda fp, wd: (spaced_input, None),
+        )
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(spaced_input, "base")
+
+        assert result["success"] is True
+        # HERMES_LOCAL_STT_COMMAND set → use_shell=True → command is a shell
+        # string. The spaced input path must survive as ONE argument.
+        cmd = captured["cmd"]
+        assert isinstance(cmd, str)
+        assert spaced_input in shlex.split(cmd), (
+            f"input path was mangled by quoting: {cmd!r}"
+        )
+
 
 # ============================================================================
 # _transcribe_local — additional tests

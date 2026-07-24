@@ -5851,7 +5851,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 return path.read_text(encoding="utf-8")
             except (OSError, IOError):
-                logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
+                logger.debug("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)
 
         return paste_ref_re.sub(_expand_ref, text)

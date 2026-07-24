@@ -1514,15 +1514,21 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    # Managed installs should follow origin/$Branch exactly. If
-                    # the checkout has diverged (or has local-only commits),
-                    # ff-only pull cannot succeed -- mirror ``hermes update`` and
-                    # reset to the fetched remote so bootstrap/install can recover.
+                    # Managed installs should follow origin/$Branch -- but an
+                    # updater must FAIL CLOSED when history has diverged, never
+                    # reset over local-only commits (the old reset fallback
+                    # silently destroyed a local commit on 2026-07-19; the
+                    # pre-update stash never covers commits). Refuse with the
+                    # reason, preserve everything, let the human resolve.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) {
-                        Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
-                        git -c windows.appendAtomically=false reset --hard "origin/$Branch"
-                        if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/$Branch failed (exit $LASTEXITCODE)" }
+                        Write-Err "Update refused: fast-forward not possible (local history has diverged)."
+                        Write-Err "Nothing was changed: local commits, branches, and files are untouched."
+                        Write-Err "See what diverged:  git log --oneline origin/$Branch..HEAD"
+                        if ($autostashRef) {
+                            Write-Err "Local changes remain stashed as $autostashRef -- restore with: git stash apply"
+                        }
+                        throw "Update refused: local history diverged from origin/$Branch (fail-closed; no reset performed)."
                     }
                 }
 

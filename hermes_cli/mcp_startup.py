@@ -24,13 +24,23 @@ def _has_configured_mcp_servers() -> bool:
         return True
 
 
-def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
+def start_background_mcp_discovery(
+    *,
+    logger,
+    thread_name: str,
+    enabled_toolsets: Optional[list] = None,
+) -> None:
     """Spawn one shared background MCP discovery thread for this process.
 
     If the first background discovery run exits without connecting any MCP
     server (for example after startup cancellation / OOM restart), later calls
     are allowed to retry instead of permanently pinning the process in a
     "discovery already started" state with zero MCP tools.
+
+    ``enabled_toolsets``, when provided, restricts discovery to MCP servers
+    named in that list (see ``tools.mcp_tool.discover_mcp_tools``). Passed
+    straight through so a worker/job that already resolved a scoped toolset
+    list doesn't boot MCP servers outside its own tool surface.
     """
     global _mcp_discovery_started, _mcp_discovery_thread
 
@@ -60,7 +70,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 
         def _discover() -> None:
             try:
-                _discover_mcp_tools_without_interactive_oauth()
+                _discover_mcp_tools_without_interactive_oauth(enabled_toolsets)
                 try:
                     from tools.mcp_tool import get_mcp_status
                     status = get_mcp_status() or []
@@ -107,7 +117,9 @@ def _resolve_discovery_timeout(explicit: "float | None") -> float:
         return 1.5
 
 
-def _discover_mcp_tools_without_interactive_oauth() -> None:
+def _discover_mcp_tools_without_interactive_oauth(
+    enabled_toolsets: Optional[list] = None,
+) -> None:
     """Run MCP discovery without letting OAuth read from the user's stdin."""
     try:
         from tools.mcp_oauth import suppress_interactive_oauth
@@ -117,7 +129,7 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
     with suppress_interactive_oauth():
         from tools.mcp_tool import discover_mcp_tools
 
-        discover_mcp_tools()
+        discover_mcp_tools(enabled_toolsets=enabled_toolsets)
 
 
 def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:

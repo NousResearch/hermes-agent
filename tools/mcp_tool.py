@@ -360,6 +360,21 @@ def _jittered(seconds: float) -> float:
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
 
+
+def _cfg_float(config: dict, key: str, default: float) -> float:
+    """Read a numeric server-config value, tolerating malformed entries.
+
+    MCP server configs are hand-edited YAML, so a value like
+    ``connect_timeout: "60s"`` or ``keepalive_interval: null`` would raise
+    ``ValueError``/``TypeError`` from a bare ``float(...)`` and take down the
+    connection or keepalive loop. Fall back to the default instead so one
+    typo in one server's block can't break MCP startup.
+    """
+    try:
+        return float(config.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
@@ -2237,7 +2252,7 @@ class MCPServerTask:
         # ``notifications/tools/list_changed`` → ``_refresh_tools``.
         keepalive_interval = max(
             _MIN_KEEPALIVE_INTERVAL,
-            float(self._config.get("keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL)),
+            _cfg_float(self._config, "keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL),
         )
 
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
@@ -2488,8 +2503,8 @@ class MCPServerTask:
                     # until the gateway hits EMFILE. Timing out here converts the
                     # hang into a normal failure, letting the ``finally`` reap the
                     # child. See #59349.
-                    connect_timeout = float(
-                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                    connect_timeout = _cfg_float(
+                        config, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT
                     )
                     self.initialize_result = await asyncio.wait_for(
                         session.initialize(), timeout=connect_timeout
@@ -2736,7 +2751,7 @@ class MCPServerTask:
         # case-insensitive so conventional casing is preserved.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
-        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        connect_timeout = _cfg_float(config, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
 
@@ -5574,7 +5589,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 
     Returns list of registered tool names.
     """
-    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+    connect_timeout = _cfg_float(config, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
     server = await asyncio.wait_for(
         _connect_server(name, config),
         timeout=connect_timeout,
@@ -5915,7 +5930,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         names = list(enabled.keys())
         coros = []
         for name, cfg in enabled.items():
-            ct = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+            ct = _cfg_float(cfg, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
             coros.append(asyncio.wait_for(_connect_server(name, cfg), timeout=ct))
 
         outcomes = await asyncio.gather(*coros, return_exceptions=True)

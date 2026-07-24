@@ -65,6 +65,18 @@ def _record(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
     return dict(row) if row is not None else None
 
 
+def _emit_execution_state(
+    record: Optional[Dict[str, Any]], *, delivery_outcome: Optional[str] = None
+) -> None:
+    """Project durable state to monitoring without affecting ledger behavior."""
+    try:
+        from agent.monitoring.cron_health import emit_execution_state
+
+        emit_execution_state(record, delivery_outcome=delivery_outcome)
+    except Exception:
+        pass
+
+
 def _process_start_time(pid: int) -> Optional[int]:
     try:
         from gateway.status import get_process_start_time
@@ -115,7 +127,9 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
         row = conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
         ).fetchone()
-    return _record(row)  # type: ignore[return-value]
+    record = _record(row)
+    _emit_execution_state(record)
+    return record  # type: ignore[return-value]
 
 
 def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
@@ -129,13 +143,16 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
         )
         if cur.rowcount != 1:
             return None
-        return _record(conn.execute(
+        record = _record(conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
         ).fetchone())
+    _emit_execution_state(record)
+    return record
 
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
+    delivery_outcome: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten."""
     now = _hermes_now().isoformat()
@@ -150,15 +167,18 @@ def finish_execution(
         if cur.rowcount != 1:
             return None
         _prune_unlocked(conn)
-        return _record(conn.execute(
+        record = _record(conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
         ).fetchone())
+    _emit_execution_state(record, delivery_outcome=delivery_outcome)
+    return record
 
 
 def recover_interrupted_executions() -> int:
     """Mark provably abandoned attempts unknown without scheduling retries."""
     now = _hermes_now().isoformat()
     changed = 0
+    recovered: List[Dict[str, Any]] = []
     with _lock, _connect() as conn:
         rows = conn.execute(
             """SELECT id, process_id, pid, process_started_at FROM executions
@@ -178,8 +198,16 @@ def recover_interrupted_executions() -> int:
                  row["id"]),
             )
             changed += cur.rowcount
+            if cur.rowcount:
+                record = _record(conn.execute(
+                    "SELECT * FROM executions WHERE id=?", (row["id"],)
+                ).fetchone())
+                if record is not None:
+                    recovered.append(record)
         if changed:
             _prune_unlocked(conn)
+    for record in recovered:
+        _emit_execution_state(record)
     return changed
 
 

@@ -4,11 +4,12 @@ Service health monitoring plus structured operational diagnostics for the
 Hermes gateway daemon, exported over OTLP/HTTP to an operator-configured
 endpoint (OpenTelemetry Collector, DataDog, or any OTLP receiver).
 
-This plane is content-free by construction. It exports gateway lifecycle
-state, platform connector health, and content-free warning/error diagnostics.
-It never exports prompts, messages, tool arguments or results, session
-history, usage analytics, audit logs, or execution traces. Run/model/tool
-trajectory capture is a separate plane served by the NeMo Relay integration
+This plane is content-free by construction. It exports gateway and cron
+lifecycle state, platform connector health, and content-free warning/error
+diagnostics. It never exports prompts, messages, tool arguments or results,
+job names, destinations, schedules, raw errors, session history, usage
+analytics, audit logs, or detailed execution traces. Run/model/tool trajectory
+capture is a separate plane served by the NeMo Relay integration
 (`plugins/observability/nemo_relay/`) and its Hermes-owned subscribers.
 
 ## What gets exported
@@ -18,6 +19,8 @@ trajectory capture is a separate plane served by the NeMo Relay integration
 | Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
 | Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
 | Diagnostics | `/v1/logs` | Warning/error gateway events with a constant body and bounded subsystem, severity, error class, and error code attributes; rendered log messages are never exported |
+| Cron scheduler gauges | `/v1/metrics` | Ticker heartbeat and last-success age (omitted when unavailable), enabled/running job counts, and overdue count derived from persisted `next_run_at` plus the scheduler's existing grace rule |
+| Cron execution lifecycle | `/v1/traces` | Durable `claimed/running/completed/failed/unknown` states, bounded source and error class, opaque hashed job key, elapsed duration when timestamps exist, and delivery outcome when the scheduler knows it; terminal states flush through a bounded fail-open barrier |
 
 Signals carry `service.name`, version, supervision mode, and a stable one-way
 hash of the install id so an operator can distinguish instances without
@@ -94,8 +97,11 @@ python scripts/observability/gateway_health_export_probe.py \
 
 ## Boundaries and roadmap
 
-The `hermes monitoring` CLI intentionally exposes `status` only. Shared
-client usage metrics and enterprise trace telemetry are being designed on
+The `hermes monitoring` CLI intentionally exposes `status` only. This first
+release covers only Hermes Agent-owned service-health and operational-diagnostic
+signals. Team Gateway/shared-connector signals are explicitly out of scope, as
+are product analytics, audit/quality reporting, and detailed execution traces.
+Shared client usage metrics and enterprise trace telemetry are being designed on
 the NeMo Relay integration with their own consent, policy, and export
 boundaries; this monitoring plane stays narrow so an operator can enable it
 without touching any content-bearing signal. The telemetry surface may be

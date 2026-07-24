@@ -278,7 +278,7 @@ def _supervision_mode() -> str:
     return "manual"
 
 
-def _read_runtime_snapshot(config: Dict[str, Any]):
+def _read_gateway_snapshot(config: Dict[str, Any]):
     from agent.monitoring.gateway_health import build_gateway_health_snapshot
     try:
         from gateway.status import read_runtime_status
@@ -293,6 +293,23 @@ def _read_runtime_snapshot(config: Dict[str, Any]):
         version=_version(),
         supervision_mode=_supervision_mode(),
     )
+
+
+def _read_cron_snapshot():
+    from agent.monitoring.cron_health import build_cron_health_snapshot
+
+    return build_cron_health_snapshot()
+
+
+def _read_runtime_snapshot(config: Dict[str, Any]):
+    gateway_snapshot = _read_gateway_snapshot(config)
+    try:
+        cron_snapshot = _read_cron_snapshot()
+    except Exception:
+        logger.debug("cron health snapshot unavailable", exc_info=True)
+        return gateway_snapshot
+    gateway_snapshot.metrics.extend(cron_snapshot.metrics)
+    return gateway_snapshot
 
 
 def _emit_snapshot_events(config: Dict[str, Any]) -> None:
@@ -337,6 +354,11 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
         "hermes.gateway.restart_requested",
         "hermes.platform.up",
         "hermes.platform.degraded",
+        "hermes.cron.scheduler.heartbeat_age_seconds",
+        "hermes.cron.scheduler.last_success_age_seconds",
+        "hermes.cron.jobs.enabled",
+        "hermes.cron.jobs.running",
+        "hermes.cron.jobs.overdue",
     ]
 
     def callback(name: str):
@@ -467,7 +489,7 @@ def _attach_log_handler(config: Dict[str, Any]) -> Any:
 
 
 def _gateway_health_event(ev: Dict[str, Any]) -> bool:
-    return ev.get("event") == "gateway_health"
+    return ev.get("event") in {"gateway_health", "cron_execution"}
 
 
 def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRuntime:

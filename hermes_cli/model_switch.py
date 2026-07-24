@@ -13,9 +13,12 @@ This module ties together the foundation layers:
 - ``hermes_cli.providers``        -- canonical provider identity + overlays
 - ``hermes_cli.model_normalize``  -- per-provider name formatting
 
-Provider switching uses the ``--provider`` flag exclusively.
-No colon-based ``provider:model`` syntax — colons are reserved for
-OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
+Provider switching uses the ``--provider`` flag. A colon-based
+``provider:model`` (or ``custom:<name>:model``) form is also accepted, but
+*only* when the left-hand side resolves to a user-configured provider (see
+``_parse_configured_provider_model_input``) — for every other provider colons
+stay reserved for OpenRouter variant suffixes (``:free``, ``:extended``,
+``:fast``), so generic model ids that contain colons are never reinterpreted.
 """
 
 from __future__ import annotations
@@ -900,6 +903,22 @@ def resolve_display_context_length(
 # Configured-provider detection for typed model names
 # ---------------------------------------------------------------------------
 
+_DECLARED_MODEL_KEYS = ("models", "available_models", "model", "default_model")
+
+
+def _match_declared_model(value, target: str) -> Optional[str]:
+    """Return the configured model id in ``value`` matching ``target`` (an
+    already-lowercased name), else None.
+
+    Delegates extraction to :func:`_declared_model_ids` so every supported
+    config shape — scalar, dict-keyed, list-of-strings, and list-of-dicts with
+    ``id``/``name`` — is handled in one place.
+    """
+    for model_id in _declared_model_ids(value):
+        if model_id.lower() == target:
+            return model_id
+    return None
+
 
 def _configured_provider_matches(
     model_name: str,
@@ -919,20 +938,13 @@ def _configured_provider_matches(
 
     Matching is exact (case-insensitive); the configured spelling is returned
     so the downstream validation/override path sees the canonical id.  Only the
-    explicitly-declared model collections are scanned (``models``, the singular
-    ``model``, and ``default_model``) — never fuzzy/family matching.
+    explicitly-declared model collections are scanned (``_DECLARED_MODEL_KEYS``:
+    ``models``, its ``available_models`` alias, the singular ``model``, and
+    ``default_model``) — never fuzzy/family matching.
     """
     if not model_name or not model_name.strip():
         return {}
     target = model_name.strip().lower()
-
-    def _match(value) -> Optional[str]:
-        """Canonical id if ``value`` (a model collection or scalar) declares
-        ``target``, else None."""
-        for model_id in _declared_model_ids(value):
-            if model_id.lower() == target:
-                return model_id
-        return None
 
     matches: dict[str, str] = {}
 
@@ -940,8 +952,8 @@ def _configured_provider_matches(
         for slug, cfg in user_providers.items():
             if not isinstance(slug, str) or not isinstance(cfg, dict):
                 continue
-            for key in ("models", "model", "default_model"):
-                hit = _match(cfg.get(key))
+            for key in _DECLARED_MODEL_KEYS:
+                hit = _match_declared_model(cfg.get(key), target)
                 if hit:
                     matches[slug] = hit
                     break
@@ -956,13 +968,57 @@ def _configured_provider_matches(
             slug = f"custom:{name}"
             if slug in matches:
                 continue
-            for key in ("models", "model", "default_model"):
-                hit = _match(entry.get(key))
+            for key in _DECLARED_MODEL_KEYS:
+                hit = _match_declared_model(entry.get(key), target)
                 if hit:
                     matches[slug] = hit
                     break
 
     return matches
+
+
+def _parse_configured_provider_model_input(
+    raw_input: str,
+    user_providers: Optional[dict],
+    custom_providers: Optional[list],
+) -> Optional[tuple[str, str]]:
+    """Parse ``provider:model`` only for configured providers.
+
+    Generic colon syntax is intentionally not part of the public ``/model``
+    contract because many provider model ids use colon suffixes.  A left-hand
+    side that resolves to a user-configured provider is unambiguous, though, so
+    accept that form for hand-configured gateway providers.
+    """
+    stripped = str(raw_input or "").strip()
+    if ":" not in stripped:
+        return None
+
+    candidates: list[tuple[str, str]] = []
+    if stripped.lower().startswith("custom:"):
+        first, _sep, rest = stripped.partition(":")
+        custom_name, sep, model = rest.partition(":")
+        if sep and custom_name.strip() and model.strip():
+            candidates.append((f"{first}:{custom_name.strip()}", model.strip()))
+        # A malformed ``custom:<name>:<model>`` must not degrade into the
+        # bare ``custom`` provider's corrupted-state self-heal fallback.
+    else:
+        provider, sep, model = stripped.partition(":")
+        if sep and provider.strip() and model.strip():
+            provider_name = provider.strip()
+            model_name = model.strip()
+            candidates.append((provider_name, model_name))
+            # Legacy ``custom_providers`` entries resolve after built-ins, so
+            # a proxy named after a vendor (for example ``deepseek``) needs an
+            # explicit custom-prefixed fallback candidate. A ``providers:``
+            # dict entry with that name still wins through the first candidate.
+            candidates.append((f"custom:{provider_name}", model_name))
+
+    for provider_name, model_name in candidates:
+        pdef = resolve_provider_full(provider_name, user_providers, custom_providers)
+        if pdef is not None and pdef.source == "user-config":
+            return (pdef.id, model_name)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1260,8 +1316,31 @@ def switch_model(
         # detection.  Unlike step e this is deliberately NOT gated on
         # ``not is_custom`` — switching from a local/custom provider A to a
         # configured provider B that declares the typed model is the point.
-        config_routed = False
+        # Configured ``provider:model`` is a fallback after the current
+        # aggregator catalog has had the first chance to preserve its existing
+        # vendor:model -> vendor/model shorthand. This avoids a custom provider
+        # named after a vendor stealing a valid aggregator slug.
+        configured_pair = None
         if (
+            not resolved_alias
+            and not resolved_moa_preset
+            and not resolved_in_current_catalog
+        ):
+            configured_pair = _parse_configured_provider_model_input(
+                raw_input,
+                user_providers,
+                custom_providers,
+            )
+
+        config_routed = configured_pair is not None
+        if configured_pair is not None:
+            explicit_provider, new_model = configured_pair
+            target_provider = explicit_provider
+            logger.debug(
+                "Configured-provider colon input routed '%s' to %s",
+                new_model, target_provider,
+            )
+        elif (
             not resolved_alias
             and not resolved_in_current_catalog
             and target_provider == current_provider
@@ -1473,12 +1552,16 @@ def switch_model(
         if user_providers:
             from hermes_cli.config import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
+            _new_model_lower = new_model.strip().lower()
             for slug, cfg in user_providers.items():
                 if not is_provider_enabled(cfg):
                     continue
                 if slug == target_provider:
-                    if new_model in _declared_model_ids(cfg.get("models", {})):
-                        override = True
+                    for key in _DECLARED_MODEL_KEYS:
+                        if _match_declared_model(cfg.get(key), _new_model_lower):
+                            override = True
+                            break
+                    if override:
                         break
         # Also check custom_providers list — models declared there should be accepted
         # even if the remote /v1/models endpoint doesn't list them.
@@ -1491,14 +1574,12 @@ def switch_model(
                 entry_slug = f"custom:{entry_name}" if entry_name else ""
                 entry_url = entry.get("base_url", "")
                 if entry_slug == target_provider or entry_url == base_url:
-                    # Check if the requested model matches the entry's model
-                    entry_model = entry.get("model", "")
-                    entry_models = entry.get("models", {})
-                    if new_model == entry_model:
-                        override = True
-                        break
-                    if new_model in _declared_model_ids(entry_models):
-                        override = True
+                    # Check if the requested model matches a declared model.
+                    for key in _DECLARED_MODEL_KEYS:
+                        if _match_declared_model(entry.get(key), new_model.strip().lower()):
+                            override = True
+                            break
+                    if override:
                         break
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
@@ -2331,13 +2412,15 @@ def list_authenticated_providers(
             # Build models list from both default_model and full models array.
             # Hermes writes ``models:`` as a dict keyed by model id, but older
             # or hand-edited configs may use strings or ``[{id: ...}]`` rows —
-            # _declared_model_ids() owns that contract.
+            # _declared_model_ids() owns that contract. ``available_models``
+            # is an accepted alias for the same list.
             entry_models: list = []
             if default_model:
                 entry_models.append(default_model)
-            for model_id in _declared_model_ids(ep_cfg.get("models", [])):
-                if model_id not in entry_models:
-                    entry_models.append(model_id)
+            for key in ("models", "available_models"):
+                for model_id in _declared_model_ids(ep_cfg.get(key, [])):
+                    if model_id not in entry_models:
+                        entry_models.append(model_id)
 
             if group_key not in ep_groups:
                 # Strip per-model suffix so "Palantir Claude 4.7 Opus" becomes
@@ -2628,12 +2711,14 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            declared_models = _declared_model_ids(entry.get("models", {}))
-            if declared_models:
-                groups[group_key]["has_explicit_models"] = True
-            for model_id in declared_models:
-                if model_id not in groups[group_key]["models"]:
-                    groups[group_key]["models"].append(model_id)
+            # ``available_models`` is an accepted alias for the ``models`` list.
+            for key in ("models", "available_models"):
+                declared_models = _declared_model_ids(entry.get(key, {}))
+                if declared_models:
+                    groups[group_key]["has_explicit_models"] = True
+                for model_id in declared_models:
+                    if model_id not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(model_id)
 
         _section4_emitted_slugs: set = set()
         _current_base_url_group_count = sum(

@@ -1449,6 +1449,7 @@ class GatewaySlashCommandsMixin:
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model <provider>:<name>            — colon form, only for a user-configured provider
         """
         from gateway.run import _hermes_home, _load_gateway_config
         import yaml

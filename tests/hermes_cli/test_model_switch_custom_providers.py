@@ -7,7 +7,11 @@ only looked at `providers:`.
 
 import hermes_cli.providers as providers_mod
 import pytest
-from hermes_cli.model_switch import list_authenticated_providers, switch_model
+from hermes_cli.model_switch import (
+    _parse_configured_provider_model_input,
+    list_authenticated_providers,
+    switch_model,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -281,6 +285,360 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
     assert result.api_key == "no-key-required"
+
+
+def test_switch_model_accepts_available_models_for_named_custom_provider(monkeypatch):
+    """``--provider <custom name>`` accepts models declared via available_models."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "no-key-required",
+            "base_url": "https://token-plan.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": "not listed",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="deepseek-v4-flash",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider="tokenplan",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "tokenplan",
+                "base_url": "https://token-plan.example/v1",
+                "model": "qwen3.7-plus",
+                "available_models": ["qwen3.7-plus", "deepseek-v4-flash"],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.provider_label == "tokenplan"
+    assert result.new_model == "deepseek-v4-flash"
+    assert result.base_url == "https://token-plan.example/v1"
+
+
+def test_available_models_routes_end_to_end_via_on_disk_config(tmp_path, monkeypatch):
+    """E2E guard for the gateway ``/model`` path.
+
+    The other available_models tests pass a raw ``custom_providers`` list straight
+    into ``switch_model``; the real gateway first runs it through
+    ``get_compatible_custom_providers`` (which folds ``available_models`` into
+    ``models``) and then ``switch_model`` resolves credentials by re-loading
+    config from disk. This drives that whole chain against a config.yaml on disk
+    with no mocked resolution, so a regression in the config-side fold (which the
+    unit tests would not catch) fails here. Covers the colon ``provider:model``
+    form reported in the issue.
+    """
+    import yaml
+    from hermes_cli.config import load_config, get_compatible_custom_providers
+    from hermes_cli.model_switch import parse_model_flags
+
+    # Block any external model-catalog fetch; keep the resolution chain real.
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "openai-codex",
+                    "default": "gpt-5.4",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                },
+                "custom_providers": [
+                    {
+                        "name": "tokenplan",
+                        "api_mode": "chat_completions",
+                        "base_url": "https://token-plan.example/v1",
+                        "api_key": "sk-tokenplan-test",
+                        "model": "qwen3.7-plus",
+                        "available_models": ["qwen3.7-plus", "qwen3.7-max", "deepseek-v4-flash"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+    custom = get_compatible_custom_providers(cfg)
+    # The fold must have preserved the declared ids under ``models``.
+    tokenplan = next(e for e in custom if e.get("name") == "tokenplan")
+    assert set(tokenplan.get("models", {})) >= {"qwen3.7-max", "deepseek-v4-flash"}
+
+    model_input, explicit_provider, *_ = parse_model_flags("tokenplan:deepseek-v4-flash")
+    result = switch_model(
+        raw_input=model_input,
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider=explicit_provider,
+        user_providers=cfg.get("providers"),
+        custom_providers=custom,
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.new_model == "deepseek-v4-flash"
+    assert result.base_url == "https://token-plan.example/v1"
+
+
+def _write_tokenplan_config(tmp_path, monkeypatch, extra_entry_keys=None):
+    """Write an on-disk config.yaml with a ``tokenplan`` custom provider and
+    return the loaded (cfg, folded custom_providers). ``extra_entry_keys``
+    overrides/adds keys on the provider entry so each test can vary how the
+    model list is declared (``available_models`` alone, or alongside
+    ``models``)."""
+    import yaml
+    from hermes_cli.config import load_config, get_compatible_custom_providers
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    entry = {
+        "name": "tokenplan",
+        "api_mode": "chat_completions",
+        "base_url": "https://token-plan.example/v1",
+        "api_key": "sk-tokenplan-test",
+        "model": "qwen3.7-plus",
+        "available_models": ["qwen3.7-plus", "qwen3.7-max", "deepseek-v4-flash"],
+    }
+    if extra_entry_keys:
+        entry.update(extra_entry_keys)
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "openai-codex",
+                    "default": "gpt-5.4",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                },
+                "custom_providers": [entry],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config()
+    return cfg, get_compatible_custom_providers(cfg)
+
+
+def test_available_models_merges_with_models_dict_from_disk(tmp_path, monkeypatch):
+    """``available_models`` must MERGE with an existing ``models:`` dict, not be
+    dropped as a fallback.
+
+    A config that keeps ``models:`` for per-model metadata (e.g. context_length)
+    *and* ``available_models:`` for a plain id list is a natural shape. The
+    normalize step previously used ``available_models`` only when ``models`` was
+    falsy, silently losing the extra ids on every CLI/gateway/TUI surface. Guard
+    the merge: ``models`` metadata wins on a shared id, and an id declared only
+    in ``available_models`` still resolves.
+    """
+    from hermes_cli.model_switch import parse_model_flags
+
+    cfg, custom = _write_tokenplan_config(
+        tmp_path,
+        monkeypatch,
+        extra_entry_keys={
+            "models": {"qwen3.7-max": {"context_length": 262144}},
+            "available_models": ["qwen3.7-max", "deepseek-v4-flash"],
+        },
+    )
+
+    tokenplan = next(e for e in custom if e.get("name") == "tokenplan")
+    models = tokenplan.get("models", {})
+    # Both sources folded in; ``models`` metadata survives on the shared id.
+    assert set(models) >= {"qwen3.7-max", "deepseek-v4-flash"}
+    assert models["qwen3.7-max"].get("context_length") == 262144
+
+    # The id present ONLY in available_models still routes end-to-end.
+    model_input, explicit_provider, *_ = parse_model_flags("tokenplan:deepseek-v4-flash")
+    result = switch_model(
+        raw_input=model_input,
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider=explicit_provider,
+        user_providers=cfg.get("providers"),
+        custom_providers=custom,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.new_model == "deepseek-v4-flash"
+
+
+def test_available_models_routes_via_custom_prefixed_colon_form(tmp_path, monkeypatch):
+    """``custom:<name>:model`` form from the issue routes through the on-disk
+    normalize/fold chain (the second syntax the reporter used)."""
+    from hermes_cli.model_switch import parse_model_flags
+
+    cfg, custom = _write_tokenplan_config(tmp_path, monkeypatch)
+
+    model_input, explicit_provider, *_ = parse_model_flags("custom:tokenplan:qwen3.7-max")
+    result = switch_model(
+        raw_input=model_input,
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider=explicit_provider,
+        user_providers=cfg.get("providers"),
+        custom_providers=custom,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.new_model == "qwen3.7-max"
+    assert result.base_url == "https://token-plan.example/v1"
+
+
+def test_aggregator_vendor_colon_precedes_same_named_custom_provider(monkeypatch):
+    """A configured provider must not steal an aggregator's vendor:model slug."""
+    monkeypatch.setattr("hermes_cli.model_switch.resolve_alias", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_provider_models",
+        lambda *_: ["glm/glm-5"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_: {
+            "api_key": "test",
+            "base_url": "",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: _MOCK_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *_: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model", lambda *_: None
+    )
+
+    result = switch_model(
+        raw_input="glm:glm-5",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.6",
+        custom_providers=[
+            {
+                "name": "glm",
+                "base_url": "https://glm.example/v1",
+                "available_models": ["glm-5"],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "glm/glm-5"
+
+
+def test_custom_prefixed_typo_does_not_use_bare_custom_self_heal():
+    custom_providers = [
+        {
+            "name": "tokenplan",
+            "base_url": "https://token-plan.example/v1",
+            "available_models": ["qwen3.7-max"],
+        }
+    ]
+
+    assert _parse_configured_provider_model_input(
+        "custom:tokenpln:qwen3.7-max",
+        user_providers={},
+        custom_providers=custom_providers,
+    ) is None
+
+
+def test_colon_form_routes_custom_provider_shadowing_builtin_vendor(monkeypatch):
+    """A legacy custom provider named like a vendor still owns its colon form."""
+    monkeypatch.setattr("hermes_cli.model_switch.resolve_alias", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_: {
+            "api_key": "test",
+            "base_url": "https://deepseek-proxy.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": "not listed",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *_: None
+    )
+
+    result = switch_model(
+        raw_input="deepseek:deepseek-v4-flash",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        custom_providers=[
+            {
+                "name": "deepseek",
+                "base_url": "https://deepseek-proxy.example/v1",
+                "available_models": ["deepseek-v4-flash"],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:deepseek"
+    assert result.new_model == "deepseek-v4-flash"
+    assert result.base_url == "https://deepseek-proxy.example/v1"
+
+
+def test_available_models_routes_via_explicit_provider_flag(tmp_path, monkeypatch):
+    """``<model> --provider tokenplan`` form routes to the available_models id
+    through the on-disk chain (the third syntax the reporter used)."""
+    from hermes_cli.model_switch import parse_model_flags
+
+    cfg, custom = _write_tokenplan_config(tmp_path, monkeypatch)
+
+    model_input, explicit_provider, *_ = parse_model_flags(
+        "deepseek-v4-flash --provider tokenplan"
+    )
+    assert explicit_provider  # the flag was parsed
+    result = switch_model(
+        raw_input=model_input,
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider=explicit_provider,
+        user_providers=cfg.get("providers"),
+        custom_providers=custom,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider.endswith("tokenplan")
+    assert result.new_model == "deepseek-v4-flash"
 
 
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):

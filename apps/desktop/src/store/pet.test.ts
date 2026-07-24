@@ -7,6 +7,8 @@ import {
   $petState,
   derivePetState,
   flashPetActivity,
+  hasPetSpriteForMeta,
+  mergePetInfoMeta,
   setPetActivity
 } from './pet'
 
@@ -72,6 +74,36 @@ describe('roam motion', () => {
     expect($petState.get()).toBe('idle')
 
     $petActivity.set({})
+  })
+})
+
+describe('pet info metadata cache helpers', () => {
+  it('treats matching slug and spritesheet revision as a reusable sprite payload', () => {
+    const current = {
+      enabled: true,
+      slug: 'boba',
+      displayName: 'Old Boba',
+      scale: 0.33,
+      spritesheetBase64: 'large-sprite-payload',
+      spritesheetRevision: '100:2048'
+    }
+    const meta = {
+      enabled: true,
+      slug: 'boba',
+      displayName: 'Boba',
+      scale: 0.5,
+      spritesheetRevision: '100:2048'
+    }
+
+    expect(hasPetSpriteForMeta(current, meta)).toBe(true)
+    expect(mergePetInfoMeta(current, meta)).toMatchObject({
+      enabled: true,
+      slug: 'boba',
+      displayName: 'Boba',
+      scale: 0.5,
+      spritesheetBase64: 'large-sprite-payload',
+      spritesheetRevision: '100:2048'
+    })
   })
 })
 

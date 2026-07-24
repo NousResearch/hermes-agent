@@ -1269,6 +1269,71 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     assert "curl" in seen
 
 
+def _agent_browser_project_root(tmp_path):
+    """A PROJECT_ROOT whose node_modules/agent-browser already exists so
+    _run_post_setup skips the npm install and reaches the Chromium step."""
+    (tmp_path / "node_modules" / "agent-browser").mkdir(parents=True)
+    return tmp_path
+
+
+def test_agent_browser_post_setup_skips_chromium_for_lightpanda(tmp_path):
+    """Lightpanda is text-only and needs no Chromium, so the `hermes tools`
+    post-setup hook must not force a Chromium install/warning.
+
+    Regression for the parity gap: doctor and nous_subscription already skip
+    the local Chromium requirement when the configured engine doesn't need it
+    (tools/browser_tool.py::check_browser_requirements treats Lightpanda as
+    runnable without Chromium), but this post-setup path used to demand the
+    install unconditionally.
+    """
+    root = _agent_browser_project_root(tmp_path)
+
+    def fake_which(name):
+        return f"/usr/bin/{name}" if name in {"npm", "npx"} else None
+
+    with patch("hermes_cli.tools_config.PROJECT_ROOT", root), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run, \
+         patch("tools.browser_tool._is_camofox_mode", lambda: False), \
+         patch("tools.browser_tool._get_cdp_override", lambda: ""), \
+         patch("tools.browser_tool._get_cloud_provider", lambda: None), \
+         patch("tools.browser_tool._using_lightpanda_engine", lambda: True), \
+         patch("tools.browser_tool._chromium_installed", lambda: False), \
+         patch("tools.browser_tool._running_in_docker", lambda: False):
+        _run_post_setup("agent_browser")
+
+    # No subprocess: npm install is skipped (node_modules present) and the
+    # Chromium install must not run because Lightpanda needs no Chromium.
+    run.assert_not_called()
+
+
+def test_agent_browser_post_setup_installs_chromium_for_chrome_engine(tmp_path):
+    """Guard: the default Chrome engine without Chromium must still install it,
+    so the Lightpanda/cloud/CDP skip doesn't over-correct into a no-op for the
+    configuration that genuinely needs a local Chromium."""
+    root = _agent_browser_project_root(tmp_path)
+
+    def fake_which(name):
+        return f"/usr/bin/{name}" if name in {"npm", "npx"} else None
+
+    with patch("hermes_cli.tools_config.PROJECT_ROOT", root), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run, \
+         patch("tools.browser_tool._is_camofox_mode", lambda: False), \
+         patch("tools.browser_tool._get_cdp_override", lambda: ""), \
+         patch("tools.browser_tool._get_cloud_provider", lambda: None), \
+         patch("tools.browser_tool._using_lightpanda_engine", lambda: False), \
+         patch("tools.browser_tool._chromium_installed", lambda: False), \
+         patch("tools.browser_tool._running_in_docker", lambda: False):
+        run.return_value.returncode = 0
+        _run_post_setup("agent_browser")
+
+    run.assert_called_once()
+    install_cmd = run.call_args.args[0]
+    assert "install" in install_cmd
+    assert "--with-deps" in install_cmd
+
+
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
 

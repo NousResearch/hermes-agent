@@ -69,6 +69,7 @@ _TAPBACK_REMOVED = {
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+_DESIRED_WEBHOOK_EVENTS = ["new-message"]
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -362,18 +363,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         webhook_url = self._webhook_register_url
 
-        # Crash resilience — reuse an existing registration if present
+        # Crash resilience — reuse an existing registration only if it already
+        # has exactly the desired event set. Older Hermes builds registered
+        # ``updated-message`` too, which can double-deliver the same inbound
+        # message after BlueBubbles metadata/read-state changes.
         existing = await self._find_registered_webhooks(webhook_url)
         if existing:
-            logger.info(
-                "[bluebubbles] webhook already registered: %s",
-                self._webhook_register_url_for_log,
-            )
-            return True
+            stale = [wh for wh in existing if wh.get("events") != _DESIRED_WEBHOOK_EVENTS]
+            if not stale and len(existing) == 1:
+                logger.info(
+                    "[bluebubbles] webhook already registered: %s",
+                    self._webhook_register_url_for_log,
+                )
+                return True
+            await self._unregister_webhook()
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": list(_DESIRED_WEBHOOK_EVENTS),
         }
 
         try:

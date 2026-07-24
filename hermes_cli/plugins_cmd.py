@@ -838,6 +838,112 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     save_config(config)
 
 
+# Plugin kinds that the general loader does NOT gate on plugins.enabled /
+# plugins.disabled: model providers register through providers/__init__.py's
+# own discovery (selected via `hermes model` / model.provider), and exclusive
+# category plugins (memory providers) activate via `<category>.provider`.
+# `plugins enable`/`disable` used to accept these and print a success message
+# while having zero effect — the flag was written but nothing ever read it,
+# which misled users into thinking they had switched something on or off.
+_PASSIVE_PLUGIN_KINDS = {"model-provider", "exclusive"}
+
+
+def _memory_provider_names() -> set:
+    """Names of every discoverable memory provider (bundled + user-installed).
+
+    Memory providers are an ``exclusive`` category routed through the
+    ``plugins.memory`` discovery system and are deliberately skipped by
+    ``_discover_all_plugins`` (and therefore by the manifest resolver).
+    Bundled providers also typically ship WITHOUT an explicit
+    ``kind: exclusive`` in their manifest (e.g. ``plugins/memory/honcho/
+    plugin.yaml``), so asking the category's own discovery is the only
+    reliable way to recognize them.
+    """
+    try:
+        from plugins.memory import discover_memory_providers
+
+        return {name for name, _desc, _avail in discover_memory_providers()}
+    except Exception:
+        return set()
+
+
+def _match_memory_provider(name: str) -> Optional[str]:
+    """Return the memory-provider name *name* refers to, else ``None``.
+
+    Accepts a bare provider name (``honcho``) or a category-qualified key
+    (``memory/honcho``); matching is on the leaf segment.
+    """
+    providers = _memory_provider_names()
+    if not providers:
+        return None
+    if name in providers:
+        return name
+    leaf = name.split("/")[-1]
+    if leaf in providers:
+        return leaf
+    return None
+
+
+def _plugin_kind(key: str) -> str:
+    """Classify *key* using the same rules the plugin loader applies.
+
+    Reuses ``PluginManager._parse_manifest`` — which folds in the
+    ``register_memory_provider`` / ``register_provider`` heuristic for
+    manifests that omit an explicit ``kind`` — instead of re-reading the raw
+    ``kind`` field, and consults ``plugins.memory`` discovery so bundled
+    memory providers (excluded from ``_discover_all_plugins`` and usually
+    lacking ``kind: exclusive``) are still recognized as passive
+    ``exclusive`` providers. Defaults to ``standalone``.
+    """
+    # Memory providers are an exclusive category handled by their own
+    # discovery, which the general scan skips. Catch them first so bundled
+    # providers without ``kind: exclusive`` aren't misread as standalone.
+    if _match_memory_provider(key):
+        return "exclusive"
+
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    for entry in _discover_all_plugins():
+        # entry = (name, version, description, source, dir_path, key)
+        if entry[5] == key:
+            d = Path(entry[4])
+            prefix = key.rsplit("/", 1)[0] if "/" in key else ""
+            for fname in ("plugin.yaml", "plugin.yml"):
+                mf = d / fname
+                if mf.exists():
+                    try:
+                        manifest = manager._parse_manifest(mf, d, entry[3], prefix)
+                    except Exception:
+                        return "standalone"
+                    if manifest is not None:
+                        return manifest.kind
+            return "standalone"
+    return "standalone"
+
+
+def _print_passive_kind_hint(console, key: str, kind: str) -> None:
+    """Explain how a passive-kind plugin is actually controlled."""
+    if kind == "model-provider":
+        console.print(
+            f"[yellow]![/yellow] [bold]{key}[/bold] is a model provider — it is "
+            "not controlled by plugins.enabled/disabled (providers register "
+            "automatically at startup).\n"
+            "  To use it:       run [bold]hermes model[/bold] and pick it, or set "
+            "[dim]model.provider[/dim] in config.yaml.\n"
+            "  To stop using it: select a different provider; remove its API key "
+            "from ~/.hermes/.env to make it unselectable.\n"
+            "Nothing was changed."
+        )
+    else:  # exclusive
+        console.print(
+            f"[yellow]![/yellow] [bold]{key}[/bold] is an exclusive category "
+            "plugin — it is activated by its category's provider key (e.g. "
+            "[dim]memory.provider[/dim]), not by plugins.enabled/disabled.\n"
+            "Nothing was changed."
+        )
+
+
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
@@ -853,11 +959,26 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     console = Console()
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
+    # Memory providers are an exclusive category (selected via memory.provider)
+    # and are skipped by the general resolver, so a bare `enable honcho` would
+    # otherwise fall through to a misleading "not installed" error. Intercept
+    # them here to show the same passive-kind hint the loader-classified path
+    # gives for user-installed exclusive/model-provider plugins.
+    mem = _match_memory_provider(name)
+    if mem:
+        _print_passive_kind_hint(console, mem, "exclusive")
+        return
+
     resolved = _resolve_plugin_key_and_source(name)
     if resolved is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
     key, source = resolved
+
+    kind = _plugin_kind(key)
+    if kind in _PASSIVE_PLUGIN_KINDS:
+        _print_passive_kind_hint(console, key, kind)
+        return
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
@@ -944,10 +1065,23 @@ def cmd_disable(name: str) -> None:
     from rich.console import Console
 
     console = Console()
+    # Memory providers are skipped by the general resolver (see cmd_enable);
+    # intercept them so `disable honcho` explains memory.provider instead of
+    # failing with "not installed".
+    mem = _match_memory_provider(name)
+    if mem:
+        _print_passive_kind_hint(console, mem, "exclusive")
+        return
+
     key = _resolve_plugin_key(name)
     if key is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
+
+    kind = _plugin_kind(key)
+    if kind in _PASSIVE_PLUGIN_KINDS:
+        _print_passive_kind_hint(console, key, kind)
+        return
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()

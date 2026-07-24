@@ -800,18 +800,27 @@ class QQAdapter(BasePlatformAdapter):
             self._session_id = None
             self._last_seq = None
 
-    @staticmethod
-    def _create_task(coro):
+    def _create_task(self, coro):
         """Schedule a coroutine, silently skipping if no event loop is running.
 
         This avoids ``RuntimeError: no running event loop`` when tests call
         ``_dispatch_payload`` synchronously outside of ``asyncio.run()``.
+
+        The task is held in ``self._background_tasks`` until it completes and
+        the done-callback discards it. The event loop only keeps a *weak*
+        reference to a bare task, so without this strong reference the GC may
+        cancel a still-running handler mid-flight — for the inbound-message
+        path that means a received QQ message is silently dropped. Mirrors the
+        tracking the base adapter already does for its own spawned tasks.
         """
         try:
             loop = asyncio.get_running_loop()
-            return loop.create_task(coro)
         except RuntimeError:
             return None
+        task = loop.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
@@ -855,7 +864,7 @@ class QQAdapter(BasePlatformAdapter):
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
             }:
-                asyncio.create_task(self._on_message(t, d))
+                self._create_task(self._on_message(t, d))
             elif t == "INTERACTION_CREATE":
                 self._create_task(self._on_interaction(d))
             else:

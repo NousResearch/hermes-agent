@@ -480,6 +480,45 @@ class TestDispatchPayload:
         adapter._dispatch_payload({"op": 0, "t": "SOME_EVENT", "s": 10, "d": {}})
         assert adapter._last_seq == 10
 
+    def test_message_dispatch_without_event_loop_does_not_raise(self):
+        # A message op must be routed through the loop-safe _create_task helper,
+        # exactly like every other op _dispatch_payload handles. The inbound
+        # branch previously used a bare asyncio.create_task(), which raises
+        # "no running event loop" whenever _dispatch_payload runs outside
+        # asyncio.run() — as every other synchronous dispatch test above does.
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._on_message = mock.Mock()  # sync stub: not scheduled without a loop
+
+        adapter._dispatch_payload(
+            {"op": 0, "t": "C2C_MESSAGE_CREATE", "s": 7, "d": {"id": "m1"}}
+        )
+
+        # Sequence tracking still advances and the message was routed on.
+        assert adapter._last_seq == 7
+        adapter._on_message.assert_called_once_with("C2C_MESSAGE_CREATE", {"id": "m1"})
+
+    def test_message_dispatch_task_is_tracked(self):
+        # The spawned handler task must be held in _background_tasks so the GC
+        # cannot cancel it mid-flight (the loop only keeps a weak reference),
+        # which would silently drop a received QQ message.
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._on_message = mock.AsyncMock()
+
+        async def run():
+            adapter._dispatch_payload(
+                {"op": 0, "t": "GROUP_AT_MESSAGE_CREATE", "s": 9, "d": {"id": "m2"}}
+            )
+            assert len(adapter._background_tasks) == 1
+            task = next(iter(adapter._background_tasks))
+            await task
+            await asyncio.sleep(0)  # let the done-callback discard the entry
+            assert adapter._background_tasks == set()
+            adapter._on_message.assert_awaited_once_with(
+                "GROUP_AT_MESSAGE_CREATE", {"id": "m2"}
+            )
+
+        asyncio.run(run())
+
 
 # ---------------------------------------------------------------------------
 # READY / RESUMED handling

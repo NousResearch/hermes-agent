@@ -98,6 +98,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
     ),
+    "apiario-dev": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        base_url_override="https://api.apiario.dev/v1",
+        base_url_env_var="APIARIO_BASE_URL",
+        extra_env_vars=("APIARIO_API_KEY",),
+    ),
     "anthropic": HermesOverlay(
         transport="anthropic_messages",
         extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),

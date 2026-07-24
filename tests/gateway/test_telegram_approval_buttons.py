@@ -149,6 +149,54 @@ class TestTelegramExecApproval:
         assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
 
     @pytest.mark.asyncio
+    async def test_full_approval_keyboard_is_two_by_two(self, monkeypatch):
+        """Regression: d48bf743f flattened all buttons into one row (4x1)."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        captured_rows = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: text,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            lambda rows: captured_rows.extend(rows) or rows,
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="curl example.test", session_key="s",
+        )
+
+        assert captured_rows == [
+            ["✅ Allow Once", "✅ Session"],
+            ["✅ Always", "❌ Deny"],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_three_button_keyboard_pairs_then_singleton(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        captured_rows = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: text,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            lambda rows: captured_rows.extend(rows) or rows,
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="curl example.test", session_key="s",
+            allow_permanent=False,
+        )
+
+        assert captured_rows == [
+            ["✅ Allow Once", "✅ Session"],
+            ["❌ Deny"],
+        ]
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

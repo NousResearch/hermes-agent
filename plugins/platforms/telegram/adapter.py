@@ -5149,7 +5149,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
                     )
             buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            keyboard = InlineKeyboardMarkup([buttons])
+            # Pair into rows (2x2 for the full set) so labels stay readable on
+            # mobile — a single 4-button row truncates to "Allo… / Ses… / …".
+            rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+            keyboard = InlineKeyboardMarkup(rows)
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),

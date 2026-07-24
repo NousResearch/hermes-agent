@@ -261,6 +261,20 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     assert "Cron watchdog" in final_response  # alert header
 
 
+def test_no_agent_script_timeout_summary_is_not_provider_timeout(hermes_env):
+    """Script-only cron timeouts must not be mislabeled as provider failures."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    message = _summarize_cron_failure_for_delivery(
+        {"name": "snapshot publisher", "no_agent": True},
+        "Script timed out after 300s: /tmp/publisher.sh",
+    )
+
+    assert "script timed out" in message
+    assert "provider" not in message
+    assert "Fallback chain" not in message
+
+
 def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
     """no_agent jobs must NOT import/construct the AIAgent."""
     from cron.jobs import create_job

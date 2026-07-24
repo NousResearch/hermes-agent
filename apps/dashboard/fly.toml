@@ -1,0 +1,23 @@
+# Fly.io deploy config for HERMES//HUB. See DEPLOY.md for the full walkthrough.
+# `app` is a placeholder — `fly launch` will set your real app name here.
+app = "hermes-hub"
+primary_region = "jnb"          # Johannesburg — closest Fly region to Durban
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8787          # matches the Dockerfile CMD
+  force_https = true
+  auto_stop_machines = "stop"   # scale to zero when idle (cheap)
+  auto_start_machines = true    # wake on the next request
+  min_machines_running = 0      # set to 1 to keep background automations always running
+
+# Persist the sync database (notes, tasks, layout, feeds, memory) across deploys.
+[[mounts]]
+  source = "hermes_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- HERMES//HUB as a launchd agent (macOS) — no Docker.
+     Install:
+       cp deploy/com.hermeshub.hub.plist ~/Library/LaunchAgents/
+       # edit the paths + token below to match your checkout, then:
+       launchctl load ~/Library/LaunchAgents/com.hermeshub.hub.plist
+     Stop / logs:
+       launchctl unload ~/Library/LaunchAgents/com.hermeshub.hub.plist
+       tail -f /tmp/hermes-hub.log -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hermeshub.hub</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>server.py</string>
+    <string>--host</string><string>0.0.0.0</string>
+    <string>--port</string><string>8787</string>
+    <string>--data-dir</string><string>/Users/CHANGE_ME/.hermes-hub</string>
+  </array>
+  <!-- Point this at your clone's apps/dashboard directory: -->
+  <key>WorkingDirectory</key><string>/Users/CHANGE_ME/hermes-agent/apps/dashboard</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HERMES_HUB_TOKEN</key><string>change-me</string>
+    <!-- Optional live agent: <key>HERMES_HUB_API_KEY</key><string>sk-ant-...</string> -->
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/hermes-hub.log</string>
+  <key>StandardErrorPath</key><string>/tmp/hermes-hub.log</string>
+</dict>
+</plist>

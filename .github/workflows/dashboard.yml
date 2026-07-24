@@ -1,0 +1,64 @@
+name: Dashboard (HERMES//HUB)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/dashboard/**"
+      - ".github/workflows/dashboard.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/dashboard/**"
+      - ".github/workflows/dashboard.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Unit tests
+        working-directory: apps/dashboard
+        run: python3 -m unittest discover -s tests -v
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Playwright Chromium
+        run: |
+          npm init -y >/dev/null
+          npm install playwright-core@1
+          npx playwright-core install --with-deps chromium
+          echo "PLAYWRIGHT_CHROMIUM=$(node -e "console.log(require('playwright-core').chromium.executablePath())")" >> "$GITHUB_ENV"
+      - name: Start servers (offline demo mode)
+        working-directory: apps/dashboard
+        run: |
+          python3 server.py --offline --port 8787 --data-dir /tmp/hub-main &
+          python3 server.py --offline --port 8788 --token ci-code --data-dir /tmp/hub-auth &
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8787/api/health >/dev/null && break || sleep 0.5
+          done
+      - name: End-to-end suite
+        env:
+          AUTH_URL: http://127.0.0.1:8788
+          AUTH_TOKEN: ci-code
+        run: node apps/dashboard/tests/e2e.mjs http://127.0.0.1:8787

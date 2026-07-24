@@ -1,0 +1,35 @@
+# HERMES//HUB as a systemd *user* service (Linux) — no Docker, no root.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/hermes-hub.service ~/.config/systemd/user/
+#   # edit WorkingDirectory / token below to match your checkout, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hermes-hub
+#   loginctl enable-linger "$USER"      # keep it running after you log out
+#
+# Status / logs / stop:
+#   systemctl --user status hermes-hub
+#   journalctl --user -u hermes-hub -f
+#   systemctl --user stop hermes-hub
+
+[Unit]
+Description=HERMES//HUB personal dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Point this at your clone's apps/dashboard directory:
+WorkingDirectory=%h/hermes-agent/apps/dashboard
+ExecStart=/usr/bin/python3 server.py --host 0.0.0.0 --port 8787 --data-dir %h/.hermes-hub
+# Access code required from every device (change this!):
+Environment=HERMES_HUB_TOKEN=change-me
+# Optional — live Claude agent:
+# Environment=HERMES_HUB_API_KEY=sk-ant-...
+# Environment=HERMES_HUB_MODEL_CORE=claude-sonnet-5
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

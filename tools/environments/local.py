@@ -21,6 +21,155 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
+_WINDOWS_BASH_NUL_REDIRECTION_RE = re.compile(
+    r"(?i)(?:(?:\d+|&)>>?|>>?)[ \t]*"
+    r"(?P<target>nul)(?=$|[\s;&|(){}])"
+)
+
+
+def _mask_windows_bash_non_executable_text(command: str) -> tuple[str, bool]:
+    """Mask shell text that cannot contain an executable redirection.
+
+    Single-quoted text, literal double-quoted text, escaped characters, and
+    comments are data.  Command substitutions inside backticks or ``$(...)``
+    remain executable even when nested in double quotes, so their shell syntax
+    stays visible to the redirect matcher.
+
+    Heredocs require parsing delimiters and payload boundaries.  Report their
+    presence so the caller can conservatively leave the whole command alone
+    instead of rewriting redirect-looking payload data.
+    """
+    executable = [False] * len(command)
+    has_heredoc = False
+
+    def scan_double_quote(index: int) -> int:
+        index += 1
+        while index < len(command):
+            ch = command[index]
+            if ch == "\\":
+                index += 2
+                continue
+            if ch == '"':
+                return index + 1
+            if ch == "`":
+                index = scan_code(index + 1, closing="`")
+                if index < len(command) and command[index] == "`":
+                    index += 1
+                continue
+            if command.startswith("$(", index):
+                index = scan_code(index + 2, closing=")", paren_depth=1)
+                if index < len(command) and command[index] == ")":
+                    index += 1
+                continue
+            index += 1
+        return index
+
+    def scan_code(
+        index: int,
+        *,
+        closing: str | None = None,
+        paren_depth: int = 0,
+    ) -> int:
+        nonlocal has_heredoc
+
+        while index < len(command):
+            ch = command[index]
+
+            if closing == "`" and ch == "`":
+                return index
+            if closing == ")" and ch == ")":
+                paren_depth -= 1
+                if paren_depth == 0:
+                    return index
+                executable[index] = True
+                index += 1
+                continue
+            if closing == ")" and ch == "(":
+                paren_depth += 1
+                executable[index] = True
+                index += 1
+                continue
+
+            if ch == "'":
+                index += 1
+                while index < len(command) and command[index] != "'":
+                    index += 1
+                if index < len(command):
+                    index += 1
+                continue
+            if ch == '"':
+                index = scan_double_quote(index)
+                continue
+            if ch == "\\":
+                index += 2
+                continue
+            if ch == "#" and (
+                index == 0
+                or command[index - 1].isspace()
+                or command[index - 1] in ";|&(){}"
+            ):
+                while index < len(command) and command[index] != "\n":
+                    index += 1
+                continue
+            if (
+                command.startswith("<<", index)
+                and (index == 0 or command[index - 1] != "<")
+                and not command.startswith("<<<", index)
+            ):
+                has_heredoc = True
+                return len(command)
+            if ch == "`":
+                index = scan_code(index + 1, closing="`")
+                if index < len(command) and command[index] == "`":
+                    index += 1
+                continue
+            if command.startswith("$(", index):
+                index = scan_code(index + 2, closing=")", paren_depth=1)
+                if index < len(command) and command[index] == ")":
+                    index += 1
+                continue
+
+            executable[index] = True
+            index += 1
+
+        return index
+
+    scan_code(0)
+    masked = "".join(
+        ch if executable[index] else ("\n" if ch == "\n" else " ")
+        for index, ch in enumerate(command)
+    )
+    return masked, has_heredoc
+
+
+def _rewrite_windows_bash_nul_redirections(command: str) -> str:
+    """Translate CMD-style ``NUL`` redirects for Windows Git Bash.
+
+    Hermes intentionally executes local Windows commands through Git Bash.
+    Unlike ``cmd.exe``, Bash treats a bare ``NUL`` redirect target as an
+    ordinary filename, so model-authored commands such as ``git ... 2>NUL``
+    leave a Windows-reserved file in the working tree.  Rewrite the common
+    CMD spellings to Bash's real null device before the command is wrapped.
+
+    Non-executable strings, escaped characters, and shell comments are masked
+    before matching. Executable command substitutions remain visible. Commands
+    containing heredocs are left unchanged so payload data is never rewritten.
+    """
+    if not command or ">" not in command or "nul" not in command.lower():
+        return command
+
+    masked, has_heredoc = _mask_windows_bash_non_executable_text(command)
+    if has_heredoc:
+        return command
+
+    rewritten = command
+    matches = list(_WINDOWS_BASH_NUL_REDIRECTION_RE.finditer(masked))
+    for match in reversed(matches):
+        start, end = match.span("target")
+        rewritten = rewritten[:start] + "/dev/null" + rewritten[end:]
+    return rewritten
+
+
 def _msys_to_windows_path(cwd: str) -> str:
     """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
@@ -1297,6 +1446,11 @@ class LocalEnvironment(BaseEnvironment):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        if _IS_WINDOWS:
+            command = _rewrite_windows_bash_nul_redirections(command)
+        return super()._prepare_command(command)
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.

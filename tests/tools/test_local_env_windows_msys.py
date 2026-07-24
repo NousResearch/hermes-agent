@@ -32,10 +32,107 @@ from tools.environments.local import (
     _prepend_git_bash_dirs,
     _quote_bash_path,
     _resolve_safe_cwd,
+    _rewrite_windows_bash_nul_redirections,
     _sanitize_subprocess_env,
     _windows_to_msys_path,
     hermes_subprocess_env,
 )
+
+
+# ---------------------------------------------------------------------------
+# CMD-style NUL redirections — Git Bash must use /dev/null
+# ---------------------------------------------------------------------------
+
+class TestWindowsBashNulRedirections:
+    def test_rewrites_common_cmd_null_device_spellings(self):
+        cases = {
+            "git show missing 2>NUL || true": "git show missing 2>/dev/null || true",
+            "tool 1>nul": "tool 1>/dev/null",
+            "tool 2>> Nul": "tool 2>> /dev/null",
+            "tool >NUL": "tool >/dev/null",
+            "tool > NUL": "tool > /dev/null",
+            "tool >>nul": "tool >>/dev/null",
+            "tool &>NUL": "tool &>/dev/null",
+            "tool &>> nul": "tool &>> /dev/null",
+        }
+
+        for command, expected in cases.items():
+            assert _rewrite_windows_bash_nul_redirections(command) == expected
+
+    def test_preserves_quoted_escaped_and_commented_text(self):
+        commands = (
+            "echo '2>NUL'",
+            'echo "2>NUL"',
+            "echo `printf '2>NUL'`",
+            r"echo 2\>NUL",
+            "cmd.exe /c \"tool 2>NUL\"",
+            "echo ok # tool 2>NUL",
+        )
+
+        for command in commands:
+            assert _rewrite_windows_bash_nul_redirections(command) == command
+
+    def test_rewrites_executable_command_substitutions(self):
+        cases = {
+            "echo `git show missing 2>NUL || true`": (
+                "echo `git show missing 2>/dev/null || true`"
+            ),
+            'echo "`git show missing 2>NUL || true`"': (
+                'echo "`git show missing 2>/dev/null || true`"'
+            ),
+            "echo $(git show missing 2>NUL || true)": (
+                "echo $(git show missing 2>/dev/null || true)"
+            ),
+            'echo "$(git show missing 2>NUL || true)"': (
+                'echo "$(git show missing 2>/dev/null || true)"'
+            ),
+        }
+
+        for command, expected in cases.items():
+            assert _rewrite_windows_bash_nul_redirections(command) == expected
+
+    def test_preserves_quoted_and_unquoted_heredoc_payloads(self):
+        commands = (
+            "cat <<EOF\n2>NUL\nEOF",
+            "cat <<'EOF'\n2>NUL\nEOF",
+            'cat <<"EOF"\n2>NUL\nEOF',
+            "cat <<-EOF\n\t2>NUL\n\tEOF",
+        )
+
+        for command in commands:
+            assert _rewrite_windows_bash_nul_redirections(command) == command
+
+    def test_does_not_mistake_a_here_string_for_a_heredoc(self):
+        command = "cat <<< payload 2>NUL"
+        assert (
+            _rewrite_windows_bash_nul_redirections(command)
+            == "cat <<< payload 2>/dev/null"
+        )
+
+    def test_preserves_non_redirect_nul_words(self):
+        commands = (
+            "echo NUL",
+            "echo ANNUL",
+            "tool >NUL.txt",
+            "tool 2>/dev/null",
+        )
+
+        for command in commands:
+            assert _rewrite_windows_bash_nul_redirections(command) == command
+
+    def test_local_environment_rewrites_only_on_windows(self, monkeypatch, tmp_path):
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        command, _ = env._prepare_command("git show missing 2>NUL || true")
+        assert command == "git show missing 2>/dev/null || true"
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        command, _ = env._prepare_command("git show missing 2>NUL || true")
+        assert command == "git show missing 2>NUL || true"
 
 
 # ---------------------------------------------------------------------------

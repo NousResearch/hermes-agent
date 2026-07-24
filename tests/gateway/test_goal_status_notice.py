@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, PendingEventQueue
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE
@@ -16,6 +16,7 @@ class FakeAdapter:
         self.calls = []
         self.callbacks = {}
         self._active_sessions = {}
+        self.pending_events = PendingEventQueue()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.calls.append(
@@ -119,8 +120,6 @@ def test_clear_goal_pending_continuations_removes_slot_and_overflow_only():
     """
     runner = GatewayRunner.__new__(GatewayRunner)
     adapter = FakeAdapter()
-    adapter._pending_messages = {}
-    runner._queued_events = {}
 
     source = SessionSource(
         platform=Platform.DISCORD,
@@ -134,14 +133,14 @@ def test_clear_goal_pending_continuations_removes_slot_and_overflow_only():
         source=source,
     )
 
-    adapter._pending_messages[session_key] = _goal_continuation_event(source)
-    runner._queued_events[session_key] = [
-        normal_event,
+    adapter.pending_events.enqueue_fifo(session_key, _goal_continuation_event(source))
+    adapter.pending_events.enqueue_fifo(session_key, normal_event)
+    adapter.pending_events.enqueue_fifo(
+        session_key,
         _goal_continuation_event(source, goal="second continuation"),
-    ]
+    )
 
     removed = runner._clear_goal_pending_continuations(session_key, adapter)
 
     assert removed == 2
-    assert adapter._pending_messages.get(session_key) is None
-    assert runner._queued_events[session_key] == [normal_event]
+    assert adapter.pending_events.snapshot(session_key) == (normal_event,)

@@ -74,7 +74,6 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner._busy_ack_ts = {}
     runner._busy_input_mode = "interrupt"
     runner._busy_text_mode = "interrupt"
-    runner._queued_events = {}
     runner._update_runtime_status = MagicMock()
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()

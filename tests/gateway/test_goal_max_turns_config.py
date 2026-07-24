@@ -37,7 +37,6 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
     )
     runner.session_store = _FakeSessionStore()
     runner.adapters = {}
-    runner._queued_events = {}
 
     event = MessageEvent(
         text="/goal ship the benchmark",

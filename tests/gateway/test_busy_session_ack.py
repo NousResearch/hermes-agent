@@ -131,7 +131,6 @@ class TestBusySessionAck:
 
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "queue"
-        runner._queued_events = {}
         adapter = _make_adapter()
 
         source = SessionSource(
@@ -164,8 +163,8 @@ class TestBusySessionAck:
             result = await GatewayRunner._handle_message(runner, event)
             assert result is None
 
-        assert adapter._pending_messages[sk].text == "first"
-        assert [event.text for event in runner._queued_events[sk]] == [
+        assert [event.text for event in adapter.pending_events.snapshot(sk)] == [
+            "first",
             "second",
             "third",
         ]
@@ -503,7 +502,6 @@ class TestBusySessionAck:
         'first\\nsecond' and destroying message boundaries."""
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
-        runner._queued_events = {}
         adapter = _make_adapter()
 
         # Both events must share the SAME platform object so they resolve to
@@ -536,8 +534,9 @@ class TestBusySessionAck:
         head = adapter._pending_messages.get(sk)
         assert head is first
         assert head.text == "first message"  # not "first message\nsecond message"
-        overflow = runner._queued_events.get(sk, [])
-        assert [e.text for e in overflow] == ["second message"]
+        assert [event.text for event in adapter.pending_events.snapshot(sk)] == [
+            "first message", "second message",
+        ]
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):

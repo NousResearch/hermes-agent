@@ -119,7 +119,6 @@ def _make_runner(session_db=None):
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._queued_events = {}
     runner._busy_ack_ts = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}

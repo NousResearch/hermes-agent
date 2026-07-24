@@ -114,7 +114,6 @@ def _run_agent_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
-    runner._queued_events = {}
     runner._draining = False
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner._should_echo_stt_transcripts = lambda: True
@@ -230,7 +229,6 @@ async def test_busy_voice_interrupt_transcribes_before_pending_drain(monkeypatch
     runner._busy_input_mode = "interrupt"
     runner._busy_text_mode = "interrupt"
     runner._busy_ack_ts = {}
-    runner._queued_events = {}
     runner._agent_has_active_subagents = lambda _agent: False
     session_key = "telegram:dm:12345"
     agent = MagicMock()

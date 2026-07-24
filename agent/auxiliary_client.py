@@ -343,18 +343,21 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
 
 
 # Context window enforced by ChatGPT's Codex OAuth backend for the
-# gpt-5.4 / gpt-5.5 / gpt-5.6 families. The raw OpenAI API and OpenRouter
-# expose 1.05M for the same slugs, but the Codex backend hard-caps at 272K
-# (verified live for 5.4/5.5: a ~330K-token request to
+# gpt-5.4 / gpt-5.5 families. The raw OpenAI API and OpenRouter expose 1.05M
+# for the same slugs, but the Codex backend hard-caps these families at 272K
+# (verified live: a ~330K-token request to
 # chatgpt.com/backend-api/codex/responses is rejected with
-# ``context_length_exceeded`` while ~250K succeeds; gpt-5.6 shares the same
-# 272K Codex cap — see _CODEX_OAUTH_CONTEXT_FALLBACK in model_metadata.py).
+# ``context_length_exceeded`` while ~250K succeeds).
 # With a 272K ceiling the default 50% compaction trigger fires at ~136K —
 # wasteful, since the model can hold far more raw context before
 # summarization actually buys anything. We raise the trigger to 85% (~231K)
-# on this exact route so Codex gpt-5.4 / gpt-5.5 / gpt-5.6 sessions use the
-# window they actually have.
+# on this exact route so Codex gpt-5.4 / gpt-5.5 sessions use the window they
+# actually have.
 _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
+
+# GPT-5.6 exposes a 372K total window on Codex OAuth. Codex applies a 95%
+# effective-window safety margin, so compact at the matching 353.4K boundary.
+_CODEX_GPT56_COMPACTION_THRESHOLD = 0.95
 
 # gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) with a
 # native 128K context window.  The default 50% compaction trigger fires at
@@ -367,16 +370,14 @@ _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4 / gpt-5.5 / gpt-5.6 on the ChatGPT Codex OAuth backend.
+    """True for gpt-5.4 / gpt-5.5 on the ChatGPT Codex OAuth backend.
 
     Matches only the Codex OAuth route (provider ``openai-codex``), not the
     direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
     larger context window for the same slug and must keep the user's default
     compaction threshold. ``-pro`` variants and dated snapshots are matched
-    via prefix so the override tracks every 272K-capped family (5.4, 5.5,
-    5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
-    variant. (Name kept for backward compatibility with the
-    ``compression.codex_gpt55_autoraise`` config key.)
+    via prefix so the override tracks both 272K-capped families without
+    re-listing every variant.
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
@@ -389,7 +390,17 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         or bare == "gpt-5.5"
         or bare.startswith("gpt-5.5-")
         or bare.startswith("gpt-5.5.")
-        or bare == "gpt-5.6"
+    )
+
+
+def _is_codex_gpt56(model: Optional[str], provider: Optional[str] = None) -> bool:
+    """True for GPT-5.6 variants on the ChatGPT Codex OAuth backend."""
+    prov = (provider or "").strip().lower()
+    if prov != "openai-codex":
+        return False
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return (
+        bare == "gpt-5.6"
         or bare.startswith("gpt-5.6-")
         or bare.startswith("gpt-5.6.")
     )
@@ -446,9 +457,12 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
-        Codex caps all three families at 272K and the default 50% trigger
-        would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
+      - gpt-5.4 / gpt-5.5 on the Codex OAuth route → 0.85, because Codex caps
+        both families at 272K and the default 50% trigger would compact at
+        ~136K.
+      - gpt-5.6 on the Codex OAuth route → 0.95, matching Codex's 5% safety
+        margin on its 372K total window (353.4K effective).
+        Both overrides are gated by ``allow_codex_gpt55_autoraise``
         (historical config-key name kept for backward compatibility) so the
         user can opt back down to the global default (the caller passes the
         config flag through here).
@@ -463,6 +477,8 @@ def _compression_threshold_for_model(
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
+    if allow_codex_gpt55_autoraise and _is_codex_gpt56(model, provider):
+        return _CODEX_GPT56_COMPACTION_THRESHOLD
     if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
         return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
     if _is_codex_spark(model, provider):
@@ -3464,10 +3480,17 @@ def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
     with _client_cache_lock:
-        stale_keys = [
-            key for key in _client_cache
-            if _normalize_aux_provider(str(key[0])) == normalized
-        ]
+        stale_keys = []
+        for key in _client_cache:
+            k_prov = _normalize_aux_provider(str(key[0]))
+            if k_prov == normalized:
+                stale_keys.append(key)
+            elif k_prov == "auto":
+                # For "auto" keys, if the pool_hint starts with normalized + ":"
+                # (e.g. "openai-codex:entry_id"), it belongs to this provider.
+                pool_hint = key[7] if len(key) > 7 else ""
+                if pool_hint and pool_hint.startswith(normalized + ":"):
+                    stale_keys.append(key)
         for key in stale_keys:
             client = _client_cache.get(key, (None, None, None))[0]
             if client is not None:
@@ -4595,7 +4618,27 @@ def _resolve_auto(
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool
             # (which might pick a different, potentially exhausted key).
-            explicit_api_key = runtime_api_key
+            #
+            # However, if the main provider has a credential pool and the pool has
+            # been rotated (meaning the pool's current active key is different from
+            # the runtime_api_key), we must NOT use the stale runtime_api_key.
+            _pool_key = None
+            _p_norm = _normalize_aux_provider(main_provider)
+            if _p_norm not in {"", "auto", "custom"}:
+                _pe = _peek_pool_entry(_p_norm)
+                if _pe is not None:
+                    _pool_key = _pool_runtime_api_key(_pe)
+
+            if _pool_key and _pool_key != runtime_api_key:
+                logger.info(
+                    "Auxiliary auto-detect: main runtime API key %s... is stale "
+                    "(pool rotated to %s...); using pool active key instead",
+                    runtime_api_key[:8] if runtime_api_key else "",
+                    _pool_key[:8] if _pool_key else "",
+                )
+                explicit_api_key = _pool_key
+            else:
+                explicit_api_key = runtime_api_key
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call

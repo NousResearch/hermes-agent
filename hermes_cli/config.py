@@ -935,6 +935,12 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "codex_usage": {
+        "cache_ttl": 180.0,
+        "fetch_timeout": 5.0,
+        "fetch_budget": 2,
+        "exhausted_pct": 98.0,
+    },
     "toolsets": ["hermes-cli"],
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
@@ -1473,12 +1479,10 @@ DEFAULT_CONFIG = {
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
         "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
-                                      # When True, gpt-5.4 / gpt-5.5 / gpt-5.6 on the
-                                      # ChatGPT Codex OAuth route raise their compaction
-                                      # trigger to 85% (vs the global `threshold` above).
-                                      # Codex hard-caps these families at a 272K window, so
-                                      # the default 50% would compact at ~136K and waste half
-                                      # the usable context. Set to False to opt back down to
+                                      # When True, gpt-5.4 / gpt-5.5 on the ChatGPT Codex
+                                      # OAuth route raise their compaction trigger to 85%
+                                      # of 272K, while gpt-5.6 raises to 95% of 372K
+                                      # (353.4K effective). Set to False to opt back down to
                                       # the global threshold (e.g. 0.50) for those Codex
                                       # sessions. Only this exact route is affected —
                                       # gpt-5.4 / 5.5 / 5.6 on OpenAI's direct API,
@@ -1486,7 +1490,7 @@ DEFAULT_CONFIG = {
                                       # regardless.
         "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.4/5.5/5.6
                                       # autoraise banner. Set False to keep the
-                                      # 85% threshold autoraise but suppress the
+                                      # model-specific threshold autoraise but suppress the
                                       # user-facing notice in CLI/gateway output.
         "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
                                       # compaction mode. The codex agent owns the real

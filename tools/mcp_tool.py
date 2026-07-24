@@ -4711,13 +4711,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
+            # If we reached here, the MCP transport/session round-trip itself
+            # succeeded.  The payload may still be an application/tool-level
+            # error (for example a 400 Flow Surfaces validation error returned
+            # by NocoBase), but that should NOT trip the server-level circuit
+            # breaker as "unreachable". Transport/connectivity failures are
+            # handled by the exception path below; tool/business errors should
+            # close any open breaker because they prove the server is reachable.
             try:
                 parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
+                _reset_server_error(server_name)
             except (json.JSONDecodeError, TypeError):
                 _reset_server_error(server_name)  # non-JSON = success
             return result
@@ -5062,6 +5065,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
       nullable branches in tool input schemas, so nullable unions are collapsed
       to the non-null branch and optionality remains represented solely by the
       parent object's ``required`` list.
+    * Array nodes with no ``items`` or ``prefixItems`` schema are given a
+      permissive empty schema; OpenAI rejects function schemas with ``array
+      schema missing items``.
 
     All repairs are provider-agnostic and ideally produce a schema valid on
     OpenAI, Anthropic, Gemini, and Moonshot in one pass.
@@ -5163,6 +5169,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                         repaired["required"] = valid
                     else:
                         repaired.pop("required", None)
+
+        if repaired.get("type") == "array" and "items" not in repaired and "prefixItems" not in repaired:
+            repaired["items"] = {}
 
         return repaired
 

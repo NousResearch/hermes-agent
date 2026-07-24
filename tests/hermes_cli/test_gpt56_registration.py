@@ -84,11 +84,10 @@ class TestGpt56PricingRoute:
 
 
 class TestGpt56CodexCompaction:
-    """Codex OAuth caps the whole gpt-5.6 family at 272K, same as 5.4/5.5, so
-    the compaction auto-raise (0.85) must fire for every 5.6 variant on the
-    openai-codex route and NOT on the direct-API/OpenRouter routes."""
+    """Codex OAuth gives GPT-5.6 a 372K total window and reserves 5% headroom,
+    so Hermes should compact at the same 353.4K effective boundary."""
 
-    def test_autoraise_applies_to_all_56_on_codex(self):
+    def test_autoraise_uses_effective_window_for_all_56_on_codex(self):
         from agent.auxiliary_client import _compression_threshold_for_model
 
         for slug in (
@@ -101,14 +100,16 @@ class TestGpt56CodexCompaction:
         ):
             assert (
                 _compression_threshold_for_model(slug, provider="openai-codex")
-                == 0.85
+                == 0.95
             ), slug
+
+        assert int(372_000 * 0.95) == 353_400
 
     def test_no_autoraise_on_direct_api_route(self):
         from agent.auxiliary_client import _compression_threshold_for_model
 
         # Direct OpenAI API / OpenRouter expose the full 1.05M window, so the
-        # 272K-cap override must NOT apply there.
+        # Codex-route override must NOT apply there.
         assert (
             _compression_threshold_for_model("gpt-5.6-sol", provider="openai")
             is None

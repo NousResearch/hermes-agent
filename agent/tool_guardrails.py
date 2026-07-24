@@ -72,7 +72,7 @@ class ToolCallGuardrailConfig:
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
     exact_failure_warn_after: int = 2
-    exact_failure_block_after: int = 5
+    exact_failure_block_after: int = 33
     same_tool_failure_warn_after: int = 3
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
@@ -290,6 +290,9 @@ class ToolCallGuardrailController:
         *,
         failed: bool | None = None,
     ) -> ToolGuardrailDecision:
+        if file_mutation_result_landed(tool_name, result):
+            self.reset_for_turn()
+
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:

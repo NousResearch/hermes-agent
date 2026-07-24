@@ -12184,23 +12184,58 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         launchd_restart,
                         get_launchd_label,
                         get_launchd_plist_path,
+                        _launchd_domain,
                     )
+                    import pathlib
 
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
+                    current_label = get_launchd_label()
+                    launch_agents_dir = get_launchd_plist_path().parent
+                    domain = _launchd_domain()
+
+                    if not launch_agents_dir.is_dir():
+                        print("  ⚠ ~/Library/LaunchAgents/ not found — skipping macOS gateway restart")
+                    else:
+                        for plist_path in sorted(
+                            launch_agents_dir.glob("ai.hermes.gateway*.plist")
+                        ):
+                            label = plist_path.stem  # ai.hermes.gateway or ai.hermes.gateway-lucero
+
+                            if label == current_label:
+                                # Current profile — use launchd_restart() which includes
+                                # graceful drain via SIGUSR1 + PID file lookup
+                                check = subprocess.run(
+                                    ["launchctl", "list", label],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5,
+                                )
+                                if check.returncode == 0:
+                                    try:
+                                        launchd_restart()
+                                        restarted_services.append(label)
+                                    except subprocess.CalledProcessError as e:
+                                        stderr = (getattr(e, "stderr", "") or "").strip()
+                                        print(f"  ⚠ {label}: restart failed: {stderr}")
+                            else:
+                                # Other profiles — direct kickstart restart
+                                check = subprocess.run(
+                                    ["launchctl", "list", label],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5,
+                                )
+                                if check.returncode == 0:
+                                    try:
+                                        subprocess.run(
+                                            ["launchctl", "kickstart", "-k", f"{domain}/{label}"],
+                                            check=True,
+                                            timeout=90,
+                                        )
+                                        restarted_services.append(label)
+                                        print(f"  ✓ {label}: restarted")
+                                    except subprocess.CalledProcessError as e:
+                                        stderr = (getattr(e, "stderr", "") or "").strip()
+                                        print(f"  ⚠ {label}: restart failed: {stderr}")
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 

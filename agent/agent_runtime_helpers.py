@@ -23,6 +23,7 @@ Methods covered:
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import logging
 import re
@@ -71,6 +72,22 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
         return True
     memory_manager = getattr(agent, "_memory_manager", None)
     return bool(memory_manager and memory_manager.has_tool(function_name))
+
+
+def _handle_function_call_accepts_kwarg(handle_function_call, name: str) -> bool:
+    """Return whether a loaded handle_function_call accepts ``name``.
+
+    Live installs can temporarily contain a newer runtime helper with an older
+    model_tools dispatcher during source sync. In that state blindly passing
+    newly-added keyword arguments breaks every registry tool call.
+    """
+    try:
+        params = inspect.signature(handle_function_call).parameters
+    except (TypeError, ValueError):
+        return True
+    if name in params:
+        return True
+    return any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values())
 
 
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
@@ -2590,19 +2607,37 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
     else:
         def _execute(next_args: dict) -> Any:
-            return _ra().handle_function_call(
-                function_name, next_args, effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=agent.session_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
-                skip_tool_request_middleware=True,
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                tool_request_middleware_trace=list(_tool_middleware_trace),
-            )
+            handle_function_call = _ra().handle_function_call
+            kwargs = {
+                "tool_call_id": tool_call_id,
+                "session_id": agent.session_id or "",
+                "enabled_tools": list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                "skip_pre_tool_call_hook": True,
+            }
+            optional_kwargs = {
+                "turn_id": getattr(agent, "_current_turn_id", "") or "",
+                "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                "skip_tool_request_middleware": True,
+                "tool_request_middleware_trace": list(_tool_middleware_trace),
+                "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
+                "disabled_toolsets": getattr(agent, "disabled_toolsets", None),
+            }
+            for key, value in optional_kwargs.items():
+                if _handle_function_call_accepts_kwarg(handle_function_call, key):
+                    kwargs[key] = value
+            try:
+                return handle_function_call(function_name, next_args, effective_task_id, **kwargs)
+            except TypeError as exc:
+                message = str(exc)
+                unsupported = [
+                    key for key in ("enabled_toolsets", "disabled_toolsets")
+                    if key in kwargs and f"unexpected keyword argument '{key}'" in message
+                ]
+                if not unsupported:
+                    raise
+                for key in ("enabled_toolsets", "disabled_toolsets"):
+                    kwargs.pop(key, None)
+                return handle_function_call(function_name, next_args, effective_task_id, **kwargs)
 
     from hermes_cli.middleware import run_tool_execution_middleware
 

@@ -3087,6 +3087,67 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_invoke_tool_supports_legacy_handle_function_call(self, agent, monkeypatch):
+        """Mixed live installs can have old handle_function_call signatures."""
+        calls = []
+
+        def legacy_handle_function_call(
+            function_name,
+            function_args,
+            task_id=None,
+            *,
+            tool_call_id=None,
+            session_id=None,
+            enabled_tools=None,
+            skip_pre_tool_call_hook=False,
+        ):
+            calls.append({
+                "function_name": function_name,
+                "function_args": function_args,
+                "task_id": task_id,
+                "tool_call_id": tool_call_id,
+                "session_id": session_id,
+                "enabled_tools": enabled_tools,
+                "skip_pre_tool_call_hook": skip_pre_tool_call_hook,
+            })
+            return "legacy-result"
+
+        monkeypatch.setattr(run_agent, "handle_function_call", legacy_handle_function_call)
+
+        result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+
+        assert result == "legacy-result"
+        assert calls == [{
+            "function_name": "web_search",
+            "function_args": {"q": "test"},
+            "task_id": "task-1",
+            "tool_call_id": None,
+            "session_id": agent.session_id,
+            "enabled_tools": list(agent.valid_tool_names),
+            "skip_pre_tool_call_hook": True,
+        }]
+
+    def test_invoke_tool_retries_when_toolset_kwargs_rejected(self, agent, monkeypatch):
+        """Retry without toolset kwargs if a dynamic dispatcher rejects them."""
+        calls = []
+
+        def rejecting_handle_function_call(function_name, function_args, task_id=None, **kwargs):
+            calls.append(dict(kwargs))
+            if "enabled_toolsets" in kwargs:
+                raise TypeError("handle_function_call() got an unexpected keyword argument 'enabled_toolsets'")
+            return "retry-result"
+
+        monkeypatch.setattr(run_agent, "handle_function_call", rejecting_handle_function_call)
+
+        result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+
+        assert result == "retry-result"
+        assert len(calls) == 2
+        assert "enabled_toolsets" in calls[0]
+        assert "disabled_toolsets" in calls[0]
+        assert "enabled_toolsets" not in calls[1]
+        assert "disabled_toolsets" not in calls[1]
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])

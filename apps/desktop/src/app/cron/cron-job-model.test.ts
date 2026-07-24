@@ -41,7 +41,8 @@ describe('cronEditorUpdates', () => {
     ).toEqual({
       deliver: 'local',
       name: 'Weekly',
-      schedule: '0 9 * * 1'
+      schedule: '0 9 * * 1',
+      no_agent: true
     })
   })
 
@@ -89,5 +90,97 @@ describe('cronEditorUpdates', () => {
 
     expect('model' in updates).toBe(false)
     expect('provider' in updates).toBe(false)
+  })
+})
+
+describe('cronEditorUpdates script mode payload', () => {
+  it('includes no_agent: true and script path for script-only jobs', () => {
+    expect(
+      cronEditorUpdates(
+        {
+          deliver: 'local',
+          name: 'Backup',
+          prompt: '',
+          schedule: '0 2 * * *',
+          no_agent: true,
+          script: '/usr/local/bin/backup.sh'
+        },
+        { scriptOnlyJob: true }
+      )
+    ).toEqual({
+      deliver: 'local',
+      name: 'Backup',
+      schedule: '0 2 * * *',
+      no_agent: true,
+      script: '/usr/local/bin/backup.sh'
+    })
+  })
+
+  it('does not include no_agent or script for agent-backed jobs', () => {
+    const result = cronEditorUpdates(
+      {
+        deliver: 'local',
+        name: 'Daily Summary',
+        prompt: 'Summarize today',
+        schedule: '0 9 * * *',
+        no_agent: false,
+        script: '/some/script.sh'
+      },
+      { scriptOnlyJob: false }
+    )
+
+    expect(result).not.toHaveProperty('no_agent')
+    expect(result).not.toHaveProperty('script')
+    expect(result.prompt).toBe('Summarize today')
+  })
+
+  it('omits script from payload when script path is empty (script-only)', () => {
+    const result = cronEditorUpdates(
+      {
+        deliver: 'local',
+        name: 'EmptyScript',
+        prompt: '',
+        schedule: '0 9 * * 1',
+        no_agent: true,
+        script: ''
+      },
+      { scriptOnlyJob: true }
+    )
+
+    expect(result.no_agent).toBe(true)
+    expect(result).not.toHaveProperty('script')
+  })
+
+  it('omits script from payload when script path is whitespace only (script-only)', () => {
+    const result = cronEditorUpdates(
+      {
+        deliver: 'local',
+        name: 'WhitespaceScript',
+        prompt: '',
+        schedule: '*/15 * * * *',
+        no_agent: true,
+        script: '   '
+      },
+      { scriptOnlyJob: true }
+    )
+
+    expect(result.no_agent).toBe(true)
+    expect(result).not.toHaveProperty('script')
+  })
+
+  it('trims script path when included in payload', () => {
+    expect(
+      cronEditorUpdates(
+        {
+          deliver: 'local',
+          name: 'Trimmed',
+          prompt: '',
+          schedule: '0 * * * *',
+          no_agent: true,
+          script: '  /path/with/spaces.sh  '
+        },
+        { scriptOnlyJob: true }
+      ).script
+    ).toBe('/path/with/spaces.sh')
   })
 })

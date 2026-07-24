@@ -43,6 +43,8 @@ export interface CronEditorSaveValues {
   /** Provider for the model override ('' = none). Always paired with model. */
   provider: string
   schedule: string
+  no_agent?: boolean
+  script?: string
 }
 
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */
@@ -51,6 +53,14 @@ export function cronEditorUpdates(values: CronEditorSaveValues, options: { scrip
     deliver: values.deliver,
     name: values.name,
     schedule: values.schedule.trim()
+  }
+
+  if (options.scriptOnlyJob) {
+    updates.no_agent = true
+    const trimmedScript = values.script?.trim()
+    if (trimmedScript) {
+      updates.script = trimmedScript
+    }
   }
 
   const trimmedPrompt = values.prompt.trim()

@@ -1042,11 +1042,11 @@ export const api = {
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
-  approvePairing: (platform: string, code: string) =>
+  approvePairing: (platform: string, request_id: string) =>
     fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, code }),
+      body: JSON.stringify({ platform, request_id }),
     }),
   revokePairing: (platform: string, user_id: string) =>
     fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
@@ -1538,7 +1538,9 @@ export interface PairingUser {
   platform: string;
   user_id: string;
   user_name?: string;
+  request_id?: string;
   code?: string;
+  code_hash_prefix?: string;
   age_minutes?: number;
 }
 

@@ -123,11 +123,13 @@ class TestCodeGeneration:
             code = store.generate_code("telegram", "user1", "Alice")
             pending = store.list_pending("telegram")
         assert len(pending) == 1
-        # list_pending no longer returns the original code — it returns a
-        # truncated hash prefix.  Verify the metadata is correct instead.
+        # list_pending no longer returns the original code. It returns a
+        # request id that admins can approve, plus diagnostic hash metadata.
         assert pending[0]["user_id"] == "user1"
         assert pending[0]["user_name"] == "Alice"
-        # The code field is now a hash prefix, not the original plaintext code
+        assert pending[0]["request_id"]
+        assert pending[0]["code"] == pending[0]["request_id"]
+        assert pending[0]["code_hash_prefix"]
         assert pending[0]["code"] != code
 
 
@@ -264,7 +266,9 @@ class TestLegacyPendingFileCompat:
             pending = store.list_pending("telegram")
         assert len(pending) == 1
         assert pending[0]["user_id"] == "legacy-user"
-        assert pending[0]["code"] == "legacy"  # placeholder
+        assert pending[0]["request_id"] == ""
+        assert pending[0]["code"] == ""
+        assert pending[0]["code_hash_prefix"] == "legacy"  # placeholder
 
     def test_cleanup_expired_removes_legacy_at_ttl(self, tmp_path):
         """Legacy entries past CODE_TTL must still get pruned."""
@@ -437,6 +441,24 @@ class TestApprovalFlow:
             store.approve_code("telegram", code)
             pending = store.list_pending("telegram")
         assert len(pending) == 0
+
+    def test_approve_request_id_from_pending_list(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            pending = store.list_pending("telegram")
+            request_id = pending[0]["request_id"]
+
+            assert request_id
+            assert request_id != bot_code
+
+            result = store.approve_request("telegram", request_id.upper())
+            remaining = store.list_pending("telegram")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+        assert remaining == []
 
     def test_approve_case_insensitive(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):

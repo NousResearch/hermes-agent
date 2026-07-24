@@ -52,14 +52,15 @@ export default function PairingPage() {
   }, [loadPairing]);
 
   const handleApprove = async (user: PairingUser) => {
-    if (!user.code) {
-      showToast("Missing pairing code", "error");
+    const requestId = user.request_id || user.code;
+    if (!requestId) {
+      showToast("Missing pairing request", "error");
       return;
     }
     const key = getUserKey(user);
     setApproving(key);
     try {
-      await api.approvePairing(user.platform, user.code);
+      await api.approvePairing(user.platform, requestId);
       showToast(`Approved: "${getUserLabel(user)}"`, "success");
       loadPairing();
     } catch (e) {
@@ -179,8 +180,15 @@ export default function PairingPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <Badge tone="outline">{user.platform}</Badge>
-                    {user.code && (
-                      <span className="font-mono text-sm">{user.code}</span>
+                    {(user.request_id || user.code) && (
+                      <span className="font-mono text-sm">
+                        {user.request_id || user.code}
+                      </span>
+                    )}
+                    {user.code_hash_prefix && (
+                      <span className="font-mono text-xs text-muted-foreground">
+                        hash {user.code_hash_prefix}
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -199,7 +207,7 @@ export default function PairingPage() {
                     size="sm"
                     className="uppercase"
                     onClick={() => handleApprove(user)}
-                    disabled={approving === key || !user.code}
+                    disabled={approving === key || !(user.request_id || user.code)}
                     prefix={
                       approving === key ? (
                         <Spinner />

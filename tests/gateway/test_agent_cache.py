@@ -389,6 +389,57 @@ class TestExtractCacheBustingConfig:
         assert sig_mem0["memory.provider"] == "mem0"
         assert sig_honcho != sig_mem0
 
+    def test_memory_providers_list_change_busts_signature(self, monkeypatch):
+        """Changing the ordered memory.providers LIST must change the
+        cache-busting signature (upstream #5688). A singleton-only cache key
+        would miss a list change and reuse a stale agent that activated a
+        different provider set."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr(
+            GatewayRunner,
+            "_extract_honcho_cache_busting_config",
+            classmethod(lambda cls: cls._empty_honcho_cache_busting_config()),
+        )
+
+        sig_a = GatewayRunner._extract_cache_busting_config(
+            {"memory": {"providers": ["index"]}}
+        )
+        sig_b = GatewayRunner._extract_cache_busting_config(
+            {"memory": {"providers": ["index", "holographic"]}}
+        )
+
+        assert sig_a["memory.providers"] == ["index"]
+        assert sig_b["memory.providers"] == ["index", "holographic"]
+        assert sig_a != sig_b
+
+    def test_honcho_in_providers_list_triggers_honcho_read(self, monkeypatch):
+        """Honcho identity keys must be read when honcho appears ANYWHERE in the
+        ordered memory.providers list, not only via the legacy singular field
+        (upstream #5688)."""
+        from gateway.run import GatewayRunner
+
+        calls = []
+
+        def _fake():
+            calls.append(True)
+            return {
+                "honcho.peer_name": "eri",
+                "honcho.ai_peer": "hermes",
+                "honcho.pin_peer_name": True,
+                "honcho.runtime_peer_prefix": "tg_",
+                "honcho.user_peer_aliases": [("123", "eri")],
+            }
+
+        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _fake)
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"memory": {"providers": ["index", "honcho"]}}
+        )
+
+        assert calls == [True]
+        assert out["honcho.peer_name"] == "eri"
+
     def test_honcho_cache_busting_config_memoized_by_mtime(self, monkeypatch, tmp_path):
         """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
         from types import SimpleNamespace

@@ -999,9 +999,9 @@ def cmd_setup(args) -> None:
 
     # --- Auto-enable Honcho as memory provider in config.yaml ---
     try:
-        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config import load_config, save_config, set_active_memory_providers
         hermes_config = load_config()
-        hermes_config.setdefault("memory", {})["provider"] = "honcho"
+        set_active_memory_providers(hermes_config, ["honcho"])
         save_config(hermes_config)
         print("  Memory provider set to 'honcho' in config.yaml")
     except Exception as e:

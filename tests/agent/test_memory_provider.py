@@ -175,17 +175,24 @@ class TestMemoryManager:
         mgr.add_provider(p2)
         assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
-    def test_second_external_rejected(self):
-        """Only one non-builtin provider is allowed."""
+    def test_multiple_externals_coexist(self):
+        """Multiple non-builtin providers register and run simultaneously.
+
+        Contract (upstream #5688): registration is unconditional; list order is
+        injection/priority order. The real production case is an always-on
+        coverage-map provider (e.g. ``index``) alongside a second external
+        provider (e.g. ``holographic``) — both must survive registration.
+        """
         mgr = MemoryManager()
         builtin = FakeMemoryProvider("builtin")
-        ext1 = FakeMemoryProvider("mem0")
-        ext2 = FakeMemoryProvider("hindsight")
+        ext1 = FakeMemoryProvider("index")
+        ext2 = FakeMemoryProvider("holographic")
         mgr.add_provider(builtin)
         mgr.add_provider(ext1)
-        mgr.add_provider(ext2)  # should be rejected
-        assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
-        assert len(mgr.providers) == 2
+        mgr.add_provider(ext2)
+        # Both externals coexist, in registration order, none dropped.
+        assert mgr.provider_names == ["builtin", "index", "holographic"]
+        assert len(mgr.providers) == 3
 
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
@@ -664,6 +671,72 @@ class TestUserInstalledProviderDiscovery:
         p = load_memory_provider("nestedimpl")
         assert p is not None
         assert p.name == "nestedimpl"
+
+    def test_e2e_two_user_plugin_providers_coexist_and_run(self, tmp_path, monkeypatch):
+        """E2E (upstream #5688): two real user-installed memory providers,
+        loaded through the actual plugin loader and registered through the real
+        MemoryManager.add_provider path, coexist and both remain callable.
+
+        This is the real production case (an always-on coverage-map provider
+        alongside a second external provider), exercised end-to-end: real
+        imports, a temp HERMES_HOME plugins dir, both providers actually
+        registering, both of their tools actually routing. Mirrors the ordered
+        memory.providers resolution the agent_init seam performs.
+        """
+        import json
+        from plugins.memory import load_memory_provider, discover_memory_providers
+        from agent.memory_manager import MemoryManager
+        from hermes_cli.config import get_active_memory_providers
+
+        def _make_provider(name, tool_name):
+            d = tmp_path / "plugins" / name
+            d.mkdir(parents=True)
+            (d / "__init__.py").write_text(
+                "import json\n"
+                "from agent.memory_provider import MemoryProvider\n"
+                "class P(MemoryProvider):\n"
+                "    @property\n"
+                f"    def name(self): return {name!r}\n"
+                "    def is_available(self): return True\n"
+                "    def initialize(self, **kw): pass\n"
+                "    def sync_turn(self, *a, **kw): pass\n"
+                "    def get_tool_schemas(self):\n"
+                f"        return [{{'name': {tool_name!r}, 'description': 'x', 'parameters': {{'type': 'object', 'properties': {{}}}}}}]\n"
+                f"    def handle_tool_call(self, tool_name, args): return json.dumps({{'ran': {name!r}}})\n"
+            )
+            return d
+
+        _make_provider("fakecov", "fakecov_pointer")
+        _make_provider("fakevec", "fakevec_recall")
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        # Both discoverable as available user plugins.
+        discovered = {n: ok for n, _, ok in discover_memory_providers()}
+        assert discovered.get("fakecov") is True
+        assert discovered.get("fakevec") is True
+
+        # Drive the exact agent_init resolution: ordered list → load → add.
+        cfg = {"memory": {"providers": ["fakecov", "fakevec"]}}
+        names = get_active_memory_providers(cfg)
+        assert names == ["fakecov", "fakevec"]
+
+        mgr = MemoryManager()
+        for nm in names:
+            prov = load_memory_provider(nm)
+            assert prov is not None and prov.is_available()
+            mgr.add_provider(prov)
+
+        # Both externals registered, in priority (list) order, none dropped.
+        assert mgr.provider_names == ["fakecov", "fakevec"]
+
+        # Both providers' tools actually route to the right provider.
+        out_cov = json.loads(mgr.handle_tool_call("fakecov_pointer", {}))
+        out_vec = json.loads(mgr.handle_tool_call("fakevec_recall", {}))
+        assert out_cov == {"ran": "fakecov"}
+        assert out_vec == {"ran": "fakevec"}
 
 
 class TestUserInstalledProviderCli:

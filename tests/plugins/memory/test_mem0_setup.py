@@ -23,6 +23,18 @@ def _inject_fake_hermes_cli(monkeypatch):
     fake_config_mod = types.ModuleType("hermes_cli.config")
     fake_config_mod.save_config = lambda c: None
 
+    def _fake_set_active_memory_providers(config, names):
+        cleaned = [n.strip() for n in (names or []) if isinstance(n, str) and n.strip()]
+        mem = config.setdefault("memory", {})
+        if not isinstance(mem, dict):
+            mem = {}
+            config["memory"] = mem
+        mem["providers"] = cleaned
+        mem["provider"] = cleaned[0] if len(cleaned) == 1 else ""
+        return config
+
+    fake_config_mod.set_active_memory_providers = _fake_set_active_memory_providers
+
     fake_setup_mod = types.ModuleType("hermes_cli.memory_setup")
     fake_setup_mod._curses_select = lambda *a, **kw: 0
     fake_setup_mod._prompt = lambda label, default=None, secret=False: default or ""

@@ -187,6 +187,47 @@ class TestGetCdpOverride:
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert bc.is_camofox_mode() is False
 
+    def test_get_cdp_override_unresolved_skips_discovery(self, monkeypatch):
+        """resolve=False returns the configured endpoint without HTTP I/O."""
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.setenv("BROWSER_CDP_URL", HTTP_URL)
+
+        def _fail_resolve(*args, **kwargs):
+            raise AssertionError("resolve=False must not perform HTTP discovery")
+
+        monkeypatch.setattr(browser_tool, "_resolve_cdp_override", _fail_resolve)
+        assert browser_tool._get_cdp_override(resolve=False) == HTTP_URL
+
+    def test_get_cdp_override_unresolved_reads_config_without_discovery(self, monkeypatch):
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+        def _fail_resolve(*args, **kwargs):
+            raise AssertionError("resolve=False must not perform HTTP discovery")
+
+        monkeypatch.setattr(browser_tool, "_resolve_cdp_override", _fail_resolve)
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"browser": {"cdp_url": HTTP_URL}}):
+            assert browser_tool._get_cdp_override(resolve=False) == HTTP_URL
+
+    def test_check_browser_requirements_does_not_probe_configured_endpoint(self, monkeypatch):
+        """check_browser_requirements() is schema-time: a configured CDP
+        endpoint must not trigger /json/version discovery."""
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+        def _fail_resolve(*args, **kwargs):
+            raise AssertionError("schema check must not resolve CDP endpoints")
+
+        monkeypatch.setattr(browser_tool, "_resolve_cdp_override", _fail_resolve)
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"browser": {"cdp_url": HTTP_URL}}):
+            assert browser_tool.check_browser_requirements() is True
+
 class TestCreateCdpSession:
     """_create_cdp_session() must sanitize the CDP URL before logging.
 

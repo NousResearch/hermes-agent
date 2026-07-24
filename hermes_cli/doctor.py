@@ -1766,10 +1766,12 @@ def run_doctor(args):
             else:
                 # Only warn about Chromium if the installed engine actually
                 # requires it: Camofox, CDP override, a cloud provider, or
-                # Lightpanda all bypass the local Chromium requirement.
+                # Lightpanda all bypass the local Chromium requirement. Use the
+                # configuration-only CDP probe: doctor must not perform HTTP
+                # discovery against a configured endpoint.
                 skip_chromium_check = (
                     _is_camofox_mode()
-                    or bool(_get_cdp_override())
+                    or bool(_get_cdp_override(resolve=False))
                     or _get_cloud_provider() is not None
                     or _using_lightpanda_engine()
                 )

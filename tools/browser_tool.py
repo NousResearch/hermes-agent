@@ -457,8 +457,8 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
-def _get_cdp_override() -> str:
-    """Return a normalized CDP URL override, or empty string.
+def _get_cdp_override(resolve: bool = True) -> str:
+    """Return a CDP URL override, or empty string.
 
     Precedence is:
     1. ``BROWSER_CDP_URL`` env var (live override from ``/browser connect``)
@@ -467,10 +467,16 @@ def _get_cdp_override() -> str:
     When either is set, we skip both Browserbase and the local headless
     launcher and connect directly to the supplied Chrome DevTools Protocol
     endpoint.
+
+    ``resolve`` controls HTTP discovery. Connection paths keep the default
+    (``True``) so they receive a concrete ``ws://`` endpoint. Schema-time
+    availability checks pass ``resolve=False``: a configured endpoint must
+    stay tool-eligible even when Chrome is temporarily stopped, instead of
+    disappearing from the tool schema after a failed ``/json/version`` probe.
     """
     env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
     if env_override:
-        return _resolve_cdp_override(env_override)
+        return _resolve_cdp_override(env_override) if resolve else env_override
 
     try:
         from hermes_cli.config import read_raw_config
@@ -478,7 +484,9 @@ def _get_cdp_override() -> str:
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
         if isinstance(browser_cfg, dict):
-            return _resolve_cdp_override(str(browser_cfg.get("cdp_url", "") or ""))
+            configured = str(browser_cfg.get("cdp_url", "") or "").strip()
+            if configured:
+                return _resolve_cdp_override(configured) if resolve else configured
     except Exception as e:
         logger.debug("Could not read browser.cdp_url from config: %s", e)
 
@@ -789,7 +797,7 @@ def _termux_browser_install_error() -> str:
 
 def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
-    if _get_cdp_override():
+    if _get_cdp_override(resolve=False):
         return False
     return _get_cloud_provider() is None
 
@@ -820,8 +828,9 @@ def _is_local_backend() -> bool:
     # either the BROWSER_CDP_URL env var or a persistent `browser.cdp_url`
     # config (both via _get_cdp_override(), and both now suppress camofox in
     # browser_camofox.py). _is_local_mode() already treats any CDP override as
-    # non-local; keep the two helpers in agreement.
-    if _get_cdp_override():
+    # non-local; keep the two helpers in agreement. Use the configuration-only
+    # probe so routing decisions do not perform endpoint discovery I/O.
+    if _get_cdp_override(resolve=False):
         return False
     if _is_camofox_mode():
         return True
@@ -1313,7 +1322,7 @@ def _navigation_session_key(task_id: str, url: str) -> str:
     """
     if task_id is None:
         task_id = "default"
-    if _get_cdp_override():
+    if _get_cdp_override(resolve=False):
         return task_id
     if _is_camofox_mode():
         return task_id
@@ -4739,8 +4748,11 @@ def check_browser_requirements() -> bool:
         return True
 
     # CDP override mode can connect to an existing remote/local browser endpoint
-    # without requiring the local agent-browser binary on PATH.
-    if _get_cdp_override():
+    # without requiring the local agent-browser binary on PATH. Use the
+    # configuration-only probe here: schema assembly must not perform HTTP
+    # discovery against the endpoint, so a temporarily stopped Chrome does not
+    # hide the browser tools.
+    if _get_cdp_override(resolve=False):
         return True
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.

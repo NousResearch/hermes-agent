@@ -29,7 +29,7 @@ def _reset_routing_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_tool, "_update_session_activity", lambda t: None)
     # Default: no CDP override, no Camofox
-    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda resolve=True: None)
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
 
 
@@ -91,7 +91,9 @@ class TestNavigationSessionKey:
     def test_cdp_override_stays_on_bare_task_id(self, monkeypatch):
         """A user-supplied CDP endpoint owns the whole session — no hybrid."""
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
-        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://localhost:9222")
+        monkeypatch.setattr(
+            browser_tool, "_get_cdp_override", lambda resolve=True: "ws://localhost:9222"
+        )
         key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
         assert key == "default"
 

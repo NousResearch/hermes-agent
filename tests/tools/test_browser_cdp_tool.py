@@ -555,24 +555,46 @@ def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
 # ---------------------------------------------------------------------------
 
 
+def _stub_cdp_override(monkeypatch, value: str):
+    import tools.browser_tool as bt
+
+    def _fake_get_cdp_override(resolve: bool = True) -> str:
+        assert resolve is False, "schema-time check must not resolve CDP endpoints"
+        return value
+
+    monkeypatch.setattr(bt, "_get_cdp_override", _fake_get_cdp_override)
+
+
 def test_check_fn_false_when_no_cdp_url(monkeypatch):
     """Gate closes when no CDP URL is set — even if the browser toolset is
     otherwise configured."""
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+    _stub_cdp_override(monkeypatch, "")
     assert browser_cdp_tool._browser_cdp_check() is False
 
 
 def test_check_fn_true_when_cdp_url_set(monkeypatch):
-    """Gate opens as soon as a CDP URL is resolvable."""
+    """Gate opens as soon as a CDP URL is configured."""
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
-    monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
-    )
+    _stub_cdp_override(monkeypatch, "ws://localhost:9222/devtools/browser/x")
+    assert browser_cdp_tool._browser_cdp_check() is True
+
+
+def test_check_fn_true_for_unreachable_http_endpoint(monkeypatch):
+    """A configured HTTP discovery endpoint stays schema-eligible even when
+    Chrome is stopped: the gate must not perform /json/version I/O."""
+    import tools.browser_tool as bt
+
+    def _fail_resolve(*args, **kwargs):
+        raise AssertionError("check_fn must not resolve CDP endpoints over HTTP")
+
+    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
+    monkeypatch.setattr(bt, "_resolve_cdp_override", _fail_resolve)
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://localhost:9223")
     assert browser_cdp_tool._browser_cdp_check() is True
 
 
@@ -582,7 +604,5 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: False)
-    monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
-    )
+    _stub_cdp_override(monkeypatch, "ws://localhost:9222/devtools/browser/x")
     assert browser_cdp_tool._browser_cdp_check() is False

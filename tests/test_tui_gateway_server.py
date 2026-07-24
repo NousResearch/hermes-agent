@@ -10350,17 +10350,17 @@ def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
     assert resp["result"] == {"connected": True, "url": "http://lan:9222"}
 
 
-def test_browser_manage_status_does_not_call_get_cdp_override(monkeypatch):
+def test_browser_manage_status_does_not_resolve_cdp_endpoint(monkeypatch):
     """Regression guard for Copilot's "status must not block" review:
-    status must NOT route through `_get_cdp_override`, which performs a
-    `/json/version` HTTP probe with a multi-second timeout."""
+    status may read the configured override, but must NOT perform the
+    `/json/version` HTTP probe (multi-second timeout)."""
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
 
-    fake = types.SimpleNamespace(
-        _get_cdp_override=lambda: pytest.fail(  # noqa: PT015 — fail loudly if called
-            "_get_cdp_override must not run on /browser status (network I/O)"
-        )
-    )
+    def _get_cdp_override(resolve: bool = True):
+        assert resolve is False, "/browser status must use resolve=False"
+        return os.environ.get("BROWSER_CDP_URL", "")
+
+    fake = types.SimpleNamespace(_get_cdp_override=_get_cdp_override)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}

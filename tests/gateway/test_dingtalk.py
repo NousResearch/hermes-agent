@@ -407,6 +407,21 @@ class TestConnect:
         assert adapter._http_client is None
 
     @pytest.mark.asyncio
+    async def test_disconnect_cancels_webhook_expiry_watcher(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        watcher = asyncio.create_task(adapter._watch_webhook_expiry())
+        adapter._webhook_watch_task = watcher
+        await asyncio.sleep(0)
+
+        await adapter.disconnect()
+
+        assert watcher.done()
+        assert adapter._webhook_watch_task is None
+
+    @pytest.mark.asyncio
     async def test_disconnect_finalizes_open_streaming_cards(self):
         """Streaming cards must be finalized before HTTP client closes."""
         from unittest.mock import AsyncMock, patch
@@ -435,6 +450,127 @@ class TestConnect:
         assert set(close_calls) == {"chat-1", "chat-2"}
         assert adapter._streaming_cards == {}
         assert adapter._http_client is None
+
+
+# ---------------------------------------------------------------------------
+# Session webhook near-expiry watcher
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookNearExpiryWatcher:
+    """Proactive warning for session_webhooks approaching their TTL inside a
+    long-lived Stream Mode connection (issue #23513).  Without an inbound
+    message to refresh the cached webhook, the only signal to operators
+    used to be a send-time failure.  The watcher emits a one-shot warning
+    while the webhook is still valid so the imminent silent failure is
+    visible.
+    """
+
+    def _now_ms(self) -> int:
+        return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+    def test_warns_when_webhook_enters_near_expiry_window(self, caplog):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        # 7 minutes from now — inside the 10-min warning window.
+        expired_time_ms = self._now_ms() + 7 * 60 * 1000
+        adapter._session_webhooks["chat-1"] = (
+            "https://api.dingtalk.com/x", expired_time_ms,
+        )
+
+        with caplog.at_level("WARNING", logger="plugins.platforms.dingtalk.adapter"):
+            adapter._scan_webhooks_for_near_expiry()
+
+        assert any(
+            "expires in" in rec.message and "chat-1" in rec.message
+            for rec in caplog.records
+        )
+        assert adapter._webhook_expiry_warned.get("chat-1") == expired_time_ms
+
+    def test_no_warning_for_fresh_webhook(self, caplog):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        # 30 minutes from now — outside the 10-min warning window.
+        adapter._session_webhooks["chat-1"] = (
+            "https://api.dingtalk.com/x", self._now_ms() + 30 * 60 * 1000,
+        )
+
+        with caplog.at_level("WARNING", logger="plugins.platforms.dingtalk.adapter"):
+            adapter._scan_webhooks_for_near_expiry()
+
+        assert not any("expires in" in rec.message for rec in caplog.records)
+        assert "chat-1" not in adapter._webhook_expiry_warned
+
+    def test_no_duplicate_warning_for_same_expiry(self, caplog):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        expired_time_ms = self._now_ms() + 7 * 60 * 1000
+        adapter._session_webhooks["chat-1"] = (
+            "https://api.dingtalk.com/x", expired_time_ms,
+        )
+
+        with caplog.at_level("WARNING", logger="plugins.platforms.dingtalk.adapter"):
+            adapter._scan_webhooks_for_near_expiry()
+            adapter._scan_webhooks_for_near_expiry()
+
+        warns = [r for r in caplog.records if "expires in" in r.message]
+        assert len(warns) == 1
+
+    def test_refreshed_webhook_rearms_warning(self, caplog):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        first_expiry = self._now_ms() + 7 * 60 * 1000
+        adapter._session_webhooks["chat-1"] = (
+            "https://api.dingtalk.com/x", first_expiry,
+        )
+
+        with caplog.at_level("WARNING", logger="plugins.platforms.dingtalk.adapter"):
+            adapter._scan_webhooks_for_near_expiry()
+            second_expiry = self._now_ms() + 8 * 60 * 1000
+            adapter._session_webhooks["chat-1"] = (
+                "https://api.dingtalk.com/x", second_expiry,
+            )
+            adapter._scan_webhooks_for_near_expiry()
+
+        warns = [r for r in caplog.records if "expires in" in r.message]
+        assert len(warns) == 2
+        assert adapter._webhook_expiry_warned["chat-1"] == second_expiry
+
+    def test_already_expired_webhook_skipped(self, caplog):
+        """Already-expired webhooks are evicted by _get_valid_webhook; the
+        watcher must not double-warn."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._session_webhooks["chat-1"] = (
+            "https://api.dingtalk.com/x", self._now_ms() - 60 * 1000,
+        )
+
+        with caplog.at_level("WARNING", logger="plugins.platforms.dingtalk.adapter"):
+            adapter._scan_webhooks_for_near_expiry()
+
+        assert not any("expires in" in rec.message for rec in caplog.records)
+
+    def test_eviction_clears_warned_marker(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        past = self._now_ms() - 60 * 1000
+        adapter._session_webhooks["chat-1"] = (
+            "https://api.dingtalk.com/x", past,
+        )
+        adapter._webhook_expiry_warned["chat-1"] = past
+
+        assert adapter._get_valid_webhook("chat-1") is None
+        assert "chat-1" not in adapter._webhook_expiry_warned
+        assert "chat-1" not in adapter._session_webhooks
+
+    def test_stale_warned_entries_pruned(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._webhook_expiry_warned["gone-chat"] = self._now_ms() + 1000
+
+        adapter._scan_webhooks_for_near_expiry()
+
+        assert "gone-chat" not in adapter._webhook_expiry_warned
 
 
 # ---------------------------------------------------------------------------

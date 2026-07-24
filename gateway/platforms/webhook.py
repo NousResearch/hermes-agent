@@ -719,13 +719,21 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
+        # Build a unique delivery ID.  Provider-supplied delivery headers
+        # (GitHub, Svix, generic X-Request-ID) are reused across retries, so
+        # they make the idempotency cache work.  When a sender includes none
+        # of them — common for custom monitors, Supabase triggers, and other
+        # bespoke webhooks — fall back to a hash of the route + raw body so a
+        # retried POST resolves to the same ID instead of a fresh time-based
+        # one, which would defeat idempotency and double-deliver.
+        delivery_id = (
+            request.headers.get("X-GitHub-Delivery")
+            or request.headers.get("svix-id")
+            or request.headers.get("X-Request-ID")
+            or "sha256:"
+            + hashlib.sha256(
+                route_name.encode("utf-8") + b"\x00" + raw_body
+            ).hexdigest()
         )
 
         # ── Idempotency ─────────────────────────────────────────

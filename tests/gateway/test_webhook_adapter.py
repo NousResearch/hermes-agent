@@ -1078,6 +1078,58 @@ class TestIdempotency:
             assert resp2.status == 202  # re-accepted
 
     @pytest.mark.asyncio
+    async def test_headerless_retry_deduplicated_by_body_hash(self):
+        """Retries with no delivery header dedupe on the route + body hash.
+
+        Custom senders (monitoring, Supabase triggers, bespoke scripts)
+        often retry after a timeout/5xx without any X-GitHub-Delivery /
+        svix-id / X-Request-ID header.  Without a content-based fallback
+        each retry got a fresh time-based ID, missed the idempotency cache,
+        and re-ran the agent — duplicate delivery.  The same raw body on the
+        same route must resolve to the same delivery ID.
+        """
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            # No delivery headers at all — identical payload sent twice.
+            resp1 = await cli.post("/webhooks/idem", json={"a": 1})
+            assert resp1.status == 202
+
+            resp2 = await cli.post("/webhooks/idem", json={"a": 1})
+            assert resp2.status == 200
+            data = await resp2.json()
+            assert data["status"] == "duplicate"
+
+        # The agent must have been dispatched exactly once.
+        await asyncio.sleep(0.05)
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_headerless_distinct_bodies_not_deduplicated(self):
+        """Different bodies on the same header-less route stay independent.
+
+        The body-hash fallback must not collapse genuinely distinct events
+        into one delivery — only byte-identical retries should dedupe.
+        """
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.post("/webhooks/idem", json={"a": 1})
+            assert resp1.status == 202
+
+            resp2 = await cli.post("/webhooks/idem", json={"a": 2})
+            assert resp2.status == 202
+
+        await asyncio.sleep(0.05)
+        assert adapter.handle_message.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_svix_id_used_as_delivery_id_for_deduplication(self):
         """Svix retries reuse svix-id, so use it as the delivery ID when present."""
         routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}

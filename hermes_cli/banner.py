@@ -143,15 +143,8 @@ def _canonical_github_remote(url: str | None) -> str:
     return value.lower()
 
 
-def _is_ssh_remote(url: str | None) -> bool:
-    if not url:
-        return False
-    value = url.strip().lower()
-    return value.startswith("git@") or value.startswith("ssh://")
-
-
-def _is_official_ssh_remote(url: str | None) -> bool:
-    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+def _is_official_remote(url: str | None) -> bool:
+    return _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
@@ -194,7 +187,13 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-    if _is_official_ssh_remote(origin_url):
+    # Passive checks must not mutate an official installer checkout. In
+    # particular, a shallow ``git fetch --depth 1`` writes ``shallow.lock``;
+    # if the short passive-check timeout kills Git, that lock survives and
+    # blocks the real ``hermes update``. Comparing HEAD with the official
+    # remote tip via ls-remote is read-only and works for both HTTPS and SSH
+    # origins (the probe itself always uses the public HTTPS URL).
+    if _is_official_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         checked = _check_via_rev(head_rev) if head_rev else None
         if checked == UPDATE_AVAILABLE_NO_COUNT:

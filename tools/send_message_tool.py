@@ -61,6 +61,32 @@ _EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2
 # generic "<PLATFORM>_HOME_CHANNEL" hint would point users at a variable that is
 # never read. Map the exceptions so the error guidance is actually actionable.
 _HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
+
+
+def _fallback_home_channel_id(platform_name: str) -> str:
+    """Resolve a platform's home-channel id when the gateway config has none.
+
+    The gateway process env can lack the bridged ``<PLATFORM>_HOME_CHANNEL``
+    (e.g. a Web-UI-managed gateway that never loaded ``.env``), yet config.yaml
+    still holds it — that is where ``hermes config set <PLATFORM>_HOME_CHANNEL``
+    writes the value. Check the env var first, then the config.yaml value, so
+    the gateway ``send_message`` tool resolves the same home channel the CLI
+    ``hermes send`` does (#43335). Returns ``""`` when neither source has it.
+    """
+    key = _HOME_CHANNEL_ENV_OVERRIDES.get(
+        platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
+    )
+    val = os.getenv(key, "").strip()
+    if val:
+        return val
+    try:
+        from hermes_cli.config import load_config
+
+        return str((load_config() or {}).get(key, "") or "").strip()
+    except Exception:
+        return ""
+
+
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -446,11 +472,18 @@ def _handle_send(args):
     used_home_channel = False
     if not chat_id:
         home = config.get_home_channel(platform)
-        if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
-            if wx_home:
+        if not home:
+            # Gateway config came up empty (commonly: the gateway process env
+            # lacks the bridged <PLATFORM>_HOME_CHANNEL). Fall back to env or
+            # config.yaml so the tool matches the CLI's resolution (#43335).
+            fallback_id = _fallback_home_channel_id(platform_name)
+            if fallback_id:
                 from gateway.config import HomeChannel
-                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+                home = HomeChannel(
+                    platform=platform,
+                    chat_id=fallback_id,
+                    name=f"{platform_name.title()} Home",
+                )
         if home:
             chat_id = home.chat_id
             used_home_channel = True

@@ -3551,9 +3551,7 @@ class GatewaySlashCommandsMixin:
                 if not compressor.has_content_to_compress(head):
                     return t("gateway.compress.nothing_to_do")
 
-                loop = asyncio.get_running_loop()
-                compressed, _ = await loop.run_in_executor(
-                    None,
+                compressed, _ = await asyncio.to_thread(
                     lambda: tmp_agent._compress_context(
                         head,
                         "",

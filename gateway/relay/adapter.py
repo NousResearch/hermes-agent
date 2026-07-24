@@ -234,16 +234,23 @@ class RelayAdapter(BasePlatformAdapter):
         outbound (the agent's reply) can re-assert it for the connector's egress
         tenant resolution. Never raises — scope tracking must not break inbound.
 
-        Two cases, matching the connector's two tenant-resolution paths:
-          - SCOPED message: remember chat_id -> scope_id. The connector resolves
-            the tenant from metadata.scope_id (routing table).
-          - DM (no scope): remember chat_id -> the authentic author user_id.
-            A DM carries no scope discriminator, so the connector instead resolves
-            the tenant from the recipient's author binding (resolveByUser); it
-            needs the user_id on the OUTBOUND action to do that. Without this, a
-            DM reply has no resolvable discriminator and the connector's egress
-            guard declines it as "target not routed to an onboarded tenant".
-            See gateway-gateway routedEgressGuard.ts / the tenant resolvers.
+        Two discriminators, captured independently (a scoped message has BOTH):
+          - scope_id: for a scoped (guild/channel) message. The connector's
+            primary path resolves the tenant from metadata.scope_id (routing
+            table).
+          - user_id: the authentic author id, captured for EVERY message (DM
+            and scoped alike). The connector resolves the tenant from the
+            recipient's author binding (resolveByUser) when a route lookup
+            misses. This is the sole discriminator for a DM (no scope), AND the
+            author-first FALLBACK for a scoped reply whose guild has no route
+            row — a managed agent joins guilds dynamically, so a provision-time
+            guild route is not guaranteed. Re-attaching user_id on scoped
+            replies too lets the connector's guild-route-miss fallback resolve
+            the tenant the same way inbound already does (SharedSocketRouter
+            targets()). Without a resolvable discriminator the connector's
+            egress guard declines the reply as 'target not routed to an
+            onboarded tenant'. See gateway-gateway routedEgressGuard.ts /
+            discordTenant.ts (makeDiscordTenantOf).
         """
         try:
             src = getattr(event, "source", None)
@@ -263,28 +270,36 @@ class RelayAdapter(BasePlatformAdapter):
             platform_value = getattr(platform, "value", platform)
             if platform_value and platform_value != "relay":
                 self._platform_by_chat[str(chat)] = str(platform_value)
-            scope = getattr(src, "scope_id", None)
-            if scope:
-                self._scope_by_chat[str(chat)] = str(scope)
-                return
-            # DM: no scope. Remember the authentic author id for outbound
-            # author-binding resolution (the user we're replying to in this DM).
+            # Author id for outbound author-binding resolution. Captured for BOTH
+            # DM and scoped messages: it's the sole discriminator for a DM and
+            # the guild-route-miss fallback for a scoped reply. (Formerly captured
+            # for DMs only, which left managed-agent guild replies with no
+            # resolvable tenant when the guild had no route row.)
             user_id = getattr(src, "user_id", None)
             if user_id:
                 self._dm_user_by_chat[str(chat)] = str(user_id)
+            scope = getattr(src, "scope_id", None)
+            if scope:
+                self._scope_by_chat[str(chat)] = str(scope)
         except Exception:  # noqa: BLE001 - scope tracking must never break inbound
             pass
 
     def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Ensure the outbound metadata carries the discriminator the connector's
-        egress guard needs to resolve the owning tenant. Two cases:
+        """Ensure the outbound metadata carries the discriminator(s) the connector's
+        egress guard needs to resolve the owning tenant.
 
-          - SCOPED reply: re-attach metadata.scope_id (routing-table resolution).
-          - DM reply: there is no scope, so re-attach metadata.user_id — the
-            authentic author id we saw inbound — which the connector resolves to
-            the tenant via the recipient's author binding (resolveByUser). Without
-            one of these, egress is declined as 'target not routed to an onboarded
-            tenant'. See gateway-gateway routedEgressGuard.ts / the tenant resolvers.
+          - scope_id: re-attached for a scoped reply (guild/channel) →
+            routing-table resolution (the primary path).
+          - user_id: the authentic author id we saw inbound, re-attached for
+            EVERY reply we know it for. It is the sole discriminator for a DM
+            (no scope), AND the author-first FALLBACK the connector uses when a
+            scoped reply's guild has no route row (a managed agent joins guilds
+            dynamically — the guild route may not be provisioned). Carrying both
+            on a scoped reply is harmless: the connector tries scope_id first and
+            only falls back to user_id on a route miss. Without a resolvable
+            discriminator egress is declined as 'target not routed to an
+            onboarded tenant'. See gateway-gateway routedEgressGuard.ts /
+            discordTenant.ts.
 
         No-op when the relevant value is already present or unknown for this chat.
         """
@@ -293,25 +308,35 @@ class RelayAdapter(BasePlatformAdapter):
             scope = self._scope_by_chat.get(str(chat_id))
             if scope:
                 meta["scope_id"] = scope
-        # DM author-binding discriminator. Only meaningful when there's no scope
-        # (a scoped reply resolves by scope_id); harmless to carry otherwise, but
-        # we only set it when this chat is a known DM and the field is absent.
-        if not meta.get("scope_id") and not meta.get("user_id"):
-            dm_user = self._dm_user_by_chat.get(str(chat_id))
-            if dm_user:
-                meta["user_id"] = dm_user
+        # Author-binding discriminator. Attached whenever we know the author for
+        # this chat and it isn't already set — for DMs (the sole discriminator)
+        # AND scoped replies (the connector's guild-route-miss fallback). It is
+        # only consulted by the connector when the scope/route lookup misses, so
+        # carrying it alongside scope_id never overrides routing-table resolution.
+        if not meta.get("user_id"):
+            author = self._dm_user_by_chat.get(str(chat_id))
+            if author:
+                meta["user_id"] = author
         return meta
 
-    def _platform_is_fronted(self, platform: str) -> bool:
-        """Whether ``platform`` is one of the platforms this gateway fronts over
-        the relay (Phase 1.5). Reads the transport's advertised identity set; used
-        to decide whether a follow-up's platform-prefixed `kind` names a real
-        fronted platform worth tagging on the frame (vs. leaving egress to the
-        session default). Safe when the transport is absent or single-identity."""
+    def fronts_platform(self, platform: Any) -> bool:
+        """Whether the authenticated relay transport advertises ``platform``.
+
+        This is the restart-safe delivery ownership signal: it comes from the
+        configured identity set sent during handshake, not from an inbound
+        chat cache learned only after a user sends another message.
+        """
+        platform_value = getattr(platform, "value", platform)
+        if not platform_value:
+            return False
         ids = getattr(self._transport, "_identities", None)
         if not ids:
             return False
-        return any(p == platform for p, _ in ids)
+        return any(p == str(platform_value) for p, _ in ids)
+
+    def _platform_is_fronted(self, platform: str) -> bool:
+        """Backward-compatible internal alias for follow-up routing."""
+        return self.fronts_platform(platform)
 
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
@@ -471,13 +496,27 @@ class RelayAdapter(BasePlatformAdapter):
             logger.debug("relay go_dormant failed", exc_info=True)
             return False
 
-    async def send(
+    async def send_for_platform(
         self,
+        logical_platform: Any,
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        """Send to an explicitly advertised logical platform over Relay.
+
+        Scheduled and persisted-home deliveries have no fresh inbound event to
+        populate ``_platform_by_chat``. The shared delivery resolver calls this
+        method only after ``fronts_platform`` succeeds, and this method repeats
+        that check fail-closed before stamping the outbound frame.
+        """
+        platform_value = getattr(logical_platform, "value", logical_platform)
+        if not self.fronts_platform(platform_value):
+            return SendResult(
+                success=False,
+                error=f"relay does not front platform {platform_value}",
+            )
         if self._transport is None:
             return SendResult(success=False, error="no transport")
         result = await self._transport.send_outbound(
@@ -488,6 +527,42 @@ class RelayAdapter(BasePlatformAdapter):
                 "reply_to": reply_to,
                 "metadata": self._with_scope(chat_id, metadata),
             },
+            platform=str(platform_value),
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id"),
+            error=result.get("error"),
+            raw_response=result,
+        )
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        send_metadata = dict(metadata or {})
+        explicit_platform = send_metadata.pop("_relay_logical_platform", None)
+        if explicit_platform:
+            return await self.send_for_platform(
+                explicit_platform,
+                chat_id,
+                content,
+                reply_to=reply_to,
+                metadata=send_metadata or None,
+            )
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_outbound(
+            {
+                "op": "send",
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": self._with_scope(chat_id, send_metadata),
+            },
             platform=self._platform_by_chat.get(str(chat_id)),
         )
         return SendResult(
@@ -495,6 +570,111 @@ class RelayAdapter(BasePlatformAdapter):
             message_id=result.get("message_id"),
             error=result.get("error"),
         )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit a relayed message through the connector-owned platform API."""
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_outbound(
+            {
+                "op": "edit",
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id") or message_id,
+            error=result.get("error"),
+        )
+
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """Egress a typing indicator through the connector.
+
+        The base class spawns ``_keep_typing`` for every adapter (a 2s refresh
+        loop for the life of the turn), but the relay adapter inherited the
+        base no-op ``send_typing`` — so hosted/relay chats never showed
+        "is typing…" even though the wire contract (``OutboundOp "typing"``)
+        and every connector-side sender (Discord ``POST /channels/{id}/typing``,
+        Telegram ``sendChatAction``, Signal ``sendTyping``, Slack assistant
+        status) already implement it. This bridges the loop's tick onto the
+        existing outbound frame.
+
+        Two details are load-bearing, mirroring ``send()``:
+          - ``_with_scope``: the connector's egress guard wraps ALL ops
+            (routedEgressGuard), so a typing frame without a resolvable tenant
+            discriminator (metadata.scope_id, or user_id for DMs) is declined
+            exactly like a bare send would be.
+          - the per-frame ``platform`` tag (Phase 1.5): a multi-platform
+            gateway must egress typing through the platform the chat lives on.
+
+        Best-effort: failures are swallowed (``_keep_typing`` already treats
+        send_typing errors as non-fatal, and an older connector that rejects
+        the op just returns an unsuccessful result we ignore). Each call is
+        one-shot — Discord/Telegram indicators self-expire and need no cleanup;
+        Slack Assistant status persists, so ``stop_typing`` below sends an
+        explicit clear for Slack only.
+        """
+        if self._transport is None:
+            return
+        try:
+            await self._transport.send_outbound(
+                {
+                    "op": "typing",
+                    "chat_id": chat_id,
+                    "metadata": self._with_scope(chat_id, metadata),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception:  # noqa: BLE001 - typing is cosmetic, never breaks a turn
+            logger.debug("relay send_typing failed for %s", chat_id, exc_info=True)
+
+    async def stop_typing(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Forward an explicit typing/status clear to the connector.
+
+        Slack Assistant status persists until explicitly cleared (empty
+        ``content`` on the ``typing`` op). Other relay senders expose only
+        one-shot typing heartbeats; sending an empty heartbeat there would
+        incorrectly re-trigger typing at completion, so this is Slack-gated.
+
+        NOTE (deploy order): a connector older than gateway-gateway #154
+        hardcodes ``status: "is typing…"`` for the typing op, so an empty
+        clear frame would SET the status instead of clearing it. Deploy the
+        connector first. Best-effort like ``send_typing``: status clearing is
+        cosmetic and must never break turn completion.
+        """
+        if self._transport is None:
+            return
+        platform = self._platform_by_chat.get(str(chat_id))
+        if platform != Platform.SLACK.value:
+            return
+        try:
+            await self._transport.send_outbound(
+                {
+                    "op": "typing",
+                    "chat_id": chat_id,
+                    "content": "",
+                    "metadata": self._with_scope(chat_id, metadata),
+                },
+                platform=platform,
+            )
+        except Exception:  # noqa: BLE001 - status clear is cosmetic, never breaks a turn
+            logger.debug("relay stop_typing failed for %s", chat_id, exc_info=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).

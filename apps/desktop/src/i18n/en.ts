@@ -132,6 +132,7 @@ export const en: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
+      gatewayAuthFailed: 'Gateway authentication failed — check your API_SERVER_KEY.',
       methodNotAllowed:
         'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.',
       microphonePermission: 'Microphone permission was denied.',
@@ -168,13 +169,23 @@ export const en: Translations = {
       turnDoneBody: 'The response is ready.',
       turnErrorTitle: 'Turn failed',
       backgroundDoneTitle: 'Background task finished',
-      backgroundFailedTitle: 'Background task failed'
+      backgroundFailedTitle: 'Background task failed',
+      creditsTitle: 'Credits'
     }
   },
 
   remoteDisplayBanner: {
     message: reason =>
       `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
+  },
+
+  billingBlock: {
+    titleNous: 'Out of Nous credits',
+    titleProvider: provider => `Out of credits — ${provider}`,
+    fallbackMessage: 'Your account is out of credits. Add credits to keep going.',
+    openBilling: 'Open billing',
+    addCredits: 'Add credits',
+    dismiss: 'Dismiss'
   },
 
   titlebar: {
@@ -225,7 +236,7 @@ export const en: Translations = {
       'nav.agents': 'Open agents',
       'session.new': 'New session',
       'session.newTab': 'New session tab',
-      'session.newWindow': 'New session in window',
+      'session.newWindow': 'New window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
       'session.slot.1': 'Switch to recent session 1',
@@ -283,6 +294,7 @@ export const en: Translations = {
       'composer.send': 'Send message',
       'composer.newline': 'Insert newline',
       'composer.steer': 'Steer the running turn',
+      'composer.queue': 'Queue message',
       'composer.sendQueued': 'Send next queued turn',
       'composer.mention': 'Reference files, folders, URLs',
       'composer.slash': 'Slash command palette',
@@ -314,6 +326,7 @@ export const en: Translations = {
       providers: 'Providers',
       providerAccounts: 'Accounts',
       providerApiKeys: 'API keys',
+      providerCustomEndpoints: 'Custom Endpoints',
       gateway: 'Gateway',
       apiKeys: 'Tools & Keys',
       keybinds: 'Keyboard Shortcuts',
@@ -322,6 +335,7 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About',
+      billing: 'Billing',
       notifications: 'Notifications',
       plugins: 'Plugins'
     },
@@ -366,6 +380,10 @@ export const en: Translations = {
         backgroundDone: {
           label: 'Background task finished',
           description: 'A backgrounded terminal command completed.'
+        },
+        credits: {
+          label: 'Credit alerts',
+          description: 'Credit access is paused or restored.'
         }
       },
       test: 'Send test notification',
@@ -512,6 +530,7 @@ export const en: Translations = {
     config: {
       none: 'None',
       noneParen: '(none)',
+      builtinOnly: 'Built-in only',
       notSet: 'Not set',
       commaSeparated: 'comma-separated values',
       loading: 'Loading Hermes configuration...',
@@ -520,7 +539,9 @@ export const en: Translations = {
       failedLoad: 'Settings failed to load',
       autosaveFailed: 'Autosave failed',
       imported: 'Config imported',
-      invalidJson: 'Invalid config JSON'
+      invalidJson: 'Invalid config JSON',
+      keepAwakeTitle: 'Keep computer awake',
+      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.'
     },
     credentials: {
       pasteKey: 'Paste key',
@@ -535,6 +556,7 @@ export const en: Translations = {
     envActions: {
       actionsFor: label => `Actions for ${label}`,
       credentialActions: 'Credential actions',
+      manageInKeys: 'Manage in API Keys',
       docs: 'Docs',
       hideValue: 'Hide value',
       revealValue: 'Reveal value',
@@ -639,7 +661,44 @@ export const en: Translations = {
       signOutFailed: 'Sign-out failed',
       testFailed: 'Remote gateway test failed',
       applyFailed: 'Could not apply gateway settings',
-      saveFailed: 'Could not save gateway settings'
+      saveFailed: 'Could not save gateway settings',
+      sshTitle: 'Connect via SSH',
+      sshDesc:
+        'Hermes is launched on the remote over SSH and tunneled to this app — nothing to start or expose yourself. Requires working key-based SSH access to the host.',
+      sshTrustHint: 'The first presented host key is trusted and pinned; later changes fail closed.',
+      sshHostTitle: 'Host',
+      sshHostDesc: 'user@host, or a Host alias from ~/.ssh/config.',
+      sshHostPick: 'Select a host…',
+      sshHostPickTitle: 'Host',
+      sshHostPickDesc: 'A Host alias from ~/.ssh/config, or Custom to type one.',
+      sshHostCustom: 'Custom (enter manually)…',
+      sshUserTitle: 'User',
+      sshUserDesc: 'Blank = ~/.ssh/config or your current user.',
+      sshUserPlaceholder: 'from ~/.ssh/config',
+      sshPortTitle: 'Port',
+      sshPortDesc: 'Blank = 22 or the ~/.ssh/config port.',
+      sshKeyTitle: 'Identity file',
+      sshKeyDesc: 'Private key path. Blank = ssh-agent or ~/.ssh/config.',
+      sshHermesPathTitle: 'Hermes path (optional)',
+      sshHermesPathDesc: 'Full path to the remote hermes binary. Blank = auto-detect.',
+      sshHermesPathPlaceholder: 'auto-detect',
+      sshTestConnection: 'Test SSH',
+      sshConnect: 'Connect',
+      sshButtonsHint: 'Save applies on the next launch. Connect reconnects now.',
+      sshReachable: (host, platform) => `Reachable: ${host} (${platform}) — Hermes found`,
+      sshIncompleteHost: 'Enter an SSH host before connecting.',
+      sshErrUnreachable: 'Could not reach that host over SSH. Check the host, port, and your network.',
+      sshErrAuth:
+        'SSH authentication failed. Load your key into the ssh-agent (ssh-add) or set an IdentityFile in ~/.ssh/config — Hermes runs ssh non-interactively.',
+      sshErrHostKey:
+        'The host key has CHANGED since you last connected. Verify this is expected, then run ssh-keygen -R <host> and reconnect.',
+      sshErrNotInstalled:
+        'Hermes is not installed on the remote host. Install it there (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) or set the Hermes path.',
+      sshErrPlatform:
+        'Unsupported remote platform. Hermes Desktop SSH mode supports Linux, macOS, and Windows remote hosts.',
+      sshErrTimeout: 'SSH connection timed out. The host may be unreachable or asleep.',
+      sshErrUpdateRequired: 'Update Hermes on the remote host before connecting with Desktop SSH.',
+      sshErrUnknown: 'SSH connection failed.'
     },
     keys: {
       loading: 'Loading API keys and credentials...',
@@ -784,6 +843,12 @@ export const en: Translations = {
       messages: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
       restored: 'Restored',
       deleteConfirm: title => `Permanently delete "${title}"? This cannot be undone.`,
+      autoArchiveTitle: 'Auto-archive stale chats',
+      autoArchiveDesc:
+        "Automatically archive chats you haven't touched in a while. Pinned chats are never archived, and nothing is deleted — archived chats just move here.",
+      autoArchiveDaysLabel: 'Archive after',
+      autoArchiveDaysUnit: 'days of inactivity',
+      autoArchiveFailed: 'Could not update auto-archive',
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
@@ -818,11 +883,22 @@ export const en: Translations = {
       noProviderOptions: 'This toolset has no provider options — enable it and it works with your current setup.',
       noProviders: 'No providers are available for this toolset right now.',
       ready: 'Ready',
+      needsSignIn: 'Needs sign-in',
+      needsSetup: 'Needs setup',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
+      nousAuthNeededTitle: 'Sign in to Nous Portal',
+      nousAuthNeededMessage: provider => `${provider} is saved but won't activate until you sign in to Nous Portal.`,
+      nousAuthSignIn: 'Sign in',
+      nousAuthDoneTitle: 'Nous Portal connected',
+      nousAuthDoneMessage: 'Your subscription backends are now active.',
+      nousAuthFailed: 'Nous Portal sign-in did not complete',
       noApiKeyRequired: 'No API key required.',
       postSetupHint: step =>
         `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
+      postSetupInstalledHint: 'Installed. Re-run setup only if something is broken.',
       postSetupRun: 'Run setup',
+      postSetupRerun: 'Re-run setup',
+      postSetupInstalled: 'Installed',
       postSetupRunning: 'Installing…',
       postSetupStarting: 'Starting…',
       postSetupCompleteTitle: 'Setup complete',
@@ -830,6 +906,15 @@ export const en: Translations = {
       postSetupErrorTitle: 'Setup finished with errors',
       postSetupErrorMessage: step => `Check the ${step} log.`,
       postSetupFailed: step => `Failed to run ${step} setup`,
+      webSearchActive: backend => `Search: ${backend}`,
+      webExtractActive: backend => `Extract: ${backend}`,
+      webCapabilityUnset: 'not set',
+      webUseForSearch: 'Use for Search',
+      webUseForExtract: 'Use for Extract',
+      webUsedForSearch: 'Search backend',
+      webUsedForExtract: 'Extract backend',
+      webCapabilitySelectedMessage: (provider, capability) => `${provider} now handles web ${capability}.`,
+      failedSelectCapability: provider => `Failed to set ${provider}`,
       loadingModels: 'Loading model catalog...',
       modelSectionTitle: 'Model',
       modelCount: count => `${count} model${count === 1 ? '' : 's'}`,
@@ -838,7 +923,20 @@ export const en: Translations = {
       modelInactiveHint: 'Select this backend first to change its model.',
       modelSelectedTitle: 'Model selected',
       modelSelectedMessage: model => `${model} applies to new sessions.`,
-      failedSelectModel: model => `Failed to select ${model}`
+      failedSelectModel: model => `Failed to select ${model}`,
+      terminalBackend: {
+        sectionTitle: 'Execution backend',
+        loading: 'Checking execution backends…',
+        failedLoad: 'Could not load terminal backends',
+        ready: 'Ready',
+        needsSetup: 'Needs setup',
+        unavailable: 'Unavailable',
+        inUse: 'In use',
+        selectedTitle: 'Backend selected',
+        selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
+        failedSelect: backend => `Failed to select ${backend}`,
+        needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
+      }
     }
   },
 
@@ -860,6 +958,9 @@ export const en: Translations = {
     noDescription: 'No description.',
     configured: 'Configured',
     needsKeys: 'Needs keys',
+    visionModelHint:
+      'Vision uses your auxiliary model configuration — the image-capable model is picked there, not per-provider here.',
+    visionModelLink: 'Choose vision model in Settings → Models',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} toolsets enabled`,
     configureToolset: label => `Configure ${label}`,
     toggleToolset: label => `Toggle ${label} toolset`,
@@ -998,6 +1099,7 @@ export const en: Translations = {
     ageSeconds: seconds => `${seconds}s ago`,
     ageMinutes: minutes => `${minutes}m ago`,
     ageHours: hours => `${hours}h ago`,
+    ageDays: days => `${days}d ago`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
     tokens: value => `${value} tok`
@@ -1320,6 +1422,72 @@ export const en: Translations = {
     platformIntro: {}
   },
 
+  webhooks: {
+    search: 'Search webhooks...',
+    loading: 'Loading webhooks...',
+    loadFailed: 'Webhooks failed to load',
+    subscriptions: (count: number) => `Subscriptions (${count})`,
+    hint: 'Subscription changes hot-reload once the receiver is running. Disabled subscriptions reject incoming events.',
+    empty: 'No webhook subscriptions yet.',
+    disabledTitle: 'Webhook receiver disabled',
+    disabledBody:
+      'Webhooks are their own gateway platform. Enable them here to accept incoming HTTP events; chat channels are only needed when a subscription delivers to Telegram, Discord, Slack, or another channel.',
+    enable: 'Enable webhooks',
+    enabling: 'Enabling...',
+    enabled: (name: string) => `Enabled: "${name}"`,
+    disabled: (name: string) => `Disabled: "${name}"`,
+    enableRow: 'Enable',
+    disableRow: 'Disable',
+    delete: 'Delete',
+    deleting: 'Deleting...',
+    deleted: 'Webhook deleted',
+    deleteTitle: 'Delete webhook',
+    deleteDescPrefix: 'This will permanently remove ',
+    deleteDescSuffix: '. This cannot be undone.',
+    deleteFailed: (name: string) => `Failed to delete "${name}"`,
+    toggleFailed: (name: string) => `Failed to update "${name}"`,
+    newSubscription: 'New subscription',
+    restarting: 'Gateway restarting...',
+    restartNeeded: 'Webhooks are enabled, but the gateway still needs a restart before the receiver can come online.',
+    restartGateway: 'Restart gateway',
+    restartingGateway: 'Restarting...',
+    restartFailed: (detail: string) => `Gateway restart failed${detail}`,
+    enabledRestarting: 'Webhooks enabled; gateway restarting...',
+    all: '(all)',
+    deliverOnly: 'deliver only',
+    createdTitle: 'Subscription created',
+    createdSecretHint: 'Copy the secret now — it is only shown once.',
+    webhookUrl: 'Webhook URL',
+    secretOnce: 'Secret (shown once)',
+    done: 'Done',
+    fieldName: 'Name',
+    fieldNamePlaceholder: 'e.g. github-push',
+    fieldDescription: 'Description',
+    fieldDescriptionPlaceholder: 'What this webhook does (optional)',
+    fieldEvents: 'Events',
+    fieldEventsPlaceholder: 'comma-separated, leave empty for all',
+    fieldSkills: 'Skills',
+    fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
+    fieldDeliver: 'Deliver to',
+    fieldDeliverOnly: 'Deliver payload only',
+    fieldPrompt: 'Prompt',
+    fieldPromptPlaceholder: 'Instructions for the agent when this webhook fires (optional)',
+    nameRequired: 'Name required',
+    create: 'Create',
+    creating: 'Creating...',
+    created: 'Created',
+    createFailed: (detail: string) => `Failed to create: ${detail}`,
+    copy: 'Copy',
+    deliverOptions: {
+      log: 'Log',
+      telegram: 'Telegram',
+      discord: 'Discord',
+      slack: 'Slack',
+      email: 'Email',
+      github_comment: 'GitHub comment'
+    }
+  },
+
   profiles: {
     close: 'Close profiles',
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
@@ -1501,6 +1669,9 @@ export const en: Translations = {
     promptPlaceholder: 'Summarize my unread Slack threads and email me the top 5...',
     frequencyLabel: 'Frequency',
     deliverLabel: 'Deliver to',
+    deliverNeedsHomeChannel: 'set a home channel first',
+    modelLabel: 'Model',
+    modelDefault: 'Default (global model)',
     customScheduleLabel: 'Custom schedule',
     customPlaceholder: '0 9 * * * or weekdays at 9am',
     customHint: 'Cron expression, or phrases like "every hour" or "weekdays at 9am".',
@@ -1510,7 +1681,23 @@ export const en: Translations = {
     scheduleRequired: 'Schedule is required.',
     scriptOnlyEditHint: 'Script-only job (no AI prompt). Job id:',
     saveChanges: 'Save changes',
-    createAction: 'Create cron'
+    createAction: 'Create cron',
+    tabs: {
+      jobs: 'Jobs',
+      blueprints: 'Blueprints'
+    },
+    blueprints: {
+      tab: 'Blueprints',
+      subtitle: 'Ready-made automations',
+      dialogDesc: 'Fill in the details and schedule it.',
+      scheduleIt: 'Schedule it',
+      scheduling: 'Scheduling...',
+      scheduled: 'Blueprint scheduled',
+      loading: 'Loading blueprints...',
+      failedLoad: 'Failed to load blueprints',
+      emptyTitle: 'No blueprints available',
+      emptyDesc: 'No automation blueprints are available on this backend.'
+    }
   },
 
   artifacts: {
@@ -1675,6 +1862,13 @@ export const en: Translations = {
       ageDay: 'd',
       ageHour: 'h',
       ageMin: 'm'
+    },
+    dateDivider: {
+      today: 'Earlier today',
+      yesterday: 'Yesterday',
+      thisWeek: 'Earlier this week',
+      lastWeek: 'Last week',
+      thisMonth: 'Earlier this month'
     }
   },
 
@@ -1754,6 +1948,7 @@ export const en: Translations = {
     urlHintPre: 'Include the full URL, e.g. ',
     attach: 'Attach',
     queued: count => `${count} Queued`,
+    queuedPaused: count => `${count} Queued — paused`,
     attachmentOnly: 'Attachment-only turn',
     emptyTurn: 'Empty turn',
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
@@ -1763,6 +1958,8 @@ export const en: Translations = {
     queueSendNext: 'Next',
     queueSend: 'Send',
     queueDelete: 'Delete',
+    queueResume: 'Resume',
+    queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
     queueStuckBody: 'A queued turn kept failing to send. It is still in the queue — try sending it again.',
     previewUnavailable: 'Preview unavailable',
@@ -1940,6 +2137,40 @@ export const en: Translations = {
     viewDocs: 'View install docs',
     installTo: 'Will install to',
     retryAfterRun: 'I’ve run it -- retry',
+    setupChoiceTitle: 'Set up Hermes Desktop',
+    setupChoiceDesc:
+      'Connect this app to a Hermes gateway you already run, or install Hermes locally on this computer.',
+    connectExistingTitle: 'Connect to existing Hermes',
+    connectExistingShort: 'Connect existing',
+    connectExistingDesc: 'Use a remote backend with a session token or browser sign-in. No local install will start.',
+    installLocalTitle: 'Install Hermes locally',
+    installLocalDesc: 'Download Hermes, create its Python environment, and run the backend on this computer.',
+    localStartUnavailable: 'Local installation could not start. Restart Hermes Desktop and try again.',
+    remoteSetupTitle: 'Connect to existing Hermes',
+    remoteSetupDesc: 'Enter your gateway URL. Hermes Desktop will detect whether it needs a token or browser sign-in.',
+    remoteUrlTitle: 'Gateway URL',
+    remoteUrlDesc: 'Use the base URL of the Hermes gateway, including https:// when remote.',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: 'Detecting gateway authentication...',
+    probeError: 'Could not reach that Hermes gateway.',
+    identityProvider: 'your identity provider',
+    authTitle: 'Authentication',
+    authNeedsOauth: provider => `Sign in with ${provider} before testing this gateway.`,
+    authSignedIn: 'Browser sign-in completed.',
+    connected: 'Connected',
+    signIn: 'Sign in',
+    signInWith: provider => `Sign in with ${provider}`,
+    enterUrlFirst: 'Enter a gateway URL first.',
+    signInIncomplete: 'The sign-in window closed before authentication completed.',
+    tokenTitle: 'Session token',
+    tokenDesc: 'Paste the session token from the remote gateway .env file.',
+    pasteSessionToken: 'Paste session token',
+    incompleteSignInTest: 'Sign in before testing this OAuth-gated gateway.',
+    incompleteTokenTest: 'Enter a session token before testing this gateway.',
+    testConnection: 'Test connection',
+    testSucceeded: (baseUrl, version) => `Connected to ${baseUrl}${version ? ` (${version})` : ''}.`,
+    applyRemote: 'Apply and reconnect',
+    backToSetup: 'Back',
     failedTitle: 'Installation failed',
     settingUpTitle: 'Setting up Hermes Agent',
     finishingTitle: 'Finishing up',
@@ -2053,7 +2284,8 @@ export const en: Translations = {
     proNeedsSubscription: 'Pro models need a paid Nous subscription.',
     free: 'Free',
     freeTier: 'Free tier',
-    priceTitle: 'Input / Output price per million tokens'
+    priceTitle: 'Input / Output price per million tokens',
+    wasPrice: 'was'
   },
 
   modelVisibility: {
@@ -2125,6 +2357,12 @@ export const en: Translations = {
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `Remote: ${host}`,
+      connectionCloud: host => `Cloud: ${host}`,
+      connectionCloudTooltip: host => `Connected to Hermes Cloud at ${host} · click to manage`,
+      connectionSshTooltip: host => `Connected over SSH to ${host} · click to manage`,
+      connectionRemoteTooltip: host => `Connected to remote backend ${host} · click to manage`,
       backendLabel: version => `backend v${version}`,
       commit: sha => `commit ${sha}`,
       branch: branch => `branch ${branch}`,
@@ -2148,6 +2386,8 @@ export const en: Translations = {
       running: count => `${count} running`,
       cron: 'Cron',
       openCron: 'Open cron jobs',
+      webhooks: 'Webhooks',
+      openWebhooks: 'Open webhooks',
       starmap: 'Memory Graph',
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
@@ -2328,6 +2568,7 @@ export const en: Translations = {
     closeOthers: 'Close others',
     closeToRight: 'Close to the right',
     closeAll: 'Close all',
+    newSessionTab: 'New session tab',
     split: dir => `Split ${dir}`,
     move: dir => `Move ${dir}`,
     dirUp: 'up',
@@ -2423,7 +2664,10 @@ export const en: Translations = {
       placeholder: 'Type your answer…',
       skip: 'Skip',
       skipped: 'Skipped',
-      continueLabel: 'Continue'
+      continueLabel: 'Continue',
+      lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
+      lateAnswerTip: 'Draft this answer as a follow-up message',
+      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
     tool: {
       code: 'Code',

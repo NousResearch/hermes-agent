@@ -48,6 +48,14 @@ def test_compaction_lifecycle_is_retagged(server, monkeypatch):
     assert events == [{"kind": "compacting", "text": COMPACTION_STATUS}]
 
 
+def test_compaction_completion_status_is_preserved(server, monkeypatch):
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "compacted", COMPACTION_DONE_STATUS)
+
+    assert events == [{"kind": "compacted", "text": COMPACTION_DONE_STATUS}]
+
 def test_other_lifecycle_status_stays_lifecycle(server, monkeypatch):
     events = _capture(server, monkeypatch)
     server._status_update("sid", "lifecycle", "❌ Rate limited after 5 retries")

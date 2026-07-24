@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -46,8 +47,10 @@ import {
 } from '../master-detail'
 import { PanelEmpty, PanelPill } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
+import { SETTINGS_ROUTE } from '../routes'
 import { ComputerUsePanel } from '../settings/computer-use-panel'
 import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
+import { TerminalBackendPanel } from '../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
@@ -759,6 +762,7 @@ function ToolsetDetail({
   onConfiguredChange: () => void
 }) {
   const { t } = useI18n()
+  const navigate = useNavigate()
   const tools = toolNames(toolset)
   const label = toolsetDisplayLabel(toolset)
 
@@ -782,7 +786,28 @@ function ToolsetDetail({
           ))}
         </div>
       )}
+      {toolset.name === 'vision' && (
+        // Vision has no provider matrix — model resolution runs through the
+        // auxiliary model config. Point at the actual home (Settings → Models,
+        // aux "vision" row) via an internal deep link instead of leaving the
+        // detail pane empty.
+        <div className="grid gap-1.5">
+          <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {t.skills.visionModelHint}
+          </p>
+          <div>
+            <Button
+              onClick={() => navigate(`${SETTINGS_ROUTE}?tab=config:model&aux=vision`)}
+              size="xs"
+              variant="textStrong"
+            >
+              {t.skills.visionModelLink}
+            </Button>
+          </div>
+        </div>
+      )}
       {toolset.name === 'computer_use' && <ComputerUsePanel onConfiguredChange={onConfiguredChange} />}
+      {toolset.name === 'terminal' && <TerminalBackendPanel onConfiguredChange={onConfiguredChange} />}
       <ToolsetConfigPanel key={toolset.name} onConfiguredChange={onConfiguredChange} toolset={toolset.name} />
     </>
   )

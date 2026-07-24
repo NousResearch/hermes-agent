@@ -774,6 +774,7 @@ _QUICK_STATE_FILES = (
     "channel_directory.json",
     "channel_aliases.json",
     "processes.json",
+    "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user-created stores that live outside the git checkout and
     # are therefore destroyed if the update flow removes/replaces the file and
     # the post-update schema-init re-creates an empty one (issue #52889). All

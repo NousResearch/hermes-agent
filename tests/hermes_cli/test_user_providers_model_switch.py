@@ -477,6 +477,33 @@ def test_list_authenticated_providers_accepts_base_url_and_singular_model(monkey
     assert custom["total_models"] == 3
 
 
+def test_list_authenticated_providers_exposes_bare_direct_custom_config(monkeypatch):
+    """A direct ``model.provider=custom`` + ``model.base_url`` config has no
+    providers:/custom_providers entry, but it is still a valid runtime target
+    and must remain visible in Desktop's model picker.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="http://172.29.176.1:8081/v1",
+        current_model="gpt-5.4",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    custom = next((p for p in providers if p["slug"] == "custom"), None)
+    assert custom is not None
+    assert custom["is_current"] is True
+    # main surfaces the bare direct-config row via the "model-config" source
+    # (with live model discovery); the desktop CRUD view builds on that same row.
+    assert custom["source"] == "model-config"
+    assert custom["api_url"] == "http://172.29.176.1:8081/v1"
+    assert "gpt-5.4" in custom["models"]
+
+
 def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monkeypatch):
     """When the same slug appears in both ``providers:`` dict and
     ``custom_providers:`` list, emit exactly one row (providers: dict wins

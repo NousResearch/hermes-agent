@@ -361,6 +361,79 @@ def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
     _assert_utf8_replace_capture(calls[0][1])
 
 
+def test_make_tui_argv_uses_bundled_tui_when_workspace_missing(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """Prebuilt-install regression (#56665): a prebuilt install (Docker
+    image, Nix build, or prior `npm run build`) ships
+    hermes_cli/tui_dist/entry.js but never ships ui-tui/ (that directory only
+    exists in a git checkout). _make_tui_argv must try the bundled entry.js
+    BEFORE _ensure_tui_workspace() — requiring the workspace first hard-exits
+    every prebuilt dashboard Chat tab connection with `sys.exit(1)` (surfaced
+    to the user as the unhelpful "Chat unavailable: 1") despite a perfectly
+    runnable bundled TUI on disk. The bundled shortcut must succeed without
+    ever touching the (missing) ui-tui workspace or git.
+    """
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+
+    bundled_entry = tmp_path / "bundled" / "entry.js"
+    bundled_entry.parent.mkdir(parents=True)
+    bundled_entry.write_text("// bundled TUI")
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: bundled_entry)
+
+    def which(name: str) -> str | None:
+        if name == "node":
+            return "/usr/bin/node"
+        raise AssertionError(f"unexpected shutil.which({name!r}) call — bundled path must not need npm/git")
+
+    monkeypatch.setattr(main_mod.shutil, "which", which)
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("bundled TUI path must not spawn any subprocess (no npm install/build, no git restore)")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
+
+    # ui-tui/ deliberately does not exist under tmp_path, and there is no
+    # .git either — this mirrors a prebuilt (Docker/Nix) install exactly.
+    tui_dir = tmp_path / "ui-tui"
+    assert not tui_dir.exists()
+
+    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert argv == ["/usr/bin/node", "--expose-gc", str(bundled_entry)]
+    assert cwd == bundled_entry.parent
+
+
+def test_make_tui_argv_dev_mode_still_requires_workspace_even_with_bundle(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """--dev never uses the prebuilt bundle (there's no source to hot-reload
+    from a bundled entry.js), so it must still hit the workspace guard when
+    ui-tui/ is missing — the bundled-first reordering must not weaken --dev.
+    """
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+
+    bundled_entry = tmp_path / "bundled" / "entry.js"
+    bundled_entry.parent.mkdir(parents=True)
+    bundled_entry.write_text("// bundled TUI")
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: bundled_entry)
+
+    def which(name: str) -> str | None:
+        if name == "git":
+            return "/usr/bin/git"
+        raise AssertionError("node/npm lookup must not run when ui-tui is missing")
+
+    monkeypatch.setattr(main_mod.shutil, "which", which)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tmp_path / "ui-tui", tui_dev=True)
+
+    assert exc.value.code == 1
+    assert "TUI workspace is missing" in capsys.readouterr().err
+
+
 def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
     tmp_path: Path, main_mod, monkeypatch, capsys
 ) -> None:

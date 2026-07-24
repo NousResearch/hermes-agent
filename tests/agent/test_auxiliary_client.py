@@ -274,6 +274,320 @@ class TestResolveTaskProviderModel:
         assert base_url == "https://explicit.example/v1"
         assert api_key == "explicit-key"
 
+    def test_explicit_provider_moa_unwraps_to_aggregator(self, monkeypatch):
+        """An *explicit* `provider="moa"` arg (e.g. a per-task model override
+        naming a MoA preset) must resolve to the preset's aggregator, not the
+        literal "moa" string — mirrors #53827's fix for the implicit
+        "main provider is moa" case in _resolve_auto(), which this function
+        never went through."""
+        preset = {
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        }
+        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: preset,
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="moa",
+            model="opus-gpt",
+            base_url="moa://local",
+            api_key="moa-virtual-provider",
+        )
+
+        assert resolved_provider == "openrouter"
+        assert model == "anthropic/claude-opus-4.8"
+        # The virtual moa:// endpoint must not be forwarded to the aggregator.
+        assert base_url is None
+        assert api_key is None
+
+    def test_config_provider_moa_unwraps_to_aggregator(self, monkeypatch):
+        """`auxiliary.<task>.provider: moa` in config.yaml — the same crash,
+        reached via the config path instead of an explicit call-time arg.
+        Before the fix this returned ("moa", ...) verbatim, and
+        resolve_provider_client() would then look up "moa" in
+        PROVIDER_REGISTRY (which has no such entry, it's not a real HTTP
+        provider), fail, and surface a "MOA_API_KEY environment variable"
+        error for a provider that was never meant to be reached over the wire."""
+        preset = {
+            "aggregator": {"provider": "anthropic", "model": "claude-opus-4.8"},
+        }
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"provider": "moa", "model": "opus-gpt"} if task == "title_generation" else {},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: preset,
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model == "claude-opus-4.8"
+        assert base_url is None
+        assert api_key is None
+
+    def test_config_provider_moa_falls_back_to_default_preset(self, monkeypatch):
+        """`auxiliary.<task>.provider: moa` with no `model:` set must resolve
+        against the user's default MoA preset, not crash or leave "moa"
+        unresolved — resolve_moa_preset() already falls back to
+        default_preset when name is falsy; this just confirms the call site
+        doesn't force a preset name where none was configured."""
+        preset = {
+            "aggregator": {"provider": "nous", "model": "hermes-4-405b"},
+        }
+
+        def fake_resolve(cfg, name):
+            assert name is None  # no auxiliary.<task>.model configured
+            return preset
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"provider": "moa"} if task == "title_generation" else {},
+        )
+        monkeypatch.setattr("hermes_cli.moa_config.resolve_moa_preset", fake_resolve)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "nous"
+        assert model == "hermes-4-405b"
+
+    def test_provider_moa_falls_back_to_literal_when_preset_resolution_fails(self, monkeypatch):
+        """If the MoA preset can't be resolved (e.g. renamed/deleted), the
+        function must not raise — it degrades to the pre-fix behavior
+        (literal "moa") rather than crash resolve_provider_client() harder."""
+        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: (_ for _ in ()).throw(KeyError("gone-preset")),
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="moa",
+            model="gone-preset",
+        )
+
+        assert resolved_provider == "moa"
+        assert model == "gone-preset"
+
+    def test_non_moa_provider_unaffected_by_unwrap_logic(self):
+        """Regression guard: providers other than "moa" must not be touched
+        by the new unwrap branch."""
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="anthropic",
+            model="claude-haiku-4-5-20251001",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model == "claude-haiku-4-5-20251001"
+
+    def test_explicit_model_auto_sentinel_is_normalized(self):
+        """MoA slots (agent/moa_loop.py's _slot_runtime) forward a preset's
+        `model:` field as the explicit `model` kwarg here, not through
+        auxiliary.<task> config. Only cfg_model was normalized before, so a
+        MoA reference/aggregator slot configured with `model: auto` sent the
+        literal string "auto" to the wire as a model id."""
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            provider="anthropic",
+            model="auto",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model is None
+
+    def test_explicit_model_auto_sentinel_case_insensitive(self):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            provider="anthropic",
+            model="AUTO",
+        )
+
+        assert model is None
+
+    def test_explicit_model_auto_falls_back_to_cfg_model(self, monkeypatch):
+        """When the explicit model is the "auto" sentinel, it must not shadow
+        a real configured task model — the `model or cfg_model` fallback
+        chain should still reach cfg_model exactly as if model had been
+        omitted entirely."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda _task: {"provider": "openai", "model": "gpt-real-model"},
+        )
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            model="auto",
+        )
+
+        assert model == "gpt-real-model"
+
+    def test_non_auto_model_is_unaffected(self):
+        """Regression guard: a real model name must not be touched by the
+        sentinel normalization."""
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            provider="openai",
+            model="gpt-4o-mini",
+        )
+
+        assert model == "gpt-4o-mini"
+
+
+class TestMoaAggregatorSharedResolution:
+    """The shared MoA→aggregator helper and the layers that consume it.
+
+    Real-config tests: write an actual config.yaml under a temp HERMES_HOME
+    and exercise the genuine load_config() → resolve_moa_preset() boundary —
+    no mocking of the configuration-resolution chain.
+    """
+
+    @staticmethod
+    def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": default_preset,
+                        "presets": {
+                            "opus-gpt": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                                ],
+                                "aggregator": {
+                                    "provider": "openrouter",
+                                    "model": "anthropic/claude-opus-4.8",
+                                },
+                            },
+                            "nous-mix": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "nous", "model": "hermes-4-70b"}
+                                ],
+                                "aggregator": {
+                                    "provider": "nous",
+                                    "model": "hermes-4-405b",
+                                },
+                            },
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
+        """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
+        aggregator through the genuine load_config()/resolve_moa_preset() path."""
+        import yaml
+
+        home = self._write_moa_config(tmp_path, monkeypatch)
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg["auxiliary"] = {"title_generation": {"provider": "moa", "model": "opus-gpt"}}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "openrouter"
+        assert model == "anthropic/claude-opus-4.8"
+        assert base_url is None
+        assert api_key is None
+
+    def test_real_config_explicit_task_provider_moa_default_preset(self, tmp_path, monkeypatch):
+        """provider: moa with no model resolves the default preset's aggregator."""
+        import yaml
+
+        home = self._write_moa_config(tmp_path, monkeypatch, default_preset="nous-mix")
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg["auxiliary"] = {"compression": {"provider": "moa"}}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="compression",
+        )
+
+        assert resolved_provider == "nous"
+        assert model == "hermes-4-405b"
+
+    def test_read_main_model_for_aux_unwraps_preset_name(self, tmp_path, monkeypatch):
+        """Main provider moa → the aux-facing main model is the aggregator's
+        model, so every unset auxiliary model defaults to the acting model
+        instead of the preset name."""
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="opus-gpt"):
+            assert _read_main_model_for_aux() == "anthropic/claude-opus-4.8"
+
+    def test_read_main_model_for_aux_unresolvable_preset_returns_empty(self, tmp_path, monkeypatch):
+        """A moa main with a deleted/renamed preset yields "" — never the
+        preset name, which would 400 on any wire."""
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="gone-preset"):
+            assert _read_main_model_for_aux() == ""
+
+    def test_read_main_model_for_aux_passthrough_for_non_moa(self, monkeypatch):
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-opus-4.6"):
+            assert _read_main_model_for_aux() == "anthropic/claude-opus-4.6"
+
+    def test_resolve_provider_client_direct_moa_unwraps(self, tmp_path, monkeypatch):
+        """Callers that hit resolve_provider_client("moa", <preset>) directly
+        (vision auto-detect, plugin code) unwrap at the router chokepoint
+        instead of dead-ending in the unknown-provider branch."""
+        self._write_moa_config(tmp_path, monkeypatch)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        client, model = resolve_provider_client("moa", "opus-gpt")
+
+        assert client is not None
+        assert model == "anthropic/claude-opus-4.8"
+
+    def test_main_agent_fallback_uses_aggregator_for_moa_main(self, tmp_path, monkeypatch):
+        """_try_main_agent_model_fallback with a moa main resolves the
+        aggregator instead of asking for a literal "moa" client."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="opus-gpt"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
+
+            client, model, label = _try_main_agent_model_fallback("anthropic", task="compression")
+
+        assert client is mock_client
+        assert model == "anthropic/claude-opus-4.8"
+        assert label == "main-agent(openrouter)"
+        assert mock_resolve.call_args.kwargs["provider"] == "openrouter"
+        assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
+
 
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
@@ -341,6 +655,174 @@ class TestBuildCallKwargsMaxTokens:
             base_url="https://integrate.api.nvidia.com/v1",
         )
         assert kwargs["max_tokens"] == 4096
+
+    # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url,expected_key",
+        [
+            ("zai", "glm-5.2", "https://api.z.ai/api/coding/paas/v4", "max_tokens"),
+            ("openrouter", "deepseek/deepseek-v4-flash:nitro", "https://openrouter.ai/api/v1", "max_tokens"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com", "max_completion_tokens"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1", "max_tokens"),
+        ],
+    )
+    def test_moa_task_sends_max_tokens_on_openai_compatible(self, provider, model, base_url, expected_key):
+        """MoA reference tasks must honor max_tokens regardless of provider.
+
+        The ``reference_max_tokens`` config option (PR #56756) caps advisor output
+        to reduce turn latency.  Before the fix, ``_build_call_kwargs`` silently
+        dropped the value for OpenAI-compatible providers (PR #34845), so the cap
+        never reached the API.  With the ``task`` parameter threaded through,
+        ``task == "moa_reference"`` includes the output cap in kwargs.
+
+        Models that require ``max_completion_tokens`` (GPT-5 family, Copilot)
+        get the correct parameter name via ``auxiliary_max_tokens_param()``.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url=base_url,
+            task="moa_reference",
+        )
+        assert kwargs[expected_key] == 800
+
+    def test_moa_task_sends_max_tokens_on_anthropic_wire(self):
+        """MoA reference tasks on Anthropic-compat endpoints keep max_tokens (unchanged behavior)."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="minimax",
+            model="minimax-m2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url="https://api.minimax.io/v1",
+            task="moa_reference",
+        )
+        assert kwargs["max_tokens"] == 600
+
+    def test_moa_aggregator_does_not_get_max_tokens_on_openai_compat(self):
+        """``reference_max_tokens`` is an advisors-only contract (#56756).
+
+        The aggregator is the acting model — it must NOT be capped by the
+        reference token budget.  Only ``task == "moa_reference"`` triggers
+        the exception in ``_build_call_kwargs``.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="zai",
+            model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_aggregator",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_non_moa_tasks_still_omit_max_tokens(self):
+        """Regression guard: compression/titles/vision keep PR #34845 behavior."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for task in ("compression", "vision", "title_generation", None, ""):
+            kwargs = _build_call_kwargs(
+                provider="openrouter",
+                model="deepseek/deepseek-v4-flash:nitro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=800,
+                base_url="https://openrouter.ai/api/v1",
+                task=task,
+            )
+            assert "max_tokens" not in kwargs, f"max_tokens should be dropped for task={task!r}"
+
+    def test_moa_task_exact_match(self):
+        """Only task == "moa_reference" triggers the cap — not the aggregator,
+        not arbitrary 'moa_' prefixed tasks."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        # 'moa_reference' → honored
+        kw = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_reference",
+        )
+        assert kw["max_tokens"] == 500
+
+        # 'moa_aggregator' → dropped (aggregator is the acting model, not an advisor)
+        kw2 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_aggregator",
+        )
+        assert "max_tokens" not in kw2
+
+        # 'moa_custom_future' → dropped (only moa_reference is whitelisted)
+        kw3 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_custom_future",
+        )
+        assert "max_tokens" not in kw3
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("gemini", "gemini-2.5-pro", None),
+            ("google", "gemini-2.5-flash", None),
+            (
+                "custom",
+                "gemini-2.5-pro",
+                "https://generativelanguage.googleapis.com/v1beta",
+            ),
+        ],
+    )
+    def test_keeps_max_tokens_for_gemini_native(self, provider, model, base_url):
+        # Native generateContent maps max_tokens → maxOutputTokens; when it is
+        # omitted Gemini applies a fixed 65,535-token ceiling, which silently
+        # turned MoA's reference_max_tokens into a no-op for gemini advisors.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 600
+        assert "max_completion_tokens" not in kwargs
+
+    def test_omits_max_tokens_for_gemini_model_on_openai_compatible_endpoint(self):
+        # Control: the gemini branch keys on provider/base_url, never the model
+        # name. A gemini model served through an OpenAI-compatible endpoint
+        # keeps the default omission behavior (#34530), including Gemini's own
+        # /openai compatibility endpoint.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for provider, base_url in [
+            ("openrouter", "https://openrouter.ai/api/v1"),
+            ("custom", "https://generativelanguage.googleapis.com/v1beta/openai"),
+        ]:
+            kwargs = _build_call_kwargs(
+                provider=provider,
+                model="google/gemini-2.5-pro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=600,
+                base_url=base_url,
+            )
+            assert "max_tokens" not in kwargs
+            assert "max_completion_tokens" not in kwargs
 
 
 class TestNousTagsScoping:
@@ -3864,6 +4346,69 @@ class TestAuxiliaryAuthRefreshRetry:
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
         stale_client.close.assert_called_once()
+
+    def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
+        """Vertex tokens live ~1h; on a long-running gateway the cached
+        auxiliary client's bearer token expires mid-session and 401s.
+        _refresh_provider_credentials("vertex") must re-mint the token via
+        the adapter (which refreshes in place when near expiry) and evict
+        the stale cached client so the next call rebuilds with a fresh one —
+        previously there was no "vertex" branch here at all, so this fell
+        through to the final `return False` and the stale client (and its
+        dead token) stayed cached until process restart."""
+        stale_client = MagicMock()
+        cache_key = ("vertex", False, None, None, None)
+
+        with (
+            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),
+            patch(
+                "agent.vertex_adapter.get_vertex_config",
+                return_value=("ya29.FRESH", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+            ) as mock_get_config,
+        ):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials("vertex") is True
+
+        mock_get_config.assert_called_once()
+        stale_client.close.assert_called_once()
+
+    def test_refresh_provider_credentials_vertex_returns_false_when_unminted(self):
+        """No usable token/base_url (e.g. ADC and the service-account file
+        both failed) — refresh must report failure, not silently evict and
+        pretend the client is fixed."""
+        with patch("agent.vertex_adapter.get_vertex_config", return_value=(None, None)):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials("vertex") is False
+
+    def test_resolve_provider_client_vertex_builds_client_from_minted_token(self):
+        """End-to-end: resolve_provider_client("vertex", ...) must reach the
+        auth_type == "vertex" branch and build a working client, not die at
+        the PROVIDER_REGISTRY lookup (a plain HERMES_OVERLAYS-only fix would
+        leave this branch dead code — PROVIDER_REGISTRY is what
+        resolve_provider_client actually gates on)."""
+        with (
+            patch("agent.vertex_adapter.has_vertex_credentials", return_value=True),
+            patch(
+                "agent.vertex_adapter.get_vertex_config",
+                return_value=("ya29.FRESH", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+            ),
+        ):
+            client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert str(client.base_url).rstrip("/") == (
+            "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+        )
+
+    def test_resolve_provider_client_vertex_none_when_no_credentials(self):
+        with patch("agent.vertex_adapter.has_vertex_credentials", return_value=False):
+            client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
+
+        assert client is None
+        assert model is None
 
     @pytest.mark.asyncio
     async def test_async_call_llm_refreshes_anthropic_on_401_for_non_vision(self):

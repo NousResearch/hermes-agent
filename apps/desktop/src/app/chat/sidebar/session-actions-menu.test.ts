@@ -1,3 +1,4 @@
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
@@ -10,9 +11,20 @@ import { renameSessionPreferringRpc } from './session-actions-menu'
 // must route the ACTIVE row through the session.title RPC (runtime id), which
 // persists the row on demand, and otherwise fall back to REST.
 
-const renameSession = vi.fn(async () => ({ ok: true, title: 'rest-title' }))
-const request = vi.fn(async () => ({ title: 'rpc-title' }) as never)
-const activeGateway = vi.fn<() => { request: typeof request } | null>(() => ({ request }))
+// Hoisted so the vi.mock factories below (which vitest lifts to the top of the
+// module) can reference these before the module body runs. This matters because
+// projects.ts subscribes to $gateway at import and nanostores fires the
+// subscriber synchronously — that reaches the @/store/gateway mock's
+// activeGateway() during the transitive import on line 4, before a plain
+// module-level const would be initialized (temporal dead zone).
+const { renameSession, request, activeGateway } = vi.hoisted(() => ({
+  renameSession: vi.fn(async () => ({ ok: true, title: 'rest-title' })),
+  request: vi.fn(async () => ({ title: 'rpc-title' }) as never),
+  activeGateway: vi.fn<() => { request: unknown } | null>(() => ({ request: undefined }))
+}))
+
+// Wire activeGateway's default return to the shared request mock now that it exists.
+activeGateway.mockReturnValue({ request })
 
 vi.mock('@/hermes', () => ({
   renameSession: (...args: unknown[]) => renameSession(...(args as [])),
@@ -23,6 +35,11 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/gateway', () => ({
+  // projects.ts subscribes to $gateway at module load (its repo-scan sync fires
+  // immediately), pulled in transitively via the session store. Provide a real
+  // atom plus the hoisted activeGateway so the synchronous subscriber doesn't
+  // throw on an incomplete mock or hit an uninitialized reference.
+  $gateway: atom(null),
   activeGateway: () => activeGateway()
 }))
 

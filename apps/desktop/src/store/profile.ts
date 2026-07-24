@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { queryClient } from '@/lib/query-client'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
@@ -177,7 +177,9 @@ $activeGatewayProfile.subscribe(value => {
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.
-    void queryClient.invalidateQueries()
+    // Narrowed so account/marketplace/onboarding caches don't refetch on
+    // every profile switch.
+    invalidateProfileScopedQueries()
     resetStarmapGraph()
   }
 

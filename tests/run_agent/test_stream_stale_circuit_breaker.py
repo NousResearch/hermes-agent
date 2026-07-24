@@ -39,6 +39,9 @@ def _make_anthropic_agent(**kwargs):
     agent.api_mode = "anthropic_messages"
     agent._anthropic_client = MagicMock()
     agent._anthropic_api_key = "test-anthropic-key"
+    # #67142: anthropic streams now run on a request-local client; route it to
+    # the test mock so .messages.stream is exercised.
+    agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
     return agent
 
 
@@ -116,7 +119,10 @@ class TestStreamStaleCircuitBreaker:
 
         # Every attempt blocks, trips the stale detector, and fails.
         agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
-        agent._anthropic_client.close.side_effect = unblock.set
+        # #67142: the stale detector now aborts the request-local client's
+        # sockets from the poll thread (not close() on the shared client), so
+        # unblock on the abort to simulate the socket shutdown waking the read.
+        agent._abort_request_anthropic_client = lambda *a, **k: unblock.set()
 
         with pytest.raises(Exception):
             agent._interruptible_streaming_api_call({})

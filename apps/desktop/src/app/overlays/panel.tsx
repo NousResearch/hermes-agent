@@ -71,7 +71,11 @@ interface PanelHeaderProps {
 
 export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
   return (
-    <header className="mb-3 flex shrink-0 items-start justify-between gap-3">
+    // The overlay's close (X) is absolutely positioned at right-3 and costs no
+    // layout space, so header actions would otherwise slide right up against it.
+    // Reserve clearance (button footprint from the card edge + a small gap) on
+    // the right whenever actions are present.
+    <header className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
@@ -217,8 +221,8 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Tip label={label}>
+      <Tip label={label}>
+        <DropdownMenuTrigger asChild>
           <Button
             aria-label={label}
             className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
@@ -227,8 +231,8 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
           >
             <Codicon name="kebab-vertical" size="0.875rem" />
           </Button>
-        </Tip>
-      </DropdownMenuTrigger>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="w-40" sideOffset={6}>
         {items.map(item => (
           <DropdownMenuItem

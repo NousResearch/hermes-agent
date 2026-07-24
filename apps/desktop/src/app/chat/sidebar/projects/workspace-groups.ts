@@ -357,19 +357,22 @@ function isPathUnder(folder: string, target: string): boolean {
  * the overview at once instead of waiting for the next backend refresh. Returns
  * null only for sessions we genuinely can't place from the row alone: cwd-less,
  * kanban-task worktrees (they fold into the kanban bucket), or a worktree that
- * lives OUTSIDE the repo root (a sibling dir whose project can't be derived).
+ * lives OUTSIDE the repo root (a sibling dir) AND under no explicit project
+ * folder. An explicit-project folder match always places the row — even when
+ * the row's cwd sits outside its recorded repo root (a mid-session relocation,
+ * or a sibling worktree of a project repo), the folder match is authoritative;
+ * only the repo-root AUTO-project fallback needs cwd-under-root confidence.
  */
 export function liveSessionProjectId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
   const cwd = (session.cwd || '').trim()
-
-  if (!cwd || kanbanWorktreeDir(cwd)) {
-    return null
-  }
-
-  // No persisted repo root yet (brand-new session) → the cwd is the root.
+  // A session may carry only a git_repo_root and no cwd — older/imported rows,
+  // or ones captured before cwd tracking. The backend still groups those by repo
+  // root, so anchor on it here too; otherwise the sidebar files the row under a
+  // project but the color derivation drops it (the "grouped but grey" bug).
   const repoRoot = (session.git_repo_root || '').trim() || cwd
+  const anchor = cwd || repoRoot
 
-  if (!isPathUnder(repoRoot, cwd)) {
+  if (!anchor || kanbanWorktreeDir(anchor)) {
     return null
   }
 
@@ -393,7 +396,39 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
     }
   }
 
-  return projectId || repoRoot
+  if (projectId) {
+    return projectId
+  }
+
+  // AUTO-project fallback (the repo root itself): with a cwd present it must
+  // sit under the repo root (a sibling worktree outside the root can't be
+  // placed from the row alone); a root-only session skips this — the root IS
+  // the anchor.
+  if (cwd && !isPathUnder(repoRoot, cwd)) {
+    return null
+  }
+
+  return repoRoot
+}
+
+/**
+ * The color a session inherits from its owning project — the explicit project
+ * whose folder is the longest prefix of the session's cwd/repo-root, when that
+ * project carries a user-set color. Auto-promoted repo projects have no color
+ * unless the user set one, so a session only tints when it belongs to a colored
+ * project (inheritance is opt-in by coloring the project). Reuses
+ * {@link liveSessionProjectId} so the color follows the SAME membership the
+ * sidebar groups by; returns null for rootless / kanban / out-of-tree rows and
+ * for sessions under an uncolored (or auto) project.
+ */
+export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[]): null | string {
+  const projectId = liveSessionProjectId(session, projects)
+
+  if (!projectId) {
+    return null
+  }
+
+  return projects.find(project => project.id === projectId)?.color ?? null
 }
 
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>

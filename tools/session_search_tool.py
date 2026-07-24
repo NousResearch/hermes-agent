@@ -55,6 +55,16 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Prefixes that identify generated context-compaction handoff summaries.
+# These are inserted by agent/context_compressor.py as normal user/assistant
+# messages but contain machine-generated summary metadata — not user content.
+# They must be excluded from discovery bookends to avoid re-introducing huge
+# compaction payloads into fresh sessions via session_search.  (#43175)
+_COMPACTION_PREFIXES = (
+    "[CONTEXT COMPACTION",
+    "[CONTEXT SUMMARY]:",
+)
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -81,18 +91,39 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     return str(ts)
 
 
-def _resolve_to_parent(db, session_id: str) -> str:
-    """Walk parent_session_id chain to the lineage root. Falls back to input on errors."""
+def _is_compaction_summary(content: str) -> bool:
+    """Return True if *content* looks like a generated compaction handoff."""
+    if not content:
+        return False
+    stripped = content.lstrip()
+    return any(stripped.startswith(p) for p in _COMPACTION_PREFIXES)
+
+
+def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
+    """Walk parent_session_id chain to the lineage root.
+
+    Returns ``(root_id, has_compression_hop)`` where ``has_compression_hop`` is
+    True if any session along the chain ended with ``end_reason = 'compression'``
+    — i.e. at least one parent/ancestor was compression-rotated into this
+    lineage. That flag lets callers distinguish a compression-split lineage
+    (parent content summarised away, no longer in live context) from a
+    delegation lineage (child content still visible to the parent agent).
+
+    Falls back to ``(session_id, False)`` on errors.
+    """
     if not session_id:
-        return session_id
-    visited = set()
+        return session_id, False
+    visited: set[str] = set()
     cur = session_id
+    has_compression = False
     while cur and cur not in visited:
         visited.add(cur)
         try:
             s = db.get_session(cur)
             if not s:
                 break
+            if s.get("end_reason") == "compression":
+                has_compression = True
             parent = s.get("parent_session_id")
             if not parent:
                 break
@@ -100,7 +131,82 @@ def _resolve_to_parent(db, session_id: str) -> str:
         except Exception as e:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
-    return cur
+    return cur, has_compression
+
+
+def _resolve_lineage(db, session_id: str) -> str:
+    """Convenience: return only the lineage root (ignores compression hop)."""
+    return _resolve_to_parent(db, session_id)[0]
+
+
+def _is_compression_ended(db, session_id: str) -> bool:
+    """Return True if *session_id* itself ended with ``end_reason='compression'``.
+
+    Unlike the ``has_compression_hop`` flag from :func:`_resolve_to_parent`
+    (which is True for any descendant of a compression-ended ancestor), this
+    checks only the session's own ``end_reason``. A delegation child created
+    under a compression continuation has ``parent_session_id`` set but its own
+    ``end_reason`` is ``None`` — its content is still live to the parent agent,
+    so it must stay excluded from discovery.
+    """
+    if not session_id:
+        return False
+    try:
+        s = db.get_session(session_id)
+        if not s:
+            return False
+        return s.get("end_reason") == "compression"
+    except Exception:
+        return False
+
+
+def _is_compacted_message(db, message_id) -> bool:
+    """Return True if *message_id* is a compaction-archived row.
+
+    Compaction archives are ``active=0, compacted=1`` — the content was
+    summarised away from live context by :meth:`archive_and_compact`.
+    Rewind/undo rows are ``active=0, compacted=0`` and must stay hidden.
+
+    Used by ``_discover`` to distinguish a compaction-archived FTS hit on the
+    current session (pre-compaction content no longer in live context — should
+    stay discoverable) from an active live hit (already in context — skip).
+    Returns False on any error so the caller falls back to the safe default
+    (skip the current session).
+    """
+    if not message_id:
+        return False
+    try:
+        with db._lock:
+            cursor = db._conn.execute(
+                "SELECT active, compacted FROM messages WHERE id = ?", (message_id,)
+            )
+            row = cursor.fetchone()
+    except Exception:
+        logging.debug("is_compacted_message lookup failed for %s", message_id, exc_info=True)
+        return False
+    return row is not None and row["active"] == 0 and row["compacted"] == 1
+
+
+def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
+    """Add a rebuild-progress note when the deferred FTS backfill (schema
+    v23) is still running, so the agent can tell the user why older results
+    may be incomplete/slower instead of treating a thin result set as
+    ground truth. No-op (and never raises) when no rebuild is pending."""
+    try:
+        status = db.fts_rebuild_status()
+    except Exception:
+        return
+    if status is None:
+        return
+    payload["index_rebuild"] = {
+        "percent": status["percent"],
+        "note": (
+            f"The search index is rebuilding in the background "
+            f"({status['percent']}% done, {status['indexed']:,} of "
+            f"{status['total']:,} messages). Results from older messages "
+            f"may be incomplete until it finishes."
+        ),
+    }
 
 
 def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -120,12 +226,30 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
-def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
-    """Slim a message row for the tool response. Keeps content even if empty."""
+def _shape_message(
+    m: Dict[str, Any],
+    anchor_id: Optional[int] = None,
+    max_content_len: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Slim a message row for the tool response. Keeps content even if empty.
+
+    When *max_content_len* is set, ``content`` is truncated to that many
+    characters and ``content_truncated`` / ``original_content_chars`` metadata
+    is added so callers know the payload was bounded.
+    """
+    raw_content = m.get("content")
+    if max_content_len and raw_content and len(raw_content) > max_content_len:
+        content = raw_content[:max_content_len] + "…"
+        truncated = True
+        original_chars = len(raw_content)
+    else:
+        content = raw_content
+        truncated = False
+        original_chars = None
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):
@@ -136,6 +260,9 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
         entry["tool_call_id"] = m.get("tool_call_id")
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
+    if truncated:
+        entry["content_truncated"] = True
+        entry["original_content_chars"] = original_chars
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
@@ -266,7 +393,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             order_by_last_active=True,
         )  # fetch extra so we can skip current
 
-        current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+        current_root = _resolve_lineage(db, current_session_id) if current_session_id else None
 
         results = []
         for s in sessions:
@@ -333,8 +460,8 @@ def _scroll(
     # Reject scrolling inside the active session lineage — those messages are
     # already in context.
     if current_session_id:
-        a_root = _resolve_to_parent(db, session_id)
-        c_root = _resolve_to_parent(db, current_session_id)
+        a_root = _resolve_lineage(db, session_id)
+        c_root = _resolve_lineage(db, current_session_id)
         if a_root and c_root and a_root == c_root:
             return tool_error(
                 "scroll rejected: anchor lives in the current session lineage (already in your active context)",
@@ -377,8 +504,8 @@ def _scroll(
             logging.debug("owning-session lookup failed: %s", e, exc_info=True)
             owning = None
         if owning and owning != session_id:
-            a_root = _resolve_to_parent(db, session_id)
-            o_root = _resolve_to_parent(db, owning)
+            a_root = _resolve_lineage(db, session_id)
+            o_root = _resolve_lineage(db, owning)
             if a_root and o_root and a_root == o_root:
                 try:
                     rebind_view = db.get_messages_around(owning, around_message_id, window=window)
@@ -447,7 +574,7 @@ def _title_match_result(
     if not session_id:
         return None
 
-    lineage_root = _resolve_to_parent(db, session_id)
+    lineage_root = _resolve_lineage(db, session_id)
     if current_lineage_root and lineage_root == current_lineage_root:
         return None
 
@@ -506,7 +633,7 @@ def _discover(
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
-    current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+    current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
 
     try:
@@ -531,14 +658,16 @@ def _discover(
     raw_results = _order_for_recall(raw_results)
 
     if not raw_results and not title_result:
-        return json.dumps({
+        _empty_payload = {
             "success": True,
             "mode": "discover",
             "query": query,
             "results": [],
             "count": 0,
             "message": "No matching sessions found.",
-        }, ensure_ascii=False)
+        }
+        _annotate_rebuild_status(db, _empty_payload)
+        return json.dumps(_empty_payload, ensure_ascii=False)
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -556,12 +685,33 @@ def _discover(
         if len(seen_sessions) >= limit:
             break
         raw_sid = r["session_id"]
-        resolved_sid = _resolve_to_parent(db, raw_sid)
-        # Skip the current session lineage
+        resolved_sid, _ = _resolve_to_parent(db, raw_sid)
+        # Skip the current session lineage — UNLESS the content has been
+        # compression-summarised out of the live context (memory black hole
+        # after compression). Two sub-cases:
+        #
+        # Legacy rotation: the FTS hit lives in a session that itself ended
+        # with end_reason='compression'. That session's content has been
+        # replaced by a summary in the continuation child, so it must stay
+        # discoverable. A delegation child living under a compression
+        # continuation does NOT have end_reason='compression' itself, so it
+        # stays excluded.
+        #
+        # In-place compaction: the FTS hit lives on the SAME session_id as the
+        # current session, but the matched message row is an archived
+        # (active=0, compacted=1) row. The live-context load filters active=1,
+        # so that content is no longer in context — let it through.
+        is_compacted_hit = _is_compacted_message(db, r.get("id"))
+        is_ended_session = _is_compression_ended(db, raw_sid)
         if current_lineage_root and resolved_sid == current_lineage_root:
-            continue
+            if not (is_ended_session or is_compacted_hit):
+                continue
         if current_session_id and raw_sid == current_session_id:
-            continue
+            # Same-session hit: only skip if the matched message is still live
+            # (active=1). Archived/compacted rows are pre-compaction content
+            # that's been summarised away — let them through.
+            if not is_compacted_hit:
+                continue
         if resolved_sid not in seen_sessions:
             row = dict(r)
             row["_lineage_root"] = resolved_sid
@@ -596,9 +746,17 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_start": [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_start") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ],
+            "messages": [_shape_message(m, anchor_id=msg_id, max_content_len=4000) for m in (view.get("window") or [])],
+            "bookend_end": [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_end") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }
@@ -606,14 +764,16 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    _final_payload = {
         "success": True,
         "mode": "discover",
         "query": query,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
-    }, ensure_ascii=False)
+    }
+    _annotate_rebuild_status(db, _final_payload)
+    return json.dumps(_final_payload, ensure_ascii=False)
 
 
 def session_search(

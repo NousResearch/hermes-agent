@@ -1,5 +1,6 @@
 import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from 'react'
 
+import { $gateway } from '@/store/gateway'
 import { $messages, setBusy, setMessages } from '@/store/session'
 
 type Sample = {
@@ -24,6 +25,19 @@ declare global {
     __PERF_DRIVE__?: {
       /** Inject an assistant message and grow it by `chunk` every `intervalMs`. Returns a stop handle. */
       stream: (opts?: { chunk?: string; intervalMs?: number; totalTokens?: number }) => SyntheticDriverHandle
+      /**
+       * Replace the transcript with `turns` synthetic user/assistant pairs of
+       * realistic mixed markdown, then resolve with the ms elapsed from the
+       * `setMessages` commit to the second animation frame (a mount+paint
+       * proxy). Used by the `transcript` perf scenario. `reset()` restores.
+       */
+      loadTranscript: (turns?: number) => Promise<number>
+      /**
+       * Whether the active gateway socket is open. The perf harness waits on
+       * this before measuring so background reconnect churn (a booting/absent
+       * backend) doesn't contaminate frame-pacing numbers.
+       */
+      connected: () => boolean
       reset: () => void
       snapshotMsgs: () => number
     }
@@ -84,7 +98,7 @@ const onRender: ProfilerOnRenderCallback = (id, phase, actualDuration, baseDurat
 if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
   // Synthetic stream driver — pushes tokens through the live $messages atom so the
   // assistant-ui runtime + react tree sees them exactly as a real LLM stream would.
-  // Used by scripts/measure-real-stream.mjs when no live LLM credit is available.
+  // Driven by the perf harness (scripts/perf/) when no live LLM credit is available.
   let baseline: ReturnType<typeof $messages.get> | null = null
   let activeHandle: SyntheticDriverHandle | null = null
 
@@ -93,8 +107,87 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
     setBusy(false)
   }
 
+  // One synthetic turn's worth of mixed markdown — prose, a list, a fenced
+  // code block, inline code, a link, and a short table — so a loaded transcript
+  // exercises the same render cost (Streamdown blocks, code cards) a real one
+  // would. Kept deterministic (seeded by index) so runs are comparable.
+  const syntheticTurn = (i: number): ReturnType<typeof $messages.get> => {
+    const user = {
+      id: `perf-u-${i}`,
+      role: 'user' as const,
+      parts: [
+        { type: 'text' as const, text: `Question ${i}: how does the widget in module ${i} handle back-pressure?` }
+      ],
+      timestamp: Date.now()
+    }
+
+    const assistant = {
+      id: `perf-a-${i}`,
+      role: 'assistant' as const,
+      parts: [
+        {
+          type: 'text' as const,
+          text: [
+            `## Answer ${i}`,
+            '',
+            `The widget buffers writes and applies a bounded queue. Key points for module \`${i}\`:`,
+            '',
+            '- It coalesces bursts into a single flush.',
+            '- Back-pressure propagates via a `Promise` that resolves on drain.',
+            '- See [the design note](https://example.com/design) for the state machine.',
+            '',
+            '```ts',
+            `function flush${i}(items: number[]) {`,
+            '  return items.reduce((a, b) => a + b, 0)',
+            '}',
+            '```',
+            '',
+            '| stage | cost |',
+            '|---|---|',
+            '| enqueue | O(1) |',
+            '| flush | O(n) |',
+            ''
+          ].join('\n')
+        }
+      ],
+      timestamp: Date.now(),
+      pending: false
+    }
+
+    return [user, assistant]
+  }
+
   window.__PERF_DRIVE__ = {
     snapshotMsgs: () => $messages.get().length,
+    connected: () => {
+      try {
+        return $gateway.get()?.connectionState === 'open'
+      } catch {
+        return false
+      }
+    },
+    loadTranscript: (turns = 200) => {
+      if (!baseline) {
+        baseline = $messages.get()
+      }
+
+      const next: ReturnType<typeof $messages.get> = []
+
+      for (let i = 0; i < turns; i += 1) {
+        next.push(...syntheticTurn(i))
+      }
+
+      const t0 = performance.now()
+      setMessages(next)
+
+      return new Promise<number>(resolve => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            resolve(performance.now() - t0)
+          })
+        })
+      })
+    },
     reset: () => {
       activeHandle?.stop()
 

@@ -222,6 +222,19 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    # Vertex authenticates via OAuth2 (service-account JSON / ADC), not a
+    # static API key or models.dev entry — resolved specially by
+    # agent/vertex_adapter.py, like bedrock's aws_sdk. Without an overlay
+    # entry get_provider("vertex") returns None, which makes
+    # _preserve_provider_with_base_url() in agent/auxiliary_client.py treat
+    # a Vertex MoA slot's resolved (base_url, api_key) pair as an unknown
+    # custom endpoint instead of "vertex" — losing the provider identity
+    # that _refresh_provider_credentials() needs to re-mint an expired
+    # OAuth2 token on a 401.
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+    ),
 }
 
 
@@ -390,6 +403,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "vertex": "Google Vertex AI",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
@@ -764,6 +778,36 @@ def resolve_provider_full(
         user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
             return user_pdef
+
+    # 0.5 Exact Hermes provider IDs must win over LOSSY alias collapsing.
+    # Example: kimi-coding-cn should stay distinct from kimi-coding instead of
+    # normalizing through the shared models.dev alias "kimi-for-coding".
+    # A collapse is lossy only when MULTIPLE distinct registry providers
+    # normalize to the same canonical name — resolving through the alias
+    # would then lose which one the caller meant. Single-entry rewrites
+    # (e.g. "copilot" → "github-copilot") are correct routing and must keep
+    # resolving through the built-in chain below so overlay transports apply.
+    if canonical != raw:
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+            _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
+            if _pcfg is not None:
+                _collapsed_siblings = [
+                    _rid
+                    for _rid in _AUTH_PROVIDER_REGISTRY
+                    if normalize_provider(_rid) == canonical
+                ]
+                if len(_collapsed_siblings) > 1:
+                    return ProviderDef(
+                        id=_pcfg.id,
+                        name=_pcfg.name,
+                        transport="openai_chat",
+                        api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()),
+                        base_url=_pcfg.inference_base_url or "",
+                        source="hermes-auth-registry",
+                    )
+        except Exception:
+            pass
 
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)

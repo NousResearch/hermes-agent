@@ -2,15 +2,19 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from './composer'
 import {
+  $parkedQueueSessions,
   $queuedPromptsBySession,
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  isQueueParked,
   migrateQueuedPrompts,
+  parkQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
   shouldAutoDrain,
+  unparkQueuedPrompts,
   updateQueuedPrompt,
   updateQueuedPromptText
 } from './composer-queue'
@@ -166,5 +170,80 @@ describe('shouldAutoDrain', () => {
 
   it('does not drain an empty queue', () => {
     expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
+  })
+
+  it('does not drain a parked queue, even when idle', () => {
+    // The Stop/Esc settle edge: busy just flipped false but the user asked to
+    // HALT — the park must hold the head back until they resume.
+    expect(shouldAutoDrain({ isBusy: false, parked: true, queueLength: 1 })).toBe(false)
+  })
+
+  it('drains again once the park is lifted', () => {
+    expect(shouldAutoDrain({ isBusy: false, parked: false, queueLength: 1 })).toBe(true)
+  })
+})
+
+describe('parked queue sessions', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+  })
+
+  it('parks only sessions with queued entries', () => {
+    expect(parkQueuedPrompts(SESSION_KEY)).toBe(false)
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+
+    expect(parkQueuedPrompts(SESSION_KEY)).toBe(true)
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('unparks explicitly', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+    parkQueuedPrompts(SESSION_KEY)
+
+    unparkQueuedPrompts(SESSION_KEY)
+
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('queueing a fresh prompt lifts the park', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+    parkQueuedPrompts(SESSION_KEY)
+
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'new intent' })
+
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('emptying the queue drops the park', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+    parkQueuedPrompts(SESSION_KEY)
+
+    removeQueuedPrompt(SESSION_KEY, entry!.id)
+
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('a park travels with migrated entries', () => {
+    // A backend bounce right after Stop re-keys the queue; shedding the park
+    // there would auto-send the exact prompts the user just halted.
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'held back' })
+    parkQueuedPrompts('rt-old')
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(isQueueParked('rt-old')).toBe(false)
+    expect(isQueueParked('rt-new')).toBe(true)
+  })
+
+  it('migration without a park does not invent one', () => {
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'flowing' })
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(isQueueParked('rt-new')).toBe(false)
   })
 })

@@ -252,7 +252,7 @@ class WebhookRouteProcessor:
                 argv,
                 input=json.dumps(payload),
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=self.script_timeout_seconds,
                 cwd=str(path.parent),
                 env=_sanitize_subprocess_env(os.environ.copy()),

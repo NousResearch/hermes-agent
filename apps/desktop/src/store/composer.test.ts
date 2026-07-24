@@ -5,6 +5,7 @@ import {
   addComposerAttachment,
   clearSessionDraft,
   type ComposerAttachment,
+  migrateSessionDraft,
   removeComposerAttachment,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
@@ -105,5 +106,30 @@ describe('session drafts', () => {
     taken.attachments[0]!.label = 'mutated'
 
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
+  })
+
+  it('migrates a tip-keyed draft onto the post-compression tip', () => {
+    const tipBefore = '20260720_062637_ad96b3'
+    const tipAfter = '20260720_071049_a28905'
+
+    stashSessionDraft(tipBefore, 'half typed while thinking', [])
+
+    expect(migrateSessionDraft(tipBefore, tipAfter)).toBe(true)
+    expect(takeSessionDraft(tipAfter).text).toBe('half typed while thinking')
+    expect(takeSessionDraft(tipBefore).text).toBe('')
+
+    clearSessionDraft(tipAfter)
+  })
+
+  it('does not overwrite a non-empty destination draft during migration', () => {
+    stashSessionDraft('from', 'old tip draft', [])
+    stashSessionDraft('to', 'already typed on new tip', [])
+
+    expect(migrateSessionDraft('from', 'to')).toBe(false)
+    expect(takeSessionDraft('to').text).toBe('already typed on new tip')
+    expect(takeSessionDraft('from').text).toBe('old tip draft')
+
+    clearSessionDraft('from')
+    clearSessionDraft('to')
   })
 })

@@ -31,10 +31,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::process::Command;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
+use crate::powershell::read_decoded_line;
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
@@ -662,28 +663,31 @@ async fn run_streamed(
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let mut out = BufReader::new(stdout).lines();
-    let mut err = BufReader::new(stderr).lines();
+    // Same non-UTF-8-safe decode path as powershell::run_script (#67193).
+    let mut out = BufReader::new(stdout);
+    let mut err = BufReader::new(stderr);
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
 
     let stage_owned = stage.map(|s| s.to_string());
     loop {
         tokio::select! {
-            line = out.next_line() => match line {
+            line = read_decoded_line(&mut out, &mut out_buf) => match line {
                 Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
                 Ok(None) => break,
                 Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
             },
-            line = err.next_line() => match line {
+            line = read_decoded_line(&mut err, &mut err_buf) => match line {
                 Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l),
                 Ok(None) => {}
                 Err(e) => { tracing::warn!("stderr read error: {e}"); }
             },
         }
     }
-    while let Ok(Some(l)) = out.next_line().await {
+    while let Ok(Some(l)) = read_decoded_line(&mut out, &mut out_buf).await {
         emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
     }
-    while let Ok(Some(l)) = err.next_line().await {
+    while let Ok(Some(l)) = read_decoded_line(&mut err, &mut err_buf).await {
         emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
     }
 

@@ -35,11 +35,20 @@ function forcedPreview(): boolean {
   }
 }
 
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+}
+
 export function GatewayConnectingOverlay() {
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
   const [previewing] = useState(forcedPreview)
+  const reduce = prefersReducedMotion()
+  // Under reduced motion, skip the multi-phase exit choreography (text-out →
+  // hold → overlay fade) and jump straight to gone so the overlay unmounts
+  // the instant the gateway opens. E2E screenshots rely on this to avoid
+  // catching the overlay mid-fade.
   const [phase, setPhase] = useState<Phase>('live')
   // Once cold boot has completed once, never resurrect the fullscreen overlay
   // — soft gateway switches keep the shell and reskeleton the sidebar instead.
@@ -81,9 +90,13 @@ export function GatewayConnectingOverlay() {
     }
 
     if (gatewayState === 'open' && shownRef.current) {
-      setPhase('text-out')
+      // Under reduced motion, skip the multi-phase exit choreography
+      // (text-out → hold → overlay fade) and jump straight to gone so the
+      // overlay unmounts the instant the gateway opens. E2E screenshots
+      // rely on this to avoid catching the overlay mid-fade.
+      setPhase(reduce ? 'gone' : 'text-out')
     }
-  }, [phase, previewing, gatewayState])
+  }, [phase, previewing, gatewayState, reduce])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {

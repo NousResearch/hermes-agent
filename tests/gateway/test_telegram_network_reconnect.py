@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 def _ensure_telegram_mock():
@@ -37,6 +37,7 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from gateway.run import GatewayRunner  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -224,6 +225,76 @@ async def test_reconnect_triggers_fatal_after_max_retries():
     fatal_handler.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_retry_exhaustion_queues_reconnect_before_child_disconnect(tmp_path):
+    """Fatal teardown must not cancel the gateway's reconnect handoff.
+
+    The gateway runs ``disconnect()`` in a bounded child task.  If the current
+    polling-recovery owner remains in ``_polling_error_task``, Telegram teardown
+    cancels that parent while it is still awaiting the fatal handler, so the
+    handler never gets to queue background reconnection.
+    """
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 10  # MAX_NETWORK_RETRIES
+    adapter.set_fatal_error_handler(runner._handle_adapter_fatal_error)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+
+    recovery_task = asyncio.create_task(
+        adapter._handle_polling_network_error(Exception("still failing"))
+    )
+    adapter._polling_error_task = recovery_task
+    result = await asyncio.gather(recovery_task, return_exceptions=True)
+
+    assert result == [None]
+    assert runner.adapters == {}
+    assert Platform.TELEGRAM in runner._failed_platforms
+    assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 0
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_watchdog_handoff_survives_child_disconnect(tmp_path):
+    """The wedged-recovery heartbeat watchdog must survive its fatal callback.
+
+    The heartbeat loop force-escalates a stuck polling-recovery task.  Like
+    the network/conflict terminal paths, the heartbeat task itself is the
+    owner that ``disconnect()`` cancels, so the fatal callback must release
+    ``_polling_heartbeat_task`` before notifying the runner.
+    """
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _make_adapter()
+    adapter.set_fatal_error_handler(runner._handle_adapter_fatal_error)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.delivery_router.adapters = runner.adapters
+
+    # Simulate the heartbeat watchdog's fatal-escalation path directly.
+    adapter._set_fatal_error(
+        "telegram_network_error",
+        "Telegram reconnect task wedged; forcing gateway reconnect.",
+        retryable=True,
+    )
+    heartbeat_task = asyncio.create_task(adapter._handoff_polling_fatal_error())
+    adapter._polling_heartbeat_task = heartbeat_task
+    result = await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    assert result == [None]
+    assert runner.adapters == {}
+    assert Platform.TELEGRAM in runner._failed_platforms
+
+
 # ---------------------------------------------------------------------------
 # Connection pool drain tests (PR #16466 salvage)
 # ---------------------------------------------------------------------------
@@ -323,6 +394,104 @@ async def test_initialize_still_runs_when_shutdown_fails():
     # initialize MUST be called even though shutdown raised
     mock_polling_req.initialize.assert_called_once()
     mock_app.updater.start_polling.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_continues_if_drain_hangs(monkeypatch):
+    """If the polling request drain HANGS (wedged httpx pool close on a
+    CLOSE-WAIT socket), the reconnect ladder must still advance rather than
+    freezing the tracked _polling_error_task forever.
+
+    Regression test for #66377: an unbounded ``shutdown()`` /
+    ``initialize()`` in ``_drain_polling_connections`` leaves the handler
+    task pending, which gates every escalation path and silently kills the
+    gateway. The drain awaits are bounded by ``_DRAIN_TIMEOUT``, so the
+    handler must complete and reach ``start_polling`` within a hard bound.
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req = _make_mock_app()
+
+    async def _hang(*args, **kwargs):
+        await asyncio.Event().wait()  # never returns
+
+    # Both drain awaits wedge indefinitely.
+    mock_polling_req.shutdown = AsyncMock(side_effect=_hang)
+    mock_polling_req.initialize = AsyncMock(side_effect=_hang)
+    adapter._app = mock_app
+
+    # Keep the drain timeout tiny so the test stays fast; the real default
+    # is generous enough not to truncate healthy closes.
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.01, raising=False)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        # Hard outer bound: on unfixed code the drain hangs forever and this
+        # trips; with the fix the inner wait_for releases well before it.
+        await asyncio.wait_for(
+            adapter._handle_polling_network_error(Exception("Timed out")),
+            timeout=5,
+        )
+
+    # Ladder advanced past the wedged drain despite it never returning.
+    mock_app.updater.start_polling.assert_called_once()
+    assert adapter._polling_network_error_count == 2
+    # The tracked task must not be stuck pending — otherwise every
+    # escalation path stays gated behind an in-flight guard.
+    assert (
+        adapter._polling_error_task is None
+        or adapter._polling_error_task.done()
+    )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_force_escalates_wedged_recovery_task(monkeypatch):
+    """#66377: the heartbeat is an independent, cause-agnostic watchdog.
+
+    Every recovery path (ladder re-entry, pending-update probe, PTB error
+    callback) gates new recovery on ``_polling_error_task.done()``. If that task
+    wedges on ANY hung await — not just the drain closed by #66492 — the gateway
+    stays alive but deaf with nothing retrying. The heartbeat must detect a
+    recovery task that stays in-flight past ``_POLLING_ERROR_TASK_STUCK_TIMEOUT``
+    and force a retryable-fatal so the background reconnector rebuilds the
+    adapter.
+    """
+    adapter = _make_adapter()
+
+    async def _wedged():
+        await asyncio.Event().wait()  # never completes — simulates the hang
+
+    wedged_task = asyncio.ensure_future(_wedged())
+    adapter._polling_error_task = wedged_task
+
+    mock_bot = MagicMock()
+    mock_bot.get_me = AsyncMock()
+    mock_app = MagicMock()
+    mock_app.bot = mock_bot
+    adapter._app = mock_app
+    adapter._probe_pending_updates = AsyncMock()
+    adapter._notify_fatal_error = AsyncMock()
+
+    # Controllable monotonic clock advanced by each (mocked) heartbeat sleep so
+    # the same wedged task is observed across the stuck threshold deterministically.
+    clock = [1000.0]
+
+    async def _fake_sleep(*_a, **_k):
+        clock[0] += 200.0
+
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock[0])
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_fake_sleep)):
+        await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    assert adapter.has_fatal_error, "wedged recovery task must force a fatal escalation"
+    adapter._notify_fatal_error.assert_awaited()
+
+    wedged_task.cancel()
+    try:
+        await wedged_task
+    except asyncio.CancelledError:
+        pass
 
 
 @pytest.mark.asyncio

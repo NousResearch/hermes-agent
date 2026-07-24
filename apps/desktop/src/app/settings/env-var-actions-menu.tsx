@@ -12,7 +12,7 @@ import {
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { ExternalLink, Eye, EyeOff, Trash2 } from '@/lib/icons'
+import { ExternalLink, Eye, EyeOff, KeyRound, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 interface EnvVarActionsMenuProps extends Pick<
@@ -27,6 +27,10 @@ interface EnvVarActionsMenuProps extends Pick<
   label: string
   onClear?: () => void
   onEdit: () => void
+  /** Internal navigation to Settings → API Keys with this key highlighted.
+   *  Rendered only when provided AND the key is set (an unset key is managed
+   *  right here via Set). */
+  onManageKeys?: () => void
   onReveal?: () => void
   showReveal?: boolean
 }
@@ -41,6 +45,7 @@ export function EnvVarActionsMenu({
   label,
   onClear,
   onEdit,
+  onManageKeys,
   onReveal,
   showReveal = true,
   sideOffset = 6
@@ -49,6 +54,7 @@ export function EnvVarActionsMenu({
   const copy = t.settings.envActions
   const hasClear = isSet && onClear
   const hasReveal = isSet && showReveal && onReveal
+  const hasManageKeys = isSet && onManageKeys
   const hasDocs = Boolean(docsUrl?.trim())
 
   return (
@@ -89,6 +95,18 @@ export function EnvVarActionsMenu({
           <Codicon name="edit" size="0.875rem" />
           <span>{isSet ? copy.replace : copy.set}</span>
         </DropdownMenuItem>
+
+        {hasManageKeys && (
+          <DropdownMenuItem
+            onSelect={() => {
+              triggerHaptic('selection')
+              onManageKeys()
+            }}
+          >
+            <KeyRound className="size-3.5" />
+            <span>{copy.manageInKeys}</span>
+          </DropdownMenuItem>
+        )}
 
         {hasClear && (
           <>

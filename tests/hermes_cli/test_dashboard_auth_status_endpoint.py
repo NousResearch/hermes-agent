@@ -92,6 +92,18 @@ def test_status_preserves_existing_fields(loopback_client):
     }
     missing = expected_keys - set(body.keys())
     assert not missing, f"/api/status dropped fields: {missing}"
+    # gateway_updated_at is a typed contract (web/src/lib/api.ts declares
+    # string | null): it must never be a number, and any string must
+    # round-trip through fromisoformat as a timezone-aware timestamp.
+    updated_at = body["gateway_updated_at"]
+    assert isinstance(updated_at, (str, type(None))), (
+        f"gateway_updated_at must be str|None, got {type(updated_at).__name__}: {updated_at!r}"
+    )
+    if updated_at is not None:
+        from datetime import datetime
+        parsed = datetime.fromisoformat(updated_at)
+        assert parsed.tzinfo is not None
+        assert parsed.isoformat() == updated_at, "gateway_updated_at is not canonical isoformat"
 
 
 # Host-local detail (absolute paths, PID, internal gateway URL) is deployment

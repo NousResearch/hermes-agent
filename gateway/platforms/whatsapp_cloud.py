@@ -820,6 +820,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
@@ -832,7 +833,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
 
-        del allow_permanent  # This adapter already offers one-shot Approve / Deny only.
+        del allow_permanent, allow_session  # This adapter already offers one-shot Approve / Deny only.
         # WhatsApp body caps at 1024 chars; reserve room for the
         # framing prose around the command.
         cmd = command or ""
@@ -1793,11 +1794,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "(session_key=%s) — likely already resolved",
                     session_key,
                 )
-            # Send confirmation message — paralleling Telegram's UX.
+            # Send confirmation message — paralleling Telegram's UX.  A tap
+            # that lands after the wait timed out (count == 0) must not claim
+            # the command was approved: it was already denied fail-closed.
             try:
-                confirm_text = (
-                    "✅ Approved." if choice == "approve" else "❌ Denied."
-                )
+                if count:
+                    confirm_text = (
+                        "✅ Approved." if choice == "approve" else "❌ Denied."
+                    )
+                else:
+                    confirm_text = (
+                        "⌛ Approval expired — command was not run "
+                        "(already timed out or resolved elsewhere)."
+                    )
                 await self.send(str(raw_message.get("from") or ""), confirm_text)
             except Exception:
                 logger.exception("[whatsapp_cloud] approval confirm failed")

@@ -294,6 +294,32 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_conflict_exhaustion_hands_off_before_child_disconnect():
+    """The conflict recovery owner must survive its fatal callback handoff."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._polling_conflict_count = 5  # MAX_CONFLICT_RETRIES
+    disconnect_tasks = []
+
+    async def fatal_handler(failed_adapter):
+        disconnect_task = asyncio.create_task(failed_adapter.disconnect())
+        disconnect_tasks.append(disconnect_task)
+        await asyncio.wait({disconnect_task})
+
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    conflict = type("Conflict", (Exception,), {})
+    recovery_task = asyncio.create_task(
+        adapter._handle_polling_conflict(conflict("getUpdates conflict"))
+    )
+    adapter._polling_error_task = recovery_task
+    result = await asyncio.gather(recovery_task, return_exceptions=True)
+    await asyncio.gather(*disconnect_tasks, return_exceptions=True)
+
+    assert result == [None]
+    assert adapter._polling_error_task is None
+
+
+@pytest.mark.asyncio
 async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 
@@ -730,4 +756,3 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     for _ in range(10):
         await asyncio.sleep(0)
     await _cancel_heartbeat(adapter)
-

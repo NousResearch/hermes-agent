@@ -336,6 +336,14 @@ class GatewayKanbanWatchersMixin:
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
+                    # Per-subscription failure-counter key. Hoisted out of the
+                    # event loop: the wake self-post path (in the loop's
+                    # ``else`` clause) needs it even when every event in the
+                    # claim was skipped before reaching the send site.
+                    sub_key = (
+                        sub["task_id"], sub["platform"],
+                        sub["chat_id"], sub.get("thread_id") or "",
+                    )
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -408,14 +416,49 @@ class GatewayKanbanWatchersMixin:
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
-                        sub_key = (
-                            sub["task_id"], sub["platform"],
-                            sub["chat_id"], sub.get("thread_id") or "",
-                        )
+                        # Adapters with no push channel (the API server —
+                        # ``supports_async_delivery = False``) can NEVER
+                        # satisfy a text-send: ``send()`` always reports
+                        # SendResult(success=False) by design (see
+                        # ApiServerAdapter.send()). Treating that as a
+                        # delivery failure would rewind/drop the subscription
+                        # forever and — because the wake dispatch below lives
+                        # in this loop's ``else`` clause — would also make the
+                        # wake-on-completion path (the actual fix for the
+                        # api_server wrong-session bug) unreachable. So for
+                        # non-push adapters, skip the doomed send attempt
+                        # entirely: there is nothing to text-notify, the
+                        # creator is woken via the self-post below instead.
+                        from gateway.wake import adapter_supports_push
+
+                        if not adapter_supports_push(adapter):
+                            logger.debug(
+                                "kanban notifier: adapter %s has no push "
+                                "channel; skipping text ping for %s, relying "
+                                "on wake self-post instead",
+                                platform_str, sub["task_id"],
+                            )
+                            # Do NOT reset the failure counter here: on this
+                            # path the wake self-post below IS the delivery,
+                            # so the counter is resolved (reset or bumped) by
+                            # the self-post outcome, not by skipping the send.
+                            continue
                         try:
-                            await adapter.send(
+                            _send_res = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            # A SendResult(success=False) without an exception
+                            # (returned by push-capable adapters on a genuine
+                            # transient failure) must count as a FAILED
+                            # delivery — otherwise the cursor advances and the
+                            # event is permanently lost. Adapters returning
+                            # None (or anything non-SendResult shaped) keep
+                            # the legacy "no exception == delivered" contract.
+                            if getattr(_send_res, "success", True) is False:
+                                raise RuntimeError(
+                                    "adapter send() reported failure: "
+                                    f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+                                )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -475,12 +518,108 @@ class GatewayKanbanWatchersMixin:
                             # dropping the subscription is the terminal action.
                             break
                     else:
-                        # All events delivered; advance cursor. The cursor
+                        # All text pings delivered (or intentionally skipped
+                        # for non-push adapters, whose delivery is the wake
+                        # self-post below). Whether the cursor may advance now
+                        # depends on the adapter class:
+                        #
+                        # * push-capable: the text send WAS the delivery, so
+                        #   advance immediately (pre-existing behavior); the
+                        #   wake injection below stays best-effort.
+                        # * non-push (api_server): the wake self-post IS the
+                        #   delivery. Advancing first would let a failed /
+                        #   retry-exhausted self-post (swallowed by the
+                        #   best-effort except) permanently lose the event.
+                        #   So the self-post runs FIRST and the cursor only
+                        #   advances after it succeeds — a failure rewinds the
+                        #   claim exactly like a failed send() above, so the
+                        #   next tick retries.
+                        task_terminal = task and task.status in {"done", "archived"}
+                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                        from gateway.wake import adapter_supports_push as _adapter_push_ok
+
+                        _is_push_adapter = _adapter_push_ok(adapter)
+                        _session_key = ""
+                        _synth = ""
+                        if _wake_kinds:
+                            _session_key = getattr(task, "session_id", None) or ""
+                        if _wake_kinds and _session_key:
+                            _title = (task.title if task else sub["task_id"])[:120]
+                            _assignee = task.assignee if task else ""
+                            _parts = []
+                            if "completed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.completed"))
+                            if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
+                            if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
+                            if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
+                            if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                            _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
+                            _synth = t(
+                                "gateway.kanban.wake.message",
+                                task_id=sub["task_id"],
+                                status=_status,
+                                title=_title,
+                                assignee=_assignee,
+                                board=board_slug,
+                            )
+
+                        if not _is_push_adapter and _wake_kinds and _session_key:
+                            # Wake self-post IS the delivery on this path —
+                            # it must succeed BEFORE the cursor advances.
+                            from gateway.wake import deliver_wake
+
+                            try:
+                                await deliver_wake(
+                                    adapter,
+                                    text=_synth,
+                                    session_id=_session_key,
+                                )
+                                logger.info(
+                                    "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
+                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
+                                )
+                                sub_fail_counts.pop(sub_key, None)
+                            except Exception as _wk_err:
+                                fails = sub_fail_counts.get(sub_key, 0) + 1
+                                sub_fail_counts[sub_key] = fails
+                                logger.warning(
+                                    "kanban notifier: wake self-post failed "
+                                    "for %s (attempt %d/%d): %s",
+                                    sub["task_id"], fails,
+                                    MAX_SEND_FAILURES, _wk_err, exc_info=True,
+                                )
+                                if fails >= MAX_SEND_FAILURES:
+                                    logger.warning(
+                                        "kanban notifier: dropping subscription "
+                                        "%s on %s after %d consecutive wake failures",
+                                        sub["task_id"], platform_str, fails,
+                                    )
+                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    # Rewind the pre-send claim so the next
+                                    # tick retries the self-post — the event
+                                    # is NOT lost.
+                                    await asyncio.to_thread(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
+                                continue
+
+                        # Delivery complete (text ping for push adapters, wake
+                        # self-post for non-push): advance cursor. The cursor
                         # is the dedup mechanism — it prevents re-delivery
                         # of the same event on subsequent ticks.
                         await asyncio.to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
+                        if not _is_push_adapter:
+                            # Nothing left to deliver on this path (the wake,
+                            # if any, already succeeded above).
+                            sub_fail_counts.pop(sub_key, None)
                         # Unsubscribe only when the task has reached a truly
                         # final status (done / archived). For blocked /
                         # gave_up / crashed / timed_out the subscription is
@@ -488,68 +627,50 @@ class GatewayKanbanWatchersMixin:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
-                        task_terminal = task and task.status in {"done", "archived"}
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
-                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
-                        if _wake_kinds:
+                        if _is_push_adapter and _wake_kinds and _session_key:
                             try:
-                                _session_key = getattr(task, "session_id", None) or ""
-                                if _session_key:
-                                    _title = (task.title if task else sub["task_id"])[:120]
-                                    _assignee = task.assignee if task else ""
-                                    _parts = []
-                                    if "completed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.completed"))
-                                    if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
-                                    if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
-                                    if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
-                                    if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
-                                    _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
-                                    _synth = t(
-                                        "gateway.kanban.wake.message",
-                                        task_id=sub["task_id"],
-                                        status=_status,
-                                        title=_title,
-                                        assignee=_assignee,
-                                        board=board_slug,
-                                    )
-                                    from gateway.session import SessionSource
-                                    from gateway.platforms.base import MessageEvent, MessageType
-                                    # KNOWN LIMITATION (tracked follow-up): the
-                                    # subscription row does not persist the
-                                    # creator's chat_type, and it is not carried
-                                    # on the session-context bridge, so we cannot
-                                    # faithfully reconstruct the creator's real
-                                    # session key here. build_session_key() keys
-                                    # DMs (":dm:<chat_id>") on a wholly different
-                                    # shape from group/thread, so any hardcoded
-                                    # value mis-routes some creators. "group" is
-                                    # the least-surprising default for the
-                                    # dashboard/group flows this wake primarily
-                                    # serves; DM-originated creators are handled
-                                    # by the follow-up that stamps + persists
-                                    # chat_type end-to-end. handle_message()
-                                    # get_or_create_session's the target, so a
-                                    # mismatch degrades to "wake lands in a fresh
-                                    # group session" — never an exception.
-                                    _source = SessionSource(
-                                        platform=plat,
-                                        chat_id=sub["chat_id"],
-                                        chat_type="group",
-                                        thread_id=sub.get("thread_id") or None,
-                                        user_id=sub.get("user_id"),
-                                        profile=sub_profile or None,
-                                    )
-                                    _synth_event = MessageEvent(
-                                        text=_synth,
-                                        message_type=MessageType.TEXT,
-                                        source=_source,
-                                        internal=True,
-                                    )
-                                    await adapter.handle_message(_synth_event)
-                                    logger.info(
-                                        "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
-                                        sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
-                                    )
+                                from gateway.session import SessionSource
+                                from gateway.wake import deliver_wake
+                                # KNOWN LIMITATION (tracked follow-up): the
+                                # subscription row does not persist the
+                                # creator's chat_type, and it is not carried
+                                # on the session-context bridge, so we cannot
+                                # faithfully reconstruct the creator's real
+                                # session key here. build_session_key() keys
+                                # DMs (":dm:<chat_id>") on a wholly different
+                                # shape from group/thread, so any hardcoded
+                                # value mis-routes some creators. "group" is
+                                # the least-surprising default for the
+                                # dashboard/group flows this wake primarily
+                                # serves; DM-originated creators are handled
+                                # by the follow-up that stamps + persists
+                                # chat_type end-to-end. handle_message()
+                                # get_or_create_session's the target, so a
+                                # mismatch degrades to "wake lands in a fresh
+                                # group session" — never an exception.
+                                _source = SessionSource(
+                                    platform=plat,
+                                    chat_id=sub["chat_id"],
+                                    chat_type="group",
+                                    thread_id=sub.get("thread_id") or None,
+                                    user_id=sub.get("user_id"),
+                                    profile=sub_profile or None,
+                                )
+                                # deliver_wake preserves the synthetic
+                                # MessageEvent/handle_message path for
+                                # push-capable adapters (the non-push /
+                                # self-post branch is handled BEFORE the
+                                # cursor advance above).
+                                await deliver_wake(
+                                    adapter,
+                                    text=_synth,
+                                    session_id=_session_key,
+                                    source=_source,
+                                )
+                                logger.info(
+                                    "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
+                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
+                                )
                             except Exception as _wk_err:
                                 # Best-effort: the notification itself already
                                 # delivered and the cursor has advanced, so a

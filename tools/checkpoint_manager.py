@@ -327,7 +327,7 @@ def _run_git(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
             env=env,
             cwd=str(normalized_working_dir),
@@ -453,7 +453,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     try:
         result = subprocess.run(
             ["git", "init", "--bare", str(store)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
             env=init_env, timeout=_GIT_TIMEOUT,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),

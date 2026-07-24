@@ -2,7 +2,7 @@ import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo } from 'react'
+import { Suspense, useCallback, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -14,16 +14,19 @@ import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
-import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
+import { migrateSessionDraft } from '@/store/composer'
+import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -32,6 +35,7 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
+  resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -251,6 +255,7 @@ export function ChatView({
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
   // from the view slice, not the global atoms (which track the primary only).
@@ -276,7 +281,38 @@ export function ChatView({
   const messagesEmpty = useStore(view.$messagesEmpty)
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
+  const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+
+  // Durable composer/queue scope (lineage root) so auto-compression tip rotation
+  // does not wipe an in-progress draft or orphan /queue entries.
+  const queueSessionKey = useMemo(
+    () => resolveComposerSessionKey(selectedSessionId, sessions),
+    [selectedSessionId, sessions]
+  )
+
+  // When the tip row arrives after compression, migrate any tip-keyed stash onto
+  // the durable lineage key before the composer remounts onto that key.
+  useEffect(() => {
+    if (!selectedSessionId || !queueSessionKey || selectedSessionId === queueSessionKey) {
+      return
+    }
+
+    migrateSessionDraft(selectedSessionId, queueSessionKey)
+    migrateQueuedPrompts(selectedSessionId, queueSessionKey)
+  }, [queueSessionKey, selectedSessionId])
+
+  // Transcript-side stops (the streaming message's hover Stop, the runtime's
+  // cancel) are explicit halts, same as the composer's Stop button: park any
+  // queued turns so the interrupt doesn't roll straight into the next one.
+  // ChatBar wraps its own onCancel internally — its send-now-while-busy path
+  // needs the raw interrupt — so it still receives the unwrapped prop.
+  const haltRun = useCallback(() => {
+    parkQueuedPrompts(queueSessionKey || activeSessionId)
+
+    return onCancel()
+  }, [activeSessionId, onCancel, queueSessionKey])
+
   // A tile IS its session — no route involved, never "mismatched".
   const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
   const isRoutedSessionView = Boolean(routedSessionId)
@@ -322,21 +358,8 @@ export function ChatView({
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: ['model-options', activeSessionId || 'global'],
-    queryFn: () => {
-      if (!activeSessionId) {
-        return getGlobalModelOptions()
-      }
-
-      if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
-      }
-
-      return gateway.request<ModelOptionsResponse>('model.options', {
-        session_id: activeSessionId,
-        explicit_only: true
-      })
-    },
+    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
+    queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
     enabled: gatewayOpen
   })
 
@@ -437,7 +460,7 @@ export function ChatView({
 
       <ChatRuntimeBoundary
         busy={busy}
-        onCancel={onCancel}
+        onCancel={haltRun}
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
@@ -455,7 +478,7 @@ export function ChatView({
             intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
-            onCancel={onCancel}
+            onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
             sessionId={activeSessionId}
@@ -524,7 +547,7 @@ export function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
-              queueSessionKey={selectedSessionId}
+              queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}
             />

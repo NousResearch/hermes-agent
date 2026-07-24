@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import socket
 import tempfile
 import time
 import unittest
@@ -1997,7 +1998,10 @@ class TestAdapterBehavior(unittest.TestCase):
 
                 async def _run() -> tuple[str, str]:
                     with patch("tools.url_safety.is_safe_url", return_value=True):
-                        with patch("httpx.AsyncClient", _FakeAsyncClient):
+                        with patch(
+                            "tools.url_safety.create_ssrf_safe_async_client",
+                            side_effect=lambda **_kwargs: _FakeAsyncClient(),
+                        ):
                             with patch(
                                 "plugins.platforms.feishu.adapter.cache_document_from_bytes",
                                 return_value="/tmp/cached-doc.bin",
@@ -2016,6 +2020,62 @@ class TestAdapterBehavior(unittest.TestCase):
         # reading response body after the connection pool has been torn
         # down, which only works by accident (httpx's eager buffering).
         self.assertLess(events.index("content_read"), events.index("client_exit"))
+
+    def test_download_remote_document_blocks_connect_time_rebind(self):
+        import httpcore
+        from httpcore._backends.auto import AutoBackend
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from tools.url_safety import SSRFConnectionBlocked
+
+        adapter = FeishuAdapter(PlatformConfig())
+        answers = iter(("93.184.216.34", "169.254.169.254"))
+
+        def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+            ip = next(answers)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))
+            ]
+
+        connect_attempts = []
+
+        async def fake_connect_tcp(
+            _self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            connect_attempts.append((host, port))
+            raise httpcore.ConnectError("stop before network")
+
+        proxy_vars = {
+            name: ""
+            for name in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            )
+        }
+        with (
+            patch.dict(os.environ, proxy_vars, clear=False),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch.object(AutoBackend, "connect_tcp", new=fake_connect_tcp),
+            self.assertRaises(SSRFConnectionBlocked),
+        ):
+            asyncio.run(
+                adapter._download_remote_document(
+                    "http://rebind.example/doc.bin",
+                    default_ext=".bin",
+                    preferred_name="doc",
+                )
+            )
+
+        self.assertEqual(connect_attempts, [])
 
     def test_dedup_state_persists_across_adapter_restart(self):
         from gateway.config import PlatformConfig
@@ -2689,6 +2749,127 @@ class TestAdapterBehavior(unittest.TestCase):
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n  2. 子项\n- 外层\n  - 内层\n<u>下划线</u> 和 ~~删除线~~"}]],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_uses_post_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| Name | Score |\n| --- | ---: |\n| Ada | 10 |"
+
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(raw_payload)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [[{"tag": "md", "text": content}]],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
+        """Regression for #26841: when a long Markdown message is split
+        across multiple chunks, every chunk must go out as
+        ``msg_type=post`` — including chunk 1.  The bug was that the
+        first chunk often had only plain prose (the per-chunk regex
+        didn't match) and was sent as ``text``, so users saw literal
+        ``**bold``/``## heading``/code fences while later chunks
+        rendered correctly.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        message_id=f"om_chunk_{len(captured)}",
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        # Force a deterministic split so the test doesn't depend on the
+        # exact 8000-char limit.  Chunk 1 is plain prose; chunk 2 has
+        # the markdown markers.  Without the fix, chunk 1 went out as
+        # ``msg_type=text``.
+        first_chunk = "Here is a short intro that has no markdown markers at all."
+        second_chunk = "## Heading\nAnd then some **bold** text."
+
+        with patch.object(
+            adapter, "truncate_message", return_value=[first_chunk, second_chunk],
+        ), patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=first_chunk + "\n" + second_chunk,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured), 2)
+        msg_types = [r.request_body.msg_type for r in captured]
+        self.assertEqual(msg_types, ["post", "post"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_plain_text_message_not_upgraded_by_prefer_post(self):
+        """A message with no markdown at all must still go out as plain
+        ``msg_type=text`` — the whole-message ``prefer_post`` decision
+        only flips on when the formatted message matches the hint regex.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        message_id=f"om_chunk_{len(captured)}",
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="just a plain sentence",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].request_body.msg_type, "text")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_inline_markdown(self):

@@ -32,12 +32,53 @@ class TestCronjobRunExecutesImmediately:
         m_claim.assert_called_once_with("job-run-1")   # at-most-once claim taken
         m_run.assert_called_once()                       # fired via the shared body
 
+    def test_run_reconciles_external_provider_after_claimed_execution(self):
+        """A direct run must re-arm Chronos after it advances next_run_at.
+
+        Otherwise a scheduled Chronos fire that loses its claim to this direct
+        run is consumed without a successor one-shot, permanently stalling the
+        recurring job.
+        """
+        order = []
+        ran = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job",
+                   side_effect=lambda *a, **kw: order.append("run") or True), \
+             patch("tools.cronjob_tools.get_job", return_value=ran), \
+             patch("tools.cronjob_tools._notify_provider_jobs_changed_safe",
+                   side_effect=lambda: order.append("notify")) as m_notify:
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["job"]["executed"] is True
+        m_notify.assert_called_once_with()
+        # Reconcile only AFTER the run persisted its final state (mark_job_run
+        # inside run_one_job), so the provider arms the post-run next_run_at.
+        assert order == ["run", "notify"]
+
+    def test_run_reconciles_external_provider_even_when_claimed_run_fails(self):
+        """A claimed direct run advances next_run_at at claim time, so the
+        provider must be reconciled even when the execution itself fails."""
+        failed = {"id": "job-run-1", "last_status": "error", "last_error": "provider 500"}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
+             patch("tools.cronjob_tools.mark_job_run"), \
+             patch("tools.cronjob_tools.get_job", return_value=failed), \
+             patch("tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["job"]["executed"] is True
+        assert out["job"]["execution_success"] is False
+        m_notify.assert_called_once_with()
+
     def test_run_skips_when_claim_lost(self):
         """If the scheduler already holds the fire claim, do NOT double-run."""
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
              patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
              patch("cron.scheduler.run_one_job") as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
+             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
 
         assert out["success"] is True
@@ -45,6 +86,7 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["execution_success"] is False
         assert "execution_skipped" in out["job"]
         m_run.assert_not_called()  # claim lost -> never fired
+        m_notify.assert_not_called()  # the winning scheduler owns the re-arm
 
     def test_run_reports_failure_from_last_status(self):
         """A failed run is reported via the re-read job's last_status/last_error."""

@@ -7,22 +7,25 @@ name: Lockfile diff
 # the ``packages`` map at the merge base and at HEAD and set-diffs the
 # {install path: version} maps instead.
 #
-# The comment is upserted: the script embeds a hidden HTML marker and the
-# workflow PATCHes the existing comment when one is found, so a PR gets
-# exactly one lockfile-diff comment that tracks the latest push instead
-# of a stack of stale ones. When a later push reverts all lockfile
-# changes, the comment is updated to say so (deleting it would be more
-# surprising than telling the reviewer it's resolved).
+# The semantic diff is exposed as a workflow_call output ``review_status``
+# (a JSON array in the unified status format) and an artifact
+# (``lockfile-diff`` containing the markdown fragment) for the step
+# summary.
 #
-# Never blocking — this is review signal, not enforcement. Exit is 0 even
-# when commenting fails (fork PRs get a read-only GITHUB_TOKEN).
+# Never blocking — this is review signal, not enforcement.
 
 on:
   workflow_call:
+    outputs:
+      changed:
+        description: Whether package-lock.json changed relative to the target branch.
+        value: ${{ jobs.diff.outputs.changed }}
+      review_status:
+        description: JSON array of review status objects for the unified PR comment.
+        value: ${{ jobs.diff.outputs.review_status }}
 
 permissions:
   contents: read
-  pull-requests: write # post/update the diff comment
 
 concurrency:
   group: lockfile-diff-${{ github.event.pull_request.number || github.ref }}
@@ -33,6 +36,9 @@ jobs:
     name: package-lock.json semantic diff
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+      review_status: ${{ steps.emit-status.outputs.review_status }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -54,45 +60,36 @@ jobs:
             --output /tmp/lockfile-diff.md
           if [ -s /tmp/lockfile-diff.md ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            cat /tmp/lockfile-diff.md >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## package-lock.json semantic diff"
+              echo ""
+              cat /tmp/lockfile-diff.md
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            : > /tmp/lockfile-diff.md
           fi
 
-      - name: Post or update PR comment
-        env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          CHANGED: ${{ steps.diff.outputs.changed }}
+      - name: Emit review_status
+        id: emit-status
         run: |
           set -euo pipefail
-          MARKER='<!-- hermes-lockfile-diff -->'
+          CHANGED="${{ steps.diff.outputs.changed }}"
+          STATUS="[]"
 
-          # Find our previous comment (paginated — busy PRs exceed one page).
-          EXISTING=$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" \
-            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" \
-            | head -1 || true)
-
-          if [ "$CHANGED" != "true" ]; then
-            if [ -n "$EXISTING" ]; then
-              # A previous push changed the lockfile but the latest one
-              # doesn't — update the comment rather than leave stale info.
-              printf '%s\n✅ package-lock.json changes from an earlier push have been reverted — locked versions now match the target branch.\n' "$MARKER" > /tmp/lockfile-diff.md
-            else
-              echo "No lockfile changes and no existing comment — nothing to do."
-              exit 0
-            fi
-          fi
-
-          if [ -n "$EXISTING" ]; then
-            echo "Updating existing comment ${EXISTING}"
-            gh api --method PATCH "repos/${REPO}/issues/comments/${EXISTING}" \
-              -F body=@/tmp/lockfile-diff.md > /dev/null \
-              || echo "::warning::Could not update PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
+          if [ "$CHANGED" = "true" ]; then
+            CONTENT=$(cat /tmp/lockfile-diff.md | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+            STATUS="[{\"source\":\"lockfile-diff\",\"results\":[{\"kind\":\"action_required\",\"title\":\"package-lock.json\",\"summary\":\"Locked npm dependency versions changed.\",\"detail\":${CONTENT},\"how_to_fix\":\"Add the \`ci-reviewed\` label after verifying the version changes are expected.\"}]}"
           else
-            echo "Creating new comment"
-            gh api "repos/${REPO}/issues/${PR}/comments" \
-              -F body=@/tmp/lockfile-diff.md > /dev/null \
-              || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
+            STATUS="[]"
           fi
+
+          echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload diff artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lockfile-diff
+          path: /tmp/lockfile-diff.md
+          retention-days: 1
+          overwrite: true

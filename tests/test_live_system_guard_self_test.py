@@ -20,12 +20,86 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import types
 
 import pytest
 
 # A guaranteed-foreign PID: PID 1 (init).  Owned by root, not us, and
 # always exists. A sane guard refuses to signal it.
 FOREIGN_PID = 1
+
+
+# ──────────────────── fail-closed self-protection ──────────────
+#
+# This file executes REAL kill primitives — os.kill(-1, SIGTERM), os.killpg,
+# pkill -f python — and depends entirely on the autouse ``_live_system_guard``
+# fixture in tests/conftest.py to intercept them. That makes the canary
+# fail-OPEN: in any collection context where this file is present but its home
+# conftest is not, the primitives fire for real and ``os.kill(-1, SIGTERM)``
+# SIGTERMs every process the invoking user owns (a full desktop-session kill was
+# reported in the field — see issue #68311). Such contexts are not exotic:
+# published sdists that ship ``tests/`` but not ``tests/conftest.py``, trees
+# assembled by copying ``test*.py`` files (that glob does NOT match
+# ``conftest.py``), ``pytest --noconftest``, or running from a foreign rootdir.
+#
+# The fixture below makes the canary fail-CLOSED instead: it refuses to run any
+# test in this file unless the guard is provably active, so no collection
+# context can ever detonate the primitives. The one thing the canary can detect
+# about its own safety is that the guard monkeypatches ``os.kill`` with a plain
+# Python function, whereas the unguarded primitive is a C builtin.
+
+
+def _live_system_guard_is_active() -> bool:
+    """True iff tests/conftest.py's ``_live_system_guard`` has patched os.kill.
+
+    The guard replaces ``os.kill`` with a plain Python function; the raw,
+    unguarded primitive is a C builtin (``types.BuiltinFunctionType``). If
+    ``os.kill`` is still the builtin, the guard never loaded and every kill
+    primitive in this file would fire for real.
+    """
+    return not isinstance(os.kill, types.BuiltinFunctionType)
+
+
+@pytest.fixture(autouse=True)
+def _refuse_to_fire_live_weapons(request):
+    """Fail closed: refuse to run a canary test unless the guard is active.
+
+    Tests genuinely marked ``@pytest.mark.live_system_guard_bypass`` opt out
+    (they run the raw primitive deliberately and harmlessly, e.g. a signal-0
+    liveness probe of our own PID), matching the guard's own bypass contract.
+    """
+    if request.node.get_closest_marker("live_system_guard_bypass"):
+        yield
+        return
+    if not _live_system_guard_is_active():
+        pytest.fail(
+            "REFUSING TO RUN: the live-system guard from tests/conftest.py is "
+            "not active in this interpreter (os.kill is still the raw C "
+            "builtin). This canary file executes real kill primitives — "
+            "os.kill(-1, SIGTERM), os.killpg, pkill -f python — and relies on "
+            "the guard to intercept them; unguarded, they SIGTERM every process "
+            "the current user owns. This usually means the file was collected "
+            "without its home tests/conftest.py (note: a test*.py copy glob "
+            "does NOT match conftest.py). See issue #68311.",
+            pytrace=False,
+        )
+    yield
+
+
+def test_fail_closed_probe_reports_guard_active():
+    """In the real suite the guard is loaded, so the probe reports active and
+    ``_refuse_to_fire_live_weapons`` stays out of the way (no false positives
+    that would wedge CI)."""
+    assert _live_system_guard_is_active() is True
+
+
+def test_fail_closed_probe_classifies_raw_builtin_as_unguarded():
+    """The probe's discriminator, exercised against real objects: a raw C
+    builtin the guard never touches (``os.getpid``) is exactly what an
+    unguarded ``os.kill`` looks like and must read as 'guard not active', while
+    the loaded guard's ``os.kill`` is a plain Python function."""
+    assert isinstance(os.getpid, types.BuiltinFunctionType)
+    assert not isinstance(os.kill, types.BuiltinFunctionType)
 
 
 # ──────────────────── kill primitives ─────────────────────────

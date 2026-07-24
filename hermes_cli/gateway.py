@@ -94,6 +94,20 @@ class ProfileGatewayProcess:
     pid: int
 
 
+@dataclass(frozen=True)
+class S6DispatchResult:
+    """Outcome of an s6 ``--all`` lifecycle dispatch."""
+
+    dispatched: bool
+    attempted: int
+    succeeded: int
+    failed_profiles: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.dispatched and not self.failed_profiles
+
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -650,6 +664,101 @@ def find_profile_gateway_processes(
             ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid)
         )
     return processes
+
+
+def _running_profile_gateway_processes() -> list[ProfileGatewayProcess]:
+    """Return only profile gateways with a live, profile-scoped PID record.
+
+    ``gateway restart --all`` must not infer that a profile should be started
+    merely because its directory or service definition exists.  Each result is
+    backed by a live PID-file or runtime-status probe: a stopped profile is
+    absent from this list and therefore cannot be started by the all-profile
+    restart.
+    """
+    processes = find_profile_gateway_processes()
+    seen_paths: set[Path] = set()
+    for process in processes:
+        try:
+            seen_paths.add(process.path.resolve())
+        except (AttributeError, OSError, RuntimeError):
+            pass
+    try:
+        from gateway.status import get_runtime_status_running_pid, read_runtime_status
+        from hermes_cli.profiles import list_profiles
+    except Exception as exc:
+        logger.debug("Could not load cross-profile gateway status: %s", exc)
+        return processes
+
+    try:
+        profiles = list_profiles()
+    except Exception as exc:
+        logger.debug("Could not enumerate cross-profile gateways: %s", exc)
+        return processes
+
+    for profile in profiles:
+        try:
+            profile_path = Path(profile.path).resolve()
+            if profile_path in seen_paths:
+                continue
+            runtime = read_runtime_status(profile_path / "gateway_state.json")
+            pid = get_runtime_status_running_pid(runtime, expected_home=profile_path)
+            if pid is None:
+                continue
+            processes.append(
+                ProfileGatewayProcess(
+                    profile=profile.name,
+                    path=profile_path,
+                    pid=pid,
+                )
+            )
+            seen_paths.add(profile_path)
+        except Exception as exc:
+            logger.debug(
+                "Could not inspect profile gateway %s: %s",
+                getattr(profile, "name", "unknown"),
+                exc,
+            )
+    return processes
+
+
+def _restart_one_profile_gateway(
+    process: ProfileGatewayProcess, *, system: bool = False
+) -> bool:
+    """Restart one already-running profile without changing other profiles."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(process.path)
+    try:
+        if supports_systemd_services() and (
+            get_systemd_unit_path(system=False).exists()
+            or get_systemd_unit_path(system=True).exists()
+        ):
+            systemd_restart(system=system)
+            return True
+        if is_macos() and get_launchd_plist_path().exists():
+            launchd_restart()
+            return True
+        if is_windows():
+            from hermes_cli import gateway_windows
+
+            gateway_windows.restart()
+            return True
+
+        restart_mode = _prepare_profile_gateway_update_restart(
+            process.profile, process.pid
+        )
+        if restart_mode is None:
+            return False
+        try:
+            from gateway.status import write_planned_stop_marker
+
+            write_planned_stop_marker(process.pid)
+        except Exception:
+            pass
+        terminate_pid(process.pid, force=False)
+        return True
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
@@ -6519,12 +6628,15 @@ def _dispatch_via_service_manager_if_s6(
     return True
 
 
-def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
+def _dispatch_all_via_service_manager_if_s6(
+    action: str,
+) -> bool | S6DispatchResult:
     """Inside a container with s6, dispatch ``--all`` lifecycle to every
     registered profile gateway.
 
-    Returns True iff dispatched (caller should ``return``); False
-    otherwise — caller continues with the host-side code path.
+    Returns an :class:`S6DispatchResult` when dispatched (the caller must
+    inspect failures before returning), or False when the host-side path
+    should continue.
 
     Without this, ``hermes gateway stop --all`` and ``... restart --all``
     fall through to ``kill_gateway_processes(all_profiles=True)``, which
@@ -6549,10 +6661,22 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     if action not in ("stop", "restart"):
         return False
     mgr = get_service_manager()
-    profiles = mgr.list_profile_gateways()
+    registered_profiles = mgr.list_profile_gateways()
+    if action == "stop":
+        # stop sends want-down and must include services that are currently
+        # down or in crash backoff; otherwise s6 can bring them up again.
+        profiles = registered_profiles
+    else:
+        # restart must preserve an operator's explicit stop state.
+        profiles = [
+            profile
+            for profile in registered_profiles
+            if mgr.is_running(f"gateway-{profile}")
+        ]
     if not profiles:
-        print("✗ No profile gateways registered under s6")
-        return True
+        description = "running" if action == "restart" else "registered"
+        print(f"✗ No {description} profile gateways under s6")
+        return S6DispatchResult(dispatched=True, attempted=0, succeeded=0)
     fn = mgr.stop if action == "stop" else mgr.restart
     errors: list[tuple[str, Exception]] = []
     for profile in profiles:
@@ -6567,7 +6691,12 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
         print(f"✓ {verb.capitalize()} {succeeded} profile gateway(s) under s6")
     for profile, exc in errors:
         print(f"✗ Could not {action} gateway-{profile}: {exc}")
-    return True
+    return S6DispatchResult(
+        dispatched=True,
+        attempted=len(profiles),
+        succeeded=succeeded,
+        failed_profiles=tuple(profile for profile, _exc in errors),
+    )
 
 
 
@@ -6966,8 +7095,12 @@ def _gateway_command_inner(args):
         # manager. ``--all`` iterates every registered profile gateway
         # through s6 (otherwise it would fall through to ``pkill``,
         # which s6-supervise observes as a crash and immediately restarts).
-        if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
-            return
+        if stop_all:
+            dispatch_result = _dispatch_all_via_service_manager_if_s6("stop")
+            if dispatch_result is not False:
+                if isinstance(dispatch_result, S6DispatchResult) and not dispatch_result.ok:
+                    sys.exit(1)
+                return
         if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
             return
 
@@ -7063,65 +7196,39 @@ def _gateway_command_inner(args):
         # iterates every registered profile gateway through s6; without
         # this it would fall through to ``pkill``, which s6-supervise
         # would observe as a crash and immediately restart anyway.
-        if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
-            return
+        if restart_all:
+            dispatch_result = _dispatch_all_via_service_manager_if_s6("restart")
+            if dispatch_result is not False:
+                if isinstance(dispatch_result, S6DispatchResult) and not dispatch_result.ok:
+                    sys.exit(1)
+                return
         if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
             return
 
         if restart_all:
-            # --all: stop every gateway process across all profiles, then start fresh
-            service_stopped = False
-            if supports_systemd_services() and (
-                get_systemd_unit_path(system=False).exists()
-                or get_systemd_unit_path(system=True).exists()
-            ):
+            # --all: restart only gateways that are live now. In particular,
+            # do not stop every process and then start the active profile: that
+            # silently resurrects profiles an operator intentionally stopped.
+            running_profiles = _running_profile_gateway_processes()
+            if not running_profiles:
+                print("✗ No running gateway profiles found")
+                return
+
+            errors: list[tuple[str, Exception | str]] = []
+            for process in running_profiles:
                 try:
-                    systemd_stop(system=system)
-                    service_stopped = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_macos() and get_launchd_plist_path().exists():
-                try:
-                    launchd_stop()
-                    service_stopped = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_windows():
-                from hermes_cli import gateway_windows
+                    if not _restart_one_profile_gateway(process, system=system):
+                        errors.append((process.profile, "could not schedule a replacement"))
+                except Exception as exc:
+                    errors.append((process.profile, exc))
 
-                if gateway_windows.is_installed():
-                    try:
-                        gateway_windows.stop()
-                        service_stopped = True
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        pass
-            killed = kill_gateway_processes(all_profiles=True)
-            total = killed + (1 if service_stopped else 0)
-            if total:
-                print(f"✓ Stopped {total} gateway process(es) across all profiles")
-            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-
-            # Start the current profile's service fresh
-            print("Starting gateway...")
-            if supports_systemd_services() and (
-                get_systemd_unit_path(system=False).exists()
-                or get_systemd_unit_path(system=True).exists()
-            ):
-                systemd_start(system=system)
-            elif is_macos() and get_launchd_plist_path().exists():
-                launchd_start()
-            elif is_windows():
-                from hermes_cli import gateway_windows
-
-                # On Windows, even without a registered Scheduled Task / Startup
-                # entry, gateway_windows.start() uses the safe detached
-                # pythonw.exe launcher.  Do not fall back to run_gateway() here:
-                # when invoked from a gateway-hosted agent/tool call, foreground
-                # run_gateway() is tied to the very gateway process we just
-                # stopped and can die before the replacement is stable.
-                gateway_windows.start()
-            else:
-                run_gateway(verbose=0)
+            restarted = len(running_profiles) - len(errors)
+            if restarted:
+                print(f"✓ Restarted {restarted} running gateway profile(s)")
+            for profile, error in errors:
+                print(f"✗ Could not restart gateway profile {profile}: {error}")
+            if errors:
+                sys.exit(1)
             return
 
         if supports_systemd_services() and (

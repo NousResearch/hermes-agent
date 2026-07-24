@@ -570,6 +570,52 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
+    @pytest.mark.parametrize("action", ["stop", "restart"])
+    def test_s6_all_partial_failure_exits_nonzero(self, action, monkeypatch):
+        result = gateway_cli.S6DispatchResult(
+            dispatched=True,
+            attempted=2,
+            succeeded=1,
+            failed_profiles=("writer",),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_all_via_service_manager_if_s6",
+            lambda _action: result,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command=action, all=True, system=False)
+            )
+
+        assert exc_info.value.code == 1
+
+    def test_restart_all_targets_only_running_profile_gateways(self, monkeypatch):
+        running = object()
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "find_profile_gateway_processes",
+            lambda: [running],
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_restart_one_profile_gateway",
+            lambda process, **_kwargs: calls.append(process) or process is running,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_all_via_service_manager_if_s6",
+            lambda _action: False,
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="restart", all=True, system=False)
+        )
+
+        assert calls == [running]
+
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
         the global kill_gateway_processes()."""

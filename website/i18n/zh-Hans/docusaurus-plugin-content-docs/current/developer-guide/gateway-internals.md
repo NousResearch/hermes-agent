@@ -256,7 +256,7 @@ Gateway 作为长期运行进程运行，管理方式如下：
 - `systemctl`（Linux）或 `launchctl`（macOS）— 服务管理
 - PID 文件位于 `~/.hermes/gateway.pid` — 面向 profile 的进程追踪
 
-**Profile 范围 vs 全局**：`start_gateway()` 使用 profile 范围的 PID 文件。`hermes gateway stop` 仅停止当前 profile 的 gateway。`hermes gateway stop --all` 使用全局 `ps aux` 扫描来终止所有 gateway 进程（用于更新时）。
+**Profile 范围 vs 全局**：`start_gateway()` 使用 profile 范围的 PID 文件。`hermes gateway stop` 仅停止当前 profile 的 gateway。`hermes gateway stop --all` 使用全局 `ps aux` 扫描来终止所有 gateway 进程（用于更新时）。`hermes gateway restart --all` 只枚举当前实际运行的 profile gateway，通过共享生命周期路径逐个重启，并且不会启动原本已停止的 profile。
 
 ## 相关文档
 

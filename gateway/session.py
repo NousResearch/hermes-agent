@@ -3105,7 +3105,20 @@ class SessionStore:
             return False
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages from a session's transcript.
+        """Load all messages from a session's transcript for human viewing.
+
+        Includes compaction-archived rows (``active=0, compacted=1``) so
+        human-readable chat history preserves the full pre-compaction
+        conversation even after in-place context compaction. The agent's own
+        prompt still sees only the compacted summary.
+
+        Also walks the parent-session chain (``include_ancestors``) so that
+        legacy rotation-based compaction — where the old session is ended and a
+        child session carries the compressed transcript — still surfaces the
+        original messages in the human-facing display.
+
+        Rewind/undo rows (``active=0, compacted=0``) are NOT included since
+        those represent user-taken-back content, not archived history.
 
         state.db is the canonical store. The legacy JSONL fallback was removed
         in spec 002 — pre-DB sessions on existing disks have already been
@@ -3119,7 +3132,10 @@ class SessionStore:
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id,
+                repair_alternation=True,
+                include_compaction_archived=True,
+                include_ancestors=True,
             )
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)

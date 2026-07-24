@@ -6523,6 +6523,7 @@ class SessionDB:
         include_ancestors: bool = False,
         include_inactive: bool = False,
         repair_alternation: bool = False,
+        include_compaction_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -6531,6 +6532,16 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        Pass ``include_compaction_archived=True`` to also include
+        compaction-archived rows (``active = 0 AND compacted = 1``) from the
+        same session — the pre-compaction transcript that in-place compaction
+        soft-archived via :meth:`archive_and_compact`. This gives human-facing
+        displays the full message history even after context compaction, while
+        the agent's own prompt still sees only the compacted summary. Rewind
+        and undo rows (``active = 0 AND compacted = 0``) are NOT included
+        unless ``include_inactive`` is also set, since those represent
+        user-taken-back messages, not archived history.
 
         ``repair_alternation=True`` runs ``repair_message_sequence`` over the
         loaded list before returning it. Callers that restore a session for
@@ -6546,7 +6557,14 @@ class SessionDB:
         if include_ancestors:
             session_ids = self._session_lineage_root_to_tip(session_id)
 
-        active_clause = "" if include_inactive else " AND active = 1"
+        if include_compaction_archived:
+            # Include active rows AND compaction-archived rows, but NOT
+            # rewind/undo rows (active=0, compacted=0). See #70846.
+            active_clause = " AND (active = 1 OR compacted = 1)"
+        elif include_inactive:
+            active_clause = ""
+        else:
+            active_clause = " AND active = 1"
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(

@@ -247,7 +247,8 @@ def test_free_response_channels_int_list():
 
 def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
                    text="hello", mentioned=False, thread_reply=False,
-                   active_session=False, channel_type=None):
+                   active_session=False, channel_type=None,
+                   native_app_mention=False):
     """Simulate the mention gating logic from _handle_slack_message.
 
     Returns True if the message would be processed, False if it would be
@@ -267,11 +268,12 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
     if mentioned:
         text = f"<@{bot_uid}> {text}"
     is_mentioned = bool(
-        (bot_uid and f"<@{bot_uid}>" in text)
+        native_app_mention
+        or (bot_uid and f"<@{bot_uid}>" in text)
         or adapter._slack_message_matches_mention_patterns(text)
     )
 
-    if not is_one_to_one_dm and bot_uid:
+    if not is_one_to_one_dm:
         # allowed_channels check (whitelist — must pass before other gating)
         allowed = adapter._slack_allowed_channels()
         if allowed and channel_id not in allowed:
@@ -432,29 +434,50 @@ def test_thread_reply_without_active_session_ignored():
     ) is False
 
 
-def test_bot_uid_none_processes_channel_message():
-    """When bot_uid is None (before auth_test), channel messages pass through.
+def test_bot_uid_none_keeps_channel_mention_gate_closed():
+    """When bot_uid is unknown, mention-gated channel messages stay closed.
 
-    This preserves the old behavior: the gating block is skipped entirely
-    when bot_uid is falsy, so messages are not silently dropped during
-    startup or for new workspaces.
+    Identity resolution must not bypass channel admission during startup or
+    for a token that does not represent a bot.
     """
     adapter = _make_adapter(require_mention=True)
     adapter._bot_user_id = None
     adapter._team_bot_user_ids = {}
 
-    # With bot_uid=None, the `if not is_dm and bot_uid:` condition is False,
-    # so the gating block is skipped — message passes through.
+    # A missing identity no longer bypasses the shared-channel gate.
     bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
     assert bot_uid is None
 
-    # Simulate: gating block not entered when bot_uid is falsy
+    # Shared-channel gating is entered even when bot_uid is falsy.
     is_dm = False
-    if not is_dm and bot_uid:
+    if not is_dm:
         result = False  # would enter gating
     else:
         result = True  # gating skipped, message processed
-    assert result is True
+    assert result is False
+
+
+def test_bot_uid_none_accepts_native_app_mention():
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot_user_id = None
+    adapter._team_bot_user_ids = {}
+
+    assert _would_process(
+        adapter,
+        text="trusted Slack mention",
+        native_app_mention=True,
+    ) is True
+
+
+def test_bot_uid_none_accepts_configured_mention_pattern():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=["^hermes"],
+    )
+    adapter._bot_user_id = None
+    adapter._team_bot_user_ids = {}
+
+    assert _would_process(adapter, text="hermes check this") is True
 
 
 # ---------------------------------------------------------------------------

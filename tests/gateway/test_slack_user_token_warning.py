@@ -2,14 +2,11 @@
 Tests for the connect-time user-token (vs bot-token) nudge.
 
 ``auth.test`` returns the ``user_id`` of whatever principal owns the configured
-token. A real bot token (``xoxb-…``) resolves to the app's bot user and the
-response carries a ``bot_id``; a user/legacy token (``xoxp-…``) resolves to the
-installing *human's* member ID with **no** ``bot_id``. In the latter case the
-adapter binds its identity to a human's member ID, so that person's ``<@…>``
-mentions are misrouted as mentions of the bot. ``_warn_if_not_bot_token``
-detects the missing ``bot_id`` at connect time — the only point where this is
-observable, since a user token still sends/receives without any runtime error —
-and logs an actionable, warning-only nudge.
+token. A real bot token resolves to the app's bot user and the response carries
+a ``bot_id``; a user/legacy token resolves to the installing human's member ID
+with no ``bot_id``. The adapter must not trust that human ID as the bot identity.
+``_warn_if_not_bot_token`` detects the missing ``bot_id`` at connect time and
+logs an actionable warning while shared-channel mention gating stays closed.
 """
 
 import logging
@@ -51,7 +48,10 @@ _ensure_slack_mock()
 import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import (  # noqa: E402
+    SlackAdapter,
+    _trusted_bot_user_id,
+)
 
 
 class _DictAuthResponse(dict):
@@ -80,6 +80,21 @@ def test_warns_when_bot_id_absent(caplog):
     matched = [r for r in caplog.records
                if "authenticated as a USER" in r.message and "U_HUMAN" in r.message]
     assert matched
+
+
+def test_user_token_identity_is_not_bound_as_bot():
+    resp = _DictAuthResponse(team_id="T1", user_id="U_HUMAN", user="trevor")
+    assert _trusted_bot_user_id(resp) == ""
+
+
+def test_bot_token_identity_is_trusted():
+    resp = _DictAuthResponse(
+        team_id="T1",
+        user_id="U_BOT",
+        bot_id="B123",
+        user="hermes",
+    )
+    assert _trusted_bot_user_id(resp) == "U_BOT"
 
 
 def test_no_warning_when_bot_id_present(caplog):

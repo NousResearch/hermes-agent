@@ -7,6 +7,7 @@ streaming, or the _run_codex_stream() call path.
 
 import hashlib
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
@@ -27,19 +28,30 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     return f"pck_{digest}"
 
 
-def _prompt_cache_retention_for_model(model: str) -> Optional[str]:
-    """Return the OpenAI Responses prompt-cache retention policy for models
-    that require an explicit policy.
+_EXTENDED_PROMPT_CACHE_MODELS = (
+    "gpt-5.5-pro",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1-chat-latest",
+    "gpt-5.1-codex",
+    "gpt-5.1",
+    "gpt-5-codex",
+    "gpt-5",
+    "gpt-4.1",
+)
+_EXTENDED_PROMPT_CACHE_MODEL_RE = re.compile(
+    rf"(?:^|[./:])(?:{'|'.join(re.escape(name) for name in _EXTENDED_PROMPT_CACHE_MODELS)})"
+    r"(?:-\d{4}-\d{2}-\d{2})?$"
+)
 
-    OpenAI documents GPT-5.5 / GPT-5.5 Pro as extended-cache-only
-    (``prompt_cache_retention: "24h"``).  Sending the field only for
-    those model families keeps older/OpenAI-compatible relays on their
-    default behavior.
-    """
-    normalized = str(model or "").lower().replace("_", "-")
-    # Custom relays commonly prefix provider namespaces, e.g.
-    # ``openai.gpt-5.5``.  Match both bare and namespaced model ids.
-    if normalized.endswith("gpt-5.5") or "gpt-5.5-" in normalized:
+
+def _prompt_cache_retention_for_model(model: str) -> Optional[str]:
+    """Return ``24h`` for models documented to support extended retention."""
+    normalized = str(model or "").strip().lower().replace("_", "-")
+    if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized):
         return "24h"
     return None
 

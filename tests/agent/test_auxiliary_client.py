@@ -4327,7 +4327,7 @@ class TestCodexAdapterPromptCacheKey:
     """
 
     @staticmethod
-    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex"):
+    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex", model="gpt-5.5"):
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
@@ -4360,7 +4360,7 @@ class TestCodexAdapterPromptCacheKey:
         real_client = MagicMock()
         real_client.base_url = base_url
         real_client.responses.create = _create
-        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        adapter = _CodexCompletionsAdapter(real_client, model)
         return adapter, captured_kwargs
 
     def test_cache_key_set_and_prefixed(self):
@@ -4413,8 +4413,16 @@ class TestCodexAdapterPromptCacheKey:
         ])
         assert "prompt_cache_key" not in captured
 
-    def test_gpt55_sets_prompt_cache_retention(self):
-        adapter, captured = self._build_adapter(base_url="https://bedrock-mantle.us-east-1.api.aws/openai/v1")
+    @pytest.mark.parametrize("model", [
+        "gpt-4.1",
+        "gpt-5.1-codex-max",
+        "openai.gpt-5.5-pro",
+    ])
+    def test_extended_cache_models_set_prompt_cache_retention(self, model):
+        adapter, captured = self._build_adapter(
+            base_url="https://responses.example.com/v1",
+            model=model,
+        )
         adapter.create(messages=[
             {"role": "system", "content": "SYS"},
             {"role": "user", "content": "hi"},

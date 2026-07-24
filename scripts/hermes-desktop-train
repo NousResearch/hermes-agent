@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+# Hermes Desktop release train for Studio729's open Hermes PRs.
+#
+# The train never writes the source checkout. It fetches into a private mirror,
+# composes a disposable worktree, and launches only an artifact whose hash is
+# recorded in a non-executable manifest.
+set -euo pipefail
+
+HOME_DIR="${HOME:?HOME is required}"
+SOURCE_REPO="$HOME_DIR/Projects/hermes-agent"
+STATE_DIR="$HOME_DIR/.hermes/desktop-train"
+MIRROR="$STATE_DIR/repo.git"
+TRAIN_WORKTREE="$HOME_DIR/Projects/.hermes-desktop-train"
+CONFIG="$STATE_DIR/local-refs.txt"
+MANIFEST="$STATE_DIR/manifest.tsv"
+LOG="$STATE_DIR/train.log"
+LAUNCH_PID="$STATE_DIR/launch.pid"
+REMOTE_REPO="NousResearch/hermes-agent"
+PR_AUTHOR="Studio729"
+UPSTREAM_URL="https://github.com/NousResearch/hermes-agent.git"
+
+say() { printf '%s\n' "$*"; }
+die() { say "error: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
+
+usage() {
+  cat <<'EOF'
+Usage: hermes-desktop-train <command>
+
+Commands:
+  init     Create the local train configuration.
+  status   Show live PR candidates and the last verified package manifest.
+  sync     Recreate the isolated train worktree from current upstream main.
+  build    Sync, typecheck, run Desktop regressions, package, and record hash.
+  launch   Launch only the last verified, hash-matching package.
+  rebuild  Build, then launch the verified package.
+  clean    Remove only generated train state/worktree; source checkout untouched.
+
+Local follow-ups before they have a GitHub PR go one per line in:
+  ~/.hermes/desktop-train/local-refs.txt
+
+Open Studio729 PRs for NousResearch/hermes-agent are discovered automatically.
+EOF
+}
+
+ensure_fixed_paths() {
+  [[ "$SOURCE_REPO" == "$HOME_DIR/Projects/hermes-agent" ]] || die "invalid source repo"
+  [[ "$STATE_DIR" == "$HOME_DIR/.hermes/desktop-train" ]] || die "invalid state directory"
+  [[ "$MIRROR" == "$STATE_DIR/repo.git" ]] || die "invalid mirror directory"
+  [[ "$TRAIN_WORKTREE" == "$HOME_DIR/Projects/.hermes-desktop-train" ]] || die "invalid train worktree"
+}
+
+ensure_dirs() {
+  ensure_fixed_paths
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+}
+
+require_owned_regular() {
+  local path="$1"
+  [[ -f "$path" && ! -L "$path" ]] || die "expected regular non-symlink file: $path"
+  [[ "$(stat -f '%u' "$path")" == "$(id -u)" ]] || die "file is not owned by current user: $path"
+  local mode
+  mode="$(stat -f '%Lp' "$path")"
+  (( (8#$mode & 0077) == 0 )) || die "file permissions must be owner-only: $path"
+}
+
+write_default_config() {
+  cat >"$CONFIG" <<'EOF'
+# One local Git ref per line. Blank lines and # comments are ignored.
+# Remove a ref when its GitHub PR is open: the train discovers open Studio729 PRs.
+fix/desktop-heph-notice-collapse
+EOF
+  chmod 600 "$CONFIG"
+}
+
+read_local_refs() {
+  ensure_dirs
+  [[ -f "$CONFIG" ]] || write_default_config
+  require_owned_regular "$CONFIG"
+  local line ref
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    ref="${line#${line%%[![:space:]]*}}"
+    ref="${ref%${ref##*[![:space:]]}}"
+    [[ -z "$ref" || "$ref" == \#* ]] && continue
+    [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "invalid local ref in $CONFIG: $ref"
+    printf '%s\n' "$ref"
+  done <"$CONFIG"
+}
+
+repo_setup() {
+  ensure_fixed_paths
+  [[ -d "$SOURCE_REPO/.git" ]] || die "source repo not found: $SOURCE_REPO"
+  need git
+  need gh
+  need npm
+}
+
+ensure_mirror() {
+  if [[ ! -d "$MIRROR" ]]; then
+    say "▸ creating private upstream mirror"
+    git clone --mirror "$UPSTREAM_URL" "$MIRROR"
+  fi
+  git --git-dir="$MIRROR" rev-parse --is-bare-repository >/dev/null 2>&1 \
+    || die "invalid train mirror: $MIRROR"
+}
+
+list_open_prs() {
+  gh pr list --repo "$REMOTE_REPO" --author "$PR_AUTHOR" --state open --limit 100 \
+    --json number,headRefOid,headRefName,title,url \
+    --jq '.[] | [.number, .headRefOid, .headRefName, .title, .url] | @tsv'
+}
+
+remove_train_worktree() {
+  ensure_fixed_paths
+  if [[ -d "$TRAIN_WORKTREE/.git" || -f "$TRAIN_WORKTREE/.git" ]]; then
+    git --git-dir="$MIRROR" worktree remove --force "$TRAIN_WORKTREE" || true
+  fi
+  # Path is fixed and checked above; this cannot remove a caller-supplied path.
+  rm -rf "$TRAIN_WORKTREE"
+}
+
+invalidate_train() {
+  remove_train_worktree
+  rm -f "$MANIFEST" "$LAUNCH_PID"
+}
+
+manifest_write() {
+  local train_head="$1" upstream_head="$2" open_prs="$3" local_refs="$4"
+  local tmp="$MANIFEST.tmp"
+  umask 077
+  {
+    printf 'version\t1\n'
+    printf 'train_head\t%s\n' "$train_head"
+    printf 'upstream_main\t%s\n' "$upstream_head"
+    printf 'synced_at\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'open_prs\t%s\n' "$open_prs"
+    printf 'local_refs\t%s\n' "$local_refs"
+    printf 'verified\tfalse\n'
+  } >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$MANIFEST"
+}
+
+manifest_value() {
+  local key="$1"
+  require_owned_regular "$MANIFEST"
+  awk -F $'\t' -v key="$key" '
+    $1 == key { if (++count != 1) exit 2; print $2 }
+    END { if (count != 1) exit 1 }
+  ' "$MANIFEST"
+}
+
+manifest_set_build() {
+  local train_head="$1" asar_hash="$2"
+  local tmp="$MANIFEST.tmp"
+  require_owned_regular "$MANIFEST"
+  awk -F $'\t' '
+    $1 != "verified" && $1 != "built_at" && $1 != "asar_sha256" { print }
+  ' "$MANIFEST" >"$tmp"
+  {
+    printf 'built_at\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'asar_sha256\t%s\n' "$asar_hash"
+    printf 'verified\ttrue\n'
+  } >>"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$MANIFEST"
+  [[ "$(manifest_value train_head)" == "$train_head" ]] || die "manifest train head changed unexpectedly"
+}
+
+sync_train() {
+  repo_setup
+  ensure_dirs
+  [[ -f "$CONFIG" ]] || write_default_config
+  # Validate here, in the main shell, rather than only inside a process
+  # substitution (whose failure would otherwise be invisible to set -e).
+  require_owned_regular "$CONFIG"
+  ensure_mirror
+  rm -f "$MANIFEST" "$LAUNCH_PID"
+  local pr_file="$STATE_DIR/open-prs.$$.tsv"
+  # Do not consume gh through process substitution: producer failures are not
+  # propagated to the loop. Materialize and validate the complete snapshot
+  # before creating a worktree, so discovery is fail-closed.
+  if ! list_open_prs >"$pr_file"; then
+    rm -f "$pr_file"
+    invalidate_train
+    die "could not discover open Studio729 PRs"
+  fi
+  chmod 600 "$pr_file"
+  say "▸ fetching upstream main into private mirror"
+  git --git-dir="$MIRROR" fetch origin main --prune
+
+  remove_train_worktree
+  local upstream_head
+  upstream_head="$(git --git-dir="$MIRROR" rev-parse refs/heads/main)"
+  git --git-dir="$MIRROR" worktree add --detach "$TRAIN_WORKTREE" "$upstream_head"
+
+  local open_prs="" local_refs="" number sha branch title url
+  while IFS=$'\t' read -r number sha branch title url; do
+    [[ "$number" =~ ^[0-9]+$ && "$sha" =~ ^[0-9a-f]{40}$ ]] || { invalidate_train; die "invalid PR response"; }
+    say "▸ merging PR #$number: $title"
+    if ! git --git-dir="$MIRROR" fetch origin "pull/$number/head:refs/train/pr/$number"; then
+      rm -f "$pr_file"
+      invalidate_train
+      die "could not fetch PR #$number"
+    fi
+    local fetched_sha
+    fetched_sha="$(git --git-dir="$MIRROR" rev-parse "refs/train/pr/$number")"
+    if [[ "$fetched_sha" != "$sha" ]]; then
+      rm -f "$pr_file"
+      invalidate_train
+      die "PR #$number changed during train sync; retry"
+    fi
+    if ! git -C "$TRAIN_WORKTREE" merge --no-edit --no-ff "refs/train/pr/$number"; then
+      rm -f "$pr_file"
+      invalidate_train
+      die "merge conflict on PR #$number; train invalidated"
+    fi
+    open_prs+="$number,$sha,$branch,$url;"
+  done <"$pr_file"
+  rm -f "$pr_file"
+
+  local ref safe_ref
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    safe_ref="${ref//\//_}"
+    say "▸ merging local follow-up: $ref"
+    if ! git --git-dir="$MIRROR" fetch "$SOURCE_REPO" "$ref:refs/train/local/$safe_ref"; then
+      invalidate_train
+      die "could not fetch local ref: $ref"
+    fi
+    if ! git -C "$TRAIN_WORKTREE" merge --no-edit --no-ff "refs/train/local/$safe_ref"; then
+      invalidate_train
+      die "merge conflict on local ref $ref; train invalidated"
+    fi
+    local_refs+="$ref;"
+  done < <(read_local_refs)
+
+  manifest_write "$(git -C "$TRAIN_WORKTREE" rev-parse HEAD)" "$upstream_head" "$open_prs" "$local_refs"
+  say "✓ train synchronized: $(git -C "$TRAIN_WORKTREE" rev-parse --short HEAD)"
+  say "  worktree: $TRAIN_WORKTREE"
+}
+
+build_train() {
+  sync_train
+  cd "$TRAIN_WORKTREE"
+  say "▸ installing workspace dependencies"
+  npm install
+  say "▸ typechecking Desktop"
+  npm --workspace apps/desktop run typecheck
+  say "▸ running Desktop release-train regressions"
+  (cd apps/desktop && npx vitest run --project ui \
+    src/app/session/hooks/use-message-stream/process-result-visibility.test.tsx \
+    src/app/session/hooks/use-session-actions.test.tsx)
+  say "▸ packaging Hermes Desktop"
+  (cd apps/desktop && npm run pack)
+
+  local app="$TRAIN_WORKTREE/apps/desktop/release/mac-arm64/Hermes.app"
+  local bin="$app/Contents/MacOS/Hermes"
+  local asar="$app/Contents/Resources/app.asar"
+  [[ -x "$bin" && -f "$asar" ]] || { invalidate_train; die "package did not produce Hermes.app"; }
+  local train_head asar_hash
+  train_head="$(git -C "$TRAIN_WORKTREE" rev-parse HEAD)"
+  asar_hash="$(shasum -a 256 "$asar" | awk '{print $1}')"
+  manifest_set_build "$train_head" "$asar_hash"
+  say "✓ verified train package: $app"
+}
+
+launch_train() {
+  ensure_fixed_paths
+  require_owned_regular "$MANIFEST"
+  local expected_head expected_hash verified actual_head actual_hash
+  expected_head="$(manifest_value train_head)"
+  expected_hash="$(manifest_value asar_sha256)"
+  verified="$(manifest_value verified)"
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ && "$expected_hash" =~ ^[0-9a-f]{64}$ && "$verified" == true ]] \
+    || die "invalid or unverified manifest; run: hermes-desktop-train build"
+  [[ -f "$TRAIN_WORKTREE/.git" ]] || die "train worktree is missing; run build"
+  actual_head="$(git -C "$TRAIN_WORKTREE" rev-parse HEAD)"
+  [[ "$actual_head" == "$expected_head" ]] || die "worktree changed after build; run build"
+
+  local app="$TRAIN_WORKTREE/apps/desktop/release/mac-arm64/Hermes.app"
+  local bin="$app/Contents/MacOS/Hermes"
+  local asar="$app/Contents/Resources/app.asar"
+  [[ -x "$bin" && -f "$asar" ]] || die "verified package is missing; run build"
+  actual_hash="$(shasum -a 256 "$asar" | awk '{print $1}')"
+  [[ "$actual_hash" == "$expected_hash" ]] || die "package hash changed after build; refusing launch"
+
+  # Never terminate an arbitrary Desktop. Only replace a previously recorded
+  # train root process when it still points at this exact train executable.
+  if [[ -f "$LAUNCH_PID" ]]; then
+    require_owned_regular "$LAUNCH_PID"
+    local prior_pid prior_command
+    prior_pid="$(tr -d '[:space:]' <"$LAUNCH_PID")"
+    if [[ "$prior_pid" =~ ^[0-9]+$ ]] && kill -0 "$prior_pid" 2>/dev/null; then
+      prior_command="$(ps -p "$prior_pid" -o command= 2>/dev/null || true)"
+      if [[ "$prior_command" == *"$bin"* ]]; then kill "$prior_pid" || true; fi
+    fi
+  fi
+
+  nohup "$bin" >>"$LOG" 2>&1 &
+  local pid=$!
+  umask 077
+  printf '%s\n' "$pid" >"$LAUNCH_PID"
+  chmod 600 "$LAUNCH_PID"
+  sleep 2
+  kill -0 "$pid" 2>/dev/null || die "package exited; inspect $LOG"
+  say "✓ release train launched"
+  say "  app:  $app"
+  say "  head: $expected_head"
+  say "  log:  $LOG"
+}
+
+status_train() {
+  ensure_fixed_paths
+  say "Hermes Desktop release train"
+  say "  source:    $SOURCE_REPO"
+  say "  mirror:    $MIRROR"
+  say "  worktree:  $TRAIN_WORKTREE"
+  say "  config:    $CONFIG"
+  say
+  if [[ -f "$CONFIG" ]]; then
+    say "Local follow-ups:"
+    read_local_refs | sed 's/^/  /' || true
+  else
+    say "Local follow-ups: (not initialized)"
+  fi
+  say "Open Studio729 PR candidates:"
+  repo_setup
+  list_open_prs | while IFS=$'\t' read -r number sha branch title url; do
+    say "  #$number ${sha:0:12}  $title"
+    say "    $url"
+  done
+  say
+  if [[ -f "$MANIFEST" ]]; then
+    say "Last verified build:"
+    say "  built:     $(manifest_value built_at 2>/dev/null || printf unknown)"
+    say "  head:      $(manifest_value train_head)"
+    say "  package:   $TRAIN_WORKTREE/apps/desktop/release/mac-arm64/Hermes.app"
+    say "  asar:      $(manifest_value asar_sha256 2>/dev/null || printf unknown)"
+    say "  verified:  $(manifest_value verified)"
+  else
+    say "No verified build yet. Run: hermes-desktop-train build"
+  fi
+}
+
+clean_train() {
+  repo_setup
+  ensure_dirs
+  remove_train_worktree
+  rm -f "$MANIFEST" "$LAUNCH_PID"
+  say "✓ train worktree and manifest removed; source checkout untouched"
+}
+
+main() {
+  local cmd="${1:-status}"
+  case "$cmd" in
+    init) ensure_dirs; [[ -f "$CONFIG" ]] || write_default_config; say "✓ initialized $CONFIG" ;;
+    status) status_train ;;
+    sync) sync_train ;;
+    build) build_train ;;
+    launch) launch_train ;;
+    rebuild) build_train; launch_train ;;
+    clean) clean_train ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"

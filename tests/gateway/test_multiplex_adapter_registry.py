@@ -221,7 +221,11 @@ def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_ho
             },
         ),
     )
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: adapter)
+    monkeypatch.setattr(
+        runner,
+        "_instantiate_adapter",
+        lambda platform, config: adapter,
+    )
 
 
 class TestSecondaryProfileFatalRecovery:
@@ -256,6 +260,7 @@ class TestSecondaryProfileFatalRecovery:
         assert len(tasks) == 1
         await tasks[0]
         assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        assert replacement.gateway_runner is runner
         assert scoped_homes
         assert all(path == Path("/profiles/reviewer") for path in scoped_homes)
 

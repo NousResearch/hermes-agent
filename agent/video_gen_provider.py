@@ -268,16 +268,53 @@ def save_url_video(
 
     Raises on any network / HTTP / oversize error so callers can fall back to
     returning the bare URL.
+
+    Provider-returned delivery URLs are treated as untrusted for host-side
+    fetches: each hop is validated with ``is_safe_url`` (same posture as
+    ``save_url_image`` / #44728) so a malicious or compromised backend cannot
+    redirect Hermes into loopback, RFC1918, or cloud-metadata ranges.
     """
     import requests
+    from urllib.parse import urljoin
 
-    response = requests.get(url, timeout=timeout, stream=True)
+    from tools.url_safety import is_safe_url
+
+    current_url = url
+    if not is_safe_url(current_url):
+        raise ValueError(
+            f"Blocked: provider-returned URL targets a private or internal address: {current_url}"
+        )
+
+    _max_redirects = 10
+    response = None
+    for _hop in range(_max_redirects + 1):
+        response = requests.get(
+            current_url, timeout=timeout, stream=True, allow_redirects=False
+        )
+        if response.is_redirect and response.headers.get("Location"):
+            next_url = urljoin(current_url, response.headers["Location"])
+            if not is_safe_url(next_url):
+                response.close()
+                raise ValueError(
+                    f"Blocked: redirect target is a private or internal address: {next_url}"
+                )
+            current_url = next_url
+            response.close()
+            continue
+        break
+    else:
+        if response is not None:
+            response.close()
+        raise ValueError(
+            f"Blocked: too many redirects (>{_max_redirects}) fetching provider-returned URL"
+        )
+
     response.raise_for_status()
 
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
     extension = _URL_VIDEO_CONTENT_TYPES.get(content_type)
     if extension is None:
-        url_path = url.split("?", 1)[0].lower()
+        url_path = current_url.split("?", 1)[0].lower()
         for ext in ("mp4", "webm", "mov", "mkv"):
             if url_path.endswith(f".{ext}"):
                 extension = ext
@@ -290,21 +327,24 @@ def save_url_video(
     path = _videos_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
 
     bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=256 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Video at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
+    try:
+        with path.open("wb") as fh:
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if not chunk:
+                    continue
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    fh.close()
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                    raise ValueError(
+                        f"Video at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
+                    )
+                fh.write(chunk)
+    finally:
+        response.close()
 
     if bytes_written == 0:
         try:

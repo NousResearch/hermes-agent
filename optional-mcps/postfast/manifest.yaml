@@ -1,0 +1,56 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: postfast
+description: Schedule and publish social media posts to 11 platforms (Instagram, TikTok, X, LinkedIn, YouTube, and more) via PostFast.
+source: https://github.com/peturgeorgievv-factory/postfast-mcp
+
+# postfast-mcp is the official stdio MCP server for PostFast (postfa.st), a
+# social media scheduling SaaS. npx resolves the package from npm, so there is
+# nothing to git-clone or build — no install block. Auth is a workspace API
+# key rather than OAuth: PostFast's hosted OAuth connector (mcp.postfa.st)
+# registers clients via CIMD, which targets the ChatGPT/Claude apps; for
+# self-hosted agents the API-key stdio server is the supported path.
+transport:
+  type: stdio
+  command: "npx"
+  # Pinned per catalog dependency policy: exact version, and the release must
+  # be at least 2 weeks old at pin time (supply-chain cooldown — the same rule
+  # the blender/n8n entries follow). 0.1.23 released 2026-07-07. The catalog
+  # never auto-updates; bumping the pin is a PR to this manifest.
+  args:
+    - "-y"
+    - "postfast-mcp@0.1.23"
+  version: "0.1.23"
+
+# Authentication: a workspace-scoped API key, prompted at install time and
+# written to ~/.hermes/.env (same api_key shape as the n8n entry). The stdio
+# server reads POSTFAST_API_KEY from its environment.
+auth:
+  type: api_key
+  env:
+    - name: POSTFAST_API_KEY
+      prompt: "PostFast workspace API key (app.postfa.st -> Workspace Settings -> API keys)"
+      required: true
+      secret: true
+
+# Tool selection at install time:
+# postfast-mcp@0.1.23 exposes 13 tools. Read/discovery tools (list_accounts,
+# list_posts, get_post_analytics, get_follower_history, list_pinterest_boards,
+# list_youtube_playlists, list_gbp_locations, search_places) are safe; the
+# mutating ones (create_posts, delete_post, upload_media, get_upload_urls,
+# generate_connect_link) publish or change real workspace state. Each tool
+# carries a thorough description and a typed input schema. We leave
+# default_enabled unset so the install-time checklist starts with everything
+# pre-checked; users prune with `hermes mcp configure postfast`. Happy to
+# encode a read-mostly default subset if reviewers prefer (as n8n does).
+
+post_install: |
+  Get an API key: sign up at https://app.postfa.st/register (7-day free
+  trial, no credit card), then Workspace Settings -> generate an API key.
+  Set it as POSTFAST_API_KEY. Regenerating the key invalidates the previous
+  one.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure postfast

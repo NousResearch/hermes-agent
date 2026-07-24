@@ -664,13 +664,35 @@ function flushBuffer(buffer: string, styles: AnsiCode[], stylePool: StylePool, o
 
   const styleId = stylePool.intern(filteredStyles)
 
+  // Zero-width combining marks (U+0E32/U+0E33 Thai SARA AA/AM, etc.) are
+  // sometimes split into their own grapheme cluster by Intl.Segmenter
+  // even though they render within the same terminal cell as the preceding
+  // base character. Merge them back into the preceding cluster so the cell
+  // char includes the full combining sequence. Without this, the vowel sign
+  // either disappears (zero-width skip) or occupies its own cell (width-1
+  // desync), both causing garbled Thai/Lao rendering during incremental
+  // streamed updates.
+  let prev: ClusteredChar | undefined
+
   for (const { segment: grapheme } of getGraphemeSegmenter().segment(buffer)) {
-    out.push({
+    const w = stringWidth(grapheme)
+
+    if (w === 0 && prev) {
+      // Zero-width combining mark: attach to preceding grapheme cluster.
+      prev.value += grapheme
+
+      continue
+    }
+
+    const cc: ClusteredChar = {
       value: grapheme,
-      width: stringWidth(grapheme),
+      width: w,
       styleId,
       hyperlink
-    })
+    }
+
+    out.push(cc)
+    prev = cc
   }
 }
 

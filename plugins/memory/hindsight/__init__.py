@@ -1027,7 +1027,6 @@ class HindsightMemoryProvider(MemoryProvider):
                 except Exception as _e:
                     raise ImportError(str(_e))
                 from hindsight import HindsightEmbedded
-                HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
@@ -1065,6 +1064,30 @@ class HindsightMemoryProvider(MemoryProvider):
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
+
+    def _close_client(self) -> None:
+        """Safely close the current client and release aiohttp resources."""
+        client = self._client
+        if client is None:
+            return
+        try:
+            if self._mode == "local_embedded":
+                inner = getattr(client, "_client", None)
+                if inner is not None and hasattr(inner, "aclose"):
+                    self._run_sync(inner.aclose())
+                    try:
+                        client._client = None
+                    except Exception:
+                        pass
+                try:
+                    client.close()
+                except RuntimeError:
+                    pass
+            else:
+                self._run_sync(client.aclose())
+        except Exception as exc:
+            logger.debug("Hindsight client close failed (non-fatal): %s", exc)
+        self._client = None
 
     def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
         """Return True for stale embedded-daemon connection failures."""
@@ -1160,7 +1183,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
                 exc,
             )
-            self._client = None
+            self._close_client()
             client = self._get_client()
             self._client = client
             return self._run_sync(operation(client))
@@ -1902,6 +1925,13 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
 
+    def __del__(self) -> None:
+        """Safety-net close when shutdown() was never called."""
+        try:
+            self._close_client()
+        except Exception:
+            pass
+
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting new retain jobs first so anyone still calling
@@ -1925,31 +1955,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=5.0)
-        if self._client is not None:
-            try:
-                if self._mode == "local_embedded":
-                    # HindsightEmbedded.close() delegates to its sync client.close().
-                    # When Hermes created/used that client on the shared async loop,
-                    # closing it from this thread can raise "attached to a different
-                    # loop" before aiohttp releases the session. Close the embedded
-                    # inner async client on the shared loop first, then let the
-                    # wrapper clean up daemon/UI bookkeeping.
-                    inner_client = getattr(self._client, "_client", None)
-                    if inner_client is not None and hasattr(inner_client, "aclose"):
-                        _run_sync(inner_client.aclose())
-                        try:
-                            self._client._client = None
-                        except Exception:
-                            pass
-                    try:
-                        self._client.close()
-                    except RuntimeError:
-                        pass
-                else:
-                    self._run_sync(self._client.aclose())
-            except Exception:
-                pass
-            self._client = None
+        self._close_client()
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

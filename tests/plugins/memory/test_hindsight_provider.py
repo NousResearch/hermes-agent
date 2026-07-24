@@ -1810,6 +1810,96 @@ class TestShutdown:
         assert provider._client is None
 
 
+class TestCloseClient:
+    """Tests for _close_client — the shared helper that releases aiohttp resources."""
+
+    def test_cloud_mode_calls_aclose(self, provider):
+        """Cloud-mode clients are closed via aclose()."""
+        mock_client = provider._client
+        assert mock_client is not None
+
+        provider._close_client()
+
+        mock_client.aclose.assert_called_once()
+        assert provider._client is None
+
+    def test_embedded_mode_closes_inner_and_wrapper(self, provider):
+        """Embedded clients close inner async client then wrapper."""
+        inner_client = _make_mock_client()
+        embedded = MagicMock()
+        embedded._client = inner_client
+        embedded.close = MagicMock()
+
+        provider._mode = "local_embedded"
+        provider._client = embedded
+
+        provider._close_client()
+
+        inner_client.aclose.assert_awaited_once()
+        embedded.close.assert_called_once()
+        assert embedded._client is None
+        assert provider._client is None
+
+    def test_noop_when_client_is_none(self, provider):
+        """No error when client is already None."""
+        provider._client = None
+        provider._close_client()  # should not raise
+        assert provider._client is None
+
+    def test_exception_in_aclose_does_not_raise(self, provider):
+        """Close failures are logged but never propagate."""
+        mock_client = provider._client
+        mock_client.aclose = AsyncMock(side_effect=RuntimeError("loop closed"))
+
+        provider._close_client()  # should not raise
+
+        assert provider._client is None
+
+    def test_run_hindsight_operation_closes_old_client_before_retry(self, provider):
+        """The primary fix: _close_client must be called before recreating client."""
+        close_called = []
+        original_close = provider._close_client
+
+        def _tracking_close():
+            close_called.append(True)
+            original_close()
+
+        provider._close_client = _tracking_close
+        provider._is_retriable_embedded_connection_error = lambda exc: True
+
+        # First call raises retriable error, second succeeds
+        provider._client.arecall = AsyncMock(side_effect=ConnectionError("refused"))
+
+        new_client = _make_mock_client()
+        get_count = [0]
+        orig_get = provider._get_client
+
+        def _mock_get_client():
+            get_count[0] += 1
+            if get_count[0] <= 1:
+                return orig_get()
+            provider._client = new_client
+            return new_client
+
+        provider._get_client = _mock_get_client
+
+        provider._run_hindsight_operation(lambda c: c.arecall(bank_id="test"))
+
+        # _close_client must have been called during the retry path
+        assert len(close_called) == 1, (
+            f"Expected _close_client to be called once during retry, called {len(close_called)} times"
+        )
+
+    def test_del_calls_close_client(self, provider):
+        """__del__ safety-net closes the client."""
+        mock_client = provider._client
+
+        provider.__del__()
+
+        mock_client.aclose.assert_called_once()
+        assert provider._client is None
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
 def test_save_config_sets_owner_only_permissions(tmp_path):
     """hindsight/config.json must be written with 0o600 so API key is not world-readable."""

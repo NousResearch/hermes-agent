@@ -9,7 +9,7 @@ import pytest
 from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
 from gateway.profile_routing import ProfileRoute
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 
 
@@ -334,6 +334,36 @@ class TestGatewayRunnerInjection:
         assert hasattr(_ToyAdapter, "gateway_runner")
         assert _ToyAdapter.gateway_runner is None
 
+    def test_factory_binds_created_adapter_to_runner(self, monkeypatch):
+        runner = object.__new__(GatewayRunner)
+        adapter = MagicMock(spec=BasePlatformAdapter)
+        monkeypatch.setattr(
+            runner,
+            "_instantiate_adapter",
+            lambda platform, config: adapter,
+        )
+
+        created = runner._create_adapter(
+            Platform.SIGNAL,
+            PlatformConfig(enabled=True),
+        )
+
+        assert created is adapter
+        assert adapter.gateway_runner is runner
+
+    def test_factory_preserves_unavailable_adapter(self, monkeypatch):
+        runner = object.__new__(GatewayRunner)
+        monkeypatch.setattr(
+            runner,
+            "_instantiate_adapter",
+            lambda platform, config: None,
+        )
+
+        assert runner._create_adapter(
+            Platform.SIGNAL,
+            PlatformConfig(enabled=True),
+        ) is None
+
 
 # A concrete adapter we can instantiate without the full platform stack.
 # ``build_source`` only reads ``self.platform`` and ``self.gateway_runner``, so a
@@ -402,6 +432,74 @@ class TestAdapterToSessionKeyIntegration:
         assert source.profile == "ops"
         assert source._transport_adapter_ref() is adapter
 
+        key = build_session_key(source, profile=source.profile)
+        assert key.startswith("agent:ops:"), key
+        assert key != build_session_key(source, profile=None)
+
+    @pytest.mark.asyncio
+    async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
+        """A factory-built Signal adapter must route a real inbound event."""
+        group_id = "test-signal-route"
+        route_chat_id = f"group:{group_id}"
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", group_id)
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            profile_routes=[
+                ProfileRoute(
+                    name="signal",
+                    platform="signal",
+                    profile="ops",
+                    chat_id=route_chat_id,
+                ),
+            ],
+        )
+        signal_config = PlatformConfig(
+            enabled=True,
+            extra={
+                "http_url": "http://127.0.0.1:18080",
+                "account": "+15555550123",
+            },
+        )
+
+        cold_adapter = runner._create_adapter(Platform.SIGNAL, signal_config)
+        replacement_adapter = runner._create_adapter(
+            Platform.SIGNAL,
+            signal_config,
+        )
+
+        assert cold_adapter is not None
+        assert replacement_adapter is not None
+        assert replacement_adapter is not cold_adapter
+        assert cold_adapter.gateway_runner is runner
+        assert replacement_adapter.gateway_runner is runner
+
+        captured = {}
+
+        async def capture_event(event):
+            captured["event"] = event
+
+        replacement_adapter.handle_message = capture_event
+        await replacement_adapter._handle_envelope(
+            {
+                "envelope": {
+                    "sourceNumber": "+15555550124",
+                    "sourceName": "Test Operator",
+                    "timestamp": 1700000000000,
+                    "dataMessage": {
+                        "message": "diagnose the cluster",
+                        "groupInfo": {
+                            "groupId": group_id,
+                            "groupName": "US East 7",
+                        },
+                    },
+                },
+            },
+        )
+
+        source = captured["event"].source
+        assert source.chat_id == route_chat_id
+        assert source.profile == "ops"
         key = build_session_key(source, profile=source.profile)
         assert key.startswith("agent:ops:"), key
         assert key != build_session_key(source, profile=None)

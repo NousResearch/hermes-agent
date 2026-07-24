@@ -198,7 +198,11 @@ class TestPlatformReconnectWatcher:
         succeed_adapter = StubAdapter(succeed=True)
         real_sleep = asyncio.sleep
 
-        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
+        with patch.object(
+            runner,
+            "_instantiate_adapter",
+            return_value=succeed_adapter,
+        ):
             with patch("gateway.run.build_channel_directory", create=True):
                 # Run one iteration of the watcher then stop
                 async def run_one_iteration():
@@ -220,6 +224,7 @@ class TestPlatformReconnectWatcher:
 
         assert Platform.TELEGRAM not in runner._failed_platforms
         assert Platform.TELEGRAM in runner.adapters
+        assert succeed_adapter.gateway_runner is runner
 
     @pytest.mark.asyncio
     async def test_reconnect_passes_is_reconnect_true(self):

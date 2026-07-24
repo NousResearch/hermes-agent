@@ -56,8 +56,12 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
     )
     env = dict(initial_env)
     env["HERMES_HOME"] = str(hermes_home)
-    # Keep PATH / PYTHONPATH so venv imports resolve.
-    for k in ("PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME"):
+    # Keep PATH / PYTHONPATH so venv imports resolve. SYSTEMROOT and USERPROFILE
+    # are required on Windows: without SYSTEMROOT the subprocess's socket
+    # provider fails to initialize (WinError 10106) the moment gateway.run
+    # imports and touches the network, and without USERPROFILE pathlib's
+    # Path.home() raises "Could not determine home directory".
+    for k in ("PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME", "SYSTEMROOT", "USERPROFILE"):
         if k in os.environ and k not in env:
             env[k] = os.environ[k]
 

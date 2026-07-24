@@ -20,8 +20,9 @@
  * actually works.
  *
  * Both probes are deliberately fast and forgiving:
- *   - 5s timeout (a hung interpreter beats forever, but we still give
- *     slow disks / cold caches room to breathe)
+ *   - default 15s timeout (5s was too short on cold Windows disks / AV;
+ *     issue #61764 death-loop) with HERMES_PROBE_TIMEOUT_MS override
+ *   - one automatic retry after a timeout before declaring the runtime dead
  *   - stdio ignored (we only care about exit code; stdout/stderr are
  *     not surfaced to the user, just to recentHermesLog for forensics
  *     via the caller's catch block if it chooses)
@@ -34,7 +35,71 @@
 
 import { execFileSync } from 'node:child_process'
 
-const PROBE_TIMEOUT_MS = 5000
+/** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
+const DEFAULT_PROBE_TIMEOUT_MS = 15_000
+
+/**
+ * Resolve the backend probe timeout (ms).
+ * Honours HERMES_PROBE_TIMEOUT_MS when it parses as a positive integer.
+ */
+function resolveProbeTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.HERMES_PROBE_TIMEOUT_MS
+  if (raw == null || raw === '') {
+    return DEFAULT_PROBE_TIMEOUT_MS
+  }
+  const n = Number.parseInt(String(raw), 10)
+  if (!Number.isFinite(n) || n <= 0) {
+    return DEFAULT_PROBE_TIMEOUT_MS
+  }
+  // Clamp absurd values (ms) so a typo can't hang startup forever.
+  return Math.min(n, 120_000)
+}
+
+const PROBE_TIMEOUT_MS = resolveProbeTimeoutMs()
+
+function isTimeoutError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false
+  }
+  const e = err as { code?: string; killed?: boolean; signal?: string }
+  if (e.killed === true) {
+    return true
+  }
+  if (e.code === 'ETIMEDOUT') {
+    return true
+  }
+  // Node marks timed-out execFileSync with SIGTERM on some platforms.
+  if (e.signal === 'SIGTERM') {
+    return true
+  }
+  return false
+}
+
+/**
+ * Run execFileSync; on timeout only, retry once before failing.
+ * Non-timeout failures (ENOENT, non-zero exit) fail immediately.
+ */
+function execProbeSync(
+  command: string,
+  args: string[],
+  options: {
+    env?: NodeJS.ProcessEnv
+    stdio: 'ignore'
+    timeout: number
+    shell?: boolean
+    windowsHide?: boolean
+  }
+): void {
+  try {
+    execFileSync(command, args, options)
+  } catch (err) {
+    if (!isTimeoutError(err)) {
+      throw err
+    }
+    // One cold-cache / AV miss should not force hermes-setup --update (#61764).
+    execFileSync(command, args, options)
+  }
+}
 
 /**
  * Return the Python snippet used to verify Hermes can import far enough to
@@ -71,7 +136,7 @@ function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, str
   }
 
   try {
-    execFileSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
+    execProbeSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
       env: { ...process.env, ...(opts.env || {}) },
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
@@ -120,7 +185,7 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   }
 
   try {
-    execFileSync(hermesCommand, ['--version'], {
+    execProbeSync(hermesCommand, ['--version'], {
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       shell: Boolean(opts?.shell),
@@ -133,4 +198,4 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   }
 }
 
-export { canImportHermesCli, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli }
+export { canImportHermesCli, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS, resolveProbeTimeoutMs, shouldTrustHermesOverride, verifyHermesCli }

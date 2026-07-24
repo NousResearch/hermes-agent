@@ -104,6 +104,7 @@ kimi = KimiProfile(
     default_max_tokens=32000,
     default_headers={"User-Agent": "hermes-agent/1.0"},
     default_aux_model="kimi-k2-turbo-preview",
+    supports_vision=True,
 )
 
 kimi_cn = KimiProfile(
@@ -115,6 +116,7 @@ kimi_cn = KimiProfile(
     default_max_tokens=32000,
     default_headers={"User-Agent": "hermes-agent/1.0"},
     default_aux_model="kimi-k2-turbo-preview",
+    supports_vision=True,
 )
 
 register_provider(kimi)

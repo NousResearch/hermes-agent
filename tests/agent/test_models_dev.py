@@ -4,8 +4,11 @@ from unittest.mock import patch, MagicMock
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
+    _model_version_key,
+    _pick_representative_model,
     fetch_models_dev,
     get_model_capabilities,
+    get_model_info,
     lookup_models_dev_context,
 )
 
@@ -401,3 +404,162 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+    def test_provider_catalog_name_resolves_to_latest_vision_model(self):
+        """Config model 'kimi-for-coding' matches provider catalog and picks latest vision model."""
+        registry = {
+            "kimi-for-coding": {
+                "id": "kimi-for-coding",
+                "name": "Kimi For Coding",
+                "models": {
+                    "k2p5": {
+                        "id": "k2p5",
+                        "name": "Kimi K2.5",
+                        "tool_call": True,
+                        "modalities": {"input": ["text", "image", "video"]},
+                        "limit": {"context": 262144, "output": 32768},
+                    },
+                    "k2p6": {
+                        "id": "k2p6",
+                        "name": "Kimi K2.6",
+                        "tool_call": True,
+                        "modalities": {"input": ["text", "image", "video"]},
+                        "limit": {"context": 262144, "output": 32768},
+                    },
+                    "k2p7": {
+                        "id": "k2p7",
+                        "name": "Kimi K2.7 Code",
+                        "tool_call": True,
+                        "modalities": {"input": ["text", "image", "video"]},
+                        "limit": {"context": 262144, "output": 32768},
+                    },
+                    "k2p10": {
+                        "id": "k2p10",
+                        "name": "Kimi K2.10 Code",
+                        "tool_call": True,
+                        "modalities": {"input": ["text", "image", "video"]},
+                        "limit": {"context": 524288, "output": 32768},
+                    },
+                    "kimi-k2-thinking": {
+                        "id": "kimi-k2-thinking",
+                        "name": "Kimi K2 Thinking",
+                        "tool_call": True,
+                        "modalities": {"input": ["text"]},
+                        "limit": {"context": 262144, "output": 32768},
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("kimi-coding", "kimi-for-coding")
+            info = get_model_info("kimi-coding", "kimi-for-coding")
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.supports_tools is True
+        # k2p10 is the latest vision model (natural sort, not lexicographic).
+        assert caps.context_window == 524288
+        assert info is not None
+        assert info.id == "kimi-for-coding"
+        assert info.name == "Kimi K2.10 Code"
+
+    def test_provider_catalog_case_insensitive(self):
+        """Provider catalog matching is case-insensitive for both key and model name."""
+        registry = {
+            "Kimi-For-Coding": {
+                "id": "Kimi-For-Coding",
+                "models": {
+                    "k2p7": {
+                        "id": "k2p7",
+                        "tool_call": True,
+                        "modalities": {"input": ["text", "image"]},
+                        "limit": {"context": 262144, "output": 32768},
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("kimi-coding", "kimi-for-coding")
+            ctx = lookup_models_dev_context("kimi-coding", "kimi-for-coding")
+            info = get_model_info("kimi-coding", "kimi-for-coding")
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert ctx == 262144
+        assert info is not None
+        assert info.context_window == 262144
+
+    def test_provider_catalog_literal_model_takes_precedence(self):
+        """If the catalog contains a model literally named like the catalog ID, use it."""
+        registry = {
+            "kimi-for-coding": {
+                "id": "kimi-for-coding",
+                "models": {
+                    "kimi-for-coding": {
+                        "id": "kimi-for-coding",
+                        "name": "Kimi For Coding (specific)",
+                        "tool_call": True,
+                        "modalities": {"input": ["text"]},
+                        "limit": {"context": 131072, "output": 16384},
+                    },
+                    "k2p7": {
+                        "id": "k2p7",
+                        "name": "Kimi K2.7 Code",
+                        "tool_call": True,
+                        "modalities": {"input": ["text", "image"]},
+                        "limit": {"context": 262144, "output": 32768},
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("kimi-coding", "kimi-for-coding")
+            info = get_model_info("kimi-coding", "kimi-for-coding")
+        assert caps is not None
+        # Literal model entry is text-only, so capabilities reflect that.
+        assert caps.supports_vision is False
+        assert caps.context_window == 131072
+        assert info is not None
+        assert info.name == "Kimi For Coding (specific)"
+
+    def test_provider_catalog_no_vision_falls_back_to_first_model(self):
+        """A catalog with no vision models falls back to a deterministic text model."""
+        registry = {
+            "kimi-for-coding": {
+                "id": "kimi-for-coding",
+                "models": {
+                    "zzz-thinking": {
+                        "id": "zzz-thinking",
+                        "tool_call": True,
+                        "modalities": {"input": ["text"]},
+                        "limit": {"context": 131072, "output": 16384},
+                    },
+                    "aaa-text": {
+                        "id": "aaa-text",
+                        "tool_call": True,
+                        "modalities": {"input": ["text"]},
+                        "limit": {"context": 65536, "output": 8192},
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("kimi-coding", "kimi-for-coding")
+        assert caps is not None
+        assert caps.supports_vision is False
+        # Alphabetical first valid model is chosen.
+        assert caps.context_window == 65536
+
+    def test_pick_representative_model_natural_sort(self):
+        """Model IDs sort numerically, not lexicographically."""
+        models = {
+            "k2p5": {"modalities": {"input": ["text", "image"]}},
+            "k2p9": {"modalities": {"input": ["text", "image"]}},
+            "k2p10": {"modalities": {"input": ["text", "image"]}},
+        }
+        entry = _pick_representative_model(models)
+        assert entry is models["k2p10"]
+
+    def test_model_version_key(self):
+        """Natural version key separates text and numeric parts."""
+        assert _model_version_key("k2p10") > _model_version_key("k2p9")
+        assert _model_version_key("k2p10") > _model_version_key("k2p2")
+        assert _model_version_key("v1.10") > _model_version_key("v1.2")

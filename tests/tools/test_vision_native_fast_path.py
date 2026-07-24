@@ -56,6 +56,15 @@ class TestSupportsMediaInToolResults:
     def test_unknown_provider_conservative_no(self):
         assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False
 
+    def test_kimi_coding_yes(self):
+        assert _supports_media_in_tool_results("kimi-coding", "kimi-for-coding") is True
+
+    def test_kimi_coding_cn_yes(self):
+        assert _supports_media_in_tool_results("kimi-coding-cn", "kimi-k2.5") is True
+
+    def test_moonshot_yes(self):
+        assert _supports_media_in_tool_results("moonshot", "kimi-k2.5") is True
+
     def test_empty_provider_no(self):
         assert _supports_media_in_tool_results("", "anything") is False
         assert _supports_media_in_tool_results(None, "anything") is False  # type: ignore[arg-type]

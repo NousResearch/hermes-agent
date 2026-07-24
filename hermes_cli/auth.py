@@ -631,13 +631,43 @@ def _resolve_api_key_provider_secret(
 # may only have access to recent models (glm-5.1, glm-5v-turbo) while older
 # ones still use glm-4.7.
 
+# Order chosen by audited key-popularity across 8 production keys:
+#   anthropic-global (6/8) > coding-global > anthropic-cn (4/8)
+#   > coding-cn > global > cn.
+# The "format" field drives detect_zai_endpoint() body shape selection.
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("anthropic-global", "https://api.z.ai/api/anthropic", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "Global (Anthropic wire)"),
+    ("coding-global",   "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "Global (Coding Plan)"),
+    ("anthropic-cn",    "https://open.bigmodel.cn/api/anthropic", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "China (Anthropic wire)"),
+    ("coding-cn",       "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5", "glm-4.7"], "China (Coding Plan)"),
+    ("global",          "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
+    ("cn",              "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
 ]
+
+
+def _zai_probe_path(ep_id: str, base_url: str) -> str:
+    """Return the request path for a given Z.AI endpoint, wire-format-aware."""
+    if ep_id.startswith("anthropic-"):
+        # Anthropic Messages API path on /api/anthropic
+        return f"{base_url}/v1/messages"
+    return f"{base_url}/chat/completions"
+
+
+def _zai_probe_body(ep_id: str, model: str) -> dict:
+    """Return the request body for a given Z.AI endpoint, wire-format-aware."""
+    if ep_id.startswith("anthropic-"):
+        return {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }
+    return {
+        "model": model,
+        "stream": False,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
 
 
 def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
@@ -646,22 +676,23 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
     first working endpoint, or None if all fail.  For endpoints with multiple
     candidate models, tries each in order and returns the first that succeeds.
+
+    Supports two wire formats:
+      - OpenAI chat completions (default, /api/paas/v4 and /api/coding/paas/v4)
+      - Anthropic Messages (anthropic-* endpoints, /api/anthropic/v1/messages)
     """
     for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
         for model in probe_models:
             try:
                 resp = httpx.post(
-                    f"{base_url}/chat/completions",
+                    _zai_probe_path(ep_id, base_url),
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
+                        # Anthropic wire requires this version header.
+                        **({"anthropic-version": "2023-06-01"} if ep_id.startswith("anthropic-") else {}),
                     },
-                    json={
-                        "model": model,
-                        "stream": False,
-                        "max_tokens": 1,
-                        "messages": [{"role": "user", "content": "ping"}],
-                    },
+                    json=_zai_probe_body(ep_id, model),
                     timeout=timeout,
                 )
                 if resp.status_code == 200:
@@ -678,16 +709,48 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     return None
 
 
+def _configured_zai_base_url() -> str:
+    """Return ``model.base_url`` when ``config.yaml`` explicitly selects Z.AI.
+
+    Lets users deliberately pick the standard vs Coding Plan endpoint in
+    config.yaml without setting ``GLM_BASE_URL`` in every profile env file.
+    Only consulted when ``model.provider`` is a Z.AI alias — prevents a
+    global ``model.base_url`` for some other provider from leaking into
+    Z.AI resolution (#58088).
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return ""
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return ""
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    if provider not in {"zai", "glm", "z-ai", "z.ai", "zhipu"}:
+        return ""
+    return str(model_cfg.get("base_url") or "").strip().rstrip("/")
+
+
 def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> str:
     """Return the correct Z.AI base URL by probing endpoints.
 
-    If the user has explicitly set GLM_BASE_URL, that always wins.
-    Otherwise, probe the candidate endpoints to find one that accepts the
-    key.  The detected endpoint is cached in provider state (auth.json) keyed
+    Precedence (highest first):
+      1. ``GLM_BASE_URL`` env var (explicit override)
+      2. ``model.base_url`` from config.yaml when ``model.provider`` is Z.AI
+      3. cached ``detected_endpoint`` in auth.json (key-hash keyed)
+      4. live probe of all candidate endpoints
+      5. ``default_url`` (registry fallback)
+
+    The detected endpoint is cached in provider state (auth.json) keyed
     on a hash of the API key so subsequent starts skip the probe.
     """
     if env_override:
         return env_override
+    config_override = _configured_zai_base_url()
+    if config_override:
+        return config_override
 
     # No API key set → don't probe (would fire N×M HTTPS requests with an
     # empty Bearer token, all returning 401).  This path is hit during

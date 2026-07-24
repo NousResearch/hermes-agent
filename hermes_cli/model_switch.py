@@ -1763,11 +1763,16 @@ def list_authenticated_providers(
         return str(url or "").strip().rstrip("/").lower()
 
     def _record_builtin_endpoint(slug: str) -> None:
-        """Record the effective base URL for a built-in provider row.
+        """Record the canonical base URL for a built-in provider row.
 
-        Prefers the live env-override (e.g. DASHSCOPE_BASE_URL) over the
-        static inference_base_url so the dedup matches what a user typing
-        that URL into custom_providers would actually hit."""
+        Uses the static inference_base_url only — NOT the live env-override
+        (e.g. OPENAI_BASE_URL).  The env override affects *routing*, not the
+        provider's identity.  Recording the overridden URL would incorrectly
+        shadow named custom providers that happen to share the override URL
+        (e.g. a ``Volcano GPT`` custom_providers entry collides with the
+        ``openai-api`` row when OPENAI_BASE_URL points at the same volcano
+        gateway).  The dedup in section 4 only needs to suppress accidental
+        duplicates, not hide intentionally-named custom providers."""
         try:
             from hermes_cli.auth import PROVIDER_REGISTRY as _reg
         except Exception:
@@ -1775,11 +1780,7 @@ def list_authenticated_providers(
         pcfg = _reg.get(slug)
         if not pcfg:
             return
-        url = ""
-        if getattr(pcfg, "base_url_env_var", ""):
-            url = os.environ.get(pcfg.base_url_env_var, "") or ""
-        if not url:
-            url = getattr(pcfg, "inference_base_url", "") or ""
+        url = getattr(pcfg, "inference_base_url", "") or ""
         normed = _norm_url(url)
         if normed:
             _builtin_endpoints.add(normed)

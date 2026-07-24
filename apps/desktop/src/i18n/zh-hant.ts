@@ -144,6 +144,7 @@ export const zhHant = defineLocale({
       microphoneFailed: '麥克風發生錯誤',
       microphoneInUse: '麥克風正被其他應用程式使用中。',
       microphonePermissionDenied: '麥克風權限被拒絕。',
+      microphoneSecureContextRequired: '麥克風錄音需要 HTTPS、localhost 或原生桌面應用程式。',
       microphoneStartFailed: '無法開始麥克風錄音。',
       microphoneUnsupported: '目前執行環境不支援麥克風錄音。',
       noMicrophone: '找不到麥克風。',

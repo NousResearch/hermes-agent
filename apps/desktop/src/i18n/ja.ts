@@ -149,6 +149,8 @@ export const ja = defineLocale({
       microphoneFailed: 'マイクが失敗しました',
       microphoneInUse: 'マイクは他のアプリで使用中です。',
       microphonePermissionDenied: 'マイクのアクセス許可が拒否されました。',
+      microphoneSecureContextRequired:
+        'マイク録音には HTTPS、localhost、またはネイティブデスクトップアプリが必要です。',
       microphoneStartFailed: 'マイクの録音を開始できませんでした。',
       microphoneUnsupported: 'このランタイムはマイク録音をサポートしていません。',
       noMicrophone: 'マイクが見つかりませんでした。',

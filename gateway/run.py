@@ -9833,11 +9833,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             served = [active] + sorted(self._profile_adapters.keys())
             # Per-profile PairingStores so authz_mixin can route pairing
             # checks to the right whitelist. The active profile gets a store
-            # at its HERMES_HOME; additional served profiles get one under
-            # profiles/<name>/pairing/. See gateway.pairing.PairingStore.
+            # at its HERMES_HOME; additional served profiles resolve from
+            # their own profile homes. See gateway.pairing.PairingStore.
             for name in served:
                 if name and name not in self.pairing_stores:
-                    self.pairing_stores[name] = PairingStore(profile=name)
+                    self.pairing_stores[name] = (
+                        self.pairing_store
+                        if name == active
+                        else PairingStore(profile=name)
+                    )
             write_runtime_status(served_profiles=served)
         except Exception:
             logger.debug("could not record served_profiles", exc_info=True)
@@ -10704,23 +10708,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 == "pair"
             ):
                 platform_name = source.platform.value if source.platform else "unknown"
+                pairing_store = self._pairing_store_for(source)
+                if pairing_store is None:
+                    logger.error(
+                        "Cannot offer pairing code on %s: no pairing store",
+                        platform_name,
+                    )
+                    return None
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
                 # multiple DMs arrive in quick succession.
-                if self.pairing_store._is_rate_limited(platform_name, source.user_id):
+                if pairing_store._is_rate_limited(platform_name, source.user_id):
                     return None
-                code = self.pairing_store.generate_code(
+                code = pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
                 )
                 if code:
                     adapter = self._adapter_for_source(source)
                     if adapter:
+                        store_profile = getattr(pairing_store, "profile", None)
+                        profile_arg = (
+                            f"-p {store_profile} "
+                            if isinstance(store_profile, str)
+                            and store_profile
+                            and store_profile != "default"
+                            else ""
+                        )
                         await adapter.send(
                             source.chat_id,
                             f"Hi~ I don't recognize you yet!\n\n"
                             f"Here's your pairing code: `{code}`\n\n"
                             f"Ask the bot owner to run:\n"
-                            f"`hermes pairing approve {platform_name} {code}`"
+                            f"`hermes {profile_arg}pairing approve "
+                            f"{platform_name} {code}`"
                         )
                 else:
                     adapter = self._adapter_for_source(source)
@@ -10731,7 +10751,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Please try again later!"
                         )
                     # Record rate limit so subsequent messages are silently ignored
-                    self.pairing_store._record_rate_limit(platform_name, source.user_id)
+                    pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
         # Intercept messages that are responses to a pending /update prompt.

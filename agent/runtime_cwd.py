@@ -57,6 +57,11 @@ def _session_cwd_override() -> str:
     return str(value).strip()
 
 
+def get_session_cwd_override() -> str:
+    """Return the cwd explicitly bound to the current session context."""
+    return _session_cwd_override()
+
+
 def resolve_agent_cwd() -> Path:
     override = _session_cwd_override()
     if override:

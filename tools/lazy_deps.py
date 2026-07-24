@@ -263,14 +263,27 @@ class FeatureUnavailable(RuntimeError):
     installs, or the install attempt failed.
     """
 
-    def __init__(self, feature: str, missing: tuple[str, ...], reason: str):
+    def __init__(
+        self,
+        feature: str,
+        missing: tuple[str, ...],
+        reason: str,
+        *,
+        remediation: Optional[str] = None,
+    ):
         self.feature = feature
         self.missing = missing
         self.reason = reason
+        self.remediation = remediation
         super().__init__(self._format())
 
     def _format(self) -> str:
         spec_list = " ".join(repr(s) for s in self.missing)
+        if self.remediation is not None:
+            return (
+                f"Feature {self.feature!r} unavailable: {self.reason}. "
+                f"{self.remediation}"
+            )
         return (
             f"Feature {self.feature!r} unavailable: {self.reason}. "
             f"To enable manually: uv pip install {spec_list}  "
@@ -283,6 +296,7 @@ class _InstallResult:
     success: bool
     stdout: str
     stderr: str
+    remediation: Optional[str] = None
 
 
 # =============================================================================
@@ -297,6 +311,45 @@ class _InstallResult:
 # security.allow_lazy_installs in config.yaml. When unset, lazy installs go
 # into the active venv as before.
 _LAZY_TARGET_ENV = "HERMES_LAZY_INSTALL_TARGET"
+
+# Nix builds optional dependencies from pyproject groups into the sealed venv.
+# Keep this as a feature-to-remediation map rather than trying to infer group
+# names: several public feature names intentionally differ from their extras
+# (for example ``tts.elevenlabs`` -> ``tts-premium``).
+_NIX_DEPENDENCY_GROUPS: dict[str, str] = {
+    "provider.anthropic": "anthropic",
+    "provider.bedrock": "bedrock",
+    "provider.vertex": "vertex",
+    "provider.azure_identity": "azure-identity",
+    "search.exa": "exa",
+    "search.firecrawl": "firecrawl",
+    "search.parallel": "parallel-web",
+    "tts.mistral": "mistral",
+    "tts.edge": "edge-tts",
+    "tts.elevenlabs": "tts-premium",
+    "stt.mistral": "mistral",
+    "stt.faster_whisper": "voice",
+    "image.fal": "fal",
+    "memory.honcho": "honcho",
+    "memory.hindsight": "hindsight",
+    "memory.supermemory": "supermemory",
+    "memory.mem0": "mem0",
+    "platform.telegram": "messaging",
+    "platform.discord": "messaging",
+    "platform.slack": "slack",
+    "platform.matrix": "matrix",
+    "platform.dingtalk": "dingtalk",
+    "platform.feishu": "feishu",
+    "platform.wecom_callback": "wecom",
+    "platform.teams": "teams",
+    "terminal.modal": "modal",
+    "terminal.daytona": "daytona",
+    "skill.google_workspace": "google",
+    "skill.youtube": "youtube",
+    "tool.acp": "acp",
+    "tool.dashboard": "web",
+    "tool.computer_use": "computer-use",
+}
 
 # Name of the stamp file written into the target dir recording the Python
 # X.Y + ABI it was populated for. If a container rebuild bumps the
@@ -494,6 +547,67 @@ def _pkg_name_from_spec(spec: str) -> str:
     return m.group(1) if m else spec
 
 
+def _managed_install_system() -> Optional[str]:
+    """Return the package manager owning an immutable Python prefix.
+
+    ``get_managed_system`` is the canonical Hermes check and covers the
+    ``HERMES_MANAGED`` environment variable plus the legacy managed marker.
+    The prefix writability fallback also covers interactive Nix invocations,
+    where the service-provided environment variable may not be present.
+    """
+    try:
+        from hermes_cli.config import get_managed_system
+
+        managed_system = get_managed_system()
+        if managed_system:
+            return managed_system
+    except Exception:
+        pass
+
+    try:
+        if not os.access(sys.prefix, os.W_OK):
+            normalized = os.path.normpath(sys.prefix).replace(os.sep, "/")
+            if normalized == "/nix/store" or normalized.startswith("/nix/store/"):
+                return "NixOS"
+            return "managed"
+    except (OSError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _managed_install_remediation(
+    system: str,
+    feature: Optional[str],
+    specs: tuple[str, ...],
+) -> str:
+    """Build package-manager guidance for a skipped pip bootstrap."""
+    if system == "NixOS":
+        group = _NIX_DEPENDENCY_GROUPS.get(feature or "")
+        if group:
+            return (
+                "Add the matching dependency group to configuration.nix: "
+                f'services.hermes-agent.extraDependencyGroups = [ "{group}" ]; '
+                "then run `sudo nixos-rebuild switch`."
+            )
+        packages = ", ".join(sorted({_pkg_name_from_spec(spec) for spec in specs}))
+        return (
+            "Add the Nix Python package(s) providing "
+            f"{packages} through services.hermes-agent.extraPythonPackages "
+            "and run `sudo nixos-rebuild switch`."
+        )
+
+    if system == "Homebrew":
+        return (
+            "Install a Homebrew package/formula that provides the missing "
+            "dependency, then reinstall or upgrade hermes-agent."
+        )
+
+    return (
+        "Install the missing dependency through the package manager that owns "
+        "this Hermes installation."
+    )
+
+
 def _specifier_from_spec(spec: str) -> str:
     """Extract just the version-specifier portion of a pip spec.
 
@@ -620,7 +734,12 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _venv_pip_install(
+    specs: tuple[str, ...],
+    *,
+    timeout: int = 300,
+    feature: Optional[str] = None,
+) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
     Two modes:
@@ -692,6 +811,15 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             if probe.returncode != 0:
                 raise FileNotFoundError("pip not in venv")
         except (subprocess.TimeoutExpired, FileNotFoundError):
+            managed_system = _managed_install_system()
+            if managed_system:
+                return _InstallResult(
+                    False,
+                    "",
+                    "pip is unavailable and ensurepip bootstrap was skipped "
+                    f"because sys.prefix is managed by {managed_system}",
+                    _managed_install_remediation(managed_system, feature, specs),
+                )
             try:
                 subprocess.run(
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
@@ -813,7 +941,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             )
 
     logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
-    result = _venv_pip_install(missing)
+    result = _venv_pip_install(missing, feature=feature)
     if not result.success:
         # Surface the actual pip error so the user can debug PyPI-side
         # issues (404 quarantine, network down, etc.).
@@ -823,7 +951,8 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             snippet = snippet[-2000:]
         raise FeatureUnavailable(
             feature, missing,
-            f"pip install failed: {snippet or 'no error output'}"
+            f"pip install failed: {snippet or 'no error output'}",
+            remediation=result.remediation,
         )
 
     # Verify post-install. importlib.metadata caches per-process, so if we

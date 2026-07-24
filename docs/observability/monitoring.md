@@ -53,7 +53,7 @@ off the hot path, while terminal cron events make one bounded fail-open flush
 attempt of up to one second so the final state is less likely to be lost.
 
 Works identically under systemd/launchd/s6 supervision, containers, tmux, or
-a plain `hermes gateway run` — the exporter lives in the gateway process, so
+a plain `hermes gateway run`: the exporter lives in the gateway process, so
 no sidecar, agent, or collector is required on the host.
 
 ## Collecting into DataDog
@@ -79,6 +79,91 @@ service:
 
 Point `monitoring.export.otlp.endpoint` at the collector. Alerts belong on
 `hermes.gateway.up`, `hermes.platform.up`, and `hermes.platform.degraded`.
+
+## Generic fleet queries and alerts
+
+The exact syntax depends on the customer's observability backend. The examples
+below use PromQL-style expressions and intentionally avoid vendor-specific
+routing, destinations, or customer inventory.
+
+Group fleet views by the opaque `service.instance.id` resource attribute. A
+process that has died cannot emit its own zero, so every deployment needs both
+explicit-state and missing-series detection.
+
+```promql
+# Explicit gateway failure.
+hermes_gateway_up == 0
+
+# Box disappeared or stopped exporting. Choose a window longer than the
+# configured export interval and collector retry allowance.
+absent_over_time(hermes_gateway_up[5m])
+
+# Locally owned bridge is explicitly down.
+hermes_platform_up == 0
+
+# Scheduler thread is stale even though the gateway may still be alive.
+hermes_cron_scheduler_heartbeat_age_seconds > 180
+
+# Ticker loops but has not completed a successful tick recently.
+hermes_cron_scheduler_last_success_age_seconds > 300
+
+# One or more jobs are beyond their existing scheduler grace window.
+hermes_cron_jobs_overdue > 0
+
+# Catch-up counter increased, proving at least one stale occurrence was
+# collapsed and run once after a delay.
+increase(hermes_cron_scheduler_catch_up_occurrences[15m]) > 0
+```
+
+Cron execution lifecycle records arrive as `hermes.cron_execution` spans.
+Alert or derive events from bounded attributes such as:
+
+```text
+hermes.status = failed|unknown
+hermes.delivery_outcome = failed|not_configured
+hermes.error_class = auth_failed|rate_limited|timeout|network_error|
+                     dispatch_failed|interrupted|empty_response|
+                     invalid_config|unknown
+```
+
+Recommended operator views:
+
+1. one row per `service.instance.id` with gateway and configured local-platform
+   state;
+2. scheduler heartbeat, last-success age, running count, overdue count, and
+   catch-up increase;
+3. a cron lifecycle feed keyed only by opaque `hermes.job_key`;
+4. separate alerts for box absence, local bridge down, scheduler stale, cron
+   failed/unknown, delivery failure, and overdue/catch-up activity.
+
+Keep alert thresholds and routing in deployment-owned configuration. Do not add
+job names, prompts, outputs, schedules, destinations, raw errors, profile names,
+or account identity merely to make a dashboard easier to read.
+
+## Release-validation scenarios
+
+Before accepting a deployment, force and verify all five cases through the real
+collector and backend:
+
+1. **Cron success:** observe `claimed -> running -> completed`, duration, and a
+   truthful delivery outcome.
+2. **Cron failure:** observe `failed` plus a bounded error class, with no raw
+   exception or content in the decoded OTLP payload.
+3. **Cron interruption:** stop the owning gateway during execution, restart it,
+   and observe recovery to `unknown`.
+4. **Locally owned bridge outage:** break one native connector, observe its
+   bounded down/retrying/fatal state and recovery, and verify unaffected boxes
+   remain healthy.
+5. **Killed gateway:** terminate one canary, verify missing-series detection,
+   restart it, and confirm the same opaque instance identity returns.
+
+Hermes Agent-owned Relay transport health remains in scope. A separate gateway
+or connector service remains authoritative for any shared connected-platform
+state that it owns and should export that state through its own telemetry path.
+
+For every scenario, verify the signal and alert clear on recovery, other boxes
+remain unaffected, collector failure stays fail-open, and decoded metrics,
+spans, logs, and resource attributes remain content-free.
 
 ## Local smoke test (no Docker)
 

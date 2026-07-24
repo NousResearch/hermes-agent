@@ -2313,8 +2313,23 @@ class ShellFileOperations(FileOperations):
         # otherwise matched), so only surface an error when exit==2 AND no
         # usable match payload remains. Otherwise we keep the real matches.
         if result.exit_code == 2 and not payload.strip():
+            # Regex parse error.  Local/smaller models often pass a glob
+            # pattern (e.g. "*detector*scheduler*") where a regex is
+            # expected.  Detect this and retry with a converted pattern
+            # so the session doesn't loop on the same failing call.
+            fallback_result = self._retry_glob_as_regex(
+                pattern, path, file_glob, limit, offset, output_mode, context,
+                diagnostics, cmd_parts,
+            )
+            if fallback_result is not None:
+                return fallback_result
             error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
-            return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+            return SearchResult(
+                error=f"Search failed: {error_msg}. "
+                      "Hint: use a valid regex (e.g. 'detector.*scheduler') "
+                      "or call search_files with target=\"files\" and a glob pattern.",
+                total_count=0,
+            )
 
         # Parse the diagnostic-free payload so error text never becomes a match.
         stdout = payload
@@ -2390,6 +2405,185 @@ class ShellFileOperations(FileOperations):
                 limit_reason=limit_reason,
             )
     
+    @staticmethod
+    def _glob_to_regex(glob_pattern: str) -> str:
+        """Convert a simple glob pattern to a regex.
+
+        Translates ``*`` → ``.*``, ``?`` → ``.``, and escapes regex
+        metacharacters in the literal portions.  Only handles the common
+        subset (no ``[...]`` character classes) — enough to rescue the
+        most frequent model mistakes.
+        """
+        import re as _re
+
+        out: list[str] = []
+        i = 0
+        while i < len(glob_pattern):
+            ch = glob_pattern[i]
+            if ch == "*":
+                out.append(".*")
+            elif ch == "?":
+                out.append(".")
+            elif ch == "\\" and i + 1 < len(glob_pattern):
+                out.append(_re.escape(glob_pattern[i + 1]))
+                i += 1
+            else:
+                out.append(_re.escape(ch))
+            i += 1
+        return "".join(out)
+
+    def _retry_glob_as_regex(
+        self,
+        pattern: str,
+        path: str,
+        file_glob: Optional[str],
+        limit: int,
+        offset: int,
+        output_mode: str,
+        context: int,
+        diagnostics: str,
+        original_cmd_parts: list,
+    ) -> Optional[SearchResult]:
+        """On regex parse error, retry with a glob→regex conversion.
+
+        Returns a ``SearchResult`` if the converted pattern matched
+        something, or ``None`` to let the caller surface the original
+        error.  Tries two strategies in order:
+
+        1. Glob→regex conversion (``*`` → ``.*``, ``?`` → ``.``)
+        2. ``rg -F`` fixed-string search (literal match)
+
+        Either may return zero matches (model passed garbage) — that is
+        fine; the caller still gets a ``SearchResult`` with an actionable
+        error message instead of a raw rg diagnostic that triggers a
+        tool loop.
+        """
+        # Heuristic: only attempt conversion when the pattern looks like
+        # a glob — bare ``*``/``?`` not preceded by regex metacharacters.
+        import re as _re
+
+        if not _re.search(r"(?<!\\)[*?]", pattern):
+            return None
+
+        # Strategy 1: glob → regex
+        converted = self._glob_to_regex(pattern)
+        if converted != pattern:
+            retry_parts = list(original_cmd_parts)
+            # Replace the last occurrence of the original pattern (it's
+            # the pattern arg, right before the path arg).
+            for idx in range(len(retry_parts) - 1, -1, -1):
+                if retry_parts[idx] == self._escape_shell_arg(pattern):
+                    retry_parts[idx] = self._escape_shell_arg(converted)
+                    break
+            retry_cmd = "set -o pipefail; " + " ".join(retry_parts)
+            retry_result = self._exec(retry_cmd, timeout=60)
+            if retry_result.exit_code in (0, 1):
+                # 0=matches, 1=no matches — either way, rg accepted the
+                # pattern.  Feed it through the normal parsing path.
+                stdout, limit_reason = _search_stdout_and_limit(retry_result)
+                _diag, payload = _split_tool_diagnostics(stdout)
+                if retry_result.exit_code == 0 and payload.strip():
+                    return self._parse_rg_payload(
+                        payload, output_mode, limit, offset, context, limit_reason,
+                        note=f"(auto-converted glob '{pattern}' → regex '{converted}')",
+                    )
+                # No matches with the converted pattern — still better
+                # than a loop.  Return empty with the conversion note.
+                return SearchResult(
+                    matches=[],
+                    total_count=0,
+                    error=None,
+                )
+
+        # Strategy 2: fixed-string search
+        fixed_parts = list(original_cmd_parts)
+        for idx in range(len(fixed_parts) - 1, -1, -1):
+            if fixed_parts[idx] == self._escape_shell_arg(pattern):
+                fixed_parts.insert(idx, "-F")
+                break
+        fixed_cmd = "set -o pipefail; " + " ".join(fixed_parts)
+        fixed_result = self._exec(fixed_cmd, timeout=60)
+        if fixed_result.exit_code in (0, 1):
+            stdout, limit_reason = _search_stdout_and_limit(fixed_result)
+            _diag, payload = _split_tool_diagnostics(stdout)
+            if fixed_result.exit_code == 0 and payload.strip():
+                return self._parse_rg_payload(
+                    payload, output_mode, limit, offset, context, limit_reason,
+                    note=f"(used fixed-string search for '{pattern}')",
+                )
+            return SearchResult(matches=[], total_count=0)
+
+        return None
+
+    def _parse_rg_payload(
+        self,
+        payload: str,
+        output_mode: str,
+        limit: int,
+        offset: int,
+        context: int,
+        limit_reason: Optional[str] = None,
+        note: str = "",
+    ) -> SearchResult:
+        """Parse rg stdout payload into a SearchResult.
+
+        Extracted from ``_search_with_rg`` so the glob-fallback retry
+        can reuse the same parsing logic without duplicating it.
+        """
+        import re as _re
+
+        if output_mode == "files_only":
+            all_files = [f for f in payload.strip().split("\n") if f]
+            total = len(all_files)
+            page = all_files[offset:offset + limit]
+            return SearchResult(
+                files=page, total_count=total,
+                truncated=bool(limit_reason), limit_reason=limit_reason,
+            )
+
+        if output_mode == "count":
+            counts: dict[str, int] = {}
+            for line in payload.strip().split("\n"):
+                if ":" in line:
+                    parts = line.rsplit(":", 1)
+                    if len(parts) == 2:
+                        try:
+                            counts[parts[0]] = int(parts[1])
+                        except ValueError:
+                            pass
+            return SearchResult(
+                counts=counts, total_count=sum(counts.values()),
+                truncated=bool(limit_reason), limit_reason=limit_reason,
+            )
+
+        _match_re = _re.compile(r"^([A-Za-z]:)?(.*?):(\d+):(.*)$")
+        matches: list = []
+        for line in payload.strip().split("\n"):
+            if not line or line == "--":
+                continue
+            m = _match_re.match(line)
+            if m:
+                matches.append(SearchMatch(
+                    path=(m.group(1) or "") + m.group(2),
+                    line_number=int(m.group(3)),
+                    content=m.group(4)[:500],
+                ))
+            elif context > 0:
+                parsed = _parse_search_context_line(line)
+                if parsed:
+                    matches.append(SearchMatch(
+                        path=parsed[0], line_number=parsed[1],
+                        content=parsed[2][:500],
+                    ))
+
+        total = len(matches)
+        page = matches[offset:offset + limit]
+        return SearchResult(
+            matches=page, total_count=total,
+            truncated=total > offset + limit or bool(limit_reason),
+            limit_reason=limit_reason,
+        )
+
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""

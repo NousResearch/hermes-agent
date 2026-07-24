@@ -692,16 +692,21 @@ def sync_skills(quiet: bool = False) -> dict:
     for name in cleaned:
         del manifest[name]
 
-    # Also copy DESCRIPTION.md files for categories (if not already present)
+    # Also copy DESCRIPTION.md files for categories (if not already present).
+    # Only copy when the category already has at least one SKILL.md on disk —
+    # this prevents recreating empty "ghost" directories that the user removed.
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         rel = desc_md.relative_to(bundled_dir)
         dest_desc = SKILLS_DIR / rel
-        if not dest_desc.exists():
-            try:
-                dest_desc.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(desc_md, dest_desc)
-            except (OSError, IOError) as e:
-                logger.debug("Could not copy %s: %s", desc_md, e)
+        if dest_desc.exists():
+            continue
+        cat_dir = dest_desc.parent
+        if not cat_dir.exists() or not list(cat_dir.rglob("SKILL.md")):
+            continue
+        try:
+            shutil.copy2(desc_md, dest_desc)
+        except (OSError, IOError) as e:
+            logger.debug("Could not copy %s: %s", desc_md, e)
 
     _write_manifest(manifest)
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)

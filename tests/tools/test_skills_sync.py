@@ -931,6 +931,58 @@ class TestSyncSkills:
         assert manifest["old-skill"] != old_hash
 
 
+    def test_description_md_not_copied_to_ghost_dirs(self, tmp_path):
+        """DESCRIPTION.md should not be copied into empty category dirs with no SKILL.md."""
+        bundled = tmp_path / "bundled_skills"
+        # Bundled: a category with both SKILL.md and DESCRIPTION.md
+        (bundled / "apple" / "findmy").mkdir(parents=True)
+        (bundled / "apple" / "findmy" / "SKILL.md").write_text("# FindMy")
+        (bundled / "apple" / "DESCRIPTION.md").write_text("Apple stuff")
+        # Bundled: a stub-only category (only DESCRIPTION.md, no SKILL.md anywhere)
+        (bundled / "empty-cat").mkdir(parents=True)
+        (bundled / "empty-cat" / "DESCRIPTION.md").write_text("Empty")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        # User deleted all skills from apple — only the DESCRIPTION.md ghost remains
+        # (or was never installed). The category dir does NOT exist on disk.
+        # empty-cat also doesn't exist.
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+        # findmy was synced (new install) → apple/ now has SKILL.md → DESCRIPTION.md should be copied
+        assert (skills_dir / "apple" / "findmy" / "SKILL.md").exists()
+        assert (skills_dir / "apple" / "DESCRIPTION.md").exists()
+
+        # empty-cat has no SKILL.md anywhere → DESCRIPTION.md should NOT be copied
+        # and the directory should NOT be created
+        assert not (skills_dir / "empty-cat").exists()
+
+    def test_description_md_not_recreated_after_user_deletion(self, tmp_path):
+        """After user deletes all skills from a category, DESCRIPTION.md should not come back."""
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "apple" / "findmy").mkdir(parents=True)
+        (bundled / "apple" / "findmy" / "SKILL.md").write_text("# FindMy")
+        (bundled / "apple" / "DESCRIPTION.md").write_text("Apple stuff")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+
+        # Simulate: user previously had findmy installed, then deleted it.
+        # Manifest still has findmy (origin hash from last sync).
+        old_hash = _dir_hash(bundled / "apple" / "findmy")
+        manifest_file.write_text(f"findmy:{old_hash}\n")
+        # No apple/ dir on disk — user deleted everything.
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+        # findmy should NOT be re-added (user deleted it)
+        assert not (skills_dir / "apple").exists()
+
+
 class TestGetBundledDir:
     def test_env_var_override(self, tmp_path, monkeypatch):
         """HERMES_BUNDLED_SKILLS env var overrides the default path resolution."""

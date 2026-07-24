@@ -1865,6 +1865,29 @@ def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
     assert reason == "blocker_auth"
 
 
+def test_respawn_guard_ignores_sluggy_workspace_error_for_spawn_failed_run(kanban_home):
+    """A workspace/spawn failure with quota-ish path text must not trip blocker_auth."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="quota-governance", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (
+                "workspace: task worktree path "
+                "'/tmp/worktrees/issue-12-quota-governance' "
+                "is not inside a git repo and does not point at a git repo root",
+                t,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'failed', 'spawn_failed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
 def test_respawn_guard_recent_success(kanban_home):
     """A completed run within the guard window triggers recent_success."""
     with kb.connect() as conn:
@@ -1987,6 +2010,39 @@ def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     # retry without manual unblock.
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_allows_spawn_failed_workspace_error_with_quota_slug(
+    kanban_home, all_assignees_spawnable
+):
+    """Workspace spawn failures should retry even if the path contains quota/auth words."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="quota-governance", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (
+                "workspace: task worktree path "
+                "'/tmp/worktrees/issue-12-quota-governance' "
+                "is not inside a git repo and does not point at a git repo root",
+                t,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'failed', 'spawn_failed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert (t, "blocker_auth") not in res.respawn_guarded
+    assert t not in res.auto_blocked
 
 
 def test_dispatch_respawn_guard_skips_recent_success(

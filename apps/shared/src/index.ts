@@ -34,6 +34,11 @@ export {
   type SettlementOutcome
 } from './charge-settlement'
 export {
+  createCronTriggerController,
+  type CronTriggerController,
+  type CronTriggerRunResult
+} from './cron-trigger-controller'
+export {
   type ConnectionState,
   type GatewayClientOptions,
   type GatewayEvent,

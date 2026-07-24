@@ -75,6 +75,11 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// The cron trigger endpoint intentionally waits for the whole job so its
+// response reflects the persisted execution result. Agent jobs can run far
+// longer than the Electron fetch default; keep this override local to the one
+// synchronous long-operation endpoint rather than weakening all API timeouts.
+export const CRON_TRIGGER_REQUEST_TIMEOUT_MS = 24 * 60 * 60 * 1000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -1178,7 +1183,8 @@ export function triggerCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger`,
-    method: 'POST'
+    method: 'POST',
+    timeoutMs: CRON_TRIGGER_REQUEST_TIMEOUT_MS
   })
 }
 

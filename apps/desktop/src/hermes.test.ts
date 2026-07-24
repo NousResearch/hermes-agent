@@ -20,7 +20,8 @@ import {
   listSidebarSessions,
   resetSidebarBatchCapability,
   speakText,
-  transcribeAudio
+  transcribeAudio,
+  triggerCronJob
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -304,6 +305,21 @@ describe('Hermes REST helpers', () => {
       await call()
       expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
     }
+  })
+
+  it('waits for synchronous cron triggers as a long-running operation', async () => {
+    api.mockResolvedValue({ id: 'job-1' })
+
+    await triggerCronJob('job-1')
+
+    const request = api.mock.calls[0]?.[0]
+    expect(request).toEqual(
+      expect.objectContaining({
+        path: '/api/cron/jobs/job-1/trigger',
+        method: 'POST'
+      })
+    )
+    expect(request.timeoutMs).toBeGreaterThanOrEqual(60 * 60 * 1000)
   })
 
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {

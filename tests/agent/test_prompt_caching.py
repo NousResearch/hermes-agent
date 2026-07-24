@@ -142,6 +142,44 @@ class TestApplyAnthropicCacheControl:
         assert isinstance(sys_content, list)
         assert sys_content[0]["cache_control"]["type"] == "ephemeral"
 
+    def test_static_prefix_gets_separate_marker_without_changing_text(self):
+        original = "shared prefix\n\nper-session suffix"
+        msgs = [
+            {"role": "system", "content": original},
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "new"},
+        ]
+
+        result = apply_anthropic_cache_control(
+            msgs, static_system_prefix="shared prefix"
+        )
+
+        system_blocks = result[0]["content"]
+        assert "".join(block["text"] for block in system_blocks) == original
+        assert all("cache_control" in block for block in system_blocks)
+        assert isinstance(result[1]["content"], str)
+        assert isinstance(result[2]["content"], list)
+        assert isinstance(result[3]["content"], list)
+
+    def test_mismatched_static_prefix_keeps_legacy_layout(self):
+        msgs = [
+            {"role": "system", "content": "authoritative prompt"},
+            {"role": "user", "content": "message"},
+        ]
+
+        result = apply_anthropic_cache_control(
+            msgs, static_system_prefix="stale prefix"
+        )
+
+        assert result[0]["content"] == [
+            {
+                "type": "text",
+                "text": "authoritative prompt",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
     def test_last_3_non_system_get_markers(self):
         msgs = [
             {"role": "system", "content": "System"},

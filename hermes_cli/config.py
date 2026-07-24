@@ -3654,7 +3654,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -6560,6 +6560,41 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
                 )
+
+    # ── Version 33 → 34: surface the legacy 600s delegation timeout ──
+    # v29 changed the schema default from 600 seconds to disabled, but did not
+    # bump the config version. Existing profiles may therefore still carry the
+    # old materialised default. We cannot distinguish that value from a user
+    # who deliberately opted into a ten-minute cap, so never mutate it. Warn
+    # once during migration and require an explicit config command to disable
+    # the cap.
+    if current_ver < 34:
+        config = read_raw_config()
+        raw_deleg = config.get("delegation")
+        raw_timeout = (
+            raw_deleg.get("child_timeout_seconds")
+            if isinstance(raw_deleg, dict)
+            else None
+        )
+        try:
+            is_legacy_timeout = (
+                isinstance(raw_timeout, (int, float, str))
+                and not isinstance(raw_timeout, bool)
+                and float(raw_timeout) == 600.0
+            )
+        except (TypeError, ValueError):
+            is_legacy_timeout = False
+        if is_legacy_timeout:
+            warning = (
+                "delegation.child_timeout_seconds=600 is an explicit 10-minute "
+                "wall-clock cap. Hermes cannot determine whether it came from "
+                "an older default or was intentional, so it was preserved. To "
+                "disable the cap, run `hermes config set "
+                "delegation.child_timeout_seconds 0`."
+            )
+            results["warnings"].append(warning)
+            if not quiet:
+                print(f"  ⚠ {warning}")
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

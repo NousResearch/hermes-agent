@@ -911,7 +911,7 @@ def _live_system_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_gateway_hard_exit(monkeypatch):
+def _stub_gateway_hard_exit(monkeypatch, request):
     """Keep ``gateway.run._exit_after_graceful_shutdown`` from killing pytest.
 
     Every exit path of ``hermes gateway run`` routes through
@@ -936,8 +936,19 @@ def _stub_gateway_hard_exit(monkeypatch):
         python -m pytest -q tests/hermes_cli/test_gateway_service.py
     dies after a handful of tests with exit code 0 and no summary line.
     """
+    # Exit-CONTRACT tests verify the os._exit routing itself (they patch
+    # os._exit / install recording stubs and expect main()/run_gateway() to
+    # REACH the seam) -- the no-op stub must not blind them.
+    _exit_contract_modules = (
+        "test_gateway_process_exit",
+        "test_gateway_run_hard_exit",
+    )
+    if any(name in str(request.fspath) for name in _exit_contract_modules):
+        yield
+        return
     monkeypatch.setattr(
         "gateway.run._exit_after_graceful_shutdown",
         lambda exit_code: None,
         raising=False,
     )
+    yield

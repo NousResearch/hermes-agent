@@ -1017,6 +1017,21 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(path, {"get_updates_buf": sync_buf})
 
 
+def _fire_alert(event_type: str, detail: str) -> None:
+    """Fire an external alert script if configured."""
+    if not ALERT_SCRIPT:
+        return
+    try:
+        import subprocess
+        subprocess.Popen(
+            [ALERT_SCRIPT, event_type, detail],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        logger.warning("Failed to fire alert (%s): %s", event_type, exc)
+
+
 async def qr_login(
     hermes_home: str,
     *,
@@ -1847,24 +1862,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     _safe_id(chat_id),
                 )
                 if ALERT_SCRIPT:
-                    try:
-                        subprocess.Popen(
-                            [
-                                "python3",
-                                ALERT_SCRIPT,
-                                "1",
-                                "ilink_session_expired",
-                                "0",
-                            ],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                    except Exception as alert_exc:
-                        logger.warning(
-                            "[%s] failed to fire session-expired alert: %s",
-                            self.name,
-                            alert_exc,
-                        )
+                    _fire_alert("session_expired", f"to={_safe_id(chat_id)}")
                 raise
             except Exception as exc:
                 last_error = exc

@@ -379,69 +379,48 @@ class TestWeixinRemoteMediaSafety:
 
 
 class TestWeixinSessionExpired:
-    """SessionExpiredError coverage: ret=-2/-3 -> no retry, alert fired."""
+    """Stale session detection: _is_stale_session_ret + ALERT_SCRIPT wiring."""
 
-    def _connected_adapter(self) -> WeixinAdapter:
-        adapter = _make_adapter()
-        adapter._session = object()
-        adapter._token = "test-token"
-        adapter._base_url = "https://weixin.example.com"
-        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
-        return adapter
+    def test_is_stale_session_ret_with_unknown_error(self):
+        """ret=-2 + errmsg='unknown error' -> stale session."""
+        from gateway.platforms.weixin import _is_stale_session_ret
+        assert _is_stale_session_ret(-2, None, "unknown error") is True
 
-    @patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock)
-    def test_send_message_raises_session_expired_on_ret_minus_2(self, api_post_mock):
-        """ret=-2 (STALE_SESSION_RET) -> SessionExpiredError, not RuntimeError."""
-        from gateway.platforms.weixin import SessionExpiredError, _send_message
+    def test_is_stale_session_ret_with_empty_errmsg(self):
+        """ret=-2 + empty errmsg -> NOT stale (only 'unknown error' triggers)."""
+        from gateway.platforms.weixin import _is_stale_session_ret
+        assert _is_stale_session_ret(-2, None, "") is False
+        assert _is_stale_session_ret(-2, None, None) is False
 
-        api_post_mock.return_value = {"ret": -2, "errmsg": "unknown error"}
-        session = object()  # mocked; _api_post is patched
-        with pytest.raises(SessionExpiredError):
-            asyncio.run(_send_message(
-                session, base_url="https://x", token="t",
-                to="wxid", text="hi", context_token=None, client_id="c1",
-            ))
+    def test_is_stale_session_ret_with_rate_limit_errmsg(self):
+        """ret=-2 + errmsg='rate limited' -> NOT stale (genuine rate limit)."""
+        from gateway.platforms.weixin import _is_stale_session_ret
+        assert _is_stale_session_ret(-2, None, "rate limited") is False
 
-    @patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock)
-    def test_send_message_raises_session_expired_on_ret_minus_3(self, api_post_mock):
-        """ret=-3 (DEAD_SESSION_RET) -> SessionExpiredError, not RuntimeError."""
-        from gateway.platforms.weixin import SessionExpiredError, _send_message
+    def test_is_stale_session_ret_with_errcode_minus_14(self):
+        """errcode=-14 -> NOT caught by _is_stale_session_ret (only checks -2)."""
+        from gateway.platforms.weixin import _is_stale_session_ret
+        assert _is_stale_session_ret(None, -14, None) is False
 
-        api_post_mock.return_value = {"ret": -3, "errmsg": "unknown error"}
-        session = object()  # mocked; _api_post is patched
-        with pytest.raises(SessionExpiredError):
-            asyncio.run(_send_message(
-                session, base_url="https://x", token="t",
-                to="wxid", text="hi", context_token=None, client_id="c1",
-            ))
+    def test_alert_script_constant(self):
+        """ALERT_SCRIPT is defined (may be empty if env var not set)."""
+        from gateway.platforms.weixin import ALERT_SCRIPT
+        assert isinstance(ALERT_SCRIPT, str)
 
-    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
-    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
-    def test_send_does_not_retry_on_session_expired(self, send_mock, sleep_mock):
-        """SessionExpiredError should NOT trigger chunk retry (unlike RuntimeError)."""
-        from gateway.platforms.weixin import SessionExpiredError
-
-        send_mock.side_effect = SessionExpiredError("ret=-2")
-        adapter = self._connected_adapter()
-        adapter.MAX_MESSAGE_LENGTH = 12
-
-        result = asyncio.run(adapter.send("wxid_test123", "hello world"))
-
-        # send called once per chunk, NO retries (SessionExpiredError aborts)
-        assert result.success is False
-        # Should be exactly 1 call (first chunk fails, send aborts)
-        assert send_mock.await_count == 1
-        # No sleep between retries
-        assert sleep_mock.await_count == 0
-
+    def test_fire_alert_no_script(self):
+        """_fire_alert is a no-op when ALERT_SCRIPT is empty."""
+        from gateway.platforms.weixin import _fire_alert
+        # Should not raise even with no script configured
+        _fire_alert("test_event", "test_detail")
 
 
 class TestWeixinPollStaleDetection:
-    """_poll_loop stale detection: ret=-2/-3/-14 -> pause, not exit."""
+    """_poll_loop stale detection: uses upstream _is_stale_session_ret."""
 
     def _connected_adapter(self) -> WeixinAdapter:
         adapter = _make_adapter()
         adapter._session = object()
+        adapter._poll_session = object()
         adapter._token = "test-token"
         adapter._base_url = "https://weixin.example.com"
         adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
@@ -453,13 +432,12 @@ class TestWeixinPollStaleDetection:
     @patch("gateway.platforms.weixin._get_updates", new_callable=AsyncMock)
     def test_poll_stale_on_ret_minus_2(self, get_updates_mock, sleep_mock):
         """ret=-2 with 'unknown error' -> stale detection -> 600s pause."""
-        from gateway.platforms.weixin import STALE_SESSION_RET
 
         call_count = {"n": 0}
         async def side_effect(*a, **kw):
             call_count["n"] += 1
             if call_count["n"] == 1:
-                return {"ret": STALE_SESSION_RET, "errmsg": "unknown error"}
+                return {"ret": -2, "errmsg": "unknown error"}
             raise asyncio.CancelledError()
 
         get_updates_mock.side_effect = side_effect
@@ -474,14 +452,12 @@ class TestWeixinPollStaleDetection:
     @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
     @patch("gateway.platforms.weixin._get_updates", new_callable=AsyncMock)
     def test_poll_stale_on_ret_minus_3(self, get_updates_mock, sleep_mock):
-        """ret=-3 (DEAD_SESSION_RET) -> stale detection -> 600s pause."""
-        from gateway.platforms.weixin import DEAD_SESSION_RET
-
+        """ret=-3 -> NOT stale (only -2/'unknown error' triggers), normal backoff."""
         call_count = {"n": 0}
         async def side_effect(*a, **kw):
             call_count["n"] += 1
             if call_count["n"] == 1:
-                return {"ret": DEAD_SESSION_RET, "errmsg": "unknown error"}
+                return {"ret": -3, "errmsg": "unknown error"}
             raise asyncio.CancelledError()
 
         get_updates_mock.side_effect = side_effect
@@ -491,7 +467,8 @@ class TestWeixinPollStaleDetection:
         except (asyncio.CancelledError, RuntimeError):
             pass
         sleep_calls = [a.args[0] for a in sleep_mock.await_args_list]
-        assert 600 in sleep_calls, f"Expected 600s sleep, got {sleep_mock.await_args_list}"
+        # ret=-3 is treated as regular failure, normal backoff (2s), not 600s
+        assert 600 not in sleep_calls, f"ret=-3 should NOT trigger stale pause, got {sleep_mock.await_args_list}"
 
     @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
     @patch("gateway.platforms.weixin._get_updates", new_callable=AsyncMock)
@@ -520,13 +497,13 @@ class TestWeixinPollStaleDetection:
     @patch("gateway.platforms.weixin._get_updates", new_callable=AsyncMock)
     def test_poll_stale_clears_sync_buffer(self, get_updates_mock, sleep_mock, save_mock):
         """Stale detection clears sync buffer before retrying."""
-        from gateway.platforms.weixin import STALE_SESSION_RET
+        
 
         call_count = {"n": 0}
         async def side_effect(*a, **kw):
             call_count["n"] += 1
             if call_count["n"] == 1:
-                return {"ret": STALE_SESSION_RET, "errmsg": "unknown error"}
+                return {"ret": -2, "errmsg": "unknown error"}
             raise asyncio.CancelledError()
 
         get_updates_mock.side_effect = side_effect

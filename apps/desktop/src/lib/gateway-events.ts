@@ -105,11 +105,23 @@ export function resolveGatewayEventSessionId({
 
   const streamEvent = eventType ? UNSCOPED_STREAM_EVENT_TYPES.has(eventType) : false
 
+  // Mid-stream unscoped events must stay on the pin from ``message.start``.
+  // After the pin clears (complete/error), do NOT fall back to whatever chat
+  // is focused now — that reattributes late deltas onto the wrong transcript
+  // (#47709 / #48281 remaining gap).
+  if (streamEvent && eventType !== 'message.start' && !unscopedStreamSessionId) {
+    return {
+      drop: true,
+      nextUnscopedStreamSessionId: null,
+      sessionId: null
+    }
+  }
+
   const sessionId =
     eventType === 'message.start'
       ? activeSessionId
       : streamEvent
-        ? unscopedStreamSessionId || activeSessionId
+        ? unscopedStreamSessionId
         : activeSessionId
 
   let nextUnscopedStreamSessionId = unscopedStreamSessionId

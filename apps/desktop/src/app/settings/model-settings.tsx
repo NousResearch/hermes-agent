@@ -208,6 +208,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
   const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
+  const [refreshingAuxiliaryModels, setRefreshingAuxiliaryModels] = useState(false)
   // Aux slots reported stale by the backend immediately after a main-model
   // switch (provider differs from the new main). Cleared on next switch/reset.
   const [switchStaleAux, setSwitchStaleAux] = useState<StaleAuxAssignment[]>([])
@@ -292,6 +293,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setSelectedProvider('')
     setSelectedModel('')
     setApiKeyDraft('')
+    setRefreshingAuxiliaryModels(false)
     void refresh({ replaceSelection: true })
   })
 
@@ -700,6 +702,30 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     [auxiliary, mainModel]
   )
 
+  const refreshAuxiliaryModelOptions = useCallback(async () => {
+    const epoch = profileEpoch.current
+    setRefreshingAuxiliaryModels(true)
+    setError('')
+
+    try {
+      const modelOptions = await getGlobalModelOptions({ refresh: true })
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
+      setProviders(modelOptions.providers || [])
+    } catch (err) {
+      if (profileEpoch.current === epoch) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    } finally {
+      if (profileEpoch.current === epoch) {
+        setRefreshingAuxiliaryModels(false)
+      }
+    }
+  }, [])
+
   const resetAuxiliaryModels = useCallback(async () => {
     if (!mainModel) {
       return
@@ -858,14 +884,25 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       <section>
         <div className="mb-2.5 flex items-center justify-between">
           <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />
-          <Button
-            disabled={!mainModel || applying}
-            onClick={() => void resetAuxiliaryModels()}
-            size="sm"
-            variant="textStrong"
-          >
-            {m.resetAllToMain}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              disabled={loading || applying || refreshingAuxiliaryModels}
+              onClick={() => void refreshAuxiliaryModelOptions()}
+              size="sm"
+              variant="text"
+            >
+              {refreshingAuxiliaryModels && <Loader2 className="animate-spin" />}
+              {t.shell.modelMenu.refreshModels}
+            </Button>
+            <Button
+              disabled={!mainModel || applying || refreshingAuxiliaryModels}
+              onClick={() => void resetAuxiliaryModels()}
+              size="sm"
+              variant="textStrong"
+            >
+              {m.resetAllToMain}
+            </Button>
+          </div>
         </div>
         <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
         {switchStaleAux.length === 0 && persistentStaleAux.length > 0 && (

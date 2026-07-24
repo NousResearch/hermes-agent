@@ -7,6 +7,7 @@ import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useI18n } from '@/i18n'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -250,6 +251,7 @@ function BuyCreditsOutcome({
   onRetry: () => void
   outcome: ReturnType<typeof useChargeFlow>['outcome']
 }) {
+  const { t } = useI18n()
   const stepUp = useStepUpFlow()
 
   if (busy) {
@@ -280,7 +282,7 @@ function BuyCreditsOutcome({
         </span>
         {outcome.portalUrl && (
           <Button onClick={() => onPortal(outcome.portalUrl)} size="sm" type="button" variant="outline">
-            Open portal
+            {t.billingPage.openPortal}
             <ExternalLink className="size-3.5" />
           </Button>
         )}
@@ -303,7 +305,7 @@ function BuyCreditsOutcome({
       {outcome.action?.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
         <Button onClick={() => onPortal(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
+          {t.billingPage.openPortal}
           <ExternalLink className="size-3.5" />
         </Button>
       )}
@@ -407,11 +409,13 @@ function BillingHeader({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
+  const { t } = useI18n()
+
   return (
     <div className="mb-2.5 flex items-center justify-between gap-3 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
       <div className="flex min-w-0 items-center gap-2">
         <BarChart3 className="size-4 shrink-0 text-muted-foreground" />
-        <span>Billing</span>
+        <span>{t.billingPage.title}</span>
       </div>
       {import.meta.env.DEV && fixtureName && onFixtureChange ? (
         <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />
@@ -455,7 +459,13 @@ function BillingSettingsContent({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
+  const { t } = useI18n()
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+
+  // The hook keeps the English label as the row identity (tests and keys rely
+  // on it); presentation localizes here.
+  const summaryLabel = (label: 'Auto-refill' | 'Balance' | 'Plan') =>
+    label === 'Balance' ? t.billingPage.balance : label === 'Plan' ? t.billingPage.plan : t.billingPage.autoRefill
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
   // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
@@ -509,13 +519,13 @@ function BillingSettingsContent({
       <div className="@container mb-6">
         <div className="grid gap-3 @2xl:grid-cols-3">
           {view.summary.map(item => (
-            <SummaryCard key={item.label} label={item.label} tone={item.tone} value={item.value} />
+            <SummaryCard key={item.label} label={summaryLabel(item.label)} tone={item.tone} value={item.value} />
           ))}
         </div>
       </div>
 
       {view.plan && (
-        <SettingsSection icon={Package} title="Plan">
+        <SettingsSection icon={Package} title={t.billingPage.plan}>
           <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
         </SettingsSection>
       )}
@@ -524,7 +534,7 @@ function BillingSettingsContent({
         <SettingsSection
           aside={paymentRow ? <PaymentMethodAside row={paymentRow} /> : undefined}
           icon={CreditCard}
-          title="Payment & credits"
+          title={t.billingPage.paymentAndCredits}
         >
           {accountRows.map(row => (
             <AccountRow billing={billing} key={row.id} row={row} />
@@ -533,7 +543,7 @@ function BillingSettingsContent({
       )}
 
       {view.usageRows.length > 0 && (
-        <SettingsSection icon={BarChart3} title="Usage">
+        <SettingsSection icon={BarChart3} title={t.billingPage.usage}>
           <div className="@container">
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />

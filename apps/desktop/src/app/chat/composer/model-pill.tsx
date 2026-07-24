@@ -8,8 +8,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/compon
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { ChevronDown } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { displayProviderLabel, formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
@@ -37,7 +38,8 @@ export function ModelPill({
   disabled: boolean
   model: ChatBarState['model']
 }) {
-  const copy = useI18n().t.shell.statusbar
+  const { t } = useI18n()
+  const copy = t.shell.statusbar
   const view = useSessionView()
   // Prefer the chat-bar snapshot (already view-scoped by ChatView); fall back
   // to the live SessionView atoms so a mid-flight session.info still paints.
@@ -60,6 +62,11 @@ export function ModelPill({
   const pinnedOverride =
     view.kind === 'primary' && !runtimeId && modelSource === 'manual' && Boolean(currentModel.trim())
 
+  // On the moa virtual provider the "model" is a preset name, not a model id —
+  // show it verbatim (the reserved `default` preset localized) instead of
+  // letting displayModelName prettify it into e.g. "Default".
+  const isMoa = (currentProvider || '').trim().toLowerCase() === 'moa'
+
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
   // color at half opacity) until a model lands.
@@ -68,7 +75,13 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+        <span className="truncate">
+          {formatModelStatusLabel(currentModel, {
+            displayName: isMoa ? displayEntityName(currentModel, t) : undefined,
+            fastMode,
+            reasoningEffort
+          })}
+        </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}
@@ -93,8 +106,13 @@ export function ModelPill({
       )
     : PILL
 
+  // Custom endpoints have an opaque slug (often literally "custom") — the
+  // catalog name carries the endpoint's user-chosen name instead.
   const baseTitle = currentProvider
-    ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+    ? copy.modelTitle(
+        isMoa ? 'MOA' : displayProviderLabel(currentProvider, model.providerName),
+        (isMoa ? displayEntityName(currentModel, t) : currentModel) || copy.modelNone
+      )
     : copy.switchModel
 
   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle

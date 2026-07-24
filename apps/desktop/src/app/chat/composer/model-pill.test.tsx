@@ -80,6 +80,42 @@ describe('ModelPill pinned-override badge', () => {
   })
 })
 
+// The provider slug for a custom endpoint is opaque (often literally
+// "custom") — the trigger tooltip/label must show the endpoint's catalog
+// display name, or at least the endpoint id from a `custom:<id>` slug.
+describe('ModelPill provider title', () => {
+  it('shows the custom endpoint name instead of the raw custom slug', () => {
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({
+          model: 'claude-opus-4-8',
+          provider: 'custom',
+          providerName: 'My Relay',
+          modelMenuContent: <div />
+        })}
+      />
+    )
+
+    expect(screen.getByLabelText('Model · My Relay: claude-opus-4-8')).toBeTruthy()
+  })
+
+  it('falls back to the endpoint id of a custom:<id> slug before the catalog loads', () => {
+    render(
+      <ModelPill
+        disabled={false}
+        model={modelState({
+          model: 'qwen3.6:35b-65k',
+          provider: 'custom:local-ollama',
+          modelMenuContent: <div />
+        })}
+      />
+    )
+
+    expect(screen.getByLabelText('Model · local-ollama: qwen3.6:35b-65k')).toBeTruthy()
+  })
+})
+
 describe('ModelPill per-surface model label', () => {
   it('shows the chat-bar model even when the primary global differs', () => {
     setCurrentModel('primary/model')

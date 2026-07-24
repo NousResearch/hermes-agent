@@ -18,6 +18,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { ChevronDown, ChevronRight } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import {
@@ -364,7 +365,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
       {moaPresets.length > 0 ? (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.moaPresets}</DropdownMenuLabel>
           {moaPresets.map(preset => {
             const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
 
@@ -377,7 +378,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                   void selectMoaPreset(preset)
                 }}
               >
-                <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
+                <span className="min-w-0 flex-1 truncate">{displayEntityName(preset, t)}</span>
                 {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )

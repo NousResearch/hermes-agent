@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -171,9 +171,30 @@ export function useEnvCredentials(): UseEnvCredentials {
     }
   }
 
+  // Overlay localized env-var descriptions (settings.envKeys) at the data
+  // entry so every consumer — row labels, card descriptions, provider group
+  // fallbacks, search — renders the translation without per-site lookups.
+  // Missing keys keep the backend English; values written back never include
+  // the description, so the overlay stays presentation-only.
+  const localizedVars = useMemo(() => {
+    if (!vars) {
+      return vars
+    }
+
+    const table = t.settings.envKeys
+    const out: Record<string, EnvVarInfo> = {}
+
+    for (const [key, info] of Object.entries(vars)) {
+      const description = table[key]?.description
+      out[key] = description ? { ...info, description } : info
+    }
+
+    return out
+  }, [t, vars])
+
   return {
     saveValue,
-    vars,
+    vars: localizedVars,
     rowProps: {
       edits,
       revealed,

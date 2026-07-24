@@ -2050,10 +2050,12 @@ def resolve_provider(
     except ImportError:
         pass  # boto3 not installed — skip Bedrock auto-detection
 
+    # Localized display prose (locales/*.yaml, English fallback); the stable
+    # machine-readable ``code`` below is what programmatic consumers match on.
+    from agent.i18n import t as _i18n_t
+
     raise AuthError(
-        "No inference provider configured. Run 'hermes model' to choose a "
-        "provider and model, or set an API key (OPENROUTER_API_KEY, "
-        "OPENAI_API_KEY, etc.) in ~/.hermes/.env.",
+        _i18n_t("auth.no_provider_configured"),
         code="no_provider_configured",
     )
 

@@ -46,6 +46,22 @@ interface ToolsetConfigPanelProps {
  *  backend's _MODEL_CATALOG_TOOLSETS map). */
 const MODEL_CATALOG_TOOLSETS = new Set(['image_gen', 'video_gen'])
 
+/** Localize a backend provider badge — a ` · `-joined token list, optionally
+ *  `★ `-prefixed (e.g. "★ recommended · free"). Each token translates through
+ *  the badgeTokens catalog; unknown tokens stay English so new backend badges
+ *  degrade gracefully. */
+export function localizedBadge(badge: string, tokens: Record<string, string>): string {
+  return badge
+    .split(' · ')
+    .map(part => {
+      const starred = part.startsWith('★')
+      const token = part.replace(/^★\s*/, '')
+
+      return (starred ? '★ ' : '') + (tokens[token] || token)
+    })
+    .join(' · ')
+}
+
 function providerConfigured(provider: ToolProvider, envState: Record<string, boolean>): boolean {
   if (provider.env_vars.length === 0) {
     return true
@@ -86,6 +102,10 @@ interface EnvVarFieldProps {
 function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
+  // Localized field hint: explicit prompt override, else the shared env-var
+  // description translation, else the backend's English prompt.
+  const envCopy = t.settings.envKeys[envVar.key]
+  const promptText = envCopy?.prompt || envCopy?.description || envVar.prompt
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
@@ -161,8 +181,8 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
               {isSet ? copy.set : copy.notSet}
             </Pill>
           </div>
-          {envVar.prompt && envVar.prompt !== envVar.key && (
-            <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
+          {promptText && promptText !== envVar.key && (
+            <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{promptText}</p>
           )}
         </div>
         {!editing && (
@@ -194,7 +214,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             autoFocus
             className="min-w-52 flex-1 font-mono"
             onChange={e => setValue(e.target.value)}
-            placeholder={envVar.prompt || envVar.key}
+            placeholder={promptText || envVar.key}
             type={envVar.default ? 'text' : 'password'}
             value={value}
           />
@@ -748,7 +768,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
             >
               <span className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm font-medium">{provider.name}</span>
-                {provider.badge && <Pill>{provider.badge}</Pill>}
+                {provider.badge && <Pill>{localizedBadge(provider.badge, copy.badgeTokens)}</Pill>}
                 {status === 'ready' && (
                   <Pill tone="primary">
                     <Check className="size-3" />
@@ -765,7 +785,9 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
             {isActive && (
               <div className="grid gap-2 bg-muted/20 p-3">
-                {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
+                {provider.tag && (
+                  <p className="text-[0.72rem] text-muted-foreground">{copy.tagCopy[provider.tag] || provider.tag}</p>
+                )}
                 {webCaps.length > 0 && (
                   // Per-capability assignment: writes web.search_backend /
                   // web.extract_backend without touching the shared

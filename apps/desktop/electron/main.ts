@@ -65,6 +65,7 @@ import {
   savedProfileSsh,
   tokenPreview
 } from './connection-config'
+import { getContextMenuLabels } from './context-menu-labels'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
@@ -619,6 +620,9 @@ const APP_ICON_PATHS = [
 ]
 
 let rendererTitleBarTheme = null
+// UI language reported by the renderer ('hermes:ui-language'); labels native
+// surfaces like the right-click context menu. English until the app loads.
+let rendererUiLanguage = 'en'
 const terminalSessions = new Map()
 
 // Force the NATIVE window appearance (vibrancy material, titlebar, the
@@ -5180,6 +5184,7 @@ function installZoomShortcuts(window) {
 
 function installContextMenu(window) {
   window.webContents.on('context-menu', (_event, params) => {
+    const labels = getContextMenuLabels(rendererUiLanguage)
     const template = []
     const hasSelection = Boolean(params.selectionText?.trim())
     const hasImage = params.mediaType === 'image' && Boolean(params.srcURL)
@@ -5189,7 +5194,7 @@ function installContextMenu(window) {
     if (hasImage) {
       template.push(
         {
-          label: 'Open Image',
+          label: labels.openImage,
           click: () => {
             if (params.srcURL && !params.srcURL.startsWith('data:')) {
               openExternalUrl(params.srcURL)
@@ -5198,17 +5203,17 @@ function installContextMenu(window) {
           enabled: !params.srcURL.startsWith('data:')
         },
         {
-          label: 'Copy Image',
+          label: labels.copyImage,
           click: () => {
             void copyImageFromUrl(params.srcURL).catch(error => rememberLog(`Copy image failed: ${error.message}`))
           }
         },
         {
-          label: 'Copy Image Address',
+          label: labels.copyImageAddress,
           click: () => clipboard.writeText(params.srcURL)
         },
         {
-          label: 'Save Image As...',
+          label: labels.saveImageAs,
           click: () => {
             void saveImageFromUrl(params.srcURL).catch(error => rememberLog(`Save image failed: ${error.message}`))
           }
@@ -5223,11 +5228,11 @@ function installContextMenu(window) {
 
       template.push(
         {
-          label: 'Open Link',
+          label: labels.openLink,
           click: () => openExternalUrl(params.linkURL)
         },
         {
-          label: 'Copy Link',
+          label: labels.copyLink,
           click: () => clipboard.writeText(params.linkURL)
         }
       )
@@ -5252,7 +5257,7 @@ function installContextMenu(window) {
 
       template.push({ type: 'separator' })
       template.push({
-        label: 'Add to dictionary',
+        label: labels.addToDictionary,
         click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
       })
     }
@@ -5264,19 +5269,19 @@ function installContextMenu(window) {
 
       if (isEditable) {
         template.push(
-          { role: 'cut', enabled: params.editFlags.canCut },
-          { role: 'copy', enabled: params.editFlags.canCopy },
-          { role: 'paste', enabled: params.editFlags.canPaste },
+          { role: 'cut', label: labels.cut, enabled: params.editFlags.canCut },
+          { role: 'copy', label: labels.copy, enabled: params.editFlags.canCopy },
+          { role: 'paste', label: labels.paste, enabled: params.editFlags.canPaste },
           { type: 'separator' },
-          { role: 'selectAll', enabled: params.editFlags.canSelectAll }
+          { role: 'selectAll', label: labels.selectAll, enabled: params.editFlags.canSelectAll }
         )
       } else {
-        template.push({ role: 'copy', enabled: params.editFlags.canCopy })
+        template.push({ role: 'copy', label: labels.copy, enabled: params.editFlags.canCopy })
       }
     }
 
     if (!template.length) {
-      template.push({ role: 'selectAll' })
+      template.push({ role: 'selectAll', label: labels.selectAll })
     }
 
     Menu.buildFromTemplate(template).popup({ window })
@@ -9702,6 +9707,13 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
   for (const win of BrowserWindow.getAllWindows()) {
     applyTitleBarOverlay(win)
   }
+})
+
+// The renderer's UI language (display.language), reported on load and on every
+// language switch. Native surfaces built in the main process (the right-click
+// context menu) label themselves from it — see context-menu-labels.ts.
+ipcMain.on('hermes:ui-language', (_event, locale) => {
+  rendererUiLanguage = typeof locale === 'string' ? locale : 'en'
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).

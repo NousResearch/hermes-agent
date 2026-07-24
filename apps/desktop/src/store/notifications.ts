@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
 
@@ -77,6 +78,14 @@ function cleanErrorText(value: string) {
 }
 
 const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
+  {
+    // The backend's provider-setup error ("No inference provider configured.
+    // Run 'hermes model' …", code no_provider_configured) reaches many
+    // surfaces through notifyError; show the same localized copy the
+    // submit/onboarding paths use for this condition.
+    test: msg => isProviderSetupErrorMessage(msg),
+    summarize: () => translateNow('desktop.providerCredentialRequired')
+  },
   {
     test: msg => /['"]code['"]\s*:\s*['"]gateway_auth_failed['"]/i.test(msg),
     summarize: () => translateNow('notifications.errors.gatewayAuthFailed')

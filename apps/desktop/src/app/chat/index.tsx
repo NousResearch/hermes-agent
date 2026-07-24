@@ -368,11 +368,24 @@ export function ChatView({
     [currentModel, currentProvider, modelOptionsQuery.data]
   )
 
+  // Catalog display name for the current provider — custom endpoints have an
+  // opaque slug (often literally "custom"), while their catalog row carries
+  // the user-chosen endpoint name. Case-insensitive to match the backend's
+  // slug normalization for hand-written config keys.
+  const currentProviderName = useMemo(() => {
+    const slug = currentProvider.trim().toLowerCase()
+
+    return slug
+      ? modelOptionsQuery.data?.providers?.find(provider => provider.slug.toLowerCase() === slug)?.name
+      : undefined
+  }, [currentProvider, modelOptionsQuery.data])
+
   const chatBarState = useMemo<ChatBarState>(
     () => ({
       model: {
         model: currentModel,
         provider: currentProvider,
+        providerName: currentProviderName,
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
         modelMenuContent,
@@ -380,7 +393,7 @@ export function ChatView({
       },
       tools: {
         enabled: true,
-        label: 'Add context',
+        label: t.composer.addContext,
         suggestions: contextSuggestions
       },
       voice: {
@@ -388,7 +401,16 @@ export function ChatView({
         active: false
       }
     }),
-    [contextSuggestions, currentModel, currentProvider, gatewayOpen, modelMenuContent, quickModels]
+    [
+      contextSuggestions,
+      currentModel,
+      currentProvider,
+      currentProviderName,
+      gatewayOpen,
+      modelMenuContent,
+      quickModels,
+      t.composer.addContext
+    ]
   )
 
   // Drop files anywhere in the conversation area, not just on the composer

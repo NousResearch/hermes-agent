@@ -33,6 +33,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import {
@@ -234,7 +235,7 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
+            label={onDefault ? p.showAllProfiles : p.switchToProfile(displayEntityName(defaultProfile.name, t))}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
@@ -246,7 +247,7 @@ export function ProfileRail() {
         <ProfilePill
           active
           glyph="home"
-          label={defaultProfile.name}
+          label={displayEntityName(defaultProfile.name, t)}
           onSelect={() => selectProfile(defaultProfile.name)}
         />
       )}

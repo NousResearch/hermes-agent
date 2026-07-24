@@ -129,7 +129,7 @@ describe('ModelSettings', () => {
       expect(screen.queryByText(/undefined/)).toBeNull()
       expect(screen.queryByText(/signs in through your browser/)).toBeNull()
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Set up Provider' }))
 
       expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
       expect(startManualOnboarding).not.toHaveBeenCalled()
@@ -143,7 +143,7 @@ describe('ModelSettings', () => {
 
     await renderModelSettings()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Provider' }))
 
     expect(startManualOnboarding).toHaveBeenCalledOnce()
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
@@ -209,7 +209,7 @@ describe('ModelSettings', () => {
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toContain('Nous'))
-    expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Set up Provider' })).toBeNull()
   })
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {

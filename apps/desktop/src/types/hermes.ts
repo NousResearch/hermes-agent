@@ -186,7 +186,12 @@ export interface CustomEndpointUpdate {
 }
 
 export interface CustomEndpointValidationResponse {
+  /** HTTP status carried alongside `message_code: 'http_error'`. */
+  http_status?: number
+  /** English fallback text; prefer `message_code` for localized display. */
   message: string
+  /** Stable identifier for localization; absent on older backends. */
+  message_code?: 'auth_rejected' | 'http_error' | 'missing_url' | 'unreachable'
   models: string[]
   ok: boolean
   reachable: boolean

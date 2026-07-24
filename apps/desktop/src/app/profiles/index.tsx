@@ -25,6 +25,7 @@ import {
   updateProfileSoul
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { slug } from '@/lib/sanitize'
@@ -108,9 +109,12 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
     }
 
     return profiles.filter(
-      profile => profile.name.toLowerCase().includes(q) || (profile.model ?? '').toLowerCase().includes(q)
+      profile =>
+        profile.name.toLowerCase().includes(q) ||
+        displayEntityName(profile.name, t).toLowerCase().includes(q) ||
+        (profile.model ?? '').toLowerCase().includes(q)
     )
-  }, [profiles, query])
+  }, [profiles, query, t])
 
   const handleCreate = useCallback(
     async (name: string, cloneFrom: null | string) => {
@@ -290,6 +294,7 @@ function ProfileRow({
   onSelect: () => void
   profile: ProfileInfo
 }) {
+  const { t } = useI18n()
   const colors = useStore($profileColors)
 
   return (
@@ -305,7 +310,7 @@ function ProfileRow({
       menu={menu}
       onSelect={onSelect}
       rowKey={profile.name}
-      title={profile.name}
+      title={displayEntityName(profile.name, t)}
     />
   )
 }
@@ -346,7 +351,9 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
       <header className="space-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profile.name}</h3>
+            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">
+              {displayEntityName(profile.name, t)}
+            </h3>
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
             {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
           </div>
@@ -546,7 +553,7 @@ function CreateProfileDialog({
               autoFocus
               id="new-profile-name"
               onValueChange={setName}
-              placeholder="my-profile"
+              placeholder={p.namePlaceholder}
               sanitize={slug}
               value={name}
             />
@@ -570,7 +577,7 @@ function CreateProfileDialog({
                 <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
                 {profiles.map(profile => (
                   <SelectItem key={profile.name} value={profile.name}>
-                    {profile.name}
+                    {displayEntityName(profile.name, t)}
                   </SelectItem>
                 ))}
               </SelectContent>

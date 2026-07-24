@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
@@ -171,9 +172,16 @@ function ModelResults({
 
   const q = normalize(search)
 
+  // MoA rows list preset *keys* as models; the reserved "default" preset
+  // renders under its localized display name (the key itself is unchanged —
+  // selection still submits the raw key).
+  const modelLabel = (provider: ModelOptionProvider, model: string) =>
+    provider.slug === 'moa' ? displayEntityName(model, t) : model
+
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
     model.toLowerCase().includes(q) ||
+    modelLabel(provider, model).toLowerCase().includes(q) ||
     provider.name.toLowerCase().includes(q) ||
     provider.slug.toLowerCase().includes(q)
 
@@ -199,7 +207,9 @@ function ModelResults({
             {provider.warning && (
               <div className="px-2 pb-2">
                 <InlineNotice className="px-2.5 py-1.5 text-xs" kind="warning">
-                  {provider.warning}
+                  {/* The MoA row's warning is a fixed English string attached by
+                      the backend; render the localized equivalent instead. */}
+                  {provider.slug === 'moa' ? copy.moaWarning : provider.warning}
                 </InlineNotice>
               </div>
             )}
@@ -225,7 +235,7 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">{model}</span>
+                  <span className="min-w-0 flex-1 truncate">{modelLabel(provider, model)}</span>
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}

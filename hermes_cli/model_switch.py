@@ -27,6 +27,7 @@ from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     ProviderDef,
+    custom_endpoint_label,
     custom_provider_slug,
     determine_api_mode,
     get_label,
@@ -164,7 +165,7 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
         return None
     return ProviderDef(
         id="custom",
-        name="Custom endpoint",
+        name=custom_endpoint_label(),
         transport="openai_chat",
         api_key_env_vars=(),
         base_url=base_url,
@@ -1327,9 +1328,9 @@ def switch_model(
     # =================================================================
 
     provider_changed = target_provider != current_provider
+    # get_label() resolves "custom" to the localized custom-endpoint label,
+    # so no special-casing is needed here anymore.
     provider_label = get_label(target_provider)
-    if target_provider == "custom" and current_base_url:
-        provider_label = "Custom endpoint"
     if target_provider.startswith("custom:"):
         custom_pdef = resolve_provider_full(
             target_provider,
@@ -2506,7 +2507,7 @@ def list_authenticated_providers(
                 pass
         results.append({
             "slug": "custom",
-            "name": "Custom endpoint",
+            "name": custom_endpoint_label(),
             "is_current": True,
             "is_user_defined": True,
             "models": _models[:max_models] if max_models is not None else _models,

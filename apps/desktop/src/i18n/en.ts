@@ -21,6 +21,7 @@ export const en: Translations = {
     copied: 'Copied',
     copy: 'Copy',
     copyFailed: 'Copy failed',
+    defaultName: 'default',
     delete: 'Delete',
     docs: 'Docs',
     done: 'Done',
@@ -171,7 +172,9 @@ export const en: Translations = {
       backgroundDoneTitle: 'Background task finished',
       backgroundFailedTitle: 'Background task failed',
       creditsTitle: 'Credits'
-    }
+    },
+    gatewayErrorTitle: 'Hermes error',
+    gatewayErrorFallback: 'Hermes reported an error'
   },
 
   remoteDisplayBanner: {
@@ -186,6 +189,19 @@ export const en: Translations = {
     openBilling: 'Open billing',
     addCredits: 'Add credits',
     dismiss: 'Dismiss'
+  },
+
+  billingPage: {
+    title: 'Billing',
+    paymentAndCredits: 'Payment & credits',
+    usage: 'Usage',
+    balance: 'Balance',
+    plan: 'Plan',
+    autoRefill: 'Auto-refill',
+    openPortal: 'Open portal',
+    connectNousTitle: 'Connect your Nous account',
+    connectNousBody: 'Run /portal in the TUI or open the Nous portal to connect your account.',
+    openPortalArrow: 'Open portal ↗'
   },
 
   titlebar: {
@@ -422,6 +438,7 @@ export const en: Translations = {
       title: 'Appearance',
       intro:
         'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
@@ -705,6 +722,7 @@ export const en: Translations = {
       failedLoad: 'API keys failed to load',
       empty: 'Nothing configured in this category yet.'
     },
+    envKeys: {},
     mcp: {
       loading: 'Loading MCP servers...',
       failedLoad: 'MCP config failed to load',
@@ -791,6 +809,32 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      staleAuxPrefix: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
+      staleAuxOtherProviders: 'other providers',
+      staleAuxSuffix: ', not your main model.',
+      pasteKeyPlaceholder: keyEnv => `Paste ${keyEnv}`,
+      activate: 'Activate',
+      activating: 'Activating...',
+      setUpProvider: name => `Set up ${name}`,
+      needsApiKeyHint: name => `${name} needs an API key — set it up to choose a model.`,
+      oauthHint: name => `${name} signs in through your browser — Hermes runs the flow for you.`,
+      moa: {
+        title: 'Mixture of Agents',
+        description:
+          'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+        presetPlaceholder: 'Preset',
+        enabled: 'Enabled',
+        setDefault: 'Set default',
+        deletePreset: 'Delete',
+        newPresetPlaceholder: 'new preset',
+        addPreset: 'Add preset',
+        defaultLabel: 'Default:',
+        referenceTitle: index => `Reference ${index}`,
+        toggleReference: (index, enabled) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
+        removeReference: 'Remove',
+        addReference: 'Add reference model',
+        aggregatorTitle: 'Aggregator'
+      },
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -800,6 +844,73 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
+      }
+    },
+    customEndpoints: {
+      title: 'Custom Endpoints',
+      loadFailed: 'Could not load custom endpoints',
+      saved: 'Custom endpoint saved.',
+      saveFailed: 'Save failed',
+      reachable: 'Endpoint is reachable.',
+      reachableWithModels: count => `Endpoint is reachable. Found ${count} models.`,
+      validationFailed: 'Endpoint validation failed.',
+      validationError: 'Validation failed',
+      enterUrlFirst: 'Enter an endpoint URL first.',
+      unreachable: url => `Could not reach ${url}.`,
+      authRejected: 'The endpoint rejected the API key.',
+      httpError: status => `Endpoint returned HTTP ${status}.`,
+      activationFailed: 'Activation failed',
+      deleteConfirm: name => `Delete ${name}?`,
+      deleteFailed: 'Delete failed',
+      active: 'Active',
+      apiKeySet: 'API key set',
+      use: 'Use',
+      deleteEndpoint: 'Delete endpoint',
+      emptyTitle: 'No custom endpoints',
+      emptyDesc: 'Add an OpenAI-compatible endpoint below.',
+      editTitle: 'Edit Endpoint',
+      addTitle: 'Add Endpoint',
+      nameLabel: 'Name',
+      providerIdLabel: 'Provider ID',
+      urlLabel: 'Endpoint URL',
+      defaultModelLabel: 'Default Model',
+      contextLabel: 'Context',
+      apiKeyLabel: 'API Key',
+      contextAuto: 'Auto',
+      keyKeepPlaceholder: 'Leave blank to keep current key',
+      keyOptionalPlaceholder: 'Optional',
+      useForNewChats: 'Use for new chats',
+      discoverModels: 'Discover models',
+      test: 'Test',
+      newEndpoint: 'New endpoint'
+    },
+    uninstall: {
+      dangerZone: 'Danger zone',
+      checking: "Checking what's installed…",
+      confirmTitle: 'Confirm uninstall',
+      confirmBody: consequence => `This removes ${consequence}. This can't be undone.`,
+      appPathLabel: path => `App: ${path}`,
+      uninstalling: 'Uninstalling…',
+      confirmYes: 'Yes, uninstall',
+      heading: 'Uninstall Hermes',
+      chooseBody: 'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      startFailed: 'Uninstall could not start.',
+      options: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description: 'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+          consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
       }
     },
     providers: {
@@ -885,6 +996,8 @@ export const en: Translations = {
       ready: 'Ready',
       needsSignIn: 'Needs sign-in',
       needsSetup: 'Needs setup',
+      badgeTokens: {},
+      tagCopy: {},
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       nousAuthNeededTitle: 'Sign in to Nous Portal',
       nousAuthNeededMessage: provider => `${provider} is saved but won't activate until you sign in to Nous Portal.`,
@@ -936,6 +1049,36 @@ export const en: Translations = {
         selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
         failedSelect: backend => `Failed to select ${backend}`,
         needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
+      },
+      computerUse: {
+        checking: 'Checking Computer Use status…',
+        statusReadFailed: 'Could not read Computer Use status',
+        unsupported: platform => `Computer Use isn't supported on this platform (${platform}).`,
+        installHint: 'Install the cua-driver backend below to drive this machine.',
+        installGrantHint: ' Then grant Accessibility and Screen Recording here.',
+        platformNotes: {
+          linux: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
+          win32: 'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.'
+        },
+        macGrantNote:
+          "Grants attach to CuaDriver's own identity (com.trycua.driver), not Hermes — so the dialog is attributed to the process that drives your Mac.",
+        recheck: 'Recheck',
+        accessibility: 'Accessibility',
+        accessibilityHint: 'Lets cua-driver post clicks, keystrokes, and read the accessibility tree.',
+        screenRecording: 'Screen Recording',
+        screenRecordingHint: 'Lets cua-driver capture screenshots of app windows.',
+        driverHealth: 'Driver health',
+        granted: 'Granted',
+        notGranted: 'Not granted',
+        ready: 'Ready',
+        notReady: 'Not ready',
+        unknown: 'Unknown',
+        readyMessage: 'Computer Use is ready. Ask the agent to capture an app and click around.',
+        grantPermissions: 'Grant permissions',
+        waitingApproval: 'Waiting for approval…',
+        grantFailed: 'Could not request permissions',
+        approveTitle: 'Approve in System Settings',
+        approveMessage: 'macOS will show a permission dialog attributed to CuaDriver. Approve it, then return here.'
       }
     }
   },
@@ -956,6 +1099,8 @@ export const en: Translations = {
     noToolsetsTitle: 'No toolsets found',
     noToolsetsDesc: 'Try a broader search query.',
     noDescription: 'No description.',
+    toolsetDescriptions: {},
+    toolsetLabels: {},
     configured: 'Configured',
     needsKeys: 'Needs keys',
     visionModelHint:
@@ -1419,7 +1564,8 @@ export const en: Translations = {
         help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
       }
     },
-    platformIntro: {}
+    platformIntro: {},
+    platformDescription: {}
   },
 
   webhooks: {
@@ -1538,6 +1684,7 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
+    namePlaceholder: 'my-profile',
     cloneFrom: 'Clone from',
     cloneFromNone: 'None (blank)',
     cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
@@ -1872,8 +2019,14 @@ export const en: Translations = {
     }
   },
 
+  // Empty → the built-in English jsonl pool (with personality variants) is used.
+  intro: {
+    bodies: {}
+  },
+
   composer: {
     message: 'Message',
+    addContext: 'Add context',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
@@ -2197,6 +2350,10 @@ export const en: Translations = {
   onboarding: {
     headerTitle: "Let's get you setup with Hermes Agent",
     headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
+    providerTitles: {
+      anthropic: 'Anthropic API Key',
+      'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription'
+    },
     preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
     starting: 'Starting Hermes…',
     lookingUpProviders: 'Looking up providers...',
@@ -2280,6 +2437,7 @@ export const en: Translations = {
     addProvider: 'Add provider',
     loadFailed: 'Could not load models',
     noAuthenticatedProviders: 'No authenticated providers.',
+    moaWarning: 'Aggregator acts as the selected model; references provide analysis before each call.',
     pro: 'Pro',
     proNeedsSubscription: 'Pro models need a paid Nous subscription.',
     free: 'Free',
@@ -2305,7 +2463,8 @@ export const en: Translations = {
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
       fast: 'Fast',
-      medium: 'Med'
+      medium: 'Med',
+      moaPresets: 'MOA presets'
     },
     modelOptions: {
       noOptions: 'No options for this model',
@@ -2774,6 +2933,7 @@ export const en: Translations = {
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
+    readinessChecksDisagree: 'setup.status reports configured credentials, but runtime resolution still failed.',
     emptySlashCommand: 'empty slash command',
     desktopCommands: 'Desktop commands',
     skillCommandsAvailable: count => `${count} skill commands available.`,

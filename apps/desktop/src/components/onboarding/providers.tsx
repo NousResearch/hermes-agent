@@ -1,23 +1,26 @@
 import { RowButton } from '@/components/ui/row-button'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { Check, ChevronRight, Terminal } from '@/lib/icons'
 import type { OAuthProvider } from '@/types/hermes'
 
-const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
+const PROVIDER_DISPLAY: Record<string, { order: number; title?: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
   'openai-codex': { order: 1, title: 'OpenAI OAuth (ChatGPT)' },
   'minimax-oauth': { order: 2, title: 'MiniMax' },
   'qwen-oauth': { order: 3, title: 'Qwen Code' },
   'xai-oauth': { order: 4, title: 'xAI Grok' },
   // Both Anthropic entries sit at the bottom: the API-key path first, then
-  // the subscription OAuth path (only works with extra usage credits).
-  anthropic: { order: 5, title: 'Anthropic API Key' },
-  'claude-code': { order: 6, title: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription' }
+  // the subscription OAuth path (only works with extra usage credits). Their
+  // display titles carry translatable copy, so they live in i18n
+  // (onboarding.providerTitles) rather than here.
+  anthropic: { order: 5 },
+  'claude-code': { order: 6 }
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
+export const providerTitle = (p: OAuthProvider, t: Translations) =>
+  t.onboarding.providerTitles[p.id] ?? PROVIDER_DISPLAY[p.id]?.title ?? p.name
 const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
@@ -44,7 +47,7 @@ export function FeaturedProviderRow({
         <div className="flex items-center gap-2">
           <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {providerTitle(provider, t)}
           </span>
           {loggedIn ? (
             <ConnectedTag />
@@ -117,7 +120,7 @@ export function ProviderRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {providerTitle(provider, t)}
           </span>
           {loggedIn ? <ConnectedTag /> : null}
         </div>

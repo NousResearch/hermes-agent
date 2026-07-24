@@ -66,6 +66,9 @@ export interface Translations {
     copied: string
     copy: string
     copyFailed: string
+    // Localized presentation of the reserved entity name "default" (default
+    // profile / MoA preset). Display-only — stored keys stay "default".
+    defaultName: string
     delete: string
     docs: string
     done: string
@@ -214,6 +217,10 @@ export interface Translations {
       backgroundFailedTitle: string
       creditsTitle: string
     }
+    // Gateway turn-error toast (title + fallback body when the backend event
+    // carries no message).
+    gatewayErrorTitle: string
+    gatewayErrorFallback: string
   }
 
   remoteDisplayBanner: {
@@ -227,6 +234,19 @@ export interface Translations {
     openBilling: string
     addCredits: string
     dismiss: string
+  }
+
+  billingPage: {
+    title: string
+    paymentAndCredits: string
+    usage: string
+    balance: string
+    plan: string
+    autoRefill: string
+    openPortal: string
+    connectNousTitle: string
+    connectNousBody: string
+    openPortalArrow: string
   }
 
   titlebar: {
@@ -334,6 +354,7 @@ export interface Translations {
     appearance: {
       title: string
       intro: string
+      themeSearchPlaceholder: string
       colorMode: string
       colorModeDesc: string
       toolViewTitle: string
@@ -598,6 +619,12 @@ export interface Translations {
       failedLoad: string
       empty: string
     }
+    /** Localized copy for env-var credential fields, keyed by the env var name.
+     *  `description` overlays the backend's English description everywhere the
+     *  Keys/Providers surfaces render it; `prompt` overlays the toolset config
+     *  panel's field hint (falls back to `description`). Missing keys keep the
+     *  backend English. */
+    envKeys: Record<string, { description?: string; prompt?: string }>
     mcp: {
       loading: string
       failedLoad: string
@@ -683,7 +710,83 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      staleAuxPrefix: (count: number, names: string) => string
+      staleAuxOtherProviders: string
+      staleAuxSuffix: string
+      pasteKeyPlaceholder: (keyEnv: string) => string
+      activate: string
+      activating: string
+      setUpProvider: (name: string) => string
+      needsApiKeyHint: (name: string) => string
+      oauthHint: (name: string) => string
+      moa: {
+        title: string
+        description: string
+        presetPlaceholder: string
+        enabled: string
+        setDefault: string
+        deletePreset: string
+        newPresetPlaceholder: string
+        addPreset: string
+        defaultLabel: string
+        referenceTitle: (index: number) => string
+        toggleReference: (index: number, enabled: boolean) => string
+        removeReference: string
+        addReference: string
+        aggregatorTitle: string
+      }
       tasks: Record<string, AuxTaskCopy>
+    }
+    customEndpoints: {
+      title: string
+      loadFailed: string
+      saved: string
+      saveFailed: string
+      reachable: string
+      reachableWithModels: (count: number) => string
+      validationFailed: string
+      validationError: string
+      enterUrlFirst: string
+      unreachable: (url: string) => string
+      authRejected: string
+      httpError: (status: number | string) => string
+      activationFailed: string
+      deleteConfirm: (name: string) => string
+      deleteFailed: string
+      active: string
+      apiKeySet: string
+      use: string
+      deleteEndpoint: string
+      emptyTitle: string
+      emptyDesc: string
+      editTitle: string
+      addTitle: string
+      nameLabel: string
+      providerIdLabel: string
+      urlLabel: string
+      defaultModelLabel: string
+      contextLabel: string
+      apiKeyLabel: string
+      contextAuto: string
+      keyKeepPlaceholder: string
+      keyOptionalPlaceholder: string
+      useForNewChats: string
+      discoverModels: string
+      test: string
+      newEndpoint: string
+    }
+    uninstall: {
+      dangerZone: string
+      checking: string
+      confirmTitle: string
+      confirmBody: (consequence: string) => string
+      appPathLabel: (path: string) => string
+      uninstalling: string
+      confirmYes: string
+      heading: string
+      chooseBody: string
+      startFailed: string
+      options: Record<'full' | 'gui' | 'lite', { title: string; description: string; consequence: string }>
     }
     providers: {
       connectAccount: string
@@ -763,6 +866,13 @@ export interface Translations {
       ready: string
       needsSignIn: string
       needsSetup: string
+      /** Localized provider badge tokens (`recommended`, `free`, `local`, …).
+       *  Backend badges are ` · `-joined token lists; unknown tokens render
+       *  as-is, so new backend tokens degrade to English. */
+      badgeTokens: Record<string, string>
+      /** Localized provider tag lines keyed by the backend's exact English
+       *  text — changed/unknown copy falls back to the original. */
+      tagCopy: Record<string, string>
       nousIncluded: string
       nousAuthNeededTitle: string
       nousAuthNeededMessage: (provider: string) => string
@@ -814,6 +924,34 @@ export interface Translations {
         failedSelect: (backend: string) => string
         needsSetupHint: string
       }
+      computerUse: {
+        checking: string
+        statusReadFailed: string
+        unsupported: (platform: string) => string
+        installHint: string
+        installGrantHint: string
+        /** Per-OS one-liner keyed by `process.platform` (linux / win32);
+         *  unknown platforms render nothing. */
+        platformNotes: Record<string, string>
+        macGrantNote: string
+        recheck: string
+        accessibility: string
+        accessibilityHint: string
+        screenRecording: string
+        screenRecordingHint: string
+        driverHealth: string
+        granted: string
+        notGranted: string
+        ready: string
+        notReady: string
+        unknown: string
+        readyMessage: string
+        grantPermissions: string
+        waitingApproval: string
+        grantFailed: string
+        approveTitle: string
+        approveMessage: string
+      }
     }
   }
 
@@ -833,6 +971,12 @@ export interface Translations {
     noToolsetsTitle: string
     noToolsetsDesc: string
     noDescription: string
+    /** Localized toolset blurbs keyed by toolset id; missing ids fall back to
+     *  the backend's English description. */
+    toolsetDescriptions: Record<string, string>
+    /** Localized toolset titles keyed by toolset id; missing ids fall back to
+     *  the backend's emoji-stripped English label. */
+    toolsetLabels: Record<string, string>
     configured: string
     needsKeys: string
     visionModelHint: string
@@ -1179,6 +1323,9 @@ export interface Translations {
     failedClear: (key: string) => string
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
     platformIntro: Record<string, string>
+    /** Localized one-line platform blurbs, keyed by platform id; missing ids
+     *  fall back to the backend's English description. */
+    platformDescription: Record<string, string>
   }
 
   webhooks: {
@@ -1289,6 +1436,7 @@ export interface Translations {
     deleting: string
     createDesc: string
     nameLabel: string
+    namePlaceholder: string
     cloneFrom: string
     cloneFromNone: string
     cloneFromDesc: string
@@ -1575,8 +1723,19 @@ export interface Translations {
     }
   }
 
+  // Empty-chat intro copy, keyed by personality ("none" is the neutral pool).
+  // An empty record means "use the built-in English pool (intro-copy.jsonl)".
+  // A locale that ships pools keeps the same randomized-per-mount behavior;
+  // personalities without a localized pool fall back to the locale's "none"
+  // pool, then to the English jsonl. Technical terms (git, diff, PR, ...)
+  // stay untranslated inside the localized copy.
+  intro: {
+    bodies: Readonly<Record<string, readonly string[]>>
+  }
+
   composer: {
     message: string
+    addContext: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
@@ -1827,6 +1986,9 @@ export interface Translations {
   onboarding: {
     headerTitle: string
     headerDesc: string
+    /** Display-title overrides for OAuth providers whose curated titles carry
+     *  translatable copy (brand-only titles stay in PROVIDER_DISPLAY). */
+    providerTitles: Record<string, string>
     preparingInstall: string
     starting: string
     lookingUpProviders: string
@@ -1888,6 +2050,9 @@ export interface Translations {
     addProvider: string
     loadFailed: string
     noAuthenticatedProviders: string
+    // Localized stand-in for the fixed English warning the backend attaches
+    // to the MoA picker row (see hermes_cli/inventory.py::_moa_provider_row).
+    moaWarning: string
     pro: string
     proNeedsSubscription: string
     free: string
@@ -1914,6 +2079,7 @@ export interface Translations {
       refreshModels: string
       fast: string
       medium: string
+      moaPresets: string
     }
     modelOptions: {
       noOptions: string
@@ -2338,6 +2504,9 @@ export interface Translations {
     createSessionFailed: string
     promptFailed: string
     providerCredentialRequired: string
+    /** Appended to a runtime-check failure reason when setup.status
+     *  simultaneously claims credentials are configured. */
+    readinessChecksDisagree: string
     emptySlashCommand: string
     desktopCommands: string
     skillCommandsAvailable: (count: number) => string

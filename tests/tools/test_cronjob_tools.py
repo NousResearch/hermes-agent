@@ -239,6 +239,30 @@ class TestCronjobRequirements:
         monkeypatch.setenv(var_name, false_like_value)
         assert check_cronjob_requirements() is False
 
+    def test_tool_definition_cache_tracks_exec_ask_env(self, monkeypatch):
+        """Cronjob should appear after gateway flips HERMES_EXEC_ASK mid-process."""
+        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from tools.registry import invalidate_check_fn_cache
+
+        def cronjob_visible() -> bool:
+            tools = get_tool_definitions(
+                enabled_toolsets=["cronjob"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            return any(tool["function"]["name"] == "cronjob" for tool in tools)
+
+        for env_name in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(env_name, raising=False)
+        _clear_tool_defs_cache()
+        invalidate_check_fn_cache()
+
+        assert cronjob_visible() is False
+
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+
+        assert cronjob_visible() is True
+
 
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)

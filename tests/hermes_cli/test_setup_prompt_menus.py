@@ -12,11 +12,11 @@ def test_prompt_strips_bracketed_paste_markers(monkeypatch):
     assert value == "sk-ant-api-key"
 
 
-def test_password_prompt_strips_bracketed_paste_markers(monkeypatch):
+def test_password_prompt_uses_secret_line_helper(monkeypatch):
     monkeypatch.setattr(
         setup_mod,
-        "masked_secret_prompt",
-        lambda _prompt="": "\x1b[200~secret-token\x1b[201~",
+        "read_secret_line",
+        lambda _prompt="": " secret-token ",
     )
 
     value = setup_mod.prompt("API key", password=True)

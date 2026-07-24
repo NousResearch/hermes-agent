@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import sys
 from collections.abc import Callable
 
@@ -11,6 +12,14 @@ from collections.abc import Callable
 _BACKSPACE_CHARS = {"\b", "\x7f"}
 _ENTER_CHARS = {"\r", "\n"}
 _EOF_CHARS = {"\x04", "\x1a"}
+_BRACKETED_PASTE_PATTERN = re.compile(r"(?:\x1b)?\[\s*(?:200|201)~")
+
+
+def _sanitize_pasted_input(value: str) -> str:
+    """Strip leaked bracketed-paste control markers from pasted text."""
+    if not isinstance(value, str) or not value:
+        return value
+    return _BRACKETED_PASTE_PATTERN.sub("", value)
 
 
 def _collect_masked_input(
@@ -62,23 +71,31 @@ def masked_secret_prompt(prompt: str, *, mask: str = "*") -> str:
     stdin = sys.stdin
     stdout = sys.stdout
 
-    if not _stream_is_tty(stdin) or not _stream_is_tty(stdout):
-        return getpass.getpass(prompt)
-
-    if os.name == "nt":
+    if _should_use_prompt_toolkit_secret_input(stdin, stdout):
         try:
-            return _masked_secret_prompt_windows(prompt, mask=mask)
+            return _sanitize_pasted_input(_prompt_toolkit_secret_prompt(prompt))
         except (KeyboardInterrupt, EOFError):
             raise
         except Exception:
-            return getpass.getpass(prompt)
+            pass
+
+    if not _stream_is_tty(stdin) or not _stream_is_tty(stdout):
+        return _sanitize_pasted_input(getpass.getpass(prompt))
+
+    if os.name == "nt":
+        try:
+            return _sanitize_pasted_input(_masked_secret_prompt_windows(prompt, mask=mask))
+        except (KeyboardInterrupt, EOFError):
+            raise
+        except Exception:
+            return _sanitize_pasted_input(getpass.getpass(prompt))
 
     try:
-        return _masked_secret_prompt_posix(prompt, mask=mask)
+        return _sanitize_pasted_input(_masked_secret_prompt_posix(prompt, mask=mask))
     except (KeyboardInterrupt, EOFError):
         raise
     except Exception:
-        return getpass.getpass(prompt)
+        return _sanitize_pasted_input(getpass.getpass(prompt))
 
 
 def _stream_is_tty(stream) -> bool:
@@ -86,6 +103,46 @@ def _stream_is_tty(stream) -> bool:
         return bool(stream.isatty())
     except Exception:
         return False
+
+
+def _should_use_prompt_toolkit_secret_input(stdin, stdout) -> bool:
+    """Use prompt_toolkit for interactive Windows secret prompts.
+
+    On Windows, prompt_toolkit preserves hidden input while allowing paste
+    paths that raw ``msvcrt.getwch()`` and ``getpass`` commonly miss.
+    """
+    return sys.platform == "win32" and _stream_is_tty(stdin) and _stream_is_tty(stdout)
+
+
+def _prompt_toolkit_secret_prompt(prompt: str) -> str:
+    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.shortcuts import prompt as pt_prompt
+
+    kb = KeyBindings()
+
+    @kb.add("c-v")
+    def _paste_clipboard(event):
+        try:
+            clip = event.app.clipboard.get_data()
+        except Exception:
+            return
+        text = _sanitize_pasted_input(getattr(clip, "text", "") or "")
+        if text:
+            event.current_buffer.insert_text(text)
+
+    @kb.add(Keys.BracketedPaste, eager=True)
+    def _handle_bracketed_paste(event):
+        text = _sanitize_pasted_input(event.data or "")
+        if text:
+            event.current_buffer.insert_text(text)
+
+    return pt_prompt(
+        ANSI(prompt),
+        is_password=True,
+        key_bindings=kb,
+    )
 
 
 def _masked_secret_prompt_windows(prompt: str, *, mask: str) -> str:

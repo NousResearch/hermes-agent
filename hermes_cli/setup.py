@@ -162,10 +162,11 @@ def print_header(title: str):
 from hermes_cli.cli_output import (  # noqa: E402
     print_error,
     print_info,
+    read_line,
+    read_secret_line,
     print_success,
     print_warning,
 )
-from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: E402
 
 
 def is_interactive_stdin() -> bool:
@@ -207,25 +208,13 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
     try:
         if password:
-            value = masked_secret_prompt(color(display, Colors.YELLOW))
+            value = read_secret_line(color(display, Colors.YELLOW))
         else:
-            value = input(color(display, Colors.YELLOW))
-
-        cleaned = _sanitize_pasted_input(value)
-        return cleaned.strip() or default or ""
+            value = read_line(color(display, Colors.YELLOW))
+        return value.strip() or default or ""
     except (KeyboardInterrupt, EOFError):
         print()
         sys.exit(1)
-
-
-_BRACKETED_PASTE_PATTERN = re.compile(r"\x1b\[\s*200~|\x1b\[\s*201~")
-
-
-def _sanitize_pasted_input(value: str) -> str:
-    """Strip terminal bracketed-paste control markers from pasted text."""
-    if not isinstance(value, str) or not value:
-        return value
-    return _BRACKETED_PASTE_PATTERN.sub("", value)
 
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:

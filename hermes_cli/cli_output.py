@@ -5,6 +5,8 @@ functions previously duplicated across setup.py, tools_config.py,
 mcp_config.py, and memory_setup.py.
 """
 
+import re
+
 from hermes_cli.colors import Colors, color
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -40,6 +42,26 @@ def print_header(text: str) -> None:
 # ─── Input Prompts ────────────────────────────────────────────────────────────
 
 
+_BRACKETED_PASTE_PATTERN = re.compile(r"(?:\x1b)?\[\s*(?:200|201)~")
+
+
+def _sanitize_pasted_input(value: str) -> str:
+    """Strip leaked bracketed-paste control markers from pasted text."""
+    if not isinstance(value, str) or not value:
+        return value
+    return _BRACKETED_PASTE_PATTERN.sub("", value)
+
+
+def read_line(display: str) -> str:
+    """Read a visible line and strip leaked bracketed-paste markers."""
+    return _sanitize_pasted_input(input(display))
+
+
+def read_secret_line(display: str) -> str:
+    """Read a hidden line and strip leaked bracketed-paste markers."""
+    return _sanitize_pasted_input(masked_secret_prompt(display))
+
+
 def prompt(
     question: str,
     default: str | None = None,
@@ -58,9 +80,9 @@ def prompt(
 
     try:
         if password:
-            value = masked_secret_prompt(display)
+            value = read_secret_line(display)
         else:
-            value = input(display)
+            value = read_line(display)
         value = value.strip()
         return value if value else (default or "")
     except (KeyboardInterrupt, EOFError):

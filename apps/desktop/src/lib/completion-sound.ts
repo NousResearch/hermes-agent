@@ -2,7 +2,7 @@
 // Fourteen curated presets for A/B in Settings → Appearance. Default is variant 1.
 
 import { ownsAmbientCue } from '@/store/ambient'
-import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
+import { $completionSoundVariantId, $completionSoundVolume, resolveCompletionSoundVariantId } from '@/store/completion-sound'
 import { $hapticsMuted } from '@/store/haptics'
 
 type OscType = OscillatorType
@@ -429,7 +429,7 @@ function playVariant(variantId: number) {
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+  master.gain.setValueAtTime($completionSoundVolume.get(), ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()

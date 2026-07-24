@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon, codiconIcon } from '@/components/ui/codicon'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   Dialog,
   DialogContent,
@@ -16,6 +15,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   Select,
   SelectContent,
@@ -64,10 +64,9 @@ import {
   PanelRowMenu,
   PanelSectionLabel
 } from '../overlays/panel'
-
-import { BlueprintsPanel } from './blueprints'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { BlueprintsPanel } from './blueprints'
 import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 

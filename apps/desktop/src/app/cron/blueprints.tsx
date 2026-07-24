@@ -54,10 +54,12 @@ function deliverLabel(value: string, c: Translations['cron']): string {
 // desktop-created job delivers to This desktop instead of nowhere.
 export function initialBlueprintValues(blueprint: AutomationBlueprint): Record<string, string> {
   const out: Record<string, string> = {}
+
   for (const field of blueprint.fields) {
     const seeded = field.default ?? ''
     out[field.name] = isDeliverField(field) && (seeded === '' || seeded === 'origin') ? DESKTOP_DELIVER_DEFAULT : seeded
   }
+
   return out
 }
 
@@ -249,6 +251,7 @@ export function BlueprintsPanel({ profile }: { profile: string }) {
     // Merge, don't clobber: keep the existing rows and add/replace this one.
     updateCronJobs(rows => {
       const rest = rows.filter(row => row.id !== job.id)
+
       return [...rest, job]
     })
   }, [])

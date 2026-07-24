@@ -1,6 +1,6 @@
 ---
 name: claude-design
-description: Design one-off HTML artifacts (landing, deck, prototype).
+description: Design HTML artifacts and iterative visual option boards.
 version: 1.1.0
 author: BadTechBandit
 license: MIT
@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [design, html, prototype, ux, ui, creative, artifact, deck, motion, design-system]
-    related_skills: [design-md, popular-web-designs, excalidraw, architecture-diagram]
+    related_skills: [design-md, popular-web-designs, sketch, excalidraw, architecture-diagram]
 ---
 
 # Claude Design for CLI/API Agents
@@ -41,7 +41,7 @@ These compose: use `popular-web-designs` for the visual vocabulary, `claude-desi
 
 You are running in **CLI/API mode**, not the Claude Design hosted web UI.
 
-Ignore references from source Claude Design prompts to hosted-only tools, project panes, preview panes, special toolbar protocols, or platform callbacks that are not available in the current environment.
+Ignore references from source Claude Design prompts to hosted-only tools, project panes, special toolbar protocols, or platform callbacks that are not available in the current environment. Hermes Desktop's real `open_preview` tool is not hosted Claude plumbing: use it when available.
 
 Examples of hosted-tool concepts to ignore or remap:
 
@@ -68,6 +68,8 @@ Default deliverable:
 - self-contained CSS and JavaScript when portability matters
 - exact on-disk path in the final response
 - verification using available local methods before saying it is done
+
+For two to four visual alternatives that should drive an iterative refinement, use the bundled visual companion when `open_preview` and a local terminal runtime are available. Load and follow [references/visual-companion.md](references/visual-companion.md) in full. It provides the authenticated preview, click-to-tool-result loop, stale-selection protection, decision ledger, fallback behavior, and cleanup sequence. Keep ordinary local HTML delivery as the fallback for remote backends and non-Desktop surfaces.
 
 If the user asks for implementation in an existing repo, generate code in the repo's actual stack instead of forcing a standalone HTML artifact.
 

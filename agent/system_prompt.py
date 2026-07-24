@@ -317,6 +317,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            loading_mode=getattr(agent, "skills_loading_mode", "eager"),
         )
     else:
         skills_prompt = ""

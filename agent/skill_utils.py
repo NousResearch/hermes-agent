@@ -628,6 +628,33 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
+def skill_conditions_match(
+    conditions: Dict[str, List],
+    available_tools: set[str] | None,
+    available_toolsets: set[str] | None,
+) -> bool:
+    """Return whether a skill's conditional activation rules are satisfied."""
+    if available_tools is None and available_toolsets is None:
+        return True
+
+    tools = available_tools or set()
+    toolsets = available_toolsets or set()
+
+    for toolset in conditions.get("fallback_for_toolsets", []):
+        if toolset in toolsets:
+            return False
+    for tool in conditions.get("fallback_for_tools", []):
+        if tool in tools:
+            return False
+    for toolset in conditions.get("requires_toolsets", []):
+        if toolset not in toolsets:
+            return False
+    for tool in conditions.get("requires_tools", []):
+        if tool not in tools:
+            return False
+    return True
+
+
 # ── Skill config extraction ───────────────────────────────────────────────
 
 

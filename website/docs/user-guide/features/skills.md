@@ -139,6 +139,54 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 The agent only loads the full skill content when it actually needs it.
 
+### Routed loading for large skill libraries
+
+The default `eager` loading mode includes every available skill name and
+description in the system prompt. This gives the model maximum recall and keeps
+existing installations unchanged.
+
+For large libraries, opt into routed loading in `~/.hermes/config.yaml`:
+
+```yaml
+skills:
+  loading: routed
+```
+
+`routed` mode replaces the full startup catalog with top-level category counts.
+The agent drills into a likely category with `skills_list(category=...)`, then
+loads the selected skill with `skill_view(name)`. Category names match the
+top-level directories under `~/.hermes/skills/`; nested categories roll up to
+their top-level parent.
+
+Skills may also declare deterministic trigger phrases:
+
+```yaml
+---
+name: weather-watch
+description: Check forecasts and weather alerts.
+triggers:
+  - weather forecast
+  - severe weather alert
+  - inspect weather for [LOCATION]
+---
+```
+
+In routed mode, a case-insensitive, word-boundary match loads the skill before
+the user turn reaches the model. The longest matching trigger wins when phrases
+overlap. Trigger activation runs through the common agent entry point, so it
+applies consistently to the CLI, gateway platforms, and API server. The
+original user message—not the injected skill body—is retained in the durable
+transcript.
+
+Triggers are literal phrases except for bracketed placeholders. A placeholder
+such as `[URL]`, `[LOCATION]`, or `[owner/repo]` matches exactly one
+non-whitespace argument. For example, `pentest [URL]` matches
+`pentest https://example.test`, while `investigate [owner/repo]` matches
+`investigate NousResearch/hermes-agent`.
+
+For namespaced metadata, `metadata.hermes.triggers` is also accepted. Changes to
+`skills.loading` take effect in new sessions.
+
 ## SKILL.md Format
 
 ```markdown
@@ -147,6 +195,8 @@ name: my-skill
 description: Brief description of what this skill does
 version: 1.0.0
 platforms: [macos, linux]     # Optional — restrict to specific OS platforms
+triggers:                      # Optional — literal phrases; [NAME] matches one argument
+  - natural language trigger
 metadata:
   hermes:
     tags: [python, automation]

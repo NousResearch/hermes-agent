@@ -135,6 +135,17 @@ def test_skills_index_reflects_installed_skills(isolated_home):
     assert data["skills_index"]["bytes"] > 0
 
 
+def test_routed_category_index_is_measured(isolated_home):
+    from hermes_cli.config import save_config
+
+    _seed_skill(isolated_home, "hello", "a demo skill for size testing")
+    save_config({"skills": {"loading": "routed"}})
+
+    data = compute_prompt_breakdown("cli")
+
+    assert data["skills_index"]["bytes"] > 0
+
+
 def test_memory_and_profile_are_attributed(isolated_home):
     """Memory and user-profile blocks are measured separately."""
     _seed_memory(
@@ -153,6 +164,17 @@ def test_skills_block_regex_matches_tagged_block():
     assert m is not None
     assert m.group(0).startswith("<available_skills>")
     assert m.group(0).endswith("</available_skills>")
+
+
+def test_skills_block_regex_matches_routed_category_block():
+    text = (
+        "preamble\n<available_skill_categories>\n"
+        "  devops: 3 skills\n</available_skill_categories>\ntail"
+    )
+    m = _SKILLS_BLOCK_RE.search(text)
+    assert m is not None
+    assert m.group(0).startswith("<available_skill_categories>")
+    assert m.group(0).endswith("</available_skill_categories>")
 
 
 def test_render_breakdown_is_plain_text(isolated_home):

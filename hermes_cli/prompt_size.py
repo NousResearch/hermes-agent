@@ -17,8 +17,10 @@ import json
 import re
 from typing import Any, Dict, List, Tuple
 
-# The skills index is wrapped in this tag pair inside the stable tier.
-_SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
+# Eager and routed skill indexes use distinct tag pairs inside the stable tier.
+_SKILLS_BLOCK_RE = re.compile(
+    r"<(available_skills|available_skill_categories)>.*?</\1>", re.DOTALL
+)
 
 
 def _bytes(s: str) -> int:
@@ -75,8 +77,8 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     context = parts.get("context", "")
     volatile = parts.get("volatile", "")
 
-    # Skills index — the <available_skills> block (the largest single block
-    # when many skills are installed). Measured inside the stable tier.
+    # Skills index — either the eager <available_skills> block or the routed
+    # <available_skill_categories> block. Measured inside the stable tier.
     skills_match = _SKILLS_BLOCK_RE.search(stable)
     skills_index = skills_match.group(0) if skills_match else ""
 

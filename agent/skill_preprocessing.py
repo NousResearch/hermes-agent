@@ -9,6 +9,9 @@ from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
+SKILL_LOADING_MODES = ("eager", "routed")
+DEFAULT_SKILL_LOADING_MODE = "eager"
+
 # Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
 # Tokens that don't resolve (e.g. ${HERMES_SESSION_ID} with no session) are
 # left as-is so the user can debug them.
@@ -34,6 +37,30 @@ def load_skills_config() -> dict:
     except Exception:
         logger.debug("Could not read skills config", exc_info=True)
     return {}
+
+
+def resolve_skill_loading_mode(skills_config: dict | None = None) -> str:
+    """Return the validated, session-stable skill loading mode.
+
+    ``eager`` preserves the complete startup index. ``routed`` keeps only a
+    category index in the system prompt and enables deterministic trigger
+    activation before the user turn reaches the model.
+    """
+    config = load_skills_config() if skills_config is None else skills_config
+    if not isinstance(config, dict):
+        return DEFAULT_SKILL_LOADING_MODE
+
+    raw_mode = config.get("loading", DEFAULT_SKILL_LOADING_MODE)
+    mode = str(raw_mode or DEFAULT_SKILL_LOADING_MODE).strip().lower()
+    if mode in SKILL_LOADING_MODES:
+        return mode
+
+    logger.warning(
+        "Unknown skills.loading value %r; using %s",
+        raw_mode,
+        DEFAULT_SKILL_LOADING_MODE,
+    )
+    return DEFAULT_SKILL_LOADING_MODE
 
 
 def substitute_template_vars(

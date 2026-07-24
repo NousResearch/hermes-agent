@@ -22,8 +22,10 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from tools import file_state
+from tools.file_operations import ReadResult, WriteResult
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
@@ -281,6 +283,158 @@ class FileToolsIntegrationTests(unittest.TestCase):
         w = json.loads(write_file_tool(path=p, content="hi\n", task_id="agentX"))
         self.assertFalse(w.get("_warning"))
         self.assertNotIn("error", w)
+
+
+class UnstatablePathUnitTests(unittest.TestCase):
+    """Paths the HOST cannot stat — the remote-backend case.
+
+    When TERMINAL_ENV routes file operations to a sandboxed backend
+    (docker, singularity, ssh, modal, daytona), the resolved path names a
+    file inside the sandbox, so ``os.path.getmtime`` on the host raises
+    OSError even though the file exists remotely.  The registry must keep
+    its wall-clock protections (sibling detection, partial-read and
+    write-without-read warnings, delegate reminders) — only the host-mtime
+    drift check is meaningless there.
+    """
+
+    def setUp(self) -> None:
+        file_state.get_registry().clear()
+        self._tmpdir = tempfile.mkdtemp(prefix="hermes_fs_sandbox_")
+        # Never created — getmtime deterministically raises OSError.
+        self._nx = os.path.join(self._tmpdir, "workspace", "app.py")
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        file_state.get_registry().clear()
+
+    def test_record_read_still_records_stamp(self):
+        file_state.record_read("A", self._nx)
+        self.assertEqual(file_state.known_reads("A"), [self._nx])
+
+    def test_note_write_still_records_writer(self):
+        since = time.time() - 1.0
+        file_state.note_write("B", self._nx)
+        out = file_state.writes_since("A", since, [self._nx])
+        self.assertEqual(out, {"B": [self._nx]})
+
+    def test_sibling_write_detected(self):
+        file_state.record_read("A", self._nx)
+        time.sleep(0.01)
+        file_state.note_write("B", self._nx)
+        warn = file_state.check_stale("A", self._nx)
+        self.assertIsNotNone(warn)
+        self.assertIn("B", warn)
+        self.assertIn("sibling", warn.lower())
+
+    def test_write_without_read_flagged(self):
+        file_state.note_write("B", self._nx)
+        warn = file_state.check_stale("A", self._nx)
+        self.assertIsNotNone(warn)
+        self.assertIn("never read", warn)
+
+    def test_partial_read_flagged_on_write(self):
+        file_state.record_read("A", self._nx, partial=True)
+        warn = file_state.check_stale("A", self._nx)
+        self.assertIsNotNone(warn)
+        self.assertIn("partial", warn.lower())
+
+    def test_own_write_then_write_is_clean(self):
+        file_state.record_read("A", self._nx)
+        file_state.note_write("A", self._nx)
+        self.assertIsNone(file_state.check_stale("A", self._nx))
+
+    def test_delegate_reminder_wiring(self):
+        # Mirrors delegate_tool: snapshot parent reads, then ask which of
+        # them a child rewrote after the delegation started.
+        file_state.record_read("parent", self._nx)
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write("child", self._nx)
+        parent_reads = file_state.known_reads("parent")
+        out = file_state.writes_since("parent", since, parent_reads)
+        self.assertIn("child", out)
+        self.assertIn(self._nx, out["child"])
+
+    def test_host_deleted_file_still_not_stale(self):
+        # Preserved semantics: when the stamp DID carry a real host mtime
+        # (file existed locally at read time) and the file has since been
+        # deleted, the write recreates it — not stale.
+        fd, p = tempfile.mkstemp(prefix="hermes_file_state_test_", suffix=".txt")
+        os.close(fd)
+        try:
+            file_state.record_read("A", p)
+            time.sleep(0.01)
+            file_state.note_write("B", p)
+        finally:
+            os.unlink(p)
+        self.assertIsNone(file_state.check_stale("A", p))
+
+
+class _RemoteFileOps:
+    """File ops whose bytes live inside the backend, not on the host FS.
+
+    Stands in for what ``_get_file_ops`` hands back on a remote terminal
+    env: reads and writes succeed against the sandbox while the resolved
+    path stays unstatable from the host.
+    """
+
+    def __init__(self, content: str = "seed\n") -> None:
+        self.content = content
+
+    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+        return ReadResult(
+            content=self.content,
+            total_lines=len(self.content.splitlines()),
+            file_size=len(self.content),
+        )
+
+    def write_file(self, path: str, content: str) -> WriteResult:
+        self.content = content
+        return WriteResult(bytes_written=len(content))
+
+
+class UnstatablePathHandlerTests(unittest.TestCase):
+    """The remote-backend case through the real file-tool handlers.
+
+    ``UnstatablePathUnitTests`` pins the registry semantics directly, but
+    production reaches the registry through ``read_file_tool`` /
+    ``write_file_tool`` — so the sibling warning must survive that wiring
+    too when the host cannot stat the path.
+    """
+
+    def setUp(self) -> None:
+        file_state.get_registry().clear()
+        self._tmpdir = tempfile.mkdtemp(prefix="hermes_fs_remote_")
+        # Backend-side path: never created on the host, so every getmtime()
+        # the handlers attempt raises OSError — as it does for a file that
+        # only exists inside the sandbox.
+        self._remote = os.path.join(self._tmpdir, "workspace", "app.py")
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        file_state.get_registry().clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_sibling_write_surfaces_warning_through_handler(self, mock_get):
+        mock_get.return_value = _RemoteFileOps()
+
+        r = json.loads(read_file_tool(path=self._remote, task_id="agentA"))
+        self.assertNotIn("error", r)
+
+        w_b = json.loads(
+            write_file_tool(path=self._remote, content="B wrote\n", task_id="agentB")
+        )
+        self.assertNotIn("error", w_b)
+
+        w_a = json.loads(
+            write_file_tool(path=self._remote, content="A stale\n", task_id="agentA")
+        )
+        warn = w_a.get("_warning", "")
+        self.assertTrue(warn, f"expected warning, got: {w_a}")
+        self.assertIn("agentB", warn)
+        self.assertIn("sibling", warn.lower())
 
 
 if __name__ == "__main__":

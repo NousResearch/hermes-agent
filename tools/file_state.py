@@ -26,6 +26,14 @@ since_ts, paths)`` for the subagent-completion reminder in delegate_tool.
 
 All methods are no-ops when ``HERMES_DISABLE_FILE_STATE_GUARD=1`` is set.
 
+When the resolved path lives inside a remote terminal backend (docker,
+singularity, ssh, modal, daytona, ...) the host cannot stat it.  Stamps
+are then recorded with ``mtime=None`` and staleness falls back to pure
+wall-clock ordering: sibling-write detection, partial-read and
+write-without-read warnings all still fire; only the host-mtime drift
+check (external edits) is skipped, since a host mtime says nothing about
+a sandboxed file.
+
 This module is intentionally separate from ``_read_tracker`` in
 ``file_tools.py`` — that tracker is per-task and handles consecutive-read
 loop detection, which is a different concern.
@@ -45,7 +53,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 # (mtime, read_ts, partial).  partial=True when read_file returned a
 # windowed view (offset > 1 or limit < total_lines) — writes that happen
 # after a partial read should still warn so the model re-reads in full.
-ReadStamp = Tuple[float, float, bool]
+# mtime is None when the host could not stat the path at stamp time
+# (path resolved inside a remote terminal backend, or file vanished).
+ReadStamp = Tuple[Optional[float], float, bool]
 
 # Number of resolved-path entries retained per agent.  Bounded to keep
 # long sessions from accumulating unbounded state.  On overflow we drop
@@ -104,11 +114,18 @@ class FileStateRegistry:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
-                return
+                # Host can't stat the path (resolved inside a remote
+                # backend, or already gone).  Keep the stamp anyway —
+                # wall-clock ordering still powers sibling detection.
+                mtime = None
         now = time.time()
         with self._state_lock:
             agent_reads = self._reads[task_id]
-            agent_reads[resolved] = (float(mtime), now, bool(partial))
+            agent_reads[resolved] = (
+                float(mtime) if mtime is not None else None,
+                now,
+                bool(partial),
+            )
             _cap_dict(agent_reads, _MAX_PATHS_PER_AGENT)
 
     def note_write(
@@ -130,13 +147,20 @@ class FileStateRegistry:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
-                return
+                # Same as record_read: a host-unstatable path must still
+                # land in the last-writer map, or sibling detection and
+                # the delegate reminder silently vanish on remote backends.
+                mtime = None
         now = time.time()
         with self._state_lock:
             self._last_writer[resolved] = (task_id, now)
             _cap_dict(self._last_writer, _MAX_GLOBAL_WRITERS)
             # Writer's own view is now up-to-date.
-            self._reads[task_id][resolved] = (float(mtime), now, False)
+            self._reads[task_id][resolved] = (
+                float(mtime) if mtime is not None else None,
+                now,
+                False,
+            )
             _cap_dict(self._reads[task_id], _MAX_PATHS_PER_AGENT)
 
     def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
@@ -163,11 +187,22 @@ class FileStateRegistry:
         if stamp is None and last_writer is None:
             return None
 
+        read_mtime: Optional[float] = None
+        if stamp is not None:
+            read_mtime = stamp[0]
+
+        current_mtime: Optional[float] = None
         try:
             current_mtime = os.path.getmtime(resolved)
         except OSError:
-            # File doesn't exist — write will create it; not stale.
-            return None
+            # Host can't stat the path.  If our stamp carried a real host
+            # mtime, the file existed locally at read time and has since
+            # been deleted — the write will recreate it; not stale.
+            # Otherwise the path resolves inside a remote backend where
+            # host stat is meaningless: fall through to the wall-clock
+            # checks below, which don't touch the filesystem.
+            if read_mtime is not None:
+                return None
 
         # Case 1: sibling subagent modified after our last read.
         if last_writer is not None:
@@ -189,10 +224,16 @@ class FileStateRegistry:
                         "Re-read the file before writing."
                     )
 
-        # Case 2: external / unknown modification (mtime drifted).
+        # Case 2: external / unknown modification (mtime drifted).  Only
+        # meaningful when both the stamp and the current host stat are
+        # real — skipped for sandboxed paths (see module docstring).
         if stamp is not None:
-            read_mtime, _read_ts, partial = stamp
-            if current_mtime != read_mtime:
+            _read_mtime, _read_ts, partial = stamp
+            if (
+                read_mtime is not None
+                and current_mtime is not None
+                and current_mtime != read_mtime
+            ):
                 return (
                     f"{resolved} was modified since you last read it "
                     "on disk (external edit or unrecorded writer). "

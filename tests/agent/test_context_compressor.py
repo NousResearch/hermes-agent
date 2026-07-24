@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -12,6 +13,7 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
+    _preview_tool_args_for_summary,
 )
 from hermes_state import SessionDB
 
@@ -897,6 +899,84 @@ None.
             "api_key": "codex-token",
             "api_mode": "codex_responses",
         }
+
+
+class TestToolArgsPreview:
+    def test_preview_preserves_short_json_args(self):
+        preview = _preview_tool_args_for_summary(
+            "read_file", '{"path":"x.py","offset":1}'
+        )
+        assert preview == '{"offset": 1, "path": "x.py"}'
+
+    def test_preview_summarizes_long_multiline_string_values(self):
+        long_code = (
+            "import os\nimport re\n\n"
+            "target_dir = os.path.expanduser(\'~/workspace/reports\')\n"
+            "print(target_dir)\n"
+        ) * 30
+        raw_args = json.dumps({"code": long_code})
+        preview = _preview_tool_args_for_summary("execute_code", raw_args)
+        parsed = json.loads(preview)
+        assert parsed["code"].startswith("<")
+        assert "chars" in parsed["code"]
+        assert "lines" in parsed["code"]
+        assert "execute_code({" not in preview
+
+    def test_preview_bounds_long_object_keys_without_dropping_values(self):
+        shared_prefix = "x" * 500
+        raw_args = json.dumps({
+            f"{shared_prefix}a": "first",
+            f"{shared_prefix}b": "second",
+        })
+
+        preview = _preview_tool_args_for_summary("execute_code", raw_args)
+        parsed = json.loads(preview)
+
+        assert len(parsed) == 2
+        assert set(parsed.values()) == {"first", "second"}
+        assert max(len(key) for key in parsed) < 200
+        assert shared_prefix not in preview
+
+    def test_preview_bounds_total_serialized_size(self):
+        raw_args = json.dumps({
+            f"section_{index}": ["x" * 150 for _ in range(8)]
+            for index in range(8)
+        })
+
+        preview = _preview_tool_args_for_summary(
+            "execute_code",
+            raw_args,
+            max_preview_chars=400,
+        )
+        parsed = json.loads(preview)
+
+        assert len(preview) <= 400
+        assert parsed["__preview_chars__"] > 400
+        assert parsed["__truncated_preview__"].startswith("<")
+
+    def test_serialize_for_summary_avoids_function_call_shaped_tool_examples(self):
+        long_code = (
+            "import os\nimport re\n\n"
+            "target_dir = os.path.expanduser(\'~/workspace/reports\')\n"
+            "print(target_dir)\n"
+        ) * 30
+        raw_args = json.dumps({"code": long_code})
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        serialized = c._serialize_for_summary([
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call1",
+                    "type": "function",
+                    "function": {"name": "execute_code", "arguments": raw_args},
+                }],
+            }
+        ])
+        assert "execute_code args=" in serialized
+        assert "execute_code({" not in serialized
+        assert "<" in serialized and "lines:" in serialized
 
 
 class TestSummaryFailureCooldown:

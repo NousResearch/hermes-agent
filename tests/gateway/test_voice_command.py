@@ -954,6 +954,7 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
@@ -984,6 +985,7 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
@@ -997,6 +999,32 @@ class TestVoiceChannelCommands:
         assert event.source.user_id == "42"
 
     @pytest.mark.asyncio
+    async def test_input_injects_channel_prompt(self, runner):
+        """Voice input carries the bound text channel's channel_prompt so
+        per-channel instructions reach the LLM, like the text path does. The
+        parent is resolved too, so a thread inherits its parent's prompt."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        # Bound channel is a thread → its parent's prompt must be considered.
+        mock_channel = MagicMock()
+        mock_channel.parent_id = 456
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value="Always reply in French.")
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Bonjour")
+
+        mock_adapter._resolve_channel_prompt.assert_called_once_with("123", "456")
+        mock_adapter.handle_message.assert_called_once()
+        event = mock_adapter.handle_message.call_args[0][0]
+        assert event.channel_prompt == "Always reply in French."
+
+    @pytest.mark.asyncio
     async def test_input_posts_transcript_in_text_channel(self, runner):
         """Voice input sends transcript message to text channel."""
         from gateway.config import Platform
@@ -1006,6 +1034,7 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
         await runner._handle_voice_channel_input(111, 42, "Test transcript")
@@ -1025,6 +1054,7 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
@@ -1045,6 +1075,7 @@ class TestVoiceChannelCommands:
         mock_channel = AsyncMock()
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 

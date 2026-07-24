@@ -80,7 +80,7 @@ class TestAlignBoundaryBackward:
         assert comp._align_boundary_backward(messages, 4) == 3
 
     def test_boundary_in_middle_of_tool_results(self):
-        """THE BUG: boundary falls between tool results of the same group."""
+        """Boundary falls between tool results of the same group."""
         comp = _make_compressor()
         messages = [
             {"role": "system", "content": "sys"},

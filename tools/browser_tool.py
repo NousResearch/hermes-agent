@@ -4209,11 +4209,49 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # an auxiliary vision LLM. The model inspects the pixels on its next
         # turn — no aux call, no information loss. Consistent with vision_analyze.
         from tools.vision_tools import (
+            _EMBED_MAX_DIMENSION,
+            _EMBED_TARGET_BYTES,
+            _MAX_BASE64_BYTES,
             _build_native_vision_tool_result,
+            _image_exceeds_dimension,
+            _resize_image_for_vision,
             _should_use_native_vision_fast_path,
         )
 
-        if _should_use_native_vision_fast_path():
+        _use_native = _should_use_native_vision_fast_path()
+        if _use_native:
+            # Proactive embed cap — same rules as _vision_analyze_native:
+            # providers reject oversized/over-dimension images with a
+            # non-retryable error, and retries resend the same bytes, so the
+            # payload must be shrunk before it enters the conversation.
+            # Full-page screenshots routinely exceed the per-side pixel
+            # ceiling even when their byte size is small.
+            _over_bytes = len(data_url) > _EMBED_TARGET_BYTES
+            _over_dims = _image_exceeds_dimension(
+                screenshot_path, _EMBED_MAX_DIMENSION)
+            if _over_bytes or _over_dims:
+                logger.info(
+                    "browser_vision: screenshot exceeds embed cap "
+                    "(%.1f MB, over_dims=%s); resizing before native attach",
+                    len(data_url) / (1024 * 1024), _over_dims,
+                )
+                data_url = _resize_image_for_vision(
+                    screenshot_path, mime_type="image/png",
+                    max_base64_bytes=_EMBED_TARGET_BYTES,
+                    max_dimension=_EMBED_MAX_DIMENSION,
+                )
+            if len(data_url) > _MAX_BASE64_BYTES:
+                # Still over the hard ceiling after resizing: skip the
+                # native attach and use the aux-LLM analysis path below —
+                # a text description beats a guaranteed provider rejection.
+                logger.warning(
+                    "browser_vision: screenshot still %.1f MB after resize; "
+                    "falling back to aux vision LLM",
+                    len(data_url) / (1024 * 1024),
+                )
+                _use_native = False
+
+        if _use_native:
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),
                 question=question,

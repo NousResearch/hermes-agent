@@ -290,6 +290,9 @@ class ToolCallGuardrailController:
         *,
         failed: bool | None = None,
     ) -> ToolGuardrailDecision:
+        if file_mutation_result_landed(tool_name, result):
+            self.reset_for_turn()
+
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:

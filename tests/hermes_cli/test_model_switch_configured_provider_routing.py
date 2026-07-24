@@ -308,3 +308,184 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
     )
     assert result.success is True, result.error_message
     assert result.target_provider == "xai-oauth"
+
+
+# ---------------------------------------------------------------------------
+# Self-duplicate provider view dedupe (#45006)
+#
+# Callers like the gateway /model path pass BOTH ``cfg["providers"]`` (as
+# user_providers) AND ``get_compatible_custom_providers(cfg)`` (as
+# custom_providers).  The latter re-exposes every ``providers`` dict entry as a
+# legacy custom-provider row, so ONE physical endpoint used to count as TWO
+# matches ("relay-lb" + "custom:Relay LB East") and the ambiguity guard
+# rejected an unambiguous bare model name.
+# ---------------------------------------------------------------------------
+
+_LB_PROVIDERS = {
+    "relay-lb": {
+        "name": "Relay LB East",
+        "base_url": "http://relay-east.internal:8080",
+        "api_key": "lb-key",
+        "api_mode": "anthropic_messages",
+        "default_model": "claude-opus-4-8",
+        "models": {"claude-fable-5": {}, "claude-opus-4-8": {}},
+    }
+}
+
+
+def _gateway_shaped_views(cfg_providers):
+    """Build (user_providers, custom_providers) exactly as the gateway /model
+    path does: providers dict + its get_compatible_custom_providers() view."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    return cfg_providers, get_compatible_custom_providers(
+        {"providers": cfg_providers}
+    )
+
+
+def test_dual_exposed_user_provider_counts_as_one():
+    """The D1 repro: a bare model name declared by exactly one ``providers``
+    entry that is ALSO re-exposed via get_compatible_custom_providers() must
+    switch successfully — not trip the multi-provider guard."""
+    user_providers, custom_providers = _gateway_shaped_views(dict(_LB_PROVIDERS))
+    # Sanity: the legacy view really is present (dual exposure is load-bearing
+    # for legacy custom_providers consumers and must not be silently dropped).
+    assert any(
+        e.get("name") == "Relay LB East" for e in custom_providers
+    ), custom_providers
+
+    result = _run_switch(
+        raw_input="claude-fable-5",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay-lb"
+    assert result.new_model == "claude-fable-5"
+
+
+def test_dual_exposed_match_resolves_user_provider_endpoint_and_key():
+    """After deduping to the ``providers.<slug>`` entry, credentials must come
+    from THAT entry (base_url + api_key), i.e. the reroute takes the
+    explicit-provider user-config credential path."""
+    user_providers, custom_providers = _gateway_shaped_views(dict(_LB_PROVIDERS))
+
+    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
+         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
+         patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
+         patch("hermes_cli.models.validate_requested_model", return_value=_ACCEPTED), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_info", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
+         patch(
+             "hermes_cli.runtime_provider.resolve_runtime_provider",
+             # Empty runtime answer -> switch_model must fall back to the
+             # user-provider entry's own base_url and api_key.
+             return_value={"api_key": "", "base_url": "", "api_mode": ""},
+         ):
+        result = switch_model(
+            raw_input="claude-fable-5",
+            current_provider="openai-codex",
+            current_model="gpt-5.4",
+            current_base_url="",
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+        )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay-lb"
+    assert result.base_url == "http://relay-east.internal:8080"
+    assert result.api_key == "lb-key"
+
+
+def test_legacy_view_without_provider_key_dedupes_by_name_and_url():
+    """A legacy custom row lacking ``provider_key`` but whose display name AND
+    endpoint equal a ``providers`` entry IS that entry — still one match."""
+    custom_providers = [
+        {
+            # Hand-rolled legacy view: no provider_key stamp.
+            "name": "Relay LB East",
+            "base_url": "http://relay-east.internal:8080/",  # trailing slash on purpose
+            "models": {"claude-fable-5": {}},
+        }
+    ]
+    result = _run_switch(
+        raw_input="claude-fable-5",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        user_providers=dict(_LB_PROVIDERS),
+        custom_providers=custom_providers,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay-lb"
+
+
+def test_genuine_ambiguity_across_user_and_custom_still_errors():
+    """Two DIFFERENT endpoints declaring the same model must still trip the
+    guard: dedupe only collapses views of the SAME physical entry."""
+    custom_providers = [
+        {
+            "name": "Other LB",
+            "base_url": "http://relay-west.internal:8080",
+            "models": {"claude-fable-5": {}},
+        }
+    ]
+    result = _run_switch(
+        raw_input="claude-fable-5",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        user_providers=dict(_LB_PROVIDERS),
+        custom_providers=custom_providers,
+    )
+    assert result.success is False
+    assert "--provider" in result.error_message
+    assert "relay-lb" in result.error_message
+    assert "custom:Other LB" in result.error_message
+
+
+def test_same_display_name_different_endpoint_is_still_ambiguous():
+    """A custom entry that merely SHARES a display name with a ``providers``
+    entry but points at a different endpoint is NOT the same provider — the
+    guard must still fire rather than silently picking one."""
+    custom_providers = [
+        {
+            "name": "Relay LB East",  # name collision, different box
+            "base_url": "http://relay-other.internal:8080",
+            "models": {"claude-fable-5": {}},
+        }
+    ]
+    result = _run_switch(
+        raw_input="claude-fable-5",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        user_providers=dict(_LB_PROVIDERS),
+        custom_providers=custom_providers,
+    )
+    assert result.success is False
+    assert "--provider" in result.error_message
+    assert "relay-lb" in result.error_message
+    assert "custom:Relay LB East" in result.error_message
+
+
+def test_same_display_name_with_missing_endpoint_url_is_not_collapsed():
+    """A custom entry that shares a display name with a ``providers`` entry but
+    declares NO endpoint URL has incomplete identity — name equality alone must
+    NOT collapse it onto the ``providers`` entry, so the guard still fires."""
+    custom_providers = [
+        {
+            "name": "Relay LB East",  # name collision, endpoint unknown
+            "models": {"claude-fable-5": {}},
+        }
+    ]
+    result = _run_switch(
+        raw_input="claude-fable-5",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        user_providers=dict(_LB_PROVIDERS),
+        custom_providers=custom_providers,
+    )
+    assert result.success is False
+    assert "--provider" in result.error_message
+    assert "relay-lb" in result.error_message
+    assert "custom:Relay LB East" in result.error_message

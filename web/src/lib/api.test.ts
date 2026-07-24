@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, setManagementProfile } from "./api";
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
@@ -102,5 +102,67 @@ describe("api OAuth helpers", () => {
       expect(init.credentials).toBe("include");
       expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
     }
+  });
+});
+
+describe("Weixin onboarding profile scoping", () => {
+  afterEach(() => {
+    setManagementProfile("");
+  });
+
+  it("appends ?profile= to Weixin onboarding start when a management profile is set", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("coder");
+
+    const fetchMock = jsonFetchMock({ session_id: "s1", state: "starting", expires_at: 0 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.startWeixinOnboarding({});
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("profile=coder");
+    expect(url).toContain("/api/messaging/weixin/onboarding/start");
+  });
+
+  it("appends ?profile= to Weixin onboarding status when a management profile is set", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("coder");
+
+    const fetchMock = jsonFetchMock({ session_id: "s1", state: "waiting", expires_at: 0 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getWeixinOnboardingStatus("s1");
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("profile=coder");
+    expect(url).toContain("/api/messaging/weixin/onboarding/s1/status");
+  });
+
+  it("appends ?profile= to Weixin onboarding apply when a management profile is set", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("coder");
+
+    const fetchMock = jsonFetchMock({ ok: true, platform: "weixin", account_id: "a1" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.applyWeixinOnboarding("s1", {});
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("profile=coder");
+    expect(url).toContain("/api/messaging/weixin/onboarding/s1/apply");
+  });
+
+  it("appends ?profile= to Weixin onboarding cancel when a management profile is set", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("coder");
+
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.cancelWeixinOnboarding("s1");
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("profile=coder");
+    expect(url).toContain("/api/messaging/weixin/onboarding/s1");
   });
 });

@@ -5758,6 +5758,10 @@ def _setup_weixin():
     save_env_value("WEIXIN_ACCOUNT_ID", account_id)
     save_env_value("WEIXIN_TOKEN", token)
     if base_url:
+        # Defensive: ensure the base URL is always the canonical iLink
+        # endpoint, even if the QR session somehow captured a stale one.
+        from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
+        base_url = _normalise_ilink_base_url(base_url)
         save_env_value("WEIXIN_BASE_URL", base_url)
     save_env_value(
         "WEIXIN_CDN_BASE_URL",

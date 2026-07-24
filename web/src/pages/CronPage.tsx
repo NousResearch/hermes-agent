@@ -45,6 +45,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { AutomationBlueprints } from "@/components/AutomationBlueprints";
+import { OperationalActionGroup } from "@/components/OperationalActionGroup";
 import { cn, themedBody } from "@/lib/utils";
 
 function formatTime(iso?: string | null): string {
@@ -746,7 +747,7 @@ export default function CronPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
-        className="uppercase"
+        className="min-h-11 uppercase lg:min-h-0"
         size="sm"
         onClick={() => {
           setCreateProfile(selectedProfile === "all" ? "default" : selectedProfile);
@@ -774,11 +775,12 @@ export default function CronPage() {
     : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-4 sm:gap-6">
       <PluginSlot name="cron:top" />
       <Toast toast={toast} />
 
       <Segmented
+        className="w-full [&_button]:min-h-11 [&_button]:flex-1 sm:w-fit sm:[&_button]:flex-none lg:[&_button]:min-h-0"
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
@@ -820,18 +822,18 @@ export default function CronPage() {
           aria-modal="true"
           aria-labelledby="create-cron-title"
         >
-          <div className={cn(themedBody, "relative w-full max-w-3xl max-h-[90vh] border border-border bg-card shadow-2xl flex flex-col")}>
+          <div className={cn(themedBody, "relative flex h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden border border-border bg-card shadow-2xl sm:h-auto sm:max-h-[90vh]")}>
             <Button
               ghost
               size="icon"
               onClick={() => setCreateModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
             </Button>
 
-            <header className="p-5 pb-3 border-b border-border">
+            <header className="border-b border-border p-3 pr-14 sm:p-5 sm:pb-3 sm:pr-14">
               <h2
                 id="create-cron-title"
                 className="font-mondwest text-display text-base tracking-wider"
@@ -840,7 +842,7 @@ export default function CronPage() {
               </h2>
             </header>
 
-            <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
+            <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5">
               <div className="grid gap-2">
                 <Label htmlFor="cron-profile">Profile</Label>
                 <Select
@@ -869,7 +871,7 @@ export default function CronPage() {
                 }}
               />
 
-              <div className="flex justify-end">
+              <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                 <Button
                   className="uppercase"
                   size="sm"
@@ -895,18 +897,18 @@ export default function CronPage() {
           aria-modal="true"
           aria-labelledby="edit-cron-title"
         >
-          <div className={cn(themedBody, "relative w-full max-w-3xl max-h-[90vh] border border-border bg-card shadow-2xl flex flex-col")}>
+          <div className={cn(themedBody, "relative flex h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden border border-border bg-card shadow-2xl sm:h-auto sm:max-h-[90vh]")}>
             <Button
               ghost
               size="icon"
               onClick={() => setEditJob(null)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
             </Button>
 
-            <header className="p-5 pb-3 border-b border-border">
+            <header className="border-b border-border p-3 pr-14 sm:p-5 sm:pb-3 sm:pr-14">
               <h2
                 id="edit-cron-title"
                 className="font-mondwest text-display text-base tracking-wider"
@@ -915,7 +917,7 @@ export default function CronPage() {
               </h2>
             </header>
 
-            <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
+            <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5">
               <CronJobFormFields
                 idPrefix="edit-cron"
                 autoFocus
@@ -929,12 +931,12 @@ export default function CronPage() {
                 }}
               />
 
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground font-mono-ui truncate pr-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span className="break-all pr-0 font-mono-ui text-xs text-muted-foreground sm:pr-4 lg:truncate">
                   {editJob.id}
                 </span>
                 <Button
-                  className="uppercase"
+                  className="min-h-11 uppercase lg:min-h-0"
                   size="sm"
                   onClick={handleEdit}
                   disabled={saving}
@@ -959,7 +961,7 @@ export default function CronPage() {
             {t.cron.scheduledJobs} ({jobs.length})
           </H2>
 
-          <div className="grid gap-1 min-w-[220px]">
+          <div className="grid w-full min-w-0 gap-1 sm:w-auto sm:min-w-[220px]">
             <Label htmlFor="cron-profile-filter">Profile</Label>
             <Select
               id="cron-profile-filter"
@@ -1000,10 +1002,10 @@ export default function CronPage() {
 
           return (
             <Card key={jobKey}>
-              <CardContent className="flex items-start gap-4 py-4">
+              <CardContent className="flex min-w-0 flex-col items-stretch gap-3 p-3 sm:flex-row sm:items-start sm:gap-4 sm:py-4">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">
+                  <div className="mb-1 flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 break-words text-sm font-medium lg:truncate">
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
@@ -1035,12 +1037,12 @@ export default function CronPage() {
                     )}
                   </div>
                   {hasName && promptText && (
-                    <p className="text-xs text-muted-foreground truncate mb-1">
+                    <p className="mb-1 break-words text-xs text-muted-foreground lg:truncate">
                       {truncateText(promptText, 100)}
                     </p>
                   )}
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span className="font-mono-ui">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    <span className="break-all font-mono-ui">
                       {getJobScheduleDisplay(job, scheduleDescribeStrings)}
                     </span>
                     <span>repeat: {getRepeatDisplay(job)}</span>
@@ -1052,18 +1054,18 @@ export default function CronPage() {
                     </span>
                   </div>
                   {job.last_delivery_error && (
-                    <p className="text-xs text-destructive mt-1">
+                    <p className="mt-1 break-words text-xs text-destructive">
                       delivery: {job.last_delivery_error}
                     </p>
                   )}
                   {job.last_error && (
-                    <p className="text-xs text-destructive mt-1">
+                    <p className="mt-1 break-words text-xs text-destructive">
                       {job.last_error}
                     </p>
                   )}
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <OperationalActionGroup separated aria-label={`Actions for ${title}`}>
                   <Button
                     ghost
                     size="icon"
@@ -1109,7 +1111,7 @@ export default function CronPage() {
                   >
                     <Trash2 />
                   </Button>
-                </div>
+                </OperationalActionGroup>
               </CardContent>
             </Card>
           );

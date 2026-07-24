@@ -28,6 +28,7 @@ import {
   type McpTransport,
 } from "@/lib/mcp-server-create";
 import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
+import { OperationalActionGroup } from "@/components/OperationalActionGroup";
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -297,7 +298,7 @@ export default function McpPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
-        className="uppercase"
+        className="min-h-11 uppercase lg:min-h-0"
         size="sm"
         onClick={() => setCreateModalOpen(true)}
       >
@@ -323,7 +324,7 @@ export default function McpPage() {
   });
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-4 sm:gap-6">
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -352,20 +353,20 @@ export default function McpPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col",
+              "relative flex h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col overflow-hidden border border-border bg-card shadow-2xl sm:h-auto sm:max-h-[90vh]",
             )}
           >
             <Button
               ghost
               size="icon"
               onClick={closeCreateModal}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
             </Button>
 
-            <header className="p-5 pb-3 border-b border-border">
+            <header className="border-b border-border p-3 pr-14 sm:p-5 sm:pb-3 sm:pr-14">
               <h2
                 id="create-mcp-title"
                 className="font-mondwest text-display text-base tracking-wider"
@@ -374,7 +375,7 @@ export default function McpPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5">
               <div className="grid gap-2">
                 <Label htmlFor="mcp-name">Name</Label>
                 <Input
@@ -383,6 +384,9 @@ export default function McpPage() {
                   placeholder="my-server"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
               </div>
 
@@ -411,6 +415,10 @@ export default function McpPage() {
                       placeholder="https://example.com/mcp"
                       value={url}
                       onChange={(e) => setUrl(e.target.value)}
+                      inputMode="url"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                     />
                   </div>
                   <div className="grid gap-2">
@@ -439,6 +447,9 @@ export default function McpPage() {
                         placeholder="Token or Bearer token"
                         value={bearerToken}
                         onChange={(e) => setBearerToken(e.target.value)}
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                       />
                       <p className="text-xs text-muted-foreground">
                         Stored in this profile&apos;s .env; config.yaml keeps
@@ -463,6 +474,9 @@ export default function McpPage() {
                       placeholder="npx"
                       value={command}
                       onChange={(e) => setCommand(e.target.value)}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                     />
                   </div>
                   <div className="grid gap-2">
@@ -472,6 +486,9 @@ export default function McpPage() {
                       placeholder="-y @modelcontextprotocol/server-foo"
                       value={args}
                       onChange={(e) => setArgs(e.target.value)}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                     />
                   </div>
                   <div className="grid gap-2">
@@ -484,12 +501,15 @@ export default function McpPage() {
                       placeholder={"API_KEY=secret\nDEBUG=1"}
                       value={env}
                       onChange={(e) => setEnv(e.target.value)}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                     />
                   </div>
                 </>
               )}
 
-              <div className="flex justify-end">
+              <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                 <Button
                   className="uppercase"
                   size="sm"
@@ -518,20 +538,20 @@ export default function McpPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col",
+              "relative flex h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col overflow-hidden border border-border bg-card shadow-2xl sm:h-auto sm:max-h-[90vh]",
             )}
           >
             <Button
               ghost
               size="icon"
               onClick={() => setInstallEntry(null)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
               aria-label="Close"
             >
               <X />
             </Button>
 
-            <header className="p-5 pb-3 border-b border-border">
+            <header className="border-b border-border p-3 pr-14 sm:p-5 sm:pb-3 sm:pr-14">
               <h2
                 id="install-mcp-title"
                 className="font-mondwest text-display text-base tracking-wider"
@@ -540,7 +560,7 @@ export default function McpPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5">
               <p className="text-xs text-muted-foreground">
                 This MCP requires the following values to be configured.
               </p>
@@ -555,6 +575,9 @@ export default function McpPage() {
                     type="password"
                     placeholder={item.name}
                     value={installEnv[item.name] ?? ""}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                     onChange={(e) =>
                       setInstallEnv((prev) => ({
                         ...prev,
@@ -565,7 +588,7 @@ export default function McpPage() {
                 </div>
               ))}
 
-              <div className="flex justify-end">
+              <div className="flex justify-end [&_button]:min-h-11 lg:[&_button]:min-h-0">
                 <Button
                   className="uppercase"
                   size="sm"
@@ -617,13 +640,13 @@ export default function McpPage() {
             <Card key={server.name}>
               <CardContent
                 className={cn(
-                  "flex items-start gap-4 py-4",
+                  "flex min-w-0 flex-col items-stretch gap-3 p-3 sm:flex-row sm:items-start sm:gap-4 sm:py-4",
                   !server.enabled && "opacity-60",
                 )}
               >
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">
+                  <div className="mb-1 flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 break-all text-sm font-medium lg:truncate">
                       {server.name}
                     </span>
                     <Badge
@@ -639,13 +662,13 @@ export default function McpPage() {
                     )}
                     {!server.enabled && <Badge tone="outline">disabled</Badge>}
                   </div>
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                     {server.transport === "http" ? (
-                      <span className="font-mono truncate">
+                      <span className="break-all font-mono lg:truncate">
                         {server.url ?? "—"}
                       </span>
                     ) : (
-                      <span className="font-mono truncate">
+                      <span className="break-all font-mono lg:truncate">
                         {[server.command, ...(server.args ?? [])]
                           .filter(Boolean)
                           .join(" ") || "—"}
@@ -660,7 +683,7 @@ export default function McpPage() {
                   {result && (
                     <div className="mt-2 text-xs">
                       {result.ok ? (
-                        <p className="text-success">
+                        <p className="break-words text-success">
                           {result.tools.length === 0
                             ? "Connected — no tools"
                             : `Tools: ${result.tools
@@ -668,7 +691,7 @@ export default function McpPage() {
                                 .join(", ")}`}
                         </p>
                       ) : (
-                        <p className="text-destructive">
+                        <p className="break-words text-destructive">
                           {result.error ?? "Connection failed"}
                         </p>
                       )}
@@ -676,7 +699,7 @@ export default function McpPage() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <OperationalActionGroup separated aria-label={`Actions for ${server.name}`}>
                   {server.auth === "oauth" && (
                     <Button
                       ghost
@@ -732,7 +755,7 @@ export default function McpPage() {
                   >
                     <Trash2 />
                   </Button>
-                </div>
+                </OperationalActionGroup>
               </CardContent>
             </Card>
           );
@@ -769,10 +792,10 @@ export default function McpPage() {
 
           return (
             <Card key={entry.name}>
-              <CardContent className="flex items-start gap-4 py-4">
+              <CardContent className="flex min-w-0 flex-col items-stretch gap-3 p-3 sm:flex-row sm:items-start sm:gap-4 sm:py-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <span className="font-medium text-sm truncate">
+                    <span className="min-w-0 break-all text-sm font-medium lg:truncate">
                       {entry.name}
                     </span>
                     <Badge
@@ -809,7 +832,7 @@ export default function McpPage() {
                   {entry.transport === "http" && entry.url && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       <span className="font-medium">Endpoint:</span>{" "}
-                      <code className="font-mono">{entry.url}</code>
+                      <code className="break-all font-mono">{entry.url}</code>
                     </p>
                   )}
                   {entry.transport === "stdio" && entry.command && (
@@ -842,7 +865,7 @@ export default function McpPage() {
                   )}
                   {entry.bootstrap.length > 0 && (
                     <details className="mt-1 text-xs text-muted-foreground">
-                      <summary className="cursor-pointer select-none">
+                      <summary className="flex min-h-11 cursor-pointer select-none items-center lg:min-h-0">
                         Bootstrap commands ({entry.bootstrap.length})
                       </summary>
                       <ul className="mt-1 ml-3 list-disc space-y-0.5">
@@ -859,7 +882,7 @@ export default function McpPage() {
                   )}
                   {entry.post_install && (
                     <details className="mt-1 text-xs text-muted-foreground">
-                      <summary className="cursor-pointer select-none">
+                      <summary className="flex min-h-11 cursor-pointer select-none items-center lg:min-h-0">
                         Setup notes
                       </summary>
                       <p className="mt-1 whitespace-pre-wrap">
@@ -877,12 +900,12 @@ export default function McpPage() {
                   ))}
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <OperationalActionGroup separated aria-label={`Catalog actions for ${entry.name}`}>
                   {entry.installed ? (
                     <Badge tone="success">Installed</Badge>
                   ) : (
                     <Button
-                      className="uppercase"
+                      className="min-h-11 uppercase lg:min-h-0"
                       size="sm"
                       onClick={() => handleInstallClick(entry)}
                       disabled={isInstalling}
@@ -891,7 +914,7 @@ export default function McpPage() {
                       {isInstalling ? "Installing..." : "Install"}
                     </Button>
                   )}
-                </div>
+                </OperationalActionGroup>
               </CardContent>
             </Card>
           );

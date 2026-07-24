@@ -38,6 +38,10 @@ import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  DASHBOARD_MOBILE_DRAWER_WIDTH,
+  dashboardDrawerA11yProps,
+} from "@/lib/dashboard-modal-shell";
+import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
@@ -58,6 +62,7 @@ import {
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
 
 // Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
 // Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
@@ -277,6 +282,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }>({ scope: "", title: null });
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
+  const mobilePanelTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobilePanelRef = useModalBehavior({
+    open: mobilePanelOpen,
+    onClose: closeMobilePanel,
+    modalLayout: false,
+    restoreFocusRef: mobilePanelTriggerRef,
+  });
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
     [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
@@ -385,20 +397,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, []);
 
   useEffect(() => {
-    if (!mobilePanelOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeMobilePanel();
-    };
-    document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [mobilePanelOpen, closeMobilePanel]);
-
-  useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e: MediaQueryListEvent) => {
       if (e.matches) setMobilePanelOpenRaw(false);
@@ -421,11 +419,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setEnd(
       <Button
         ghost
-        onClick={() => setMobilePanelOpenRaw(true)}
+        onClick={(event) => {
+          mobilePanelTriggerRef.current = event.currentTarget;
+          setMobilePanelOpenRaw(true);
+        }}
         aria-expanded={mobilePanelOpen}
         aria-controls="chat-side-panel"
         className={cn(
-          "shrink-0 rounded border border-current/20",
+          "hermes-mobile-touch-target shrink-0 rounded border border-current/20",
           "px-2 py-1 text-xs font-medium tracking-wide",
           "text-text-secondary hover:text-midground hover:bg-midground/5",
         )}
@@ -1324,28 +1325,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     narrow &&
     portalRoot &&
     createPortal(
-      <>
+      <div ref={mobilePanelRef} className="contents">
         {mobilePanelOpen && (
-          <Button
-            ghost
-            aria-label={t.app.closeModelTools}
+          <div
+            aria-hidden
             onClick={closeMobilePanel}
-            className={cn(
-              "fixed inset-0 z-[55] p-0 block",
-              "bg-black/60",
-            )}
+            className="fixed inset-0 z-[55] bg-black/60"
           />
         )}
 
         <div
           id="chat-side-panel"
-          role="complementary"
           aria-label={modelToolsLabel}
+          {...dashboardDrawerA11yProps(mobilePanelOpen)}
           className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "hermes-mobile-sidebar font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh min-w-0 flex-col antialiased",
+            DASHBOARD_MOBILE_DRAWER_WIDTH,
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",
+            "motion-reduce:transition-none",
             "[background:var(--component-sidebar-background)]",
             "[clip-path:var(--component-sidebar-clip-path)]",
             "[border-image:var(--component-sidebar-border-image)]",
@@ -1373,7 +1372,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className="text-text-secondary hover:text-midground"
+              className="hermes-mobile-touch-target text-text-secondary hover:text-midground"
             >
               <X />
             </Button>
@@ -1401,7 +1400,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             />
           </div>
         </div>
-      </>,
+      </div>,
       portalRoot,
     );
 
@@ -1482,7 +1481,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "rounded border border-current/30",
               "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
+              "transition-opacity duration-150 motion-reduce:transition-none",
               "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}

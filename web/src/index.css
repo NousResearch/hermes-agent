@@ -95,7 +95,9 @@ html {
   font-size: var(--theme-base-size);
   line-height: var(--theme-line-height);
   letter-spacing: var(--theme-letter-spacing);
+  height: 100vh;
   height: 100dvh;
+  max-height: 100vh;
   max-height: 100dvh;
   overflow: hidden;
 }
@@ -129,15 +131,122 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   overflow: hidden;
 }
 
-@media (max-width: 768px) {
+.hermes-app-shell {
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+}
+
+@media (max-width: 1023px) {
   html,
   body,
   #root {
+    min-height: 100vh;
     min-height: 100dvh;
     height: auto;
     max-height: none;
     overflow-x: hidden;
     overflow-y: auto;
+  }
+
+  .hermes-mobile-header {
+    min-height: calc(3.5rem + env(safe-area-inset-top, 0px));
+    padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
+  }
+
+  .hermes-mobile-content-offset {
+    padding-top: calc(3.5rem + env(safe-area-inset-top, 0px));
+  }
+
+  .hermes-mobile-sidebar {
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .hermes-mobile-touch-target,
+  .hermes-mobile-nav-target,
+  .hermes-mobile-profile-control button,
+  .hermes-mobile-sidebar :is(button, a, [role='button'], [role='option']) {
+    min-height: 44px;
+  }
+
+  .hermes-mobile-touch-target {
+    min-width: 44px;
+  }
+
+  .hermes-mobile-page-actions {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .hermes-mobile-page-actions > * {
+    max-width: 100%;
+  }
+
+  .hermes-mobile-page-after-title,
+  .hermes-mobile-page-after-title > * {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .hermes-mobile-page-actions :is(button, a, [role='button'], [role='tab']) {
+    min-height: 44px;
+  }
+
+  /* Shared card/detail convention: preserve dense desktop rows, but let
+     mobile titles, metadata, and header/action pairs wrap before they can
+     widen the route canvas. */
+  main :where(h1, h2, h3, p, dd, dt) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  main :where(.flex.items-center.justify-between) {
+    min-width: 0;
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+
+  main :where(.flex.items-center.justify-between) > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .hermes-modal-backdrop {
+    align-items: flex-start;
+    min-height: 100vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: calc(0.75rem + env(safe-area-inset-top, 0px)) 0.75rem
+      calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .hermes-modal-panel-viewport {
+    max-height: calc(
+      100vh - 1.5rem - env(safe-area-inset-top, 0px) -
+        env(safe-area-inset-bottom, 0px)
+    );
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  @supports (height: 100dvh) {
+    .hermes-modal-backdrop {
+      min-height: 100dvh;
+    }
+
+    .hermes-modal-panel-viewport {
+      max-height: calc(
+        100dvh - 1.5rem - env(safe-area-inset-top, 0px) -
+          env(safe-area-inset-bottom, 0px)
+      );
+    }
   }
 }
 
@@ -213,6 +322,23 @@ code { font-size: 0.875rem; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .hermes-mobile-sidebar,
+  .hermes-mobile-sidebar *,
+  .hermes-sidebar-tooltip,
+  .hermes-modal-backdrop,
+  .hermes-modal-panel-viewport,
+  [role='dialog'],
+  [role='alertdialog'],
+  [role='status'][aria-live],
+  [data-slot='dialog-overlay'] {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
+}
+
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */
 .scrollbar-none {
   -ms-overflow-style: none;
@@ -244,4 +370,3 @@ code { font-size: 0.875rem; }
   background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 /
     2px 2px;
 }
-

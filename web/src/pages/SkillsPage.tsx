@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Package,
@@ -326,7 +333,7 @@ export default function SkillsPage() {
       <div className="relative w-full min-w-0 sm:max-w-xs">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-8 rounded-none pl-8 pr-7 text-xs"
+          className="h-11 rounded-none pl-8 pr-11 text-xs sm:pr-7 lg:h-8"
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -335,7 +342,7 @@ export default function SkillsPage() {
           <Button
             ghost
             size="xs"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute right-0 top-1/2 min-h-11 min-w-11 -translate-y-1/2 text-muted-foreground hover:text-foreground sm:right-1.5 lg:min-h-0 lg:min-w-0"
             onClick={() => setSearch("")}
             aria-label={t.common.clear}
           >
@@ -382,22 +389,24 @@ export default function SkillsPage() {
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
 
-      <div className="flex flex-col sm:flex-row sm:items-start gap-4">
-        <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
-          <div className="sm:sticky sm:top-0">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <aside aria-label={t.skills.title} className="lg:w-56 lg:shrink-0">
+          <div className="lg:sticky lg:top-0">
             <div className="flex flex-col rounded-none border border-border bg-muted/20">
-              <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
+              <div className="hidden items-center gap-2 border-b border-border px-3 py-2 lg:flex">
                 <Filter className="h-3 w-3 text-text-tertiary" />
                 <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
                   {t.skills.filters}
                 </span>
               </div>
 
-              <div className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-x-visible scrollbar-none p-2">
+              <div className="scrollbar-none flex snap-x snap-mandatory gap-1 overflow-x-auto p-2 lg:flex-col lg:snap-none lg:overflow-x-visible">
                 <PanelItem
                   icon={Package}
                   label={`${t.skills.all} (${skills.length})`}
-                  active={view === "skills" && !isSearching}
+                  active={
+                    view === "skills" && !isSearching && !activeCategory
+                  }
                   onClick={() => {
                     setView("skills");
                     setActiveCategory(null);
@@ -427,37 +436,21 @@ export default function SkillsPage() {
               {view === "skills" &&
                 !isSearching &&
                 allCategories.length > 0 && (
-                  <div className="hidden sm:flex flex-col border-t border-border">
-                    <div className="px-3 pt-2 pb-1 font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary">
-                      {t.skills.categories}
-                    </div>
-                    <div className="flex flex-col p-2 pt-1 gap-px max-h-[calc(100vh-340px)] overflow-y-auto">
-                      {allCategories.map(({ key, name, count }) => {
-                        const isActive = activeCategory === key;
-
-                        return (
-                          <ListItem
-                            key={key}
-                            active={isActive}
-                            onClick={() =>
-                              setActiveCategory(isActive ? null : key)
-                            }
-                            className="rounded-none px-2 py-1 text-xs"
-                          >
-                            <span className="flex-1 truncate">{name}</span>
-                            <span
-                              className={`text-xs tabular-nums ${
-                                isActive
-                                  ? "text-text-secondary"
-                                  : "text-text-tertiary"
-                              }`}
-                            >
-                              {count}
-                            </span>
-                          </ListItem>
-                        );
-                      })}
-                    </div>
+                  <div className="border-t border-border">
+                    <MobileCategoryFilters
+                      activeCategory={activeCategory}
+                      allLabel={t.skills.all}
+                      categories={allCategories}
+                      label={t.skills.categories}
+                      onChange={setActiveCategory}
+                      total={skills.length}
+                    />
+                    <DesktopCategoryFilters
+                      activeCategory={activeCategory}
+                      categories={allCategories}
+                      label={t.skills.categories}
+                      onChange={setActiveCategory}
+                    />
                   </div>
                 )}
             </div>
@@ -467,9 +460,9 @@ export default function SkillsPage() {
         <div className="flex-1 min-w-0">
           {isSearching ? (
             <Card className="rounded-none">
-              <CardHeader className="py-3 px-4">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm flex items-center gap-2">
+              <CardHeader className="px-3 py-3 sm:px-4">
+                <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
                     <Search className="h-4 w-4" />
                     {t.skills.title}
                   </CardTitle>
@@ -483,7 +476,7 @@ export default function SkillsPage() {
                   </Badge>
                 </div>
               </CardHeader>
-              <CardContent className="px-4 pb-4">
+              <CardContent className="p-2 sm:p-4">
                 {searchMatchedSkills.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-8">
                     {t.skills.noSkillsMatch}
@@ -507,9 +500,9 @@ export default function SkillsPage() {
           ) : view === "skills" ? (
             /* Skills list */
             <Card className="rounded-none">
-              <CardHeader className="py-3 px-4">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm flex items-center gap-2">
+              <CardHeader className="px-3 py-3 sm:px-4">
+                <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
                     <Package className="h-4 w-4" />
                     {activeCategory
                       ? prettyCategory(
@@ -518,7 +511,7 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <div className="flex items-center gap-2">
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
                     <Badge tone="secondary" className="text-xs">
                       {t.skills.skillCount
                         .replace("{count}", String(activeSkills.length))
@@ -527,6 +520,7 @@ export default function SkillsPage() {
                     <Button
                       size="sm"
                       outlined
+                      className="min-h-11 flex-1 sm:flex-none lg:min-h-0"
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
@@ -535,6 +529,7 @@ export default function SkillsPage() {
                     <Button
                       size="sm"
                       outlined
+                      className="min-h-11 flex-1 sm:flex-none lg:min-h-0"
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
@@ -543,7 +538,7 @@ export default function SkillsPage() {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="px-4 pb-4">
+              <CardContent className="p-2 sm:p-4">
                 {activeSkills.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-8">
                     {skills.length === 0
@@ -583,12 +578,12 @@ export default function SkillsPage() {
 
                     return (
                       <Card key={ts.name} className="relative rounded-none">
-                        <CardContent className="py-4">
+                        <CardContent className="p-3 sm:p-4">
                           <div className="flex items-start gap-3">
                             <TsIcon className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-medium text-sm">
+                              <div className="mb-1 flex flex-wrap items-center gap-2">
+                                <span className="min-w-0 break-words text-sm font-medium">
                                   {labelText}
                                 </span>
                                 <Badge
@@ -614,7 +609,7 @@ export default function SkillsPage() {
                                     <Badge
                                       key={tool}
                                       tone="secondary"
-                                      className="text-xs font-mono"
+                                      className="max-w-full break-all font-mono text-xs"
                                     >
                                       {tool}
                                     </Badge>
@@ -635,6 +630,7 @@ export default function SkillsPage() {
                                 <Button
                                   size="sm"
                                   outlined
+                                  className="min-h-11 lg:min-h-0"
                                   onClick={() => setConfigToolset(ts)}
                                   prefix={<Wrench />}
                                 >
@@ -671,7 +667,7 @@ export default function SkillsPage() {
         onSaved={handleEditorSaved}
       />
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="hermes-modal-panel-viewport max-w-lg overflow-y-auto max-lg:[&_[data-slot=dialog-close]]:h-11 max-lg:[&_[data-slot=dialog-close]]:w-11">
           <DialogHeader>
             <DialogTitle>Learn a skill</DialogTitle>
             <DialogDescription>
@@ -714,7 +710,7 @@ export default function SkillsPage() {
               />
             </div>
           </div>
-          <div className="flex justify-end gap-2 pt-1">
+          <div className="flex justify-end gap-2 pt-1 max-lg:[&_button]:min-h-11 max-sm:[&_button]:flex-1">
             <Button ghost onClick={() => setLearnOpen(false)}>
               Cancel
             </Button>
@@ -733,7 +729,7 @@ export default function SkillsPage() {
   );
 }
 
-function SkillRow({
+export function SkillRow({
   skill,
   toggling,
   onToggle,
@@ -741,32 +737,34 @@ function SkillRow({
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
-    <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
+    <div className="group flex min-w-0 items-start gap-2 px-2 py-2 transition-colors hover:bg-muted/40 sm:gap-3 sm:px-3 sm:py-2.5">
       <div className="pt-0.5 shrink-0">
         <Switch
+          aria-label={`${skill.name}: ${skill.enabled ? "enabled" : "disabled"}`}
+          className="relative before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] sm:before:inset-0"
           checked={skill.enabled}
           onCheckedChange={onToggle}
           disabled={toggling}
         />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-0.5">
+        <div className="mb-0.5 flex min-w-0 items-center gap-2">
           <span
-            className={`font-mono-ui text-sm ${
+            className={`min-w-0 break-words font-mono-ui text-sm ${
               skill.enabled ? "text-foreground" : "text-muted-foreground"
             }`}
           >
             {skill.name}
           </span>
         </div>
-        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+        <p className="line-clamp-none text-xs leading-relaxed text-muted-foreground sm:line-clamp-2">
           {skill.description || noDescriptionLabel}
         </p>
       </div>
       <Button
         ghost
         size="icon"
-        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+        className="min-h-11 min-w-11 shrink-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 lg:min-h-0 lg:min-w-0 [@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11 [@media(hover:none)]:opacity-100"
         title="Edit SKILL.md"
         aria-label={`Edit ${skill.name}`}
         onClick={onEdit}
@@ -781,9 +779,10 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
   return (
     <ListItem
       active={active}
+      aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "rounded-none whitespace-nowrap px-2.5 py-1.5",
+        "min-h-11 w-auto shrink-0 snap-start rounded-none whitespace-nowrap px-2.5 py-1.5 lg:min-h-0 lg:w-full lg:snap-none",
         "font-mondwest text-[0.7rem] tracking-[0.08em] uppercase",
         active && "bg-foreground/90 text-background hover:text-background",
       )}
@@ -791,6 +790,116 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
       <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="flex-1 truncate">{label}</span>
     </ListItem>
+  );
+}
+
+interface SkillCategory {
+  key: string;
+  name: string;
+  count: number;
+}
+
+export function MobileCategoryFilters({
+  activeCategory,
+  allLabel,
+  categories,
+  label,
+  onChange,
+  total,
+}: {
+  activeCategory: string | null;
+  allLabel: string;
+  categories: SkillCategory[];
+  label: string;
+  onChange: (category: string | null) => void;
+  total: number;
+}) {
+  const labelId = useId();
+
+  return (
+    <div className="lg:hidden">
+      <span id={labelId} className="sr-only">
+        {label}
+      </span>
+      <div
+        aria-labelledby={labelId}
+        className="scrollbar-none flex snap-x snap-mandatory gap-1.5 overflow-x-auto p-2"
+        role="group"
+      >
+        <ListItem
+          active={activeCategory === null}
+          aria-pressed={activeCategory === null}
+          className="min-h-11 w-auto shrink-0 snap-start rounded-none px-3 py-2 text-xs"
+          onClick={() => onChange(null)}
+        >
+          <span>{allLabel}</span>
+          <span className="tabular-nums text-text-tertiary">{total}</span>
+        </ListItem>
+        {categories.map(({ key, name, count }) => {
+          const isActive = activeCategory === key;
+          return (
+            <ListItem
+              key={key}
+              active={isActive}
+              aria-pressed={isActive}
+              className="min-h-11 w-auto max-w-[15rem] shrink-0 snap-start rounded-none px-3 py-2 text-xs"
+              onClick={() => onChange(isActive ? null : key)}
+            >
+              <span className="min-w-0 whitespace-normal break-words text-left">
+                {name}
+              </span>
+              <span className="shrink-0 tabular-nums text-text-tertiary">
+                {count}
+              </span>
+            </ListItem>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DesktopCategoryFilters({
+  activeCategory,
+  categories,
+  label,
+  onChange,
+}: {
+  activeCategory: string | null;
+  categories: SkillCategory[];
+  label: string;
+  onChange: (category: string | null) => void;
+}) {
+  return (
+    <div className="hidden flex-col lg:flex">
+      <div className="px-3 pb-1 pt-2 font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary">
+        {label}
+      </div>
+      <div className="flex max-h-[calc(100dvh-340px)] flex-col gap-px overflow-y-auto p-2 pt-1">
+        {categories.map(({ key, name, count }) => {
+          const isActive = activeCategory === key;
+          return (
+            <ListItem
+              key={key}
+              active={isActive}
+              aria-pressed={isActive}
+              className="rounded-none px-2 py-1 text-xs"
+              onClick={() => onChange(isActive ? null : key)}
+            >
+              <span className="flex-1 truncate">{name}</span>
+              <span
+                className={cn(
+                  "text-xs tabular-nums",
+                  isActive ? "text-text-secondary" : "text-text-tertiary",
+                )}
+              >
+                {count}
+              </span>
+            </ListItem>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -855,7 +964,7 @@ const SEVERITY_TONE: Record<string, "destructive" | "warning" | "secondary" | "o
   low: "secondary",
 };
 
-function HubBrowser({
+export function HubBrowser({
   showToast,
   profile,
 }: {
@@ -1004,11 +1113,11 @@ function HubBrowser({
       {/* ── Search bar ── */}
       <Card className="rounded-none">
         <CardContent className="py-4 flex flex-col gap-3">
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative min-w-0 flex-1">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                className="h-8 pl-8 text-sm"
+                className="h-11 pl-8 text-sm lg:h-8"
                 placeholder="Search the skill hub (GitHub, official, community)…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -1017,22 +1126,29 @@ function HubBrowser({
                 }}
               />
             </div>
-            <Button
-              size="sm"
-              onClick={() => void runSearch()}
-              disabled={searching || !query.trim()}
-              prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
+            <div
+              className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0"
+              data-skills-hub-search-actions
             >
-              Search
-            </Button>
-            <Button
-              size="sm"
-              outlined
-              onClick={() => void updateAll()}
-              prefix={<RefreshCw className="h-3.5 w-3.5" />}
-            >
-              Update all
-            </Button>
+              <Button
+                size="sm"
+                className="min-h-11 lg:min-h-0"
+                onClick={() => void runSearch()}
+                disabled={searching || !query.trim()}
+                prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
+              >
+                Search
+              </Button>
+              <Button
+                size="sm"
+                outlined
+                className="min-h-11 lg:min-h-0"
+                onClick={() => void updateAll()}
+                prefix={<RefreshCw className="h-3.5 w-3.5" />}
+              >
+                Update all
+              </Button>
+            </div>
           </div>
 
           {/* Connected hubs strip — proves the tab is wired up. */}
@@ -1080,7 +1196,7 @@ function HubBrowser({
             </div>
           ) : featured.length > 0 ? (
             <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2 px-1">
+              <div className="flex flex-wrap items-center gap-2 px-1">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
                 <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
                   Featured skills
@@ -1252,7 +1368,7 @@ function SearchMeta({
 }
 
 /* ---- One result card ---- */
-function HubResultCard({
+export function HubResultCard({
   result,
   installed,
   onOpen,
@@ -1266,21 +1382,21 @@ function HubResultCard({
   const trust = trustVisual(result.trust_level);
   return (
     <Card className="rounded-none transition-colors hover:bg-muted/30">
-      <CardContent className="py-3 flex items-start gap-3">
+      <CardContent className="flex flex-col items-stretch gap-2 p-3 sm:flex-row sm:items-start sm:gap-3 sm:px-4 sm:py-3">
         <button
           type="button"
-          className="flex-1 min-w-0 text-left"
+          className="min-h-11 min-w-0 flex-1 text-left"
           onClick={onOpen}
           aria-label={`Open ${result.name}`}
         >
           <div className="flex flex-wrap items-center gap-2 mb-0.5">
-            <span className="font-mono-ui text-sm hover:underline">
+            <span className="min-w-0 break-words font-mono-ui text-sm hover:underline">
               {result.name}
             </span>
-            <Badge tone={trust.tone} className="text-xs">
+            <Badge tone={trust.tone} className="max-w-full break-all text-xs">
               {trust.label}
             </Badge>
-            <Badge tone="secondary" className="text-xs">
+            <Badge tone="secondary" className="max-w-full break-all text-xs">
               {result.source}
             </Badge>
             {installed && (
@@ -1289,39 +1405,44 @@ function HubResultCard({
               </Badge>
             )}
           </div>
-          <p className="text-xs text-text-secondary line-clamp-2">
+          <p className="line-clamp-none text-xs text-text-secondary sm:line-clamp-2">
             {result.description}
           </p>
           <div className="flex flex-wrap items-center gap-1 mt-1">
             {result.tags.slice(0, 5).map((tag) => (
               <span
                 key={tag}
-                className="text-[0.65rem] font-mono text-text-tertiary border border-border px-1 py-px"
+                className="max-w-full break-all border border-border px-1 py-px font-mono text-[0.65rem] text-text-tertiary"
               >
                 {tag}
               </span>
             ))}
           </div>
-          <p className="text-xs font-mono text-text-tertiary truncate mt-1">
+          <p className="mt-1 break-all font-mono text-xs text-text-tertiary lg:truncate">
             {result.identifier}
           </p>
         </button>
-        <div className="flex shrink-0 flex-col gap-1.5">
+        <div
+          className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-col sm:gap-1.5"
+          data-hub-card-actions
+        >
           <Button
             size="sm"
             outlined
+            className="min-h-11 lg:min-h-0"
             onClick={onOpen}
             prefix={<FileText className="h-3.5 w-3.5" />}
           >
             Details
           </Button>
           {installed ? (
-            <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+            <Button className="min-h-11 lg:min-h-0" size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
               Installed
             </Button>
           ) : (
             <Button
               size="sm"
+              className="min-h-11 lg:min-h-0"
               onClick={onInstall}
               prefix={<Download className="h-3.5 w-3.5" />}
             >
@@ -1335,7 +1456,7 @@ function HubResultCard({
 }
 
 /* ---- Detail dialog: SKILL.md preview + on-demand security scan ---- */
-function SkillDetailDialog({
+export function SkillDetailDialog({
   result,
   installed,
   onClose,
@@ -1354,6 +1475,8 @@ function SkillDetailDialog({
   const [scan, setScan] = useState<SkillHubScan | null>(null);
   const [scanning, setScanning] = useState(false);
   const trust = trustVisual(result.trust_level);
+  const readmePanelId = useId();
+  const scanPanelId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -1385,11 +1508,11 @@ function SkillDetailDialog({
 
   return (
     <Dialog open onOpenChange={(o: boolean) => !o && onClose()}>
-      <DialogContent className="max-w-3xl rounded-none">
+      <DialogContent className="hermes-modal-panel-viewport h-[calc(100dvh-1.5rem)] max-w-3xl grid-rows-[auto_auto_auto_minmax(0,1fr)] overflow-hidden rounded-none lg:h-auto max-lg:[&_[data-slot=dialog-close]]:h-11 max-lg:[&_[data-slot=dialog-close]]:w-11">
         <DialogHeader>
-          <DialogTitle className="flex flex-wrap items-center gap-2 text-sm">
+          <DialogTitle className="flex min-w-0 flex-wrap items-center gap-2 pr-9 text-sm">
             <Package className="h-4 w-4" />
-            {result.name}
+            <span className="min-w-0 break-words">{result.name}</span>
             <Badge tone={trust.tone} className="text-xs">
               {trust.label}
             </Badge>
@@ -1408,57 +1531,70 @@ function SkillDetailDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="mt-1 flex flex-col gap-1">
+        <div className="mt-1 flex min-w-0 flex-col gap-1 px-3 sm:px-0">
           <p className="text-xs text-text-secondary">{result.description}</p>
-          <p className="text-xs font-mono text-text-tertiary truncate">
+          <p className="break-all font-mono text-xs text-text-tertiary lg:truncate">
             {result.identifier}
           </p>
         </div>
 
         {/* Action row */}
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-y border-border py-2.5">
-          <Button
-            size="sm"
-            outlined={tab !== "readme"}
-            onClick={() => setTab("readme")}
-            prefix={<FileText className="h-3.5 w-3.5" />}
-          >
-            Read SKILL.md
-          </Button>
-          <Button
-            size="sm"
-            outlined={tab !== "scan"}
-            onClick={() => void runScan()}
-            disabled={scanning}
-            prefix={
-              scanning ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Shield className="h-3.5 w-3.5" />
-              )
-            }
-          >
-            {scan ? "Re-scan" : "Security scan"}
-          </Button>
-          <div className="ml-auto flex items-center gap-3">
+        <div className="mt-3 flex flex-col items-stretch gap-2 border-y border-border px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:px-0">
+          <div className="grid grid-cols-2 gap-2" role="tablist" aria-label="Skill details">
+            <Button
+              size="sm"
+              className="min-h-11 lg:min-h-0"
+              outlined={tab !== "readme"}
+              onClick={() => setTab("readme")}
+              prefix={<FileText className="h-3.5 w-3.5" />}
+              role="tab"
+              id={`${readmePanelId}-tab`}
+              aria-controls={readmePanelId}
+              aria-selected={tab === "readme"}
+            >
+              Read SKILL.md
+            </Button>
+            <Button
+              size="sm"
+              className="min-h-11 lg:min-h-0"
+              outlined={tab !== "scan"}
+              onClick={() => void runScan()}
+              disabled={scanning}
+              prefix={
+                scanning ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Shield className="h-3.5 w-3.5" />
+                )
+              }
+              role="tab"
+              id={`${scanPanelId}-tab`}
+              aria-controls={scanPanelId}
+              aria-selected={tab === "scan"}
+            >
+              {scan ? "Re-scan" : "Security scan"}
+            </Button>
+          </div>
+          <div className="flex min-w-0 flex-col items-stretch gap-2 sm:ml-auto sm:flex-row sm:items-center sm:gap-3">
             {result.repo && (
               <a
                 href={`https://github.com/${result.repo}`}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                className="inline-flex min-h-11 min-w-0 items-center gap-1 break-all text-xs text-primary hover:underline lg:min-h-0"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
                 {result.repo}
               </a>
             )}
             {installed ? (
-              <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+              <Button className="min-h-11 lg:min-h-0" size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
                 Installed
               </Button>
             ) : (
               <Button
                 size="sm"
+                className="min-h-11 lg:min-h-0"
                 onClick={onInstall}
                 prefix={<Download className="h-3.5 w-3.5" />}
               >
@@ -1469,7 +1605,15 @@ function SkillDetailDialog({
         </div>
 
         {/* Body */}
-        <div className="mt-3 max-h-[55vh] overflow-auto">
+        <div
+          id={tab === "readme" ? readmePanelId : scanPanelId}
+          aria-labelledby={
+            tab === "readme" ? `${readmePanelId}-tab` : `${scanPanelId}-tab`
+          }
+          className="mt-3 min-h-0 overflow-auto px-3 pb-3 lg:max-h-[55vh] lg:px-0 lg:pb-0"
+          role="tabpanel"
+          tabIndex={0}
+        >
           {tab === "readme" ? (
             previewLoading ? (
               <div className="flex items-center justify-center py-12">
@@ -1494,7 +1638,9 @@ function SkillDetailDialog({
                     <span className="font-mondwest tracking-[0.1em] uppercase">
                       Files:{" "}
                     </span>
-                    <span className="font-mono">{preview.files.join("  ")}</span>
+                    <span className="break-all font-mono">
+                      {preview.files.join("  ")}
+                    </span>
                   </div>
                 )}
                 <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
@@ -1619,7 +1765,7 @@ function ScanPanel({
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs font-medium">{f.category}</span>
-                  <span className="text-xs font-mono text-text-tertiary truncate">
+                  <span className="break-all font-mono text-xs text-text-tertiary lg:truncate">
                     {f.file}:{f.line}
                   </span>
                 </div>

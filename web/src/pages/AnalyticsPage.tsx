@@ -249,7 +249,32 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto">
+        <div className="divide-y divide-border/60 lg:hidden" data-testid="analytics-daily-mobile-list">
+          {sorted.map((day) => (
+            <article key={day.day} className="grid gap-2 py-3 first:pt-0 last:pb-0">
+              <h3 className="font-medium">{formatDate(day.day)}</h3>
+              <dl className="grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <dt className="text-muted-foreground">{t.sessions.title}</dt>
+                  <dd className="mt-0.5 tabular-nums">{day.sessions}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t.analytics.input}</dt>
+                  <dd className="mt-0.5 tabular-nums" style={{ color: "var(--series-input-token)" }}>
+                    {formatTokens(day.input_tokens)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t.analytics.output}</dt>
+                  <dd className="mt-0.5 tabular-nums" style={{ color: "var(--series-output-token)" }}>
+                    {formatTokens(day.output_tokens)}
+                  </dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
+        <div className="hidden overflow-x-auto lg:block" data-testid="analytics-daily-desktop-table">
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
@@ -308,7 +333,28 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto">
+        <div className="divide-y divide-border/60 lg:hidden" data-testid="analytics-model-mobile-list">
+          {sorted.map((model) => (
+            <article key={model.model} className="grid gap-2 py-3 first:pt-0 last:pb-0">
+              <h3 className="break-all font-mono-ui text-xs">{model.model}</h3>
+              <dl className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <dt className="text-muted-foreground">{t.sessions.title}</dt>
+                  <dd className="mt-0.5 tabular-nums">{model.sessions}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t.analytics.tokens}</dt>
+                  <dd className="mt-0.5 tabular-nums">
+                    <span style={{ color: "var(--series-input-token)" }}>{formatTokens(model.input_tokens)}</span>
+                    {" / "}
+                    <span style={{ color: "var(--series-output-token)" }}>{formatTokens(model.output_tokens)}</span>
+                  </dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
+        <div className="hidden overflow-x-auto lg:block" data-testid="analytics-model-desktop-table">
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
@@ -363,7 +409,32 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto">
+        <div className="divide-y divide-border/60 lg:hidden" data-testid="analytics-skill-mobile-list">
+          {sorted.map((skill) => (
+            <article key={skill.skill} className="grid gap-2 py-3 first:pt-0 last:pb-0">
+              <h3 className="break-all font-mono-ui text-xs">{skill.skill}</h3>
+              <dl className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <dt className="text-muted-foreground">{t.analytics.loads}</dt>
+                  <dd className="mt-0.5 tabular-nums">{skill.view_count}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t.analytics.edits}</dt>
+                  <dd className="mt-0.5 tabular-nums">{skill.manage_count}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t.analytics.total}</dt>
+                  <dd className="mt-0.5 tabular-nums">{skill.total_count}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t.analytics.lastUsed}</dt>
+                  <dd className="mt-0.5">{skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}</dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
+        <div className="hidden overflow-x-auto lg:block" data-testid="analytics-skill-desktop-table">
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
@@ -450,6 +521,7 @@ export default function AnalyticsPage() {
               key={p.label}
               type="button"
               size="sm"
+              className="min-h-11 lg:min-h-0"
               outlined={days !== p.days}
               onClick={() => setDays(p.days)}
             >
@@ -460,7 +532,7 @@ export default function AnalyticsPage() {
             type="button"
             ghost
             size="icon"
-            className="text-muted-foreground hover:text-foreground"
+            className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
             onClick={load}
             disabled={loading}
             aria-label={t.common.refresh}
@@ -482,7 +554,7 @@ export default function AnalyticsPage() {
   }, [load]);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-4 sm:gap-6">
       <PluginSlot name="analytics:top" />
 
       {showTokens === false && (

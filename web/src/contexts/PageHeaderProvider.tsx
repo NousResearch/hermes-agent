@@ -56,24 +56,24 @@ export function PageHeaderProvider({
             "z-1 w-full shrink-0",
             "box-border border-b border-current/20",
             "bg-background-base",
-            // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
-            "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
+            // Mobile/tablet stacks title + toolbar; the desktop shell stays one row.
+            "min-h-0 overflow-x-hidden overflow-y-visible py-3 lg:h-14 lg:min-h-[3.5rem] lg:overflow-hidden lg:py-0",
           )}
           role="banner"
         >
           <div
             className={cn(
-              "flex w-full min-w-0 flex-1 gap-3 px-3 sm:h-full sm:gap-3 sm:px-6",
+              "flex w-full min-w-0 flex-1 gap-3 px-3 sm:gap-3 sm:px-6 lg:h-full",
               isChatRoute
                 ? "flex-row items-center"
-                : "flex-col justify-center sm:flex-row sm:items-center",
+                : "flex-col justify-center lg:flex-row lg:items-center",
             )}
           >
             <div
               className={cn(
                 "flex min-w-0 flex-1 gap-2 sm:gap-3",
                 afterTitle && isEnvRoute
-                  ? "flex-col items-start sm:flex-row sm:items-center"
+                  ? "flex-col items-start lg:flex-row lg:items-center"
                   : afterTitle
                     ? "flex-row flex-wrap items-center"
                     : "flex-row items-center",
@@ -83,7 +83,7 @@ export function PageHeaderProvider({
                 className={cn(
                   "font-expanded min-w-0 text-sm font-bold tracking-[0.08em] text-midground",
                   afterTitle && isEnvRoute
-                    ? "max-w-full sm:min-w-0 sm:shrink sm:truncate"
+                    ? "max-w-full lg:min-w-0 lg:shrink lg:truncate"
                     : afterTitle
                       ? "shrink truncate"
                       : "truncate",
@@ -94,9 +94,9 @@ export function PageHeaderProvider({
               {afterTitle ? (
                 <div
                   className={cn(
-                    "min-w-0 scrollbar-none",
+                    "hermes-mobile-page-after-title min-w-0 scrollbar-none",
                     isEnvRoute
-                      ? "w-full overflow-x-auto sm:flex-1 sm:overflow-x-auto"
+                      ? "w-full overflow-x-auto lg:flex-1 lg:overflow-x-auto"
                       : "shrink-0 overflow-visible",
                   )}
                 >
@@ -108,10 +108,10 @@ export function PageHeaderProvider({
             {end ? (
               <div
                 className={cn(
-                  "flex min-w-0 sm:max-w-md sm:flex-1",
+                  "hermes-mobile-page-actions flex min-w-0 lg:max-w-md lg:flex-1",
                   isChatRoute
                     ? "w-auto shrink-0 justify-end"
-                    : "w-full justify-start sm:justify-end",
+                    : "w-full justify-start lg:justify-end",
                 )}
               >
                 {end}

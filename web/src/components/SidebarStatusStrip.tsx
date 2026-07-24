@@ -24,6 +24,7 @@ export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
       title={t.app.statusOverview}
       className={cn(
         "block text-left",
+        "hermes-mobile-nav-target",
         "px-5 pb-2 pt-0.5",
         "text-text-secondary",
         "transition-colors hover:text-midground",

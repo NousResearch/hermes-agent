@@ -32,6 +32,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { OperationalActionGroup } from "@/components/OperationalActionGroup";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
@@ -73,6 +74,94 @@ function displayPath(path: string | null | undefined): string {
 
 function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
   return Array.from(event.dataTransfer.types).includes("Files");
+}
+
+interface MobileFilesListProps {
+  entries: ManagedFileEntry[];
+  parent?: string | null;
+  onDelete(entry: ManagedFileEntry): void;
+  onDownload(entry: ManagedFileEntry): void;
+  onOpen(entry: ManagedFileEntry): void;
+  onOpenParent(): void;
+}
+
+export function MobileFilesList({
+  entries,
+  parent,
+  onDelete,
+  onDownload,
+  onOpen,
+  onOpenParent,
+}: MobileFilesListProps) {
+  return (
+    <div className="divide-y divide-border/60 lg:hidden" data-testid="files-mobile-list">
+      {parent ? (
+        <button
+          type="button"
+          onClick={onOpenParent}
+          className="flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left font-mono text-sm text-text-secondary transition hover:bg-background/40"
+        >
+          <ArrowUp className="h-4 w-4 shrink-0 text-text-tertiary" />
+          <span>Parent directory</span>
+        </button>
+      ) : null}
+
+      {entries.map((entry) => (
+        <article key={entry.path} className="min-w-0 p-3">
+          <button
+            type="button"
+            onClick={() => (entry.is_directory ? onOpen(entry) : onDownload(entry))}
+            className="flex min-h-11 w-full min-w-0 items-start gap-2 text-left font-mono text-sm text-foreground"
+          >
+            {entry.is_directory ? (
+              <Folder className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            ) : (
+              <FileIcon className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary" />
+            )}
+            <span className="min-w-0 break-all">{entry.name}</span>
+          </button>
+
+          <dl className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-text-secondary">
+            <div className="min-w-0">
+              <dt className="text-[0.6875rem] uppercase tracking-wider text-text-tertiary">Type</dt>
+              <dd>{entry.is_directory ? "Directory" : "File"}</dd>
+            </div>
+            <div className="min-w-0">
+              <dt className="text-[0.6875rem] uppercase tracking-wider text-text-tertiary">Size</dt>
+              <dd className="tabular-nums">{formatBytes(entry.size)}</dd>
+            </div>
+            <div className="col-span-2 min-w-0">
+              <dt className="text-[0.6875rem] uppercase tracking-wider text-text-tertiary">Modified</dt>
+              <dd>
+                {Number.isFinite(entry.mtime)
+                  ? DATE_FORMAT.format(entry.mtime * 1000)
+                  : "-"}
+              </dd>
+            </div>
+          </dl>
+
+          <OperationalActionGroup aria-label={`Actions for ${entry.name}`}>
+            <Button
+              ghost
+              type="button"
+              onClick={() => (entry.is_directory ? onOpen(entry) : onDownload(entry))}
+            >
+              {entry.is_directory ? <FolderOpen /> : <Download />}
+              {entry.is_directory ? "Open" : "Download"}
+            </Button>
+            <Button
+              ghost
+              destructive
+              type="button"
+              onClick={() => onDelete(entry)}
+            >
+              <Trash2 /> Delete
+            </Button>
+          </OperationalActionGroup>
+        </article>
+      ))}
+    </div>
+  );
 }
 
 export default function FilesPage() {
@@ -286,25 +375,28 @@ export default function FilesPage() {
               onChange={(event) => setPathInput(event.target.value)}
               aria-label="Path"
               placeholder="Path"
-              className="h-9 min-w-0 flex-1 font-mono"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              className="min-h-11 min-w-0 flex-1 font-mono lg:min-h-9"
             />
-            <Button type="submit" size="sm" outlined className="uppercase">
+            <Button type="submit" size="sm" outlined className="min-h-11 uppercase lg:min-h-0">
               Go
             </Button>
           </form>
         ) : (
-          <div className="min-w-0 truncate font-mono text-sm text-text-secondary" title={activePath}>
+          <div className="min-w-0 break-all font-mono text-sm text-text-secondary lg:truncate" title={activePath}>
             {activePath}
           </div>
         )}
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="grid min-w-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
           <Button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={!canUpload}
             size="sm"
             outlined
-            className="uppercase"
+            className="min-h-11 uppercase lg:min-h-0"
             prefix={uploading ? <Spinner /> : <Upload />}
           >
             Upload
@@ -315,7 +407,7 @@ export default function FilesPage() {
             disabled={!activePath}
             size="sm"
             outlined
-            className="uppercase"
+            className="min-h-11 uppercase lg:min-h-0"
             prefix={<FolderPlus />}
           >
             Create
@@ -346,7 +438,7 @@ export default function FilesPage() {
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
               {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
             </span>
-            <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
+            <span className="block break-all font-mono text-xs text-text-secondary lg:truncate" title={activePath}>
               {activePath || "Loading"}
             </span>
           </span>
@@ -357,13 +449,37 @@ export default function FilesPage() {
       </button>
 
       <Card className="min-w-0 max-w-full overflow-hidden">
-        <CardContent className="overflow-x-auto p-0">
+        <CardContent className="p-0">
           {error && (
             <div className="border-b border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
               {error}
             </div>
           )}
 
+          {loading && !listing ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+              <Spinner />
+              Loading files...
+            </div>
+          ) : listing ? (
+            <>
+              <MobileFilesList
+                entries={listing.entries}
+                parent={listing.parent}
+                onOpenParent={() => setCurrentPath(listing.parent ?? undefined)}
+                onOpen={openDirectory}
+                onDownload={(entry) => void downloadFile(entry)}
+                onDelete={setPendingDelete}
+              />
+              {listing.entries.length === 0 ? (
+                <div className="py-12 text-center text-sm text-muted-foreground lg:hidden">
+                  No files
+                </div>
+              ) : null}
+            </>
+          ) : null}
+
+          <div className="hidden overflow-x-auto lg:block" data-testid="files-desktop-table">
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
             <span>Name</span>
             <span>Size</span>
@@ -387,14 +503,7 @@ export default function FilesPage() {
             </button>
           )}
 
-          {loading && !listing ? (
-            <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-              <Spinner />
-              Loading files...
-            </div>
-          ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
-          ) : (
+          {listing ? (
             listing?.entries.map((entry) => (
               <div
                 key={entry.path}
@@ -451,7 +560,11 @@ export default function FilesPage() {
                 </span>
               </div>
             ))
-          )}
+          ) : null}
+          {listing && listing.entries.length === 0 ? (
+            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
+          ) : null}
+          </div>
         </CardContent>
       </Card>
 
@@ -465,7 +578,7 @@ export default function FilesPage() {
           if (!open) setFolderName("");
         }}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent className="hermes-modal-panel-viewport max-w-sm">
           <DialogHeader>
             <DialogTitle>Create folder</DialogTitle>
             <DialogDescription>
@@ -475,6 +588,9 @@ export default function FilesPage() {
           <div className="p-4">
             <Input
               autoFocus
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={folderName}
               onChange={(event) => setFolderName(event.target.value)}
               onKeyDown={(event) => {
@@ -484,7 +600,7 @@ export default function FilesPage() {
               disabled={creating}
             />
           </div>
-          <DialogFooter>
+          <DialogFooter className="[&_button]:min-h-11 lg:[&_button]:min-h-0">
             <Button
               type="button"
               outlined

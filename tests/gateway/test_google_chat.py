@@ -3172,8 +3172,10 @@ class TestGoogleChatStandaloneSend:
         fake_creds.token = "the-token"
         fake_creds.refresh = MagicMock(return_value=None)
 
-        original = _gc_mod.service_account.Credentials.from_service_account_info
-        _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
+        service_account = _gc_mod.service_account
+        assert service_account is not None
+        original = service_account.Credentials.from_service_account_info
+        service_account.Credentials.from_service_account_info = MagicMock(
             return_value=fake_creds
         )
         try:
@@ -3188,7 +3190,7 @@ class TestGoogleChatStandaloneSend:
                 "hello cron",
             )
         finally:
-            _gc_mod.service_account.Credentials.from_service_account_info = original
+            service_account.Credentials.from_service_account_info = original
 
         assert result == {
             "success": True,
@@ -3227,8 +3229,10 @@ class TestGoogleChatStandaloneSend:
         fake_creds.token = "the-token"
         fake_creds.refresh = MagicMock(return_value=None)
 
-        original = _gc_mod.service_account.Credentials.from_service_account_info
-        _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
+        service_account = _gc_mod.service_account
+        assert service_account is not None
+        original = service_account.Credentials.from_service_account_info
+        service_account.Credentials.from_service_account_info = MagicMock(
             return_value=fake_creds
         )
         try:
@@ -3247,7 +3251,7 @@ class TestGoogleChatStandaloneSend:
                 "hi",
             )
         finally:
-            _gc_mod.service_account.Credentials.from_service_account_info = original
+            service_account.Credentials.from_service_account_info = original
 
         assert "error" in result
         assert "403" in result["error"]

@@ -6,6 +6,7 @@ interactive setup menus.
 """
 
 import os
+from typing import Any
 
 from gateway.platform_registry import PlatformEntry, platform_registry
 
@@ -16,7 +17,7 @@ def _register_irc_platform(**overrides):
     Tests run outside the normal plugin-discovery path, so we inject the entry
     directly into the singleton registry and yield its dict shape.
     """
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         name="irc",
         label="IRC",
         adapter_factory=lambda cfg: None,

@@ -96,9 +96,22 @@ def _numstat(cwd: str, args: list[str]) -> dict[str, tuple[int, int]]:
     return counts
 
 
+def _is_read_protected_path(cwd: str, rel: str) -> bool:
+    """Return True when a git review file path targets a credential store."""
+    try:
+        from agent.file_safety import get_read_block_error
+    except Exception:
+        return False
+    raw = Path(str(rel or ""))
+    target = raw if raw.is_absolute() else Path(cwd) / raw
+    return get_read_block_error(str(target)) is not None
+
+
 def _untracked_insertions(cwd: str, rel: str) -> int:
     """Line count of an untracked file (newlines + a final unterminated line),
     so the review tree can show +N for new files. Binary / oversized → 0."""
+    if _is_read_protected_path(cwd, rel):
+        return 0
     try:
         target = Path(cwd) / rel
         st = target.stat()
@@ -153,26 +166,60 @@ def _default_branch_name(cwd: str) -> str | None:
 # ── porcelain v2 status parsing ──────────────────────────────────────────────
 
 
-def _walk_entries(raw: str):
-    """Yield (tag, xy, path) per changed file from ``git status --porcelain=v2 -z``,
-    skipping branch headers and the rename/copy origin-path records. One walker
-    feeds the rail, the review list, and the commit flow."""
+def _walk_entries_with_paths(raw: str):
+    """Yield (tag, xy, display_path, all_paths) from porcelain-v2 status.
+
+    ``display_path`` remains the destination path used by UI rows and git
+    commands. ``all_paths`` includes rename/copy origins so security filters can
+    make decisions from both sides of a move.
+    """
     records = raw.split("\0")
     i = 0
     while i < len(records):
         rec = records[i]
         tag = rec[0] if rec else ""
         if tag == "?":
-            yield "?", "??", rec[2:]
+            path = rec[2:]
+            yield "?", "??", path, (path,)
         elif tag == "u":
-            yield "u", rec.split(" ")[1], rec.split(" ", 10)[-1]
+            path = rec.split(" ", 10)[-1]
+            yield "u", rec.split(" ")[1], path, (path,)
         elif tag in ("1", "2"):
             xy = rec.split(" ")[1]
             path = rec.split(" ", 8)[-1] if tag == "1" else rec.split(" ", 9)[-1]
+            display_path = resolve_rename_path(path)
+            all_paths = (display_path,)
             if tag == "2":
-                i += 1  # rename/copy: the origin path is the next NUL record
-            yield tag, xy, resolve_rename_path(path)
+                i += 1
+                origin = records[i] if i < len(records) else ""
+                if origin and origin != display_path:
+                    all_paths = (display_path, origin)
+            yield tag, xy, display_path, all_paths
         i += 1
+
+
+def _walk_entries(raw: str):
+    """Yield (tag, xy, path) per changed file from ``git status --porcelain=v2 -z``.
+
+    The path is the destination path for rename/copy rows, matching the existing
+    UI and git-command behavior.
+    """
+    for tag, xy, path, _paths in _walk_entries_with_paths(raw):
+        yield tag, xy, path
+
+
+def _entry_has_read_protected_path(cwd: str, paths: tuple[str, ...]) -> bool:
+    return any(_is_read_protected_path(cwd, path) for path in paths)
+
+
+def _status_paths_for_display_path(cwd: str, file_path: str) -> tuple[str, ...]:
+    code, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
+    if code != 0:
+        return (file_path,)
+    for _tag, _xy, path, paths in _walk_entries_with_paths(raw):
+        if file_path == path or file_path in paths:
+            return paths
+    return (file_path,)
 
 
 def _entry_staged(tag: str, xy: str) -> bool:
@@ -308,6 +355,8 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
     if not _is_dir(cwd):
         return ""
+    if _entry_has_read_protected_path(cwd, _status_paths_for_display_path(cwd, file_path)):
+        return ""
     if scope == "branch":
         base = _branch_base(cwd)
         return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
@@ -327,6 +376,8 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
     """Working-tree-vs-HEAD diff for one file (the preview's diff view). Unlike
     review_diff, never all-adds a clean tracked file; only a genuinely untracked one."""
     if not _is_dir(cwd):
+        return ""
+    if _entry_has_read_protected_path(cwd, _status_paths_for_display_path(cwd, file_path)):
         return ""
     head = _git_out(cwd, ["diff", "HEAD", "--", file_path])
     if head.strip():
@@ -394,15 +445,28 @@ def review_commit_context(cwd: str) -> dict:
     code, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
     if code != 0:
         return {"diff": "", "recent": ""}
-    entries = list(_walk_entries(raw))
+    entries = list(_walk_entries_with_paths(raw))
 
-    has_staged = any(_entry_staged(tag, xy) for tag, xy, _ in entries)
-    diff = _git_out(cwd, ["diff", "--cached"]) if has_staged else _git_out(cwd, ["diff", "HEAD"])
+    has_staged = any(_entry_staged(tag, xy) for tag, xy, _path, _paths in entries)
+    tracked_paths = [
+        path
+        for tag, _xy, path, paths in entries
+        if tag != "?" and not _entry_has_read_protected_path(cwd, paths)
+    ]
+    if tracked_paths:
+        diff_args = ["diff", "--cached"] if has_staged else ["diff", "HEAD"]
+        diff = _git_out(cwd, [*diff_args, "--", *tracked_paths])
+    else:
+        diff = ""
     if len(diff) > _COMMIT_CONTEXT_DIFF_MAX_CHARS:
         omitted = len(diff) - _COMMIT_CONTEXT_DIFF_MAX_CHARS
         diff = f"{diff[:_COMMIT_CONTEXT_DIFF_MAX_CHARS]}\n# diff truncated: {omitted} chars omitted\n"
 
-    untracked = [path for tag, _xy, path in entries if tag == "?"]
+    untracked = [
+        path
+        for tag, _xy, path, paths in entries
+        if tag == "?" and not _entry_has_read_protected_path(cwd, paths)
+    ]
     if untracked:
         visible = untracked[:_COMMIT_CONTEXT_UNTRACKED_MAX]
         note = "\n# New (untracked) files:\n" + "".join(f"#   {p}\n" for p in visible)

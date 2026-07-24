@@ -21,6 +21,9 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _CLIENT_REQUIREMENT,
+    _PINNED_CLIENT_VERSION,
+    _client_version_supported,
     _load_config,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
@@ -500,7 +503,9 @@ class TestPostSetup:
         assert not (hermes_home / "hindsight" / "config.json").exists()
         assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
 
-    def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
+    def test_local_embedded_setup_materializes_profile_env(
+        self, tmp_path, monkeypatch, capsys
+    ):
         hermes_home = tmp_path / "hermes-home"
         user_home = tmp_path / "user-home"
         user_home.mkdir()
@@ -518,6 +523,8 @@ class TestPostSetup:
         provider = HindsightMemoryProvider()
         provider.post_setup(str(hermes_home), {"memory": {}})
 
+        output = capsys.readouterr().out
+        assert f"hindsight-all {_CLIENT_REQUIREMENT}" in output
         assert saved_configs[-1]["memory"]["provider"] == "hindsight"
         env_text = (hermes_home / ".env").read_text()
         assert "HINDSIGHT_LLM_API_KEY=sk-local-test\n" in env_text
@@ -1819,3 +1826,70 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestClientVersionGate:
+    """Provider-managed installs must converge on the reviewed exact client.
+
+    Packaging metadata governs fresh installs, while the runtime gate repairs
+    any older or newer client already present in the environment.
+    """
+
+    def test_client_requirement_is_exact_pin(self):
+        # Guards the single source of truth the install paths interpolate.
+        assert _CLIENT_REQUIREMENT == (
+            f"hindsight-client=={_PINNED_CLIENT_VERSION}"
+        )
+
+    @pytest.mark.parametrize(
+        "installed,supported",
+        [
+            ("0.6.1", False),        # the old repository pin
+            ("0.8.4", False),        # previous PR target
+            ("0.8.5", True),         # the reviewed exact pin
+            ("0.8.6", False),        # nearest future patch drift
+            ("0.9.0", False),        # previous exclusive cap
+            ("1.2.0", False),        # future major drift
+            (None, False),            # metadata missing
+            ("not-a-version", False),  # malformed
+        ],
+    )
+    def test_version_pin_membership(self, installed, supported):
+        assert _client_version_supported(installed) is supported
+
+    def _run_gate(self, monkeypatch, installed):
+        """Drive _ensure_supported_client with a faked installed version and a
+        captured subprocess.run, returning the mock for assertions."""
+        monkeypatch.setattr("importlib.metadata.version", lambda dist: installed)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv")
+        run = MagicMock()
+        monkeypatch.setattr("subprocess.run", run)
+        HindsightMemoryProvider()._ensure_supported_client()
+        return run
+
+    def test_below_pin_reinstalls_exact_spec(self, monkeypatch):
+        run = self._run_gate(monkeypatch, "0.6.1")
+        run.assert_called_once()
+        cmd = run.call_args.args[0]
+        # The exact reviewed requirement is what gets installed.
+        assert cmd[-1] == _CLIENT_REQUIREMENT
+        assert "--upgrade" in cmd
+
+    def test_above_pin_reinstalls_exact_spec(self, monkeypatch):
+        # Preserve the original >=0.9 regression case from the bounded gate.
+        run = self._run_gate(monkeypatch, "0.9.1")
+        run.assert_called_once()
+        assert run.call_args.args[0][-1] == _CLIENT_REQUIREMENT
+
+    def test_pinned_version_is_left_untouched(self, monkeypatch):
+        run = self._run_gate(monkeypatch, "0.8.5")
+        run.assert_not_called()
+
+    def test_missing_uv_does_not_crash(self, monkeypatch):
+        monkeypatch.setattr("importlib.metadata.version", lambda dist: "0.6.1")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        run = MagicMock()
+        monkeypatch.setattr("subprocess.run", run)
+        # No uv on PATH: log a hint, never attempt an install, never raise.
+        HindsightMemoryProvider()._ensure_supported_client()
+        run.assert_not_called()

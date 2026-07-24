@@ -326,6 +326,37 @@ class TestActiveFeatures:
         )
         assert "platform.slack" in ld.active_features()
 
+    def test_shared_package_does_not_make_sibling_feature_active(self, monkeypatch):
+        # Regression: several messaging adapters (discord/slack/teams/matrix)
+        # each pin `aiohttp` to a common security floor. A user who enabled
+        # Discord has aiohttp installed, but NONE of matrix's distinctive
+        # packages (mautrix, aiosqlite, asyncpg, aiohttp-socks). aiohttp alone
+        # must NOT make platform.matrix look active — otherwise `hermes update`
+        # tries to refresh Matrix and triggers a doomed mautrix[encryption]
+        # (libolm) build on a machine that never enabled Matrix.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) in {"discord.py", "brotlicffi", "aiohttp"},
+        )
+        active = ld.active_features()
+        assert "platform.discord" in active
+        assert "platform.matrix" not in active
+        assert "platform.slack" not in active
+        assert "platform.teams" not in active
+
+    def test_feature_without_distinctive_package_falls_back_to_any_present(self, monkeypatch):
+        # tts.mistral and stt.mistral both declare ONLY `mistralai`, which is
+        # shared between them — neither has a distinctive package. With no
+        # distinctive signal the check must fall back to presence-of-any so
+        # these features still register as active when mistralai is installed.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "mistralai",
+        )
+        active = ld.active_features()
+        assert "tts.mistral" in active
+        assert "stt.mistral" in active
+
 
 class TestRefreshActiveFeatures:
     def test_no_active_features_returns_empty(self, monkeypatch):

@@ -7,7 +7,7 @@ auto-approval, a malicious skill could carry an injection payload that
 executed with full tool access every tick.
 
 Fix: `_build_job_prompt` now runs the fully-assembled prompt (user
-prompt + cron hint + skill content) through the same scanner and raises
+prompt + skill content) through the same scanner and raises
 `CronPromptInjectionBlocked` on match. `run_job` catches that and
 surfaces a clean "job blocked" delivery instead of running the agent.
 """

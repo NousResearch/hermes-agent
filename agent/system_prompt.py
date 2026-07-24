@@ -28,6 +28,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
+    CRON_DELIVERY_INVARIANTS,
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
@@ -450,6 +451,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
     if _effective_hint:
         stable_parts.append(_effective_hint)
+
+    # Cron delivery invariants — the [SILENT] suppression contract
+    # cron/scheduler.py::run_job relies on, plus a reinforcing no-self-delivery
+    # reminder — are appended unconditionally here, AFTER the overridable hint
+    # above, rather than folded into PLATFORM_HINTS["cron"], so a
+    # platform_hints.cron.replace override an admin sets purely to reword the
+    # descriptive hint can't silently drop them. See
+    # agent/prompt_builder.py::CRON_DELIVERY_INVARIANTS.
+    if platform_key == "cron":
+        stable_parts.append(CRON_DELIVERY_INVARIANTS)
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []

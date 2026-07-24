@@ -4727,7 +4727,45 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     break
                 except Exception as send_err:
-                    if "reply message not found" in str(send_err).lower():
+                    err_str = str(send_err).lower()
+                    # Flood control / RetryAfter — mirror edit_message's
+                    # handling: short waits retry inline, long waits return
+                    # a clean failure so the caller can fall back instead of
+                    # cascading retries that produce duplicate messages.
+                    retry_after = getattr(send_err, "retry_after", None)
+                    if retry_after is not None or "retry after" in err_str:
+                        wait = retry_after if retry_after else 1.0
+                        logger.warning(
+                            "[%s] Overflow continuation flood control, waiting %.1fs",
+                            self.name, wait,
+                        )
+                        if wait > 5.0:
+                            logger.warning(
+                                "[%s] Overflow split: flood control wait too long (%.0fs), stopping",
+                                self.name, wait,
+                            )
+                            sent_msg = None
+                            break
+                        await asyncio.sleep(wait)
+                        try:
+                            text = _strip_mdv2(chunk) if finalize else chunk
+                            sent_msg = await self._bot.send_message(
+                                chat_id=normalize_telegram_chat_id(chat_id),
+                                text=text,
+                                reply_to_message_id=reply_to_id,
+                                **thread_kwargs,
+                                **self._link_preview_kwargs(),
+                                **self._notification_kwargs(metadata),
+                            )
+                            break
+                        except Exception as retry_err:
+                            logger.warning(
+                                "[%s] Overflow continuation retry after flood wait failed: %s",
+                                self.name, _redact_telegram_error_text(retry_err),
+                            )
+                            sent_msg = None
+                            break
+                    if "reply message not found" in err_str:
                         # Drop the reply anchor and try again.  Private DM
                         # topic fallback needs the anchor and topic id together;
                         # forum topics can still safely keep message_thread_id.

@@ -55,6 +55,7 @@ import {
   setMessages
 } from '@/store/session'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import { armWakeWord } from '@/store/wake-word'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -701,7 +702,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (gatewayState === 'open') {
-      void requestGateway('wake.start', { surface: 'gui' }).catch(() => undefined)
+      // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
+      // same listener this auto-arm claims.
+      void armWakeWord(requestGateway)
     }
   }, [gatewayState, requestGateway])
 

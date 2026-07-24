@@ -3255,12 +3255,19 @@ class BasePlatformAdapter(ABC):
 
         coro = _run_delete()
         try:
-            asyncio.create_task(coro)
+            task = asyncio.create_task(coro)
         except RuntimeError:
             # No running loop (e.g. unit tests that never reach the async
             # path).  Close the coroutine cleanly so Python doesn't warn
             # about it never being awaited, then drop silently.
             coro.close()
+            return
+        # CPython only holds a weak reference to running tasks; without
+        # retaining we risk "Task was destroyed but it is pending!" and
+        # silent ephemeral-delete drops mid-flight.  Mirror the pattern
+        # used in handle_message and gateway/platforms/sms.py.
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def send_slash_confirm(
         self,

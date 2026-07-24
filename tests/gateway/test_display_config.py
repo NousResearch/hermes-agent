@@ -295,18 +295,28 @@ class TestPlatformDefaults:
         for plat in ("email", "sms", "webhook", "homeassistant"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
-    def test_low_tier_streaming_defaults_to_false(self):
-        """Low-tier platforms default streaming to False."""
+    def test_streaming_returns_none_only_for_wecom(self):
+        """Streaming returns None only for WeCom when no explicit override.
+        
+        WeCom uses native stream API and needs to follow the top-level
+        streaming config. Other low-tier platforms keep their default
+        False behavior from platform tier defaults.
+        High-tier platforms (telegram, discord) already have None in
+        their tier defaults, so they also return None.
+        """
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "signal", "streaming") is False
-        assert resolve_display_setting({}, "email", "streaming") is False
-
-    def test_high_tier_streaming_defaults_to_none(self):
-        """High-tier platforms default streaming to None (follow global)."""
-        from gateway.display_config import resolve_display_setting
-
+        # WeCom: special-cased to return None (follow global config)
+        assert resolve_display_setting({}, "wecom", "streaming") is None
+        # High-tier platforms: tier default is already None
         assert resolve_display_setting({}, "telegram", "streaming") is None
+        assert resolve_display_setting({}, "discord", "streaming") is None
+        # Other low-tier platforms: fall through to tier default (False)
+        assert resolve_display_setting({}, "signal", "streaming") is False
+        assert resolve_display_setting({}, "dingtalk", "streaming") is False
+        assert resolve_display_setting({}, "bluebubbles", "streaming") is False
+        # Minimal tier platforms: fall through to tier default (False)
+        assert resolve_display_setting({}, "email", "streaming") is False
 
     def test_telegram_mobile_chatter_defaults(self):
         """Telegram keeps real mid-turn signal (interim commentary + heartbeats)

@@ -167,6 +167,133 @@ class TestResolveProxyUrl:
         assert resolve_proxy_url() == "http://proxy.example:8080"
 
 
+class TestBuildPlatformStreamConsumer:
+    def test_wecom_uses_shared_draft_consumer_when_platform_is_non_editable(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        source.chat_id = "wecom-chat"
+        adapter = MagicMock(
+            SUPPORTS_MESSAGE_EDITING=False,
+        )
+        adapter.stream_metadata_for_reply_to.return_value = {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
+        adapter.supports_draft_streaming.return_value = True
+        scfg = StreamingConfig()
+
+        with patch("gateway.stream_consumer.GatewayStreamConsumer") as mock_consumer_cls:
+            mock_consumer = MagicMock()
+            mock_consumer.on_delta = MagicMock()
+            mock_consumer_cls.return_value = mock_consumer
+
+            consumer, delta_cb = runner._build_platform_stream_consumer(
+                source=source,
+                adapter=adapter,
+                scfg=scfg,
+                metadata=None,
+                want_stream_deltas=True,
+            )
+
+        mock_consumer_cls.assert_called_once()
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["metadata"] == {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
+        assert kwargs["config"].transport == "auto"
+        assert consumer is mock_consumer
+        assert delta_cb == mock_consumer.on_delta
+
+    def test_wecom_skips_streaming_without_draft_metadata(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=False)
+        adapter.stream_metadata_for_reply_to.return_value = None
+        scfg = StreamingConfig()
+
+        consumer, delta_cb = runner._build_platform_stream_consumer(
+            source=source,
+            adapter=adapter,
+            scfg=scfg,
+            metadata=None,
+            want_stream_deltas=True,
+        )
+
+        assert consumer is None
+        assert delta_cb is None
+
+    def test_resolve_reasoning_stream_callback_records_wecom_reasoning(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        adapter = MagicMock()
+        consumer = MagicMock(
+            adapter=adapter,
+            metadata={
+                "wecom_reply_req_id": "req-123",
+                "wecom_stream_id": "stream-123",
+            },
+        )
+
+        with patch("gateway.run._load_gateway_config", return_value={
+            "display": {"platforms": {"wecom": {"show_reasoning": True}}}
+        }):
+            callback = runner._resolve_reasoning_stream_callback(
+                source=source,
+                stream_consumer=consumer,
+            )
+
+        assert callable(callback)
+        callback("model reasoning")
+        adapter.record_stream_reasoning.assert_called_once_with(
+            "req-123",
+            "stream-123",
+            "model reasoning",
+        )
+
+    def test_non_editable_non_wecom_platform_skips_generic_streaming(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.QQBOT)
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=False)
+        scfg = StreamingConfig()
+
+        consumer, delta_cb = runner._build_platform_stream_consumer(
+            source=source,
+            adapter=adapter,
+            scfg=scfg,
+            metadata=None,
+            want_stream_deltas=True,
+        )
+
+        assert consumer is None
+        assert delta_cb is None
+
+    def test_telegram_passes_fresh_final_setting_to_generic_consumer(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.TELEGRAM)
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=True)
+        scfg = StreamingConfig()
+        scfg.fresh_final_after_seconds = 12.5
+
+        with patch("gateway.stream_consumer.GatewayStreamConsumer") as mock_consumer_cls:
+            mock_consumer = MagicMock()
+            mock_consumer.on_delta = MagicMock()
+            mock_consumer_cls.return_value = mock_consumer
+
+            consumer, delta_cb = runner._build_platform_stream_consumer(
+                source=source,
+                adapter=adapter,
+                scfg=scfg,
+                metadata=None,
+                want_stream_deltas=True,
+            )
+
+        assert consumer is mock_consumer
+        assert delta_cb == mock_consumer.on_delta
+        cfg = mock_consumer_cls.call_args.kwargs["config"]
+        assert cfg.fresh_final_after_seconds == 12.5
+
+
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""
 
@@ -492,6 +619,55 @@ class TestRunAgentViaProxy:
                     )
 
         assert "Authorization" not in session.captured_headers
+
+    @pytest.mark.asyncio
+    async def test_wecom_proxy_uses_shared_draft_stream_consumer(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=False, send_typing=AsyncMock())
+        adapter.stream_metadata_for_reply_to.return_value = {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
+        adapter.supports_draft_streaming.return_value = True
+        runner.adapters[Platform.WECOM] = adapter
+        runner.config.streaming.enabled = True
+        runner.config.streaming.transport = "auto"
+        source = _make_source(platform=Platform.WECOM)
+        source.chat_id = "wecom-chat"
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with patch("gateway.stream_consumer.GatewayStreamConsumer") as mock_consumer_cls:
+                        mock_consumer = MagicMock()
+                        mock_consumer.run = AsyncMock()
+                        mock_consumer.finish = MagicMock()
+                        mock_consumer.on_delta = MagicMock()
+                        mock_consumer_cls.return_value = mock_consumer
+
+                        result = await runner._run_agent_via_proxy(
+                            message="hi",
+                            context_prompt="",
+                            history=[],
+                            source=source,
+                            session_id="sess-1",
+                        )
+
+        mock_consumer_cls.assert_called_once()
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["metadata"] == {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
+        assert result["final_response"] == "ok"
 
     @pytest.mark.asyncio
     async def test_no_system_message_when_context_empty(self, monkeypatch):

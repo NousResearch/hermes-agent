@@ -96,10 +96,55 @@ def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
         elapsed = time.time() - t0
         assert "TTFB" in str(excinfo.value)
         assert "codex_ttfb_kill" in closes
+        assert getattr(agent, "_active_codex_stream_request_token", None) is None
         # ~1s cutoff + 2s join grace; must be far under the 60s stale timeout.
         assert elapsed < 15, f"TTFB watchdog took {elapsed:.1f}s"
     finally:
         stop["flag"] = True
+
+
+def test_ttfb_retired_worker_error_does_not_replace_timeout(tmp_path, monkeypatch):
+    """A retired Codex worker may still unwind after the watchdog fires.
+
+    Its local stream error must not replace the watchdog's retryable TimeoutError;
+    otherwise the outer retry path sees the wrong failure and can leave stale
+    stream callbacks active.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if getattr(agent, "_active_codex_stream_request_token", None) is None:
+                raise RuntimeError("retired worker stream ended without terminal")
+            time.sleep(0.02)
+        raise RuntimeError("test timed out waiting for retirement")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    with pytest.raises(TimeoutError) as excinfo:
+        h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert "TTFB" in str(excinfo.value)
+    assert "retired worker" not in str(excinfo.value)
+    assert "codex_ttfb_kill" in closes
 
 
 def test_ttfb_default_tolerates_slow_first_event(tmp_path, monkeypatch):

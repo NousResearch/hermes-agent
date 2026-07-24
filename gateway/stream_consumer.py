@@ -301,6 +301,7 @@ class GatewayStreamConsumer:
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
+        self._draft_streaming_selected = False
         self._before_finalize_notified = False
 
     def _metadata_for_send(
@@ -694,6 +695,7 @@ class GatewayStreamConsumer:
         # final answer as a regular sendMessage (drafts have no message_id
         # to edit).
         self._use_draft_streaming = self._resolve_draft_streaming()
+        self._draft_streaming_selected = self._use_draft_streaming
         if self._use_draft_streaming:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
@@ -807,6 +809,74 @@ class GatewayStreamConsumer:
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
                     ):
+                        if (
+                            self._draft_streaming_selected
+                            and got_done
+                            and commentary_text is None
+                        ):
+                            self._final_response_sent = await self._send_or_edit(
+                                self._accumulated,
+                                finalize=True,
+                            )
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
+                            elif self._fallback_final_send:
+                                await self._send_fallback_final(self._accumulated)
+                            return
+
+                        # Native drafts are replaceable previews, not durable
+                        # message chunks. While generation is still in
+                        # progress, keep the complete accumulated response for
+                        # finalization and update only a safe-size preview.
+                        # Sending non-final chunks through adapter.send() can
+                        # be rejected by non-editable transports such as
+                        # WeCom; clearing _accumulated afterward used to drop
+                        # every prefix that crossed the message limit.
+                        if (
+                            self._use_draft_streaming
+                            and not got_done
+                            and not got_segment_break
+                            and commentary_text is None
+                        ):
+                            preview_chunks = self.adapter.truncate_message(
+                                self._accumulated,
+                                _safe_limit,
+                                len_fn=_len_fn,
+                            )
+                            preview = preview_chunks[0] if preview_chunks else ""
+                            draft_ok = bool(
+                                preview and await self._send_draft_frame(preview)
+                            )
+                            self._last_edit_time = time.monotonic()
+                            if (
+                                draft_ok
+                                or getattr(
+                                    self.adapter,
+                                    "SUPPORTS_MESSAGE_EDITING",
+                                    True,
+                                ) is False
+                            ):
+                                await asyncio.sleep(0.05)
+                                continue
+
+                        # A non-editable adapter whose native draft transport
+                        # failed has no valid non-final delivery path. Keep
+                        # buffering until got_done instead of attempting
+                        # permanent preview chunks and then clearing the full
+                        # accumulated response.
+                        if (
+                            not got_done
+                            and not got_segment_break
+                            and getattr(
+                                self.adapter,
+                                "SUPPORTS_MESSAGE_EDITING",
+                                True,
+                            ) is False
+                        ):
+                            self._last_edit_time = time.monotonic()
+                            await asyncio.sleep(0.05)
+                            continue
+
                         # No existing message to edit (first message or after a
                         # segment break).  Seal only the overflowing head chunks
                         # as fixed messages, then keep the trailing chunk in

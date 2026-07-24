@@ -1541,7 +1541,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     try:
         config = load_gateway_config()
     except Exception as e:
-        msg = f"failed to load gateway config: {e}"
+        msg = f"failed to load gateway config: {redact_credential_text(str(e))}"
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
@@ -1976,7 +1976,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
                     )
             except Exception as e:
-                err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
+                err_msg = (
+                    f"live adapter delivery to {platform_name}:{chat_id} failed: "
+                    f"{redact_credential_text(str(e))}"
+                )
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
                 logger.warning(
@@ -2040,20 +2043,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         target_errors.append(msg)
                         delivery_errors.extend(target_errors)
                         continue
-                    msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-                    logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
+                    detail = str(e)
+                    redacted_detail = redact_credential_text(detail)
+                    msg = f"delivery to {platform_name}:{chat_id} failed: {redacted_detail}"
+                    logger.error(
+                        "Job '%s': %s", job["id"], msg,
+                        exc_info=redacted_detail == detail,
+                    )
                     target_errors.extend([msg])
                     delivery_errors.extend(target_errors)
                     continue
             except Exception as e:
-                msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-                logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
+                detail = str(e)
+                redacted_detail = redact_credential_text(detail)
+                msg = f"delivery to {platform_name}:{chat_id} failed: {redacted_detail}"
+                logger.error(
+                    "Job '%s': %s", job["id"], msg,
+                    exc_info=redacted_detail == detail,
+                )
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
 
             if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+                msg = f"delivery error: {redact_credential_text(str(result['error']))}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
@@ -3645,8 +3658,13 @@ def run_job(
         return True, output, final_response, None
         
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {str(e)}"
-        logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        detail = str(e)
+        redacted_detail = redact_credential_text(detail)
+        error_msg = f"{type(e).__name__}: {redacted_detail}"
+        logger.error(
+            "Job '%s' failed: %s", job_name, error_msg,
+            exc_info=redacted_detail == detail,
+        )
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

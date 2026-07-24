@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import json
 import logging
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -20,9 +21,10 @@ import re
 import uuid
 
 # Cross-process advisory file locking for jobs.json critical sections.
-# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent,
-# in which case _jobs_lock() degrades to in-process locking only (the old
-# behaviour) rather than failing.
+# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent.
+# An already-private lock retains the historical in-process fallback, while a
+# legacy lock that still needs hardening fails closed without cross-process
+# exclusion.
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-Unix
@@ -100,6 +102,10 @@ _jobs_lock_state = threading.local()
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+class JobsLockSecurityError(RuntimeError):
+    """Raised when the jobs lock cannot be opened or hardened safely."""
 
 
 @dataclass(frozen=True)
@@ -253,6 +259,123 @@ def _jobs_lock_file() -> Path:
     return _current_cron_store().cron_dir / ".jobs.lock"
 
 
+def _validate_jobs_lock_stat(lock_stat: os.stat_result, path: Path) -> None:
+    """Require an owner-correct, singly-linked regular lock inode."""
+    if not stat.S_ISREG(lock_stat.st_mode):
+        kind = "symlink" if stat.S_ISLNK(lock_stat.st_mode) else "non-regular file"
+        raise JobsLockSecurityError(f"Refusing {kind} cron jobs lock: {path}")
+    get_effective_uid = getattr(os, "geteuid", None)
+    if get_effective_uid is None:
+        raise JobsLockSecurityError(
+            "Cannot verify cron jobs lock ownership on this platform"
+        )
+    if lock_stat.st_uid != get_effective_uid():
+        raise JobsLockSecurityError(
+            f"Refusing cron jobs lock owned by another user: {path}"
+        )
+    if lock_stat.st_nlink != 1:
+        raise JobsLockSecurityError(f"Refusing multiply-linked cron jobs lock: {path}")
+
+
+def _validate_jobs_lock_identity(
+    path: Path,
+    fd: int,
+    expected: Optional[os.stat_result] = None,
+    required_mode: Optional[int] = None,
+) -> os.stat_result:
+    """Match a lock descriptor to a no-follow pathname observation."""
+    try:
+        fd_stat = os.fstat(fd)
+        path_stat = os.lstat(path)
+    except OSError as exc:
+        raise JobsLockSecurityError(
+            f"Cannot revalidate cron jobs lock identity: {path}"
+        ) from exc
+
+    current_observations = [fd_stat, path_stat]
+    for observation in current_observations:
+        _validate_jobs_lock_stat(observation, path)
+        if (
+            required_mode is not None
+            and stat.S_IMODE(observation.st_mode) != required_mode
+        ):
+            raise JobsLockSecurityError(
+                f"Cron jobs lock has unsafe permissions: {path}"
+            )
+
+    observations = list(current_observations)
+    if expected is not None:
+        _validate_jobs_lock_stat(expected, path)
+        observations.insert(0, expected)
+
+    identities = {(item.st_dev, item.st_ino) for item in observations}
+    if len(identities) != 1:
+        raise JobsLockSecurityError(f"Cron jobs lock identity changed: {path}")
+    return fd_stat
+
+
+def _open_jobs_lock_fd() -> Tuple[int, os.stat_result]:
+    """Create or securely open the jobs lock and pin its inode identity."""
+    path = _jobs_lock_file()
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if not no_follow:
+        raise JobsLockSecurityError(
+            "Final-component no-follow open is unavailable for the cron jobs lock"
+        )
+    base_flags = os.O_RDWR
+    base_flags |= no_follow
+    base_flags |= getattr(os, "O_CLOEXEC", 0)
+    while True:
+        try:
+            fd = os.open(path, base_flags | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                path_stat = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            _validate_jobs_lock_stat(path_stat, path)
+            try:
+                fd = os.open(path, base_flags)
+            except OSError as exc:
+                raise JobsLockSecurityError(
+                    f"Cannot securely open cron jobs lock: {path}"
+                ) from exc
+            try:
+                return fd, _validate_jobs_lock_identity(path, fd, path_stat)
+            except Exception:
+                os.close(fd)
+                raise
+        except OSError as exc:
+            raise JobsLockSecurityError(
+                f"Cannot securely create cron jobs lock: {path}"
+            ) from exc
+        try:
+            return fd, _validate_jobs_lock_identity(path, fd)
+        except Exception:
+            os.close(fd)
+            raise
+
+
+def _harden_jobs_lock_fd(
+    path: Path,
+    fd: int,
+    expected: os.stat_result,
+) -> None:
+    """Harden and revalidate the held descriptor without pathname mutation."""
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is None:
+        raise JobsLockSecurityError(
+            "Descriptor chmod is unavailable for the cron jobs lock"
+        )
+    try:
+        fchmod(fd, 0o600)
+    except (OSError, NotImplementedError) as exc:
+        raise JobsLockSecurityError(
+            f"Cannot harden cron jobs lock permissions: {path}"
+        ) from exc
+    _validate_jobs_lock_identity(path, fd, expected, required_mode=0o600)
+
+
 @contextlib.contextmanager
 def _jobs_lock():
     """Serialize a load_jobs→modify→save_jobs critical section.
@@ -264,10 +387,11 @@ def _jobs_lock():
     at all — a `cron pause` could be silently clobbered by a concurrent
     gateway write, leaving a "paused" job still firing).
 
-    The flock is blocking, but every critical section that uses it is short
-    (field updates only — no agent execution), so contention resolves in
-    milliseconds. If neither fcntl nor msvcrt is available the manager still
-    provides in-process locking, matching the historical behaviour.
+    Every critical section that uses the lock is short (field updates only —
+    no agent execution), so contention normally resolves in milliseconds. If
+    neither fcntl nor msvcrt is available, an already-private lock retains the
+    historical in-process fallback; a legacy lock that needs hardening fails
+    closed because it cannot be safely chmodded without cross-process exclusion.
 
     Nested calls in the same thread reuse the held lock so legacy callers that
     invoke save_jobs() inside a broader mutation section don't deadlock or try
@@ -285,11 +409,14 @@ def _jobs_lock():
     with _jobs_file_lock:
         _jobs_lock_state.depth = 1
         lock_fd = None
+        lock_needs_hardening = False
+        cross_process_locked = False
         try:
             try:
                 ensure_dirs()
-                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
-                lock_fd.seek(0)
+                lock_fd, _lock_identity = _open_jobs_lock_fd()
+                lock_needs_hardening = stat.S_IMODE(_lock_identity.st_mode) != 0o600
+                os.lseek(lock_fd, 0, os.SEEK_SET)
                 if fcntl is not None:
                     # Bounded acquisition (#60703): a plain blocking
                     # fcntl.flock(LOCK_EX) here has NO timeout, and it is
@@ -301,19 +428,25 @@ def _jobs_lock():
                     # get_due_jobs() — silently and forever: the heartbeat
                     # file stops updating and all jobs stop firing with no
                     # error logged.  Poll LOCK_NB against a deadline instead;
-                    # on timeout, log loudly and fall through to the same
-                    # in-process-only degraded mode used when locking is
-                    # unavailable.  A briefly-torn cross-process write is
-                    # strictly better than a permanently dead scheduler.
+                    # on timeout, retain the reviewed in-process-only fallback
+                    # for an already-private inode. A legacy inode that still
+                    # needs hardening must fail closed: chmod is forbidden until
+                    # the foreign holder releases the same inode.
                     _deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
                     while True:
                         try:
                             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            cross_process_locked = True
                             break
                         except (OSError, IOError):
                             if time.monotonic() >= _deadline:
+                                if lock_needs_hardening:
+                                    raise JobsLockSecurityError(
+                                        "Timed out before the legacy cron jobs "
+                                        "lock could be hardened"
+                                    )
                                 logger.error(
-                                    "Timed out after %.0fs waiting for the cron "
+                                    "Timed out after %.1fs waiting for the cron "
                                     "jobs lock (%s) — another process is holding "
                                     "it. Proceeding with in-process locking only "
                                     "so the scheduler stays alive (#60703).",
@@ -321,33 +454,55 @@ def _jobs_lock():
                                     _jobs_lock_file(),
                                 )
                                 try:
-                                    lock_fd.close()
+                                    os.close(lock_fd)
                                 except OSError:
                                     pass
                                 lock_fd = None
                                 break
                             time.sleep(0.1)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+                    getattr(msvcrt, "locking")(lock_fd, getattr(msvcrt, "LK_LOCK"), 1)
+                    cross_process_locked = True
+                elif lock_needs_hardening:
+                    raise JobsLockSecurityError(
+                        "Cross-process locking is unavailable for legacy cron "
+                        "jobs lock hardening"
+                    )
+                if cross_process_locked:
+                    _harden_jobs_lock_fd(_jobs_lock_file(), lock_fd, _lock_identity)
+            except JobsLockSecurityError:
+                raise
             except (OSError, IOError) as e:
+                if cross_process_locked or (
+                    lock_fd is not None and lock_needs_hardening
+                ):
+                    raise JobsLockSecurityError(
+                        "Cron jobs lock failed before safe hardening"
+                    ) from e
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
-                logger.warning("jobs.json cross-process lock unavailable (%s); "
-                               "proceeding with in-process lock only", e)
-            try:
-                yield
-            finally:
-                if lock_fd is not None:
-                    try:
-                        if fcntl is not None:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        elif msvcrt is not None:
-                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
-                    except (OSError, IOError):
-                        pass
-                    finally:
-                        lock_fd.close()
+                logger.warning(
+                    "jobs.json cross-process lock unavailable (%s); "
+                    "proceeding with in-process lock only",
+                    e,
+                )
+            yield
         finally:
+            if lock_fd is not None:
+                try:
+                    if fcntl is not None and cross_process_locked:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    elif msvcrt is not None and cross_process_locked:
+                        getattr(msvcrt, "locking")(
+                            lock_fd, getattr(msvcrt, "LK_UNLCK"), 1
+                        )
+                except (OSError, IOError):
+                    pass
+                finally:
+                    try:
+                        os.close(lock_fd)
+                    except OSError:
+                        pass
             _jobs_lock_state.depth = 0
 
 # Fields on a cron job that must never change after creation. ``id`` is used

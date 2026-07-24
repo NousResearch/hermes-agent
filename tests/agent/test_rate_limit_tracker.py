@@ -123,6 +123,11 @@ class TestFormatting:
         assert _fmt_count(33600) == "33.6K"
         assert _fmt_count(1500) == "1.5K"
 
+    def test_fmt_count_rolls_rounded_thousands_into_millions(self):
+        assert _fmt_count(999_949) == "999.9K"
+        assert _fmt_count(999_950) == "1.0M"
+        assert _fmt_count(999_999) == "1.0M"
+
     def test_fmt_count_small(self):
         assert _fmt_count(800) == "800"
         assert _fmt_count(0) == "0"

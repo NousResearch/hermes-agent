@@ -26,6 +26,12 @@ def test_display_toolset_name_handles_empty():
     assert banner._display_toolset_name(None) == "unknown"
 
 
+def test_format_context_length_rolls_rounded_thousands_into_millions():
+    assert banner._format_context_length(999_949) == "999.9K"
+    assert banner._format_context_length(999_950) == "1M"
+    assert banner._format_context_length(999_999) == "1M"
+
+
 def test_build_welcome_banner_uses_normalized_toolset_names():
     """Unavailable toolsets should not have '_tools' appended in banner output."""
     with (

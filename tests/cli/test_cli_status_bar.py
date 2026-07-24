@@ -7,12 +7,13 @@ import cli as cli_mod
 from cli import HermesCLI
 
 
-def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
+def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514", reasoning_config=None):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.reasoning_config = reasoning_config
     return cli_obj
 
 
@@ -63,6 +64,107 @@ class TestCLIStatusBar:
         assert cli_obj._status_bar_context_style(81) == "class:status-bar-bad"
         assert cli_obj._status_bar_context_style(95) == "class:status-bar-critical"
 
+    def test_reasoning_effort_label_is_blank_when_unset(self):
+        # No explicit reasoning config -> labeling it "(medium)" would claim
+        # more than we know. Blank hides the label entirely.
+        cli_obj = _make_cli()
+        assert cli_obj._reasoning_effort_label() == ""
+
+    def test_reasoning_effort_label_explicit_effort(self):
+        cli_obj = _make_cli(reasoning_config={"enabled": True, "effort": "high"})
+        assert cli_obj._reasoning_effort_label() == "high"
+
+    def test_reasoning_effort_label_disabled(self):
+        cli_obj = _make_cli(reasoning_config={"enabled": False})
+        assert cli_obj._reasoning_effort_label() == "none"
+
+    def test_build_status_bar_text_shows_reasoning_effort(self):
+        cli_obj = _attach_agent(
+            _make_cli(reasoning_config={"enabled": True, "effort": "high"}),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "(high)" in text
+
+    def test_build_status_bar_text_shows_explicit_medium(self):
+        # An explicit medium config is a deliberate user pick, unlike unset —
+        # the label must distinguish the two.
+        cli_obj = _attach_agent(
+            _make_cli(reasoning_config={"enabled": True, "effort": "medium"}),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "(medium)" in text
+
+    def test_build_status_bar_text_medium_width_hides_unset_reasoning(self):
+        # The 52-75 column branch is a separate render path — it must also
+        # skip the empty "()" for unset reasoning.
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=60)
+        assert "()" not in text
+
+    def test_build_status_bar_text_narrow_hides_reasoning(self):
+        cli_obj = _attach_agent(
+            _make_cli(reasoning_config={"enabled": True, "effort": "high"}),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=45)
+        assert "(high)" not in text
+
+    def _fragments_cli(self, reasoning_config=None):
+        cli_obj = _attach_agent(
+            _make_cli(reasoning_config=reasoning_config),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+        cli_obj._get_tui_terminal_width = lambda: 120
+        return cli_obj
+
+    def test_status_bar_fragments_show_reasoning_effort(self):
+        frags = self._fragments_cli(
+            reasoning_config={"enabled": True, "effort": "high"}
+        )._get_status_bar_fragments()
+        joined = "".join(text for _style, text in frags)
+        assert "(high)" in joined
+
+    def test_status_bar_fragments_hide_unset_reasoning(self):
+        frags = self._fragments_cli()._get_status_bar_fragments()
+        joined = "".join(text for _style, text in frags)
+        assert joined  # render path exercised, not the exception fallback
+        assert "()" not in joined
+
     def test_build_status_bar_text_for_wide_terminal(self):
         cli_obj = _attach_agent(
             _make_cli(),
@@ -77,6 +179,9 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=120)
 
         assert "claude-sonnet-4-20250514" in text
+        # Unset reasoning: no default "(medium)" label and no empty "()".
+        assert "(medium)" not in text
+        assert "()" not in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default

@@ -24,6 +24,7 @@ from hermes_constants import (
     node_tool_runnable,
     parse_reasoning_effort,
     reset_hermes_home_override,
+    reasoning_effort_label,
     secure_parent_dir,
     set_hermes_home_override,
     with_hermes_node_path,
@@ -1205,3 +1206,35 @@ class TestWslPathTranslation:
         assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
         # Already-POSIX paths pass through untouched.
         assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"
+
+
+@pytest.mark.parametrize(
+    ("reasoning_config", "expected"),
+    [
+        # Unset / malformed -> blank: no explicit session-level effort is
+        # configured, so no label (a default "medium" would be misleading).
+        (None, ""),
+        ({}, ""),
+        ("high", ""),
+        ({"enabled": True, "effort": "bogus"}, ""),
+        ({"enabled": True, "effort": ""}, ""),
+        # Disabled -> "none", even with a stale effort left in the dict.
+        ({"enabled": False}, "none"),
+        ({"enabled": False, "effort": "high"}, "none"),
+        # Explicit efforts pass through, including "medium".
+        ({"enabled": True, "effort": "medium"}, "medium"),
+        ({"effort": "low"}, "low"),
+    ],
+)
+def test_reasoning_effort_label(reasoning_config, expected):
+    assert reasoning_effort_label(reasoning_config) == expected
+
+
+def test_reasoning_effort_label_round_trips_every_parseable_effort():
+    """Invariant: whatever parse_reasoning_effort accepts, the label shows
+    verbatim ("none" for disabled, "" for unset) — no drift between the two
+    helpers as effort levels are added."""
+    for effort in VALID_REASONING_EFFORTS:
+        assert reasoning_effort_label(parse_reasoning_effort(effort)) == effort
+    assert reasoning_effort_label(parse_reasoning_effort("none")) == "none"
+    assert reasoning_effort_label(parse_reasoning_effort("")) == ""

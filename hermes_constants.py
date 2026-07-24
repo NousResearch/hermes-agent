@@ -1022,6 +1022,33 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     return result
 
 
+def reasoning_effort_label(reasoning_config: dict | None) -> str:
+    """Return the canonical display label for an explicit reasoning config.
+
+    Shared by the classic CLI status bar and the TUI gateway's session.info
+    payload so both label identically (the desktop consumes the same string
+    but applies its own presentation, e.g. rendering blank as its default).
+
+    Semantics: this is the *configured* session-level effort (config.yaml,
+    ``/reasoning``), not the per-request wire value — transports remap or
+    clamp efforts per model at request-build time, and auxiliary tasks pin
+    their own efforts, so there is no single "effective" value to display.
+    Unset or malformed configs return "" — no explicit session-level effort
+    is configured (a transport may still synthesize its own default), so
+    labeling it "medium" would claim more than we know. Disabled returns
+    "none", which must stay distinguishable from unset "" (the desktop keeps
+    a sticky "thinking off" pick alive off that distinction).
+    """
+    if not isinstance(reasoning_config, dict) or not reasoning_config:
+        return ""
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if effort in VALID_REASONING_EFFORTS:
+        return effort
+    return ""
+
+
 def is_termux() -> bool:
     """Return True when running inside a Termux (Android) environment.
 

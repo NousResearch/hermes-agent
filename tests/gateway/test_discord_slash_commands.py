@@ -916,6 +916,117 @@ async def test_auto_thread_skips_threads_and_dms(adapter, monkeypatch):
 
 
 # ------------------------------------------------------------------
+# force_thread_channels for free-response channels
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_free_response_channel_skips_auto_thread(adapter, monkeypatch):
+    """Free-response channel without force_thread: auto-thread is skipped (default)."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "100")
+
+    adapter._auto_create_thread = AsyncMock()
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel(channel_id=100))
+    await adapter._handle_message(msg)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    assert len(captured_events) == 1
+    assert captured_events[0].source.chat_id == "100"  # stays in channel
+
+
+@pytest.mark.asyncio
+async def test_free_response_with_force_thread_creates_thread(adapter, monkeypatch):
+    """Free-response channel with force_thread: auto-thread IS created."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "100")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "100")
+
+    thread = SimpleNamespace(id=999, name="ForcedThread")
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel(channel_id=100))
+    await adapter._handle_message(msg)
+
+    adapter._auto_create_thread.assert_awaited_once_with(msg)
+    assert len(captured_events) == 1
+    event = captured_events[0]
+    assert event.source.chat_id == "999"  # redirected to thread
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_force_thread_multiple_channels_list(adapter, monkeypatch):
+    """force_thread only applies to listed channels, not all free-response channels."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "100,101")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "101")  # only 101 gets threads
+
+    thread = SimpleNamespace(id=999, name="ForcedThread")
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    # Channel 100 is free-response but NOT force_thread → no thread
+    msg_100 = _fake_message(_FakeTextChannel(channel_id=100))
+    await adapter._handle_message(msg_100)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    assert len(captured_events) == 1
+    assert captured_events[0].source.chat_id == "100"
+
+
+@pytest.mark.asyncio
+async def test_force_thread_wildcard_all_free_response(adapter, monkeypatch):
+    """Wildcard '*' in force_thread applies to all free-response channels."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "100,101")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "*")
+
+    thread = SimpleNamespace(id=999, name="WildcardThread")
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel(channel_id=101))
+    await adapter._handle_message(msg)
+
+    adapter._auto_create_thread.assert_awaited_once_with(msg)
+    assert len(captured_events) == 1
+    assert captured_events[0].source.chat_id == "999"  # redirected
+
+
+# ------------------------------------------------------------------
 # Config bridge
 # ------------------------------------------------------------------
 
@@ -942,6 +1053,48 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+
+
+def test_discord_force_thread_channels_config_bridge(monkeypatch, tmp_path):
+    """discord.force_thread_channels in config.yaml bridges to DISCORD_FORCE_THREAD_CHANNELS env var.
+
+    Tests both list form (YAML list) and string form in separate runs.
+    """
+    import yaml
+    from pathlib import Path
+
+    # --- List form ---
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir()
+    config_path = hermes_dir / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "discord": {"force_thread_channels": ["123", "456"]},
+    }))
+
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_FORCE_THREAD_CHANNELS") == "123,456"
+
+    # --- String form ---
+    hermes_dir_2 = tmp_path / ".hermes2"
+    hermes_dir_2.mkdir()
+    config_path_2 = hermes_dir_2 / "config.yaml"
+    config_path_2.write_text(yaml.dump({
+        "discord": {"force_thread_channels": "789"},
+    }))
+
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir_2))
+
+    load_gateway_config()
+
+    assert os.getenv("DISCORD_FORCE_THREAD_CHANNELS") == "789"
 
 
 # ------------------------------------------------------------------

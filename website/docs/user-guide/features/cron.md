@@ -297,11 +297,24 @@ By default, delivered cron output is wrapped with a header and footer so the rec
 
 ```
 Cronjob Response: Morning feeds
+(job_id: abc123)
 -------------
 
 <agent output here>
 
-Note: The agent cannot see this message, and therefore cannot respond to it.
+To stop or manage this job, send me a new message (e.g. "stop reminder Morning feeds").
+```
+
+For **one-shot** jobs (created without a repeating schedule), the footer changes to indicate the job will not run again:
+
+```
+Cronjob Response: Deploy check
+(job_id: def456)
+-------------
+
+<agent output here>
+
+This was a one-time job and will not run again. To create or manage cron jobs, send me a message like "cron list".
 ```
 
 To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:

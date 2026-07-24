@@ -5016,10 +5016,8 @@ class MessageSender:
             return content
 
         divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
         divider_pos = content.find(divider)
-        footer_pos = content.rfind(footer_prefix)
-        if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos:
+        if divider_pos < 0:
             return content
 
         header = content[:divider_pos]
@@ -5027,7 +5025,19 @@ class MessageSender:
             return content
 
         body_start = divider_pos + len(divider)
-        body = content[body_start:footer_pos].strip()
+        body = content[body_start:].strip()
+
+        # Both scheduler footers are emitted as the final paragraph. Only
+        # remove a recognized footer so multi-paragraph output is preserved.
+        footer_pos = body.rfind("\n\n")
+        if footer_pos > 0:
+            footer = body[footer_pos + 2:]
+            if footer.startswith((
+                "To stop or manage this job, send me a new message ",
+                "This was a one-time job and will not run again. ",
+            )):
+                body = body[:footer_pos].strip()
+
         return body or content
 
     # -- Cleanup on disconnect ---------------------------------------------

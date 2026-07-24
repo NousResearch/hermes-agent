@@ -1509,12 +1509,29 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
+
+        # One-shot jobs (repeat.times == 1) auto-delete after run —
+        # the generic "stop or manage" footer is misleading since the
+        # job is already gone.  Show a tailored message instead.
+        is_oneshot = job.get("repeat", {}).get("times") == 1
+        if is_oneshot:
+            footer = (
+                f"This was a one-time job and will not run again. "
+                f"To create or manage cron jobs, send me a message "
+                f"like \"cron list\"."
+            )
+        else:
+            footer = (
+                f"To stop or manage this job, send me a new message "
+                f"(e.g. \"stop reminder {task_name}\")."
+            )
+
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
             f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{footer}"
         )
     else:
         delivery_content = content

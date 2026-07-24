@@ -1053,6 +1053,24 @@ export const ja = defineLocale({
     emptyTitle: 'まだ学習はありません',
     emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。'
   },
+  memoryViewer: {
+    title: 'メモリビューアー',
+    subtitle: 'エージェントメモリとユーザープロファイルを参照',
+    close: 'メモリビューアーを閉じる',
+    loading: '読み込み中…',
+    loadFailed: 'メモリ内容を読み込めませんでした',
+    memoryTab: 'エージェントメモリ',
+    userTab: 'ユーザープロファイル',
+    emptyTitle: 'まだ内容はありません',
+    memoryEmpty: 'エージェントはまだメモリを作成していません。会話を通じて自動的に蓄積されます。',
+    userEmpty: 'ユーザープロファイルはまだありません。エージェントは会話を通じてあなたの好みを学習します。',
+    entryCount: count => `${count} 件`,
+    edit: '編集',
+    save: '保存',
+    saving: '保存中…',
+    cancel: 'キャンセル',
+    discardConfirm: '保存していない変更があります。破棄しますか？'
+  },
   agents: {
     close: 'エージェントを閉じる',
     title: 'スポーンツリー',
@@ -1162,6 +1180,10 @@ export const ja = defineLocale({
       sessions: 'セッションの検索と管理',
       system: 'ステータス、ログ、システムアクション',
       usage: 'トークン、コスト、スキルの活動履歴'
+    },
+    maintenance: {
+      viewMemory: '記憶を表示',
+      viewUser: 'プロフィールを表示'
     },
     nav: {
       newChat: { title: '新しいセッション', detail: '新しいセッションを開始' },

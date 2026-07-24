@@ -91,6 +91,7 @@ function Harness({
   onReady,
   onSeedState,
   openMemoryGraph,
+  openMemoryViewer,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -113,6 +114,7 @@ function Harness({
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
+  openMemoryViewer?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -152,6 +154,7 @@ function Harness({
     getRouteToken: getRouteToken ?? (() => 'token'),
     handleSkinCommand: () => '',
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
+    openMemoryViewer: openMemoryViewer ?? (() => undefined),
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeStoredSession ?? (() => undefined),

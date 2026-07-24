@@ -25,6 +25,8 @@ import type {
   LogsResponse,
   McpCatalogResponse,
   McpServerSummary,
+  MemoryContentResponse,
+  MemoryContentUpdate,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
@@ -1547,6 +1549,23 @@ export function resetMemory(target: 'all' | 'memory' | 'user'): Promise<{ ok: bo
     body: { target }
   })
 }
+
+export function getMemoryContent(): Promise<MemoryContentResponse> {
+  return window.hermesDesktop.api<MemoryContentResponse>({
+    ...profileScoped(),
+    path: '/api/memory/content'
+  })
+}
+
+export function saveMemoryContent(body: MemoryContentUpdate): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    method: 'POST',
+    path: '/api/memory/content',
+    body
+  })
+}
+
 
 export function getCuratorStatus(): Promise<CuratorStatusResponse> {
   return window.hermesDesktop.api<CuratorStatusResponse>({

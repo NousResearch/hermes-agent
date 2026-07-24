@@ -940,6 +940,24 @@ export interface Translations {
     importedBadge: string
     resetToMine: string
   }
+  memoryViewer: {
+    title: string
+    subtitle: string
+    close: string
+    loading: string
+    loadFailed: string
+    memoryTab: string
+    userTab: string
+    emptyTitle: string
+    memoryEmpty: string
+    userEmpty: string
+    entryCount: (count: number) => string
+    edit: string
+    save: string
+    saving: string
+    cancel: string
+    discardConfirm: string
+  }
   agents: {
     close: string
     title: string
@@ -1129,6 +1147,8 @@ export interface Translations {
       resetMemory: string
       resetUser: string
       resetAll: string
+      viewMemory: string
+      viewUser: string
       resetConfirm: (target: string) => string
       resetDone: (files: string) => string
       resetFailed: string

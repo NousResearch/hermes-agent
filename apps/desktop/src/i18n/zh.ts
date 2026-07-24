@@ -1269,6 +1269,24 @@ export const zh: Translations = {
     importedBadge: '导入的图谱',
     resetToMine: '返回我的图谱'
   },
+  memoryViewer: {
+    title: '记忆浏览器',
+    subtitle: '查看代理记忆与用户人格档案',
+    close: '关闭记忆浏览器',
+    loading: '加载中…',
+    loadFailed: '无法加载记忆内容',
+    memoryTab: '代理记忆',
+    userTab: '用户档案',
+    emptyTitle: '暂无内容',
+    memoryEmpty: '代理尚未创建任何记忆。在对话中代理会自动积累经验。',
+    userEmpty: '尚未建立用户档案。代理会在对话中逐步了解你的偏好。',
+    entryCount: count => `${count} 条记录`,
+    edit: '编辑',
+    save: '保存',
+    saving: '保存中…',
+    cancel: '取消',
+    discardConfirm: '有未保存的更改，确定要放弃吗？'
+  },
   agents: {
     close: '关闭代理',
     title: '派生树',
@@ -1473,6 +1491,8 @@ export const zh: Translations = {
       resetMemory: '重置记忆',
       resetUser: '重置画像',
       resetAll: '全部重置',
+      viewMemory: '查看记忆',
+      viewUser: '查看画像',
       resetConfirm: target => `删除 ${target}？此操作不可撤销。`,
       resetDone: files => `已删除 ${files}。`,
       resetFailed: '记忆重置失败',

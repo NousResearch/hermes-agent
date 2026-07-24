@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+﻿import { useCallback, useEffect, useState } from 'react'
 
+import { useOverlayRouting } from '@/app/shell/hooks/use-overlay-routing'
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -52,6 +53,7 @@ function formatBytes(size: number): string {
 export function MaintenancePanel() {
   const { t } = useI18n()
   const mm = t.commandCenter.maintenance
+  const { openMemory } = useOverlayRouting()
 
   const [actionName, setActionName] = useState<null | string>(null)
   const [actionStatus, setActionStatus] = useState<ActionStatusResponse | null>(null)
@@ -326,17 +328,21 @@ export function MaintenancePanel() {
               busy={memoryBusy}
               label={mm.memoryFile}
               onReset={() => void doResetMemory('memory', mm.memoryFile)}
+              onView={() => openMemory('memory')}
               resetLabel={mm.resetMemory}
               size={memory.builtin_files.memory}
               sizeLabel={memory.builtin_files.memory > 0 ? formatBytes(memory.builtin_files.memory) : mm.empty}
+              viewLabel={mm.viewMemory}
             />
             <MemoryFileRow
               busy={memoryBusy}
               label={mm.userFile}
               onReset={() => void doResetMemory('user', mm.userFile)}
+              onView={() => openMemory('user')}
               resetLabel={mm.resetUser}
               size={memory.builtin_files.user}
               sizeLabel={memory.builtin_files.user > 0 ? formatBytes(memory.builtin_files.user) : mm.empty}
+              viewLabel={mm.viewUser}
             />
           </div>
         )}
@@ -383,16 +389,20 @@ function MemoryFileRow({
   busy,
   label,
   onReset,
+  onView,
   resetLabel,
   size,
-  sizeLabel
+  sizeLabel,
+  viewLabel
 }: {
   busy: boolean
   label: string
   onReset: () => void
+  onView: () => void
   resetLabel: string
   size: number
   sizeLabel: string
+  viewLabel: string
 }) {
   return (
     <div className="flex items-center justify-between gap-3 py-2">
@@ -402,15 +412,20 @@ function MemoryFileRow({
           {sizeLabel}
         </span>
       </div>
-      <Button
-        className="text-destructive hover:text-destructive"
-        disabled={busy || size <= 0}
-        onClick={onReset}
-        size="xs"
-        variant="text"
-      >
-        {resetLabel}
-      </Button>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button disabled={busy} onClick={onView} size="xs" variant="text">
+          {viewLabel}
+        </Button>
+        <Button
+          className="text-destructive hover:text-destructive"
+          disabled={busy || size <= 0}
+          onClick={onReset}
+          size="xs"
+          variant="text"
+        >
+          {resetLabel}
+        </Button>
+      </div>
     </div>
   )
 }

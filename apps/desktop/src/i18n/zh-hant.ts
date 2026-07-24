@@ -1021,6 +1021,24 @@ export const zhHant = defineLocale({
     emptyTitle: '尚無學習內容',
     emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。'
   },
+  memoryViewer: {
+    title: '記憶瀏覽器',
+    subtitle: '查看代理記憶與使用者人格檔案',
+    close: '關閉記憶瀏覽器',
+    loading: '載入中…',
+    loadFailed: '無法載入記憶內容',
+    memoryTab: '代理記憶',
+    userTab: '使用者檔案',
+    emptyTitle: '暫無內容',
+    memoryEmpty: '代理尚未建立任何記憶。在對話中代理會自動累積經驗。',
+    userEmpty: '尚未建立使用者檔案。代理會在對話中逐步了解你的偏好。',
+    entryCount: count => `${count} 筆記錄`,
+    edit: '編輯',
+    save: '儲存',
+    saving: '儲存中…',
+    cancel: '取消',
+    discardConfirm: '有未儲存的變更，確定要放棄嗎？'
+  },
   agents: {
     close: '關閉代理',
     title: '派生樹',
@@ -1130,6 +1148,10 @@ export const zhHant = defineLocale({
       sessions: '搜尋和管理工作階段',
       system: '狀態、記錄和系統動作',
       usage: '一段時間內的詞元、費用和技能活動'
+    },
+    maintenance: {
+      viewMemory: '查看記憶',
+      viewUser: '查看畫像'
     },
     nav: {
       newChat: { title: '新工作階段', detail: '開始新的工作階段' },

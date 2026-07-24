@@ -1182,6 +1182,18 @@ export interface MemoryStatusResponse {
   builtin_files: { memory: number; user: number }
 }
 
+/** `GET /api/memory/content` — text content of built-in memory files. */
+export interface MemoryContentResponse {
+  memory: string
+  user: string
+}
+
+/** `POST /api/memory/content` — request body for updating memory files. */
+export interface MemoryContentUpdate {
+  memory: string
+  user: string
+}
+
 /** `GET /api/curator` — background skill-curator status. */
 export interface CuratorStatusResponse {
   enabled: boolean

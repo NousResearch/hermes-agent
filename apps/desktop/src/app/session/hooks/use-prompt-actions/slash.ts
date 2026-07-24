@@ -81,6 +81,7 @@ interface SlashCommandDeps {
     options?: { onProgress?: (state: string) => void; sessionId?: string }
   ) => Promise<{ ok: boolean; error?: string }>
   openMemoryGraph: () => void
+  openMemoryViewer: () => void
   refreshSessions: () => Promise<void>
   requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -106,6 +107,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     handleSkinCommand,
     handoffSession,
     openMemoryGraph,
+    openMemoryViewer,
     refreshSessions,
     requestGateway,
     resumeStoredSession,
@@ -871,6 +873,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       handleSkinCommand,
       handoffSession,
       openMemoryGraph,
+      openMemoryViewer,
       refreshSessions,
       requestGateway,
       resumeStoredSession,

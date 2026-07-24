@@ -1074,6 +1074,24 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map'
   },
+  memoryViewer: {
+    title: 'Memory Viewer',
+    subtitle: 'Browse agent memories and user profile',
+    close: 'Close memory viewer',
+    loading: 'Loading…',
+    loadFailed: 'Could not load memory content',
+    memoryTab: 'Agent Memory',
+    userTab: 'User Profile',
+    emptyTitle: 'No content yet',
+    memoryEmpty: 'The agent has not created any memories. Memories accumulate as you chat.',
+    userEmpty: 'No user profile yet. The agent learns your preferences over time.',
+    entryCount: count => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+    edit: 'Edit',
+    save: 'Save',
+    saving: 'Saving…',
+    cancel: 'Cancel',
+    discardConfirm: 'You have unsaved changes. Discard them?'
+  },
   agents: {
     close: 'Close agents',
     title: 'Spawn tree',
@@ -1279,6 +1297,8 @@ export const en: Translations = {
       resetMemory: 'Reset memory',
       resetUser: 'Reset profile',
       resetAll: 'Reset both',
+      viewMemory: 'View memory',
+      viewUser: 'View profile',
       resetConfirm: target => `Delete ${target}? This cannot be undone.`,
       resetDone: files => `Deleted ${files}.`,
       resetFailed: 'Memory reset failed',

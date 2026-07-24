@@ -114,6 +114,7 @@ const CronView = lazy(async () => ({ default: (await import('../cron')).CronView
 const ProfilesView = lazy(async () => ({ default: (await import('../profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('../settings')).SettingsView }))
 const StarmapView = lazy(async () => ({ default: (await import('../starmap')).StarmapView }))
+const MemoryViewer = lazy(async () => ({ default: (await import('../memory')).MemoryViewer }))
 
 // Surfaces (the four wired panes), the render context + WiredPane, and the
 // WiringActions/WiringApi contracts all live in sibling modules — this file is
@@ -190,8 +191,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     commandCenterOpen,
     cronOpen,
     currentView,
+    memoryOpen,
     openAgents,
     openCommandCenterSection,
+    openMemory,
     openStarmap,
     profilesOpen,
     resetOverlayReturnRoute,
@@ -550,6 +553,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     getRouteToken,
     handleSkinCommand,
     openMemoryGraph: openStarmap,
+    openMemoryViewer: openMemory,
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeSession,
@@ -1015,6 +1019,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {starmapOpen && (
         <Suspense fallback={null}>
           <StarmapView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {memoryOpen && (
+        <Suspense fallback={null}>
+          <MemoryViewer onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
 

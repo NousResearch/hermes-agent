@@ -2078,8 +2078,9 @@ describe('usePromptActions sleep/wake session recovery', () => {
       />
     )
 
-    // submitText swallows the error into an inline bubble and returns false.
-    expect(await handle!.submitText('message')).toBe(false)
+    // submitText swallows the error into an inline bubble and returns true
+    // (#68927: after prompt.submit was sent, the draft must not be restored).
+    expect(await handle!.submitText('message')).toBe(true)
     // No resume attempt for a non-recoverable error.
     expect(calls).not.toContain('session.resume')
   })
@@ -2109,7 +2110,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     // With a null stored ref, the `&& selectedStoredSessionIdRef.current` guard
     // short-circuits — no resume is attempted and the error surfaces normally.
-    expect(await handle!.submitText('message')).toBe(false)
+    // Returns true because the optimistic user message stays in the session
+    // state with an inline error bubble — the draft must not be restored
+    // after prompt.submit was acknowledged (#68927).
+    expect(await handle!.submitText('message')).toBe(true)
     expect(calls).not.toContain('session.resume')
   })
 

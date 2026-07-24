@@ -618,14 +618,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (targetIsCurrentView() && isProviderSetupError(err)) {
           requestDesktopOnboarding(copy.providerCredentialRequired)
 
-          return false
+          // Same as the generic error case below — prompt.submit already
+          // persisted the user turn.  Never restore the draft (#68927).
+          // Clear the draft so the user can see their bubble + the provider
+          // onboarding prompt without confusing draft restoration.
+          return true
         }
 
         if (targetIsCurrentView()) {
           notifyError(err, copy.promptFailed)
         }
 
-        return false
+        // The outer catch block is reached after prompt.submit was sent and
+        // optimistically seeded — the user turn was already persisted on the
+        // backend.  Return true so that dispatchSubmit in the composer clears
+        // the draft instead of restoring the text into the input.  Restoring
+        // the draft here would make the user's Enter appear to do nothing
+        // (text stays in composer, no visible user bubble), even though the
+        // backend accepted the turn and an assistant error bubble is already
+        // part of the session state (#68927).
+        return true
       }
     },
     [

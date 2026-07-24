@@ -41,6 +41,10 @@ _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 # Tools that take shell commands where we should extract paths
 _COMMAND_TOOLS = {"terminal"}
 
+_DIRECTORY_COMMANDS = {"cd", "pushd"}
+
+_SHELL_OPERATORS = {"&&", "||", "|", ";", "&", "(", ")"}
+
 # How many parent directories to walk up when looking for hints.
 # Prevents scanning all the way to / for deeply nested paths.
 _MAX_ANCESTOR_WALK = 5
@@ -150,21 +154,39 @@ class SubdirectoryHintTracker:
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens from a shell command string."""
         try:
-            tokens = shlex.split(cmd)
+            tokens = shlex.split(cmd, posix=os.name != "nt")
         except ValueError:
             tokens = cmd.split()
 
+        previous_token: Optional[str] = None
         for token in tokens:
             # Skip flags
             if token.startswith("-"):
-                continue
-            # Must look like a path (contains / or .)
-            if "/" not in token and "." not in token:
+                previous_token = token
                 continue
             # Skip URLs
             if token.startswith(("http://", "https://", "git@")):
+                previous_token = token
+                continue
+            if token in _SHELL_OPERATORS:
+                previous_token = token
+                continue
+            if previous_token in _DIRECTORY_COMMANDS:
+                self._add_path_candidate(token, candidates)
+                previous_token = token
+                continue
+            # Must look like a path.
+            if (
+                "/" not in token
+                and "\\" not in token
+                and "." not in token
+                and not token.startswith("~")
+                and not (len(token) >= 2 and token[1] == ":")
+            ):
+                previous_token = token
                 continue
             self._add_path_candidate(token, candidates)
+            previous_token = token
 
     def _is_valid_subdir(self, path: Path) -> bool:
         """Check if path is a valid directory to scan for hints.

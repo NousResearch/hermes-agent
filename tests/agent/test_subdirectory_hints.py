@@ -112,6 +112,15 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Backend-specific instructions" in result
 
+    def test_terminal_cd_command_with_relative_directory(self, project):
+        """Relative cd targets should also trigger subdirectory hint discovery."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "terminal", {"command": "cd backend && ls"}
+        )
+        assert result is not None
+        assert "Backend-specific instructions" in result
+
     def test_relative_path(self, project):
         """Relative paths resolved against working_dir."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

@@ -15,6 +15,21 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 
 
+@pytest.fixture(autouse=True)
+def _reset_app_state():
+    """Reset web_server.app.state after each test to prevent cross-file pollution.
+
+    Without this, module-level mutations to app.state (bound_host, auth_required,
+    auth_provider, oauth_state, etc.) survive the file boundary and break
+    subsequent test files that rely on clean state.
+    """
+    yield
+    # Reset all known stateful attributes on the app
+    for attr in ("bound_host", "bound_port", "auth_required", "auth_provider"):
+        if hasattr(web_server.app.state, attr):
+            delattr(web_server.app.state, attr)
+
+
 @pytest.fixture
 def client_loopback():
     # Pin the bound-host state for host_header_middleware so requests with

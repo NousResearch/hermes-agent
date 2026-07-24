@@ -344,6 +344,14 @@ def _resolve_command_stt_provider_config(
     return None
 
 
+def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
+    """Return whether *provider* is exempt from Hermes's remote upload cap."""
+    key = (provider or "").lower().strip()
+    if key in {"local", "local_command"}:
+        return True
+    return False
+
+
 def _iter_command_stt_providers(stt_config: Dict[str, Any]):
     """Yield (name, config) pairs for every declared command-type STT provider."""
     if not isinstance(stt_config, dict):
@@ -1041,7 +1049,26 @@ def _dispatch_to_plugin_provider(
 # ---------------------------------------------------------------------------
 
 
-def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
+def _validate_audio_file_size(audio_path: Path) -> Optional[Dict[str, Any]]:
+    """Return an error when *audio_path* exceeds the remote upload cap."""
+    try:
+        file_size = audio_path.stat().st_size
+    except OSError as e:
+        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
+    if file_size > MAX_FILE_SIZE:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
+        }
+    return None
+
+
+def _validate_audio_file(
+    file_path: str,
+    *,
+    enforce_size_limit: bool = True,
+) -> Optional[Dict[str, Any]]:
     """Validate the audio file.  Returns an error dict or None if OK."""
     audio_path = Path(file_path)
 
@@ -1057,17 +1084,12 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
             "transcript": "",
             "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
         }
+    if enforce_size_limit:
+        return _validate_audio_file_size(audio_path)
     try:
-        file_size = audio_path.stat().st_size
-        if file_size > MAX_FILE_SIZE:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
-            }
+        audio_path.stat()
     except OSError as e:
         return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
-
     return None
 
 # ---------------------------------------------------------------------------
@@ -1733,8 +1755,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
           - "error" (str, optional): Error message if success is False
           - "provider" (str, optional): Which provider was used
     """
-    # Validate input
-    error = _validate_audio_file(file_path)
+    # Apply common path validation before provider resolution so invalid files
+    # cannot trigger provider setup or lazy installation.
+    error = _validate_audio_file(file_path, enforce_size_limit=False)
     if error:
         return error
 
@@ -1748,6 +1771,10 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         }
 
     provider = _get_provider(stt_config)
+    if not _is_local_stt_provider(provider, stt_config):
+        error = _validate_audio_file_size(Path(file_path))
+        if error:
+            return error
 
     if provider == "local":
         local_cfg = stt_config.get("local") or {}

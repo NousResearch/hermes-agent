@@ -962,6 +962,9 @@ def init_agent(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
     agent._persist_user_message_timestamp = None
+    # Deferred background payloads adopted by this turn. The finalizer stamps
+    # these only on the closing assistant row, never on the early user flush.
+    agent._deferred_notification_ids = ()
 
     # Cache anthropic image-to-text fallbacks per image payload/URL so a
     # single tool loop does not repeatedly re-run auxiliary vision on the

@@ -35,6 +35,7 @@ import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import type {
+  CancelRunOptions,
   ClientSessionState,
   FileAttachResponse,
   HandoffFailResponse,
@@ -540,7 +541,7 @@ export function usePromptActions({
     [copy.sttDisabled, sttEnabled]
   )
 
-  const cancelRun = useCallback(async () => {
+  const cancelRun = useCallback(async (options?: CancelRunOptions) => {
     // Read from the ref, not the closure-captured `activeSessionId`. The
     // actions bag is a stable ref mutated in place (Object.assign on each
     // ContribWiring render), and ChatRoutesSurface is memoized on that stable
@@ -555,6 +556,10 @@ export function usePromptActions({
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
       setBusy(false)
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => (state.busy ? { ...state, busy: false } : state))
+      }
     }
 
     setAwaitingResponse(false)
@@ -574,7 +579,7 @@ export function usePromptActions({
       return {
         ...state,
         messages,
-        busy: false,
+        busy: options?.preserveBusyUntilSettled ? state.busy : false,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
@@ -596,7 +601,10 @@ export function usePromptActions({
 
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
-      releaseBusy()
+
+      if (!options?.preserveBusyUntilSettled) {
+        releaseBusy()
+      }
     } catch (err) {
       let stopError = err
 
@@ -615,6 +623,8 @@ export function usePromptActions({
           if (recoveredId) {
             activeSessionIdRef.current = recoveredId
             await requestGateway('session.interrupt', { session_id: recoveredId })
+            // The original runtime no longer exists, so it cannot emit the
+            // settle event a notification preemption would otherwise await.
             releaseBusy()
 
             return

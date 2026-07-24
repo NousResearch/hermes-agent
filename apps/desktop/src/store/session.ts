@@ -6,7 +6,7 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import type { SessionInfo, UsageStats } from '@/types/hermes'
+import type { SessionInfo, TurnOrigin, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
@@ -365,6 +365,7 @@ export const $currentUsage = atom<UsageStats>({
 })
 export const $sessionStartedAt = atom<number | null>(null)
 export const $turnStartedAt = atom<number | null>(null)
+export const $turnOrigin = atom<TurnOrigin | null>(null)
 export const $introPersonality = atom('')
 export const $currentPersonality = atom('')
 export const $availablePersonalities = atom<string[]>([])
@@ -496,6 +497,7 @@ export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBr
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)
 export const setTurnStartedAt = (next: Updater<number | null>) => updateAtom($turnStartedAt, next)
+export const setTurnOrigin = (next: Updater<TurnOrigin | null>) => updateAtom($turnOrigin, next)
 export const setIntroPersonality = (next: Updater<string>) => updateAtom($introPersonality, next)
 export const setCurrentPersonality = (next: Updater<string>) => updateAtom($currentPersonality, next)
 export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom($availablePersonalities, next)

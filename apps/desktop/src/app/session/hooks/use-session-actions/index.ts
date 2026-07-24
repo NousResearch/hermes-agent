@@ -2,10 +2,16 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
+import { reconcileClientTurnState } from '@/app/session/turn-state'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  type GatewayEventPayload,
+  preserveLocalAssistantErrors,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { migrateSessionDraft } from '@/store/composer'
@@ -934,17 +940,37 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
-        resumedRunning = Boolean((resumed as { running?: boolean }).running)
+        const turnSnapshot: GatewayEventPayload = { ...(resumed.info ?? {}) }
 
-        updateSessionState(
+        if (Object.hasOwn(resumed, 'running')) {
+          turnSnapshot.running = resumed.running
+        }
+
+        if (Object.hasOwn(resumed, 'turn_generation')) {
+          turnSnapshot.turn_generation = resumed.turn_generation
+        }
+
+        if (Object.hasOwn(resumed, 'turn_origin')) {
+          turnSnapshot.turn_origin = resumed.turn_origin
+        }
+
+        if (Object.hasOwn(resumed, 'turn_state_revision')) {
+          turnSnapshot.turn_state_revision = resumed.turn_state_revision
+        }
+
+        const resumedState = updateSessionState(
           resumed.session_id,
-          state => ({
-            ...state,
-            ...(runtimeInfo ?? {}),
-            messages: messagesForView,
-            busy: resumedRunning,
-            awaitingResponse: resumedRunning
-          }),
+          state => {
+            const reconciled = reconcileClientTurnState(state, turnSnapshot, 'snapshot')
+            const turnState = reconciled.accepted ? reconciled.state : state
+
+            return {
+              ...turnState,
+              ...(runtimeInfo ?? {}),
+              messages: messagesForView,
+              awaitingResponse: reconciled.accepted ? turnState.busy : state.awaitingResponse
+            }
+          },
           storedSessionId
         )
 
@@ -955,6 +981,7 @@ export function useSessionActions({
         if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
           setMessages(messagesForView)
         }
+        resumedRunning = Boolean(resumedState.busy)
       } catch (err) {
         if (!isCurrentResume()) {
           return

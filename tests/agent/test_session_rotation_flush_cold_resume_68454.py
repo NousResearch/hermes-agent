@@ -43,6 +43,9 @@ def _make_flush_agent(db: SessionDB, session_id: str):
     agent._flush_messages_to_session_db_unlocked = (
         AIAgent._flush_messages_to_session_db_unlocked.__get__(agent, AIAgent)
     )
+    agent._message_for_persistence = (
+        AIAgent._message_for_persistence.__get__(agent, AIAgent)
+    )
     return agent
 
 

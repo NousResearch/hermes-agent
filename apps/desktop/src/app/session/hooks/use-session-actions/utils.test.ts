@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { reconcileClientTurnState } from '@/app/session/turn-state'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -62,6 +64,62 @@ describe('applyRuntimeInfo credential warnings', () => {
     applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
 
     expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+  })
+})
+
+describe('applyRuntimeInfo turn origin', () => {
+  it('restores the active origin and generation from reconnect session info', () => {
+    expect(applyRuntimeInfo({ turn_generation: 9, turn_origin: 'notification' })).toMatchObject({
+      turnGeneration: 9,
+      turnOrigin: 'notification'
+    })
+    expect(applyRuntimeInfo({ turn_generation: 9, turn_origin: null })).toMatchObject({
+      turnGeneration: 9,
+      turnOrigin: null
+    })
+  })
+})
+
+describe('resume turn-state reconciliation', () => {
+  it('rejects a stale active response after the same generation settles', () => {
+    const initial = createClientSessionState()
+
+    const active = reconcileClientTurnState(
+      initial,
+      { running: true, turn_generation: 9, turn_origin: 'notification', turn_state_revision: 40 },
+      'snapshot'
+    )
+
+    const settled = reconcileClientTurnState(
+      active.state,
+      { running: false, turn_generation: 9, turn_origin: null, turn_state_revision: 41 },
+      'snapshot'
+    )
+
+    const staleResponse = reconcileClientTurnState(
+      settled.state,
+      { running: true, turn_generation: 9, turn_origin: 'notification', turn_state_revision: 40 },
+      'snapshot'
+    )
+
+    expect(staleResponse.accepted).toBe(false)
+    expect(staleResponse.state).toMatchObject({
+      busy: false,
+      turnGeneration: 9,
+      turnOrigin: null,
+      turnStateRevision: 41
+    })
+  })
+
+  it('keeps generation-only snapshots compatible with older backends', () => {
+    const active = reconcileClientTurnState(
+      createClientSessionState(),
+      { running: true, turn_generation: 3, turn_origin: 'notification' },
+      'snapshot'
+    )
+
+    expect(active.accepted).toBe(true)
+    expect(active.state).toMatchObject({ busy: true, turnGeneration: 3, turnOrigin: 'notification' })
   })
 })
 

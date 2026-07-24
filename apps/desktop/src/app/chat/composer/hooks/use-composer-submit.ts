@@ -5,6 +5,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import type { TurnOrigin } from '@/types/hermes'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -36,6 +37,7 @@ interface UseComposerSubmitArgs {
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  turnOrigin: TurnOrigin | null
 }
 
 /**
@@ -70,7 +72,8 @@ export function useComposerSubmit({
   queuedPrompts,
   sessionId,
   setComposerText,
-  stashAt
+  stashAt,
+  turnOrigin
 }: UseComposerSubmitArgs) {
   const scope = useComposerScope()
 
@@ -151,7 +154,15 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!compacting && !attachments.length && text.trim()) {
+      } else if (turnOrigin === 'notification' && payloadPresent) {
+        // Foreground priority: queue the draft and interrupt the
+        // notification turn so the user's explicit input takes over.
+        const queued = queueCurrentDraft()
+
+        if (queued) {
+          void Promise.resolve(onCancel({ preserveBusyUntilSettled: true }))
+        }
+      } else if (!compacting && !attachments.length && text.trim() && onSteer) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.
@@ -159,7 +170,11 @@ export function useComposerSubmit({
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
         // queue the whole payload for the next turn.
-        queueCurrentDraft()
+        const queued = queueCurrentDraft()
+
+        if (queued && turnOrigin === 'notification') {
+          void Promise.resolve(onCancel({ preserveBusyUntilSettled: true }))
+        }
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).

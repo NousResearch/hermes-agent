@@ -334,6 +334,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
+    deferred_notification_ids: Optional[List[str]] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -425,6 +426,9 @@ def build_turn_context(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
+    agent._deferred_notification_ids = tuple(
+        sorted({str(event_id) for event_id in (deferred_notification_ids or ()) if event_id})
+    )
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id

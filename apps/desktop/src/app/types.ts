@@ -1,7 +1,11 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import type { SessionMessage, UsageStats } from '@/types/hermes'
+import type { SessionMessage, TurnOrigin, UsageStats } from '@/types/hermes'
+
+export interface CancelRunOptions {
+  preserveBusyUntilSettled?: boolean
+}
 
 export interface ContextSuggestion {
   text: string
@@ -198,4 +202,7 @@ export interface ClientSessionState {
    *  the primary-only $currentUsage — the statusbar reads it for a focused
    *  tile's context count. Null until the first turn reports. */
   usage: null | UsageStats
+  turnOrigin?: TurnOrigin | null
+  turnGeneration: number
+  turnStateRevision: number
 }

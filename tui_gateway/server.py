@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, Literal, NamedTuple, Optional
 
 from hermes_constants import (
     get_hermes_home,
@@ -38,6 +38,9 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+TurnOrigin = Literal["user", "notification", "goal"]
+_TURN_ORIGINS = frozenset({"user", "notification", "goal"})
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -3816,6 +3819,30 @@ def _sync_session_key_after_compress(
     if not new_session_id or new_session_id == old_key:
         return
 
+    try:
+        from tools.async_delegation import migrate_deferred_notifications
+
+        if not migrate_deferred_notifications(
+            old_key,
+            new_session_id,
+            db_path=_deferred_notification_db_path(session),
+        ):
+            logger.warning(
+                "Compression left deferred notification ownership on parent: "
+                "old_session_id=%s new_session_id=%s",
+                old_key,
+                new_session_id,
+            )
+    except Exception:
+        # The transcript lineage remains authoritative. Cold-session hydration
+        # retries this migration before loading pending rows.
+        logger.exception(
+            "Could not migrate deferred notification ownership after compression: "
+            "old_session_id=%s new_session_id=%s",
+            old_key,
+            new_session_id,
+        )
+
     lease_reanchored = _transfer_active_session_slot(
         sid,
         session,
@@ -4042,7 +4069,12 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         return None
 
 
-def _session_info(agent, session: dict | None = None) -> dict:
+def _session_info(
+    agent,
+    session: dict | None = None,
+    *,
+    turn_snapshot: Optional[dict] = None,
+) -> dict:
     if session is None:
         for candidate in _sessions.values():
             if candidate.get("agent") is agent:
@@ -4085,6 +4117,16 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
         yolo = False
+    if turn_snapshot is None:
+        turn_session = session or {}
+        history_lock = turn_session.get("history_lock")
+        if history_lock is None:
+            turn_state = _turn_state_snapshot_locked(turn_session)
+        else:
+            with history_lock:
+                turn_state = _turn_state_snapshot_locked(turn_session)
+    else:
+        turn_state = turn_snapshot
     info: dict = {
         "model": mirror.get("model", getattr(agent, "model", "")),
         "provider": mirror.get("provider", getattr(agent, "provider", "")),
@@ -4099,7 +4141,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "branch": _git_branch_for_cwd(cwd),
         "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
-        "running": bool((session or {}).get("running")),
+        "running": bool(turn_state["running"]),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
         "stored_session_id": session_key or "",
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -4110,6 +4152,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "usage": _session_usage_snapshot(session),
         "profile_name": _current_profile_name(),
     }
+    info["turn_origin"] = turn_state["turn_origin"]
+    info["turn_generation"] = int(turn_state["turn_generation"])
+    info["turn_state_revision"] = int(turn_state["turn_state_revision"])
     try:
         from hermes_cli import __version__, __release_date__
 
@@ -5473,6 +5518,7 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    profile_home: Path | None = None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5486,9 +5532,14 @@ def _init_session(
             "created_at": now,
             "last_active": now,
             "running": False,
+            "turn_generation": 0,
+            "turn_origin": None,
+            "turn_state_revision": 0,
+            "turn_state_running": False,
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
+            "profile_home": str(profile_home) if profile_home is not None else None,
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -5504,6 +5555,8 @@ def _init_session(
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
+    _restore_activated_profile_completions(_sessions[sid])
+    _hydrate_deferred_notification_state(_sessions[sid])
     db = session_db if session_db is not None else _get_db()
     if db is not None:
         row = db.get_session(key)
@@ -5960,6 +6013,89 @@ def _replace_inflight_user(session: dict, text: Any) -> None:
     session["inflight_turn"] = turn
 
 
+def _set_turn_origin_locked(session: dict, origin: TurnOrigin) -> int:
+    """Start a public turn-state revision while ``history_lock`` is held."""
+    if origin not in _TURN_ORIGINS:
+        raise ValueError(f"invalid turn origin: {origin!r}")
+    token = int(session.get("turn_generation", 0)) + 1
+    session["turn_generation"] = token
+    session["turn_state_revision"] = int(session.get("turn_state_revision", 0)) + 1
+    session["turn_state_running"] = True
+    session["turn_origin"] = origin
+    session["turn_token"] = token
+    # Public state settles before post-turn cleanup releases the concurrency
+    # reservation. Keep a separate token so a stale turn cannot release a newer
+    # one after message.complete has already advanced the public revision.
+    session["turn_reservation_token"] = token
+    return token
+
+
+def _clear_turn_origin_locked(session: dict, token: int) -> bool:
+    """Settle only the public turn that still owns ``token``."""
+    if session.get("turn_token") != token:
+        return False
+    session["turn_state_revision"] = int(session.get("turn_state_revision", 0)) + 1
+    session["turn_state_running"] = False
+    session["turn_origin"] = None
+    session["turn_token"] = None
+    return True
+
+
+def _turn_state_snapshot_locked(session: dict) -> dict:
+    """Capture monotonic public turn state while ``history_lock`` is held."""
+    public_running = session.get("turn_state_running")
+    return {
+        "running": (
+            bool(session.get("running"))
+            if public_running is None
+            else bool(public_running)
+        ),
+        "turn_generation": int(session.get("turn_generation", 0)),
+        "turn_origin": session.get("turn_origin"),
+        "turn_state_revision": int(session.get("turn_state_revision", 0)),
+    }
+
+
+def _compose_deferred_notification_prompt(text: Any, notifications: list[str]) -> str:
+    sections = []
+    for index, notification in enumerate(notifications, start=1):
+        sections.append(f"--- background completion {index} ---\n{notification}")
+    context = "\n\n".join(sections)
+    return (
+        "[BACKGROUND COMPLETION CONTEXT — NOT A NEW USER REQUEST]\n"
+        "The following owned background result(s) arrived after the previous turn "
+        "reached its iteration limit. Use them as context for the human request below.\n\n"
+        f"{context}\n"
+        "[END BACKGROUND COMPLETION CONTEXT]\n\n"
+        f"{text}"
+    )
+
+
+def _clean_returned_user_message(messages: list, index: int, clean_text: str) -> None:
+    """Remove API-only context from returned history without dropping media parts."""
+    if not (0 <= index < len(messages)):
+        return
+    message = messages[index]
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return
+    content = message.get("content")
+    if not isinstance(content, list):
+        message["content"] = clean_text
+        return
+    cleaned = []
+    replaced_text = False
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            if not replaced_text:
+                cleaned.append({**part, "text": clean_text})
+                replaced_text = True
+            continue
+        cleaned.append(part)
+    if not replaced_text:
+        cleaned.insert(0, {"type": "text", "text": clean_text})
+    message["content"] = cleaned
+
+
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
@@ -6109,7 +6245,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     _clear_inflight_turn(session)
                 _emit("error", sid, {"message": message})
         else:
-            _run_prompt_submit(rid, sid, session, queued["text"])
+            _run_prompt_submit(rid, sid, session, queued["text"], origin="user")
     except Exception as exc:
         print(
             f"[tui_gateway] queued prompt dispatch failed: "
@@ -6248,6 +6384,10 @@ def _(rid, params: dict) -> dict:
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
+            "turn_generation": 0,
+            "turn_origin": None,
+            "turn_state_revision": 0,
+            "turn_state_running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),
             "source": source,
@@ -6258,6 +6398,7 @@ def _(rid, params: dict) -> dict:
         }
         _register_session_cwd(_sessions[sid])
 
+    _restore_activated_profile_completions(_sessions[sid])
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -6302,6 +6443,10 @@ def _(rid, params: dict) -> dict:
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                 "profile_name": _current_profile_name(),
+                "running": False,
+                "turn_generation": 0,
+                "turn_origin": None,
+                "turn_state_revision": 0,
             },
         },
     )
@@ -6452,6 +6597,10 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
         "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "profile_name": _current_profile_name(),
+        "running": False,
+        "turn_generation": 0,
+        "turn_origin": None,
+        "turn_state_revision": 0,
     }
     if provider:
         info["provider"] = provider
@@ -6476,7 +6625,7 @@ def _deferred_session_record(
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
     now = time.time()
-    return {
+    record = {
         "agent": None,
         "agent_error": None,
         "agent_ready": threading.Event(),
@@ -6502,6 +6651,10 @@ def _deferred_session_record(
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
+        "turn_generation": 0,
+        "turn_origin": None,
+        "turn_state_revision": 0,
+        "turn_state_running": False,
         "session_key": session_key,
         "show_reasoning": _load_show_reasoning(),
         "slash_worker": None,
@@ -6510,6 +6663,8 @@ def _deferred_session_record(
         "tool_started_at": {},
         "transport": current_transport() or _stdio_transport,
     }
+    _hydrate_deferred_notification_state(record)
+    return record
 
 
 def _claim_or_reuse_live(
@@ -6527,6 +6682,7 @@ def _claim_or_reuse_live(
         with _sessions_lock:
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
+    _restore_activated_profile_completions(record)
     return None
 
 
@@ -6895,6 +7051,7 @@ def _(rid, params: dict) -> dict:
                     cwd=profile_resume_cwd,
                     session_db=db,
                     source=source,
+                    profile_home=profile_home,
                 )
             finally:
                 if init_home_token is not None:
@@ -6975,7 +7132,7 @@ def _session_live_status(sid: str, session: dict) -> str:
     # session stuck mid-construction.
     if ready is not None and not ready.is_set() and session.get("agent_build_started"):
         return "starting"
-    if session.get("running"):
+    if session.get("turn_state_running", session.get("running")):
         return "working"
     return "idle"
 
@@ -7047,18 +7204,28 @@ def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
     return None
 
 
-def _fallback_session_info(session: dict) -> dict:
+def _fallback_session_info(session: dict, *, turn_snapshot: Optional[dict] = None) -> dict:
+    turn_state = turn_snapshot or _turn_state_snapshot_locked(session)
     agent = session.get("agent")
     if agent is not None:
-        return _session_info(agent)
+        info = _session_info(agent, session, turn_snapshot=turn_snapshot)
+        info.setdefault("running", bool(turn_state["running"]))
+        info.setdefault("turn_generation", int(turn_state["turn_generation"]))
+        info.setdefault("turn_origin", turn_state["turn_origin"])
+        info.setdefault("turn_state_revision", int(turn_state["turn_state_revision"]))
+        return info
     cwd = _default_session_cwd()
     return {
         "cwd": cwd,
         "project": _project_info_for_cwd(cwd),
         "lazy": True,
         "model": _resolve_model(),
+        "running": bool(turn_state["running"]),
         "skills": {},
         "tools": {},
+        "turn_generation": int(turn_state["turn_generation"]),
+        "turn_origin": turn_state["turn_origin"],
+        "turn_state_revision": int(turn_state["turn_state_revision"]),
     }
 
 
@@ -7153,13 +7320,14 @@ def _live_session_payload(
         )
         inflight = _inflight_snapshot(session)
         queued = _queued_prompt_snapshot(session)
-        running = bool(session.get("running"))
+        turn_snapshot = _turn_state_snapshot_locked(session)
+        running = bool(turn_snapshot["running"])
     # Prefer the persisted display lineage (candidate-inclusive) so this payload
     # matches the eager session.resume + REST transcript; the DB has its own
     # lock, so read it outside the session history lock.
     history = _live_visible_history(session, _get_db(), in_memory_history)
     payload = {
-        "info": _fallback_session_info(session),
+        "info": _fallback_session_info(session, turn_snapshot=turn_snapshot),
         "message_count": len(history),
         "messages": _history_to_messages(history),
         "running": running,
@@ -7167,6 +7335,9 @@ def _live_session_payload(
         "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
+        "turn_generation": int(turn_snapshot["turn_generation"]),
+        "turn_origin": turn_snapshot["turn_origin"],
+        "turn_state_revision": int(turn_snapshot["turn_state_revision"]),
     }
     if inflight:
         payload["inflight"] = inflight
@@ -10095,7 +10266,7 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, origin="user")
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -10273,6 +10444,403 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+_NOTIFICATION_ACK_RETRY_DELAYS = (0.05, 0.25, 1.0, 5.0, 15.0, 30.0)
+
+
+def _durable_notification_event_id(event: Optional[dict]) -> Optional[str]:
+    if not event or event.get("type") != "async_delegation":
+        return None
+    delegation_id = str(event.get("delegation_id") or "")
+    return f"async_delegation:{delegation_id}" if delegation_id else None
+
+
+def _deferred_notification_db_path(session: dict) -> Path:
+    profile_home = str(session.get("profile_home") or "").strip()
+    return (Path(profile_home) if profile_home else Path(get_hermes_home())) / "state.db"
+
+
+def _restore_activated_profile_completions(session: dict) -> int:
+    """Restore durable async completions once when a profile becomes active."""
+    from tools.process_registry import process_registry
+
+    return process_registry.restore_profile_home(
+        _deferred_notification_db_path(session).parent
+    )
+
+
+def _hydrate_deferred_notification_state(session: dict) -> None:
+    """Rebuild the deferred batch and reconcile any committed adoption."""
+    from tools.async_delegation import (
+        load_deferred_notifications,
+        migrate_compression_lineage_deferred_notifications,
+        reconcile_adopted_deferred_notifications,
+    )
+
+    session_key = str(session.get("session_key") or "")
+    db_path = _deferred_notification_db_path(session)
+    migrate_compression_lineage_deferred_notifications(
+        session_key,
+        db_path=db_path,
+    )
+    reconcile_adopted_deferred_notifications(db_path=db_path)
+    rows = load_deferred_notifications(session_key, db_path=db_path)
+    texts = list(session.get("deferred_notification_texts") or [])
+    ids = set(session.get("deferred_notification_event_ids") or ())
+    for row in rows:
+        event_id = str(row.get("event_id") or "")
+        if event_id and event_id not in ids:
+            texts.append(str(row.get("payload") or ""))
+            ids.add(event_id)
+    session["deferred_notification_texts"] = texts
+    session["deferred_notification_event_ids"] = ids
+    session["defer_notifications_until_user"] = bool(texts)
+
+
+def _persist_deferred_notification(
+    session: dict,
+    event_id: str,
+    text: str,
+    event: dict,
+) -> bool:
+    from tools.async_delegation import persist_deferred_notification
+
+    return persist_deferred_notification(
+        str(session.get("session_key") or event.get("session_key") or ""),
+        event_id,
+        text,
+        event,
+        db_path=_deferred_notification_db_path(session),
+    )
+
+
+def _deferred_notifications_have_durable_adoption(
+    session: dict,
+    event_ids: set[str],
+) -> bool:
+    """Check whether an owned batch is adopted or already reconciled."""
+    if not event_ids:
+        return False
+    from tools.async_delegation import (
+        deferred_notifications_adopted_or_delivered,
+        migrate_compression_lineage_deferred_notifications,
+    )
+
+    session_key = str(session.get("session_key") or "")
+    db_path = _deferred_notification_db_path(session)
+    try:
+        migrate_compression_lineage_deferred_notifications(
+            session_key, db_path=db_path
+        )
+        return deferred_notifications_adopted_or_delivered(
+            session_key, event_ids, db_path=db_path
+        )
+    except Exception:
+        logger.warning(
+            "failed to reconcile deferred adoption before batch restore: "
+            "session=%s events=%s",
+            session_key,
+            sorted(event_ids),
+            exc_info=True,
+        )
+        return False
+
+
+def _retry_consumed_deferred_ack(
+    session_key: str,
+    event_ids: set[str],
+    db_path: Path,
+) -> None:
+    from tools.async_delegation import (
+        complete_deferred_notifications,
+        migrate_compression_lineage_deferred_notifications,
+    )
+
+    attempt = 0
+    while True:
+        delay = _NOTIFICATION_ACK_RETRY_DELAYS[
+            min(attempt, len(_NOTIFICATION_ACK_RETRY_DELAYS) - 1)
+        ]
+        if delay:
+            time.sleep(delay)
+        try:
+            migrate_compression_lineage_deferred_notifications(
+                session_key, db_path=db_path
+            )
+            if complete_deferred_notifications(
+                session_key, event_ids, db_path=db_path
+            ):
+                logger.info(
+                    "deferred notification consumption ack retry succeeded: "
+                    "session=%s events=%s",
+                    session_key,
+                    sorted(event_ids),
+                )
+                return
+        except Exception:
+            pass
+        attempt += 1
+
+
+def _ack_consumed_deferred_notifications(
+    session: dict,
+    event_ids: set[str],
+) -> bool:
+    if not event_ids:
+        return True
+    from tools.async_delegation import (
+        complete_deferred_notifications,
+        migrate_compression_lineage_deferred_notifications,
+    )
+
+    session_key = str(session.get("session_key") or "")
+    db_path = _deferred_notification_db_path(session)
+    try:
+        migrate_compression_lineage_deferred_notifications(
+            session_key, db_path=db_path
+        )
+        if complete_deferred_notifications(
+            session_key, event_ids, db_path=db_path
+        ):
+            return True
+        error: BaseException = RuntimeError(
+            "deferred delivery rows remain pending or lack adoption proof"
+        )
+    except Exception as exc:
+        error = exc
+    logger.warning(
+        "deferred notification reached history; retrying ack without reinjection: "
+        "session=%s events=%s error=%s",
+        session_key,
+        sorted(event_ids),
+        error,
+    )
+    try:
+        threading.Thread(
+            target=_retry_consumed_deferred_ack,
+            args=(session_key, set(event_ids), db_path),
+            daemon=True,
+            name=f"tui-deferred-ack-{session_key[:24]}",
+        ).start()
+    except Exception:
+        # The payload is already in conversation history. Never restore it to
+        # the in-memory batch solely because the durable delivered-bit write
+        # failed; that would duplicate the context on the next explicit turn.
+        logger.exception(
+            "deferred notification consumption ack thread failed to start: "
+            "session=%s events=%s",
+            session_key,
+            sorted(event_ids),
+        )
+    return False
+
+
+def _retry_accepted_notification_ack(
+    event: dict,
+    claim_id: str,
+    consumer: str,
+) -> None:
+    from tools.async_delegation import complete_event_delivery
+
+    event_id = _durable_notification_event_id(event) or "legacy"
+    attempt = 0
+    while True:
+        delay = _NOTIFICATION_ACK_RETRY_DELAYS[
+            min(attempt, len(_NOTIFICATION_ACK_RETRY_DELAYS) - 1)
+        ]
+        if delay:
+            time.sleep(delay)
+        try:
+            if complete_event_delivery(event, claim_id):
+                logger.info(
+                    "durable notification ack retry succeeded: consumer=%s event=%s",
+                    consumer,
+                    event_id,
+                )
+                return
+        except Exception:
+            pass
+        attempt += 1
+
+
+def _ack_accepted_notification(event: Optional[dict], claim_id: str, consumer: str) -> None:
+    if not event or not claim_id:
+        return
+
+    try:
+        from tools.async_delegation import complete_event_delivery
+
+        if complete_event_delivery(event, claim_id):
+            return
+        error: BaseException = RuntimeError("durable delivery claim no longer acknowledges")
+    except Exception as exc:
+        error = exc
+    logger.warning(
+        "durable notification accepted; retrying ack without reinjection: "
+        "consumer=%s event=%s error=%s",
+        consumer,
+        _durable_notification_event_id(event) or "legacy",
+        error,
+    )
+    try:
+        retry_thread = threading.Thread(
+            target=_retry_accepted_notification_ack,
+            args=(event, claim_id, consumer),
+            daemon=True,
+            name=f"tui-notification-ack-{str(event.get('delegation_id') or 'legacy')[:24]}",
+        )
+        retry_thread.start()
+    except Exception:
+        # The notification turn/deferred context is already consumer-visible.
+        # Never release or reinject it merely because the ack worker could not
+        # start; the durable row remains pending for recovery diagnostics.
+        logger.exception(
+            "durable notification ack retry thread failed to start: consumer=%s event=%s",
+            consumer,
+            _durable_notification_event_id(event) or "legacy",
+        )
+
+
+def _dispatch_notification_turn(
+    rid,
+    sid: str,
+    session: dict,
+    text: str,
+    *,
+    emit_status: bool = True,
+    event: Optional[dict] = None,
+    consumer: str = "tui-poller",
+) -> str:
+    claim_id: Optional[str] = ""
+    if event is not None:
+        from tools.async_delegation import claim_event_delivery, release_event_delivery
+
+    try:
+        with session["history_lock"]:
+            if session.get("running"):
+                outcome = "busy"
+            else:
+                if event is not None:
+                    claim_id = claim_event_delivery(event, consumer)
+                if claim_id is None:
+                    outcome = "claimed"
+                elif session.get("defer_notifications_until_user"):
+                    event_id = _durable_notification_event_id(event)
+                    deferred_ids = session.get("deferred_notification_event_ids")
+                    if not isinstance(deferred_ids, set):
+                        deferred_ids = set(deferred_ids or ())
+                        session["deferred_notification_event_ids"] = deferred_ids
+                    pending = True
+                    if event_id is not None and event is not None:
+                        # Acceptance is durable before the terminal event is
+                        # acknowledged. A persistence failure falls through the
+                        # outer exception path and releases the pre-accept claim.
+                        pending = _persist_deferred_notification(
+                            session, event_id, text, event
+                        )
+                    if pending and (event_id is None or event_id not in deferred_ids):
+                        session.setdefault("deferred_notification_texts", []).append(text)
+                        if event_id is not None:
+                            deferred_ids.add(event_id)
+                    outcome = "deferred" if pending else "accepted"
+                else:
+                    session["running"] = True
+                    outcome = "dispatched"
+    except Exception:
+        if event is not None and claim_id:
+            release_event_delivery(event, claim_id)
+        raise
+
+    if outcome == "accepted":
+        _ack_accepted_notification(event, claim_id or "", consumer)
+        return "claimed"
+
+    if outcome == "claimed":
+        return outcome
+
+    status_text = text
+    if outcome == "deferred":
+        status_text = f"{text}\n\nBackground result is pending for your next explicit user turn."
+
+    if outcome == "busy":
+        if emit_status:
+            _emit("status.update", sid, {"kind": "process", "text": status_text})
+        return outcome
+
+    if outcome == "deferred":
+        if emit_status or outcome == "deferred":
+            try:
+                _emit("status.update", sid, {"kind": "process", "text": status_text})
+            except Exception:
+                logger.exception("deferred notification status emission failed after acceptance")
+        _ack_accepted_notification(event, claim_id or "", consumer)
+        return outcome
+
+    try:
+        if outcome == "dispatched":
+            if emit_status:
+                _emit("status.update", sid, {"kind": "process", "text": status_text})
+            submit_kwargs: dict = {"origin": "notification"}
+            if event is not None and event.get("type") == "async_delegation":
+                submit_kwargs["display_kind"] = "async_delegation_complete"
+                submit_kwargs["display_metadata"] = _async_delegation_display_metadata(event)
+            _run_prompt_submit(rid, sid, session, text, **submit_kwargs)
+    except Exception:
+        if event is not None and claim_id:
+            release_event_delivery(event, claim_id)
+        with session["history_lock"]:
+            session["running"] = False
+        raise
+
+    _ack_accepted_notification(event, claim_id or "", consumer)
+    return outcome
+
+
+def _dispatch_goal_followup(rid, sid: str, session: dict, text: str) -> bool:
+    with session["history_lock"]:
+        if session.get("running"):
+            return False
+        session["running"] = True
+    try:
+        _run_prompt_submit(rid, sid, session, text, origin="goal")
+    except Exception:
+        with session["history_lock"]:
+            session["running"] = False
+        raise
+    return True
+
+
+def _drain_post_turn_notifications(rid, sid: str, session: dict) -> None:
+    from tools.process_registry import process_registry
+
+    pending = process_registry.drain_notifications(
+        session_key=session.get("session_key", ""),
+        owns_event=lambda event: _session_owns_notification_event(sid, session, event),
+        skip_poll_observed=False,
+    )
+    for index, (event, text) in enumerate(pending):
+        try:
+            outcome = _dispatch_notification_turn(
+                rid,
+                sid,
+                session,
+                text,
+                event=event,
+                consumer="tui-post-turn",
+            )
+        except Exception:
+            for queued_event, _queued_text in pending[index:]:
+                process_registry.completion_queue.put(queued_event)
+            logger.exception(
+                "post-turn notification dispatch failed; requeued %d event(s)",
+                len(pending) - index,
+            )
+            break
+        if outcome == "busy":
+            for queued_event, _queued_text in pending[index:]:
+                process_registry.completion_queue.put(queued_event)
+            break
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -10288,20 +10856,16 @@ def _notification_poller_loop(
     """
     from tools.process_registry import process_registry, format_process_notification
 
-    _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    emitted = set()
+    dispatch_failures_logged = set()
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
-            evt = process_registry.completion_queue.get(timeout=0.5)
+            event = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
             continue
 
-        # Multiple desktop sessions share this one process-wide queue. Only
-        # consume events that belong to *this* session — otherwise a background
-        # process started in session A would surface its completion in whichever
-        # session's poller happened to wake first (Ben's "reported in a
-        # different session" bug). Leave foreign events for their owner.
-        if _notification_event_belongs_elsewhere(sid, session, evt):
-            process_registry.completion_queue.put(evt)
+        if _notification_event_belongs_elsewhere(sid, session, event):
+            process_registry.completion_queue.put(event)
             time.sleep(0.1)
             continue
 
@@ -10310,166 +10874,129 @@ def _notification_poller_loop(
         # direct durable key, or compression lineage. If none proves ownership,
         # the event is orphaned and must not be adopted by this chat. Truly
         # ownerless ordinary notifications retain legacy global delivery.
-        requires_owner = _notification_event_requires_owner(evt)
-        if requires_owner and not _session_owns_notification_event(sid, session, evt):
+        requires_owner = _notification_event_requires_owner(event)
+        if requires_owner and not _session_owns_notification_event(sid, session, event):
             log = (
                 logger.warning
-                if evt.get("type") == "async_delegation"
+                if event.get("type") == "async_delegation"
                 else logger.debug
             )
             log(
                 "Dropping unowned %s notification (origin=%r key=%r) instead "
                 "of delivering to session %s",
-                evt.get("type", "completion"),
-                str(evt.get("origin_ui_session_id") or ""),
-                str(evt.get("session_key") or ""),
+                event.get("type", "completion"),
+                str(event.get("origin_ui_session_id") or ""),
+                str(event.get("session_key") or ""),
                 sid,
             )
             continue
 
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+        event_session_id = event.get("session_id", "")
+        if event.get("type") == "completion" and process_registry.is_completion_consumed(
+            event_session_id
+        ):
             continue
-
-        text = format_process_notification(evt)
+        text = format_process_notification(event)
         if not text:
             continue
 
-        # Only emit the same notification identity to TUI once — re-queued
-        # completions get re-emitted every 0.5s otherwise when session is busy,
-        # while distinct watch_match events from the same process must remain
-        # visible independently.
-        _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
-        _requeued = False
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                _requeued = True
-            else:
-                session["running"] = True
-        if _requeued:
-            # Back off before re-polling: the re-queued event keeps the queue
-            # non-empty, so without a sleep this loop spins at full speed
-            # (100% CPU, GIL churn) for as long as the session stays busy.
+        dedup_key = _notification_event_dedup_key(event)
+        emit_status = dedup_key not in emitted
+        try:
+            outcome = _dispatch_notification_turn(
+                f"__notif__{int(time.time() * 1000)}",
+                sid,
+                session,
+                text,
+                emit_status=emit_status,
+                event=event,
+                consumer="tui-poller",
+            )
+        except Exception:
+            # Status is emitted before the agent turn starts. Remember the
+            # identity so retries retain the event without spamming that line.
+            if emit_status:
+                emitted.add(dedup_key)
+            process_registry.completion_queue.put(event)
+            if dedup_key not in dispatch_failures_logged:
+                dispatch_failures_logged.add(dedup_key)
+                logger.exception(
+                    "notification poller dispatch failed; requeued event %r",
+                    dedup_key,
+                )
             time.sleep(0.25)
             continue
+        if emit_status:
+            emitted.add(dedup_key)
+        if outcome == "busy":
+            process_registry.completion_queue.put(event)
+            time.sleep(0.25)
 
-        rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
-        if _claim is None:
-            continue
-        try:
-            _emit("message.start", sid)
-            if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
-                )
-            else:
-                _run_prompt_submit(rid, sid, session, text)
-            complete_event_delivery(evt, _claim)
-        except Exception as exc:
-            release_event_delivery(evt, _claim)
-            print(
-                f"[tui_gateway] notification poller dispatch failed: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-            with session["history_lock"]:
-                session["running"] = False
-
-    # Drain any remaining events after stop signal (process all pending
-    # before exiting so nothing is lost on shutdown). Events owned by other
-    # live sessions are set aside and re-queued so their poller still sees them.
-    # Orphaned events (owner gone) are dropped — same guard as the main loop.
     deferred: list = []
     while not process_registry.completion_queue.empty():
         try:
-            evt = process_registry.completion_queue.get_nowait()
+            event = process_registry.completion_queue.get_nowait()
         except Exception:
             break
-        if _notification_event_belongs_elsewhere(sid, session, evt):
-            deferred.append(evt)
+        if _notification_event_belongs_elsewhere(sid, session, event):
+            deferred.append(event)
             continue
         # Same positive-proof rule as the live loop. Preserve the existing
         # shutdown behavior for orphaned delegation payloads by deferring them
         # for a later resume; ordinary addressed orphans are dropped.
-        requires_owner = _notification_event_requires_owner(evt)
-        if requires_owner and not _session_owns_notification_event(sid, session, evt):
-            if evt.get("type") == "async_delegation":
-                deferred.append(evt)
+        requires_owner = _notification_event_requires_owner(event)
+        if requires_owner and not _session_owns_notification_event(sid, session, event):
+            if event.get("type") == "async_delegation":
+                deferred.append(event)
             else:
                 logger.debug(
                     "Dropping unowned %s notification during shutdown drain "
                     "(origin=%r key=%r)",
-                    evt.get("type", "completion"),
-                    str(evt.get("origin_ui_session_id") or ""),
-                    str(evt.get("session_key") or ""),
+                    event.get("type", "completion"),
+                    str(event.get("origin_ui_session_id") or ""),
+                    str(event.get("session_key") or ""),
                 )
             continue
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+        event_session_id = event.get("session_id", "")
+        if event.get("type") == "completion" and process_registry.is_completion_consumed(
+            event_session_id
+        ):
             continue
-        text = format_process_notification(evt)
+        text = format_process_notification(event)
         if not text:
             continue
 
-        _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                break
-            session["running"] = True
-
-        rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
-        if _claim is None:
-            continue
+        dedup_key = _notification_event_dedup_key(event)
+        emit_status = dedup_key not in emitted
         try:
-            _emit("message.start", sid)
-            if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
-                )
-            else:
-                _run_prompt_submit(rid, sid, session, text)
-            complete_event_delivery(evt, _claim)
-        except Exception as exc:
-            release_event_delivery(evt, _claim)
-            print(
-                f"[tui_gateway] notification poller dispatch failed: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
+            outcome = _dispatch_notification_turn(
+                f"__notif__{int(time.time() * 1000)}",
+                sid,
+                session,
+                text,
+                emit_status=emit_status,
+                event=event,
+                consumer="tui-poller",
             )
-            with session["history_lock"]:
-                session["running"] = False
+        except Exception:
+            if emit_status:
+                emitted.add(dedup_key)
+            deferred.append(event)
+            if dedup_key not in dispatch_failures_logged:
+                dispatch_failures_logged.add(dedup_key)
+                logger.exception(
+                    "shutdown notification dispatch failed; requeued event %r",
+                    dedup_key,
+                )
+            break
+        if emit_status:
+            emitted.add(dedup_key)
+        if outcome == "busy":
+            process_registry.completion_queue.put(event)
+            break
 
-    # Hand any other sessions' events back to the shared queue.
-    for evt in deferred:
-        process_registry.completion_queue.put(evt)
+    for event in deferred:
+        process_registry.completion_queue.put(event)
 
 
 def _async_delegation_display_metadata(evt: dict) -> dict:
@@ -10581,23 +11108,52 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(
-    rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    display_kind: str | None = None,
     display_metadata: dict | None = None,
+    origin: TurnOrigin = "user",
 ) -> None:
+    claimed_notifications: list[str] = []
+    claimed_notification_ids: set[str] = set()
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        persist_user_message = None
+        if origin == "user":
+            claimed_notifications = list(session.get("deferred_notification_texts") or [])
+            claimed_notification_ids = set(session.get("deferred_notification_event_ids") or ())
+            session["deferred_notification_texts"] = []
+            session["deferred_notification_event_ids"] = set()
+            session["defer_notifications_until_user"] = False
+            if claimed_notifications:
+                persist_user_message = text if isinstance(text, str) else str(text)
+                text = _compose_deferred_notification_prompt(text, claimed_notifications)
+        turn_token = _set_turn_origin_locked(session, origin)
+        turn_start_revision = int(session["turn_state_revision"])
         if not isinstance(session.get("inflight_turn"), dict):
-            _start_inflight_turn(session, text)
+            _start_inflight_turn(session, persist_user_message if persist_user_message is not None else text)
     agent = session["agent"]
+    _emit(
+        "message.start",
+        sid,
+        {
+            "turn_generation": turn_token,
+            "turn_origin": origin,
+            "turn_state_revision": turn_start_revision,
+        },
+    )
     if hasattr(agent, "clear_interrupt"):
         try:
             agent.clear_interrupt()
         except Exception:
             pass
-    _emit("message.start", sid)
+
 
     def run():
         approval_token = None
@@ -10606,6 +11162,8 @@ def _run_prompt_submit(
         goal_followup = None  # set by the post-turn goal hook below
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         one_turn_restore = session.pop("one_turn_model_restore", None)
+        claimed_notifications_consumed = False
+        history_adopted = False
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -10779,8 +11337,15 @@ def _run_prompt_submit(
                 "stream_callback": _stream,
             }
             try:
-                if "task_id" in inspect.signature(agent.run_conversation).parameters:
+                run_parameters = inspect.signature(agent.run_conversation).parameters
+                if "task_id" in run_parameters:
                     run_kwargs["task_id"] = session["session_key"]
+                if persist_user_message is not None and "persist_user_message" in run_parameters:
+                    run_kwargs["persist_user_message"] = persist_user_message
+                if claimed_notification_ids and "deferred_notification_ids" in run_parameters:
+                    run_kwargs["deferred_notification_ids"] = sorted(
+                        claimed_notification_ids
+                    )
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
@@ -10854,8 +11419,10 @@ def _run_prompt_submit(
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
+                            _clean_returned_user_message(result["messages"], len(history), persist_user_message) if persist_user_message is not None else None
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                            history_adopted = True
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -10892,6 +11459,9 @@ def _run_prompt_submit(
                     if result.get("interrupted")
                     else "error" if result.get("error") else "complete"
                 )
+                if origin == "user" and str(result.get("turn_exit_reason") or "").startswith("max_iterations_reached("):
+                    with session["history_lock"]:
+                        session["defer_notifications_until_user"] = True
                 # When the backend produced no visible response AND reported a
                 # real error (e.g. invalid model slug → provider 4xx), surface
                 # that error as the visible text instead of shipping an empty
@@ -10911,7 +11481,37 @@ def _run_prompt_submit(
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            # Durable deferred notifications are consumed only after the exact
+            # owned event IDs have adoption/delivery proof in SessionDB. Live
+            # history adoption alone is not crash-safe: the returned transcript
+            # can look complete while the final assistant/proof transaction was
+            # never committed. Legacy in-memory notifications have no durable
+            # IDs or ack path, so they retain their history-fence behavior.
+            if status == "complete":
+                if claimed_notification_ids:
+                    claimed_notifications_consumed = (
+                        _deferred_notifications_have_durable_adoption(
+                            session, claimed_notification_ids
+                        )
+                    )
+                else:
+                    claimed_notifications_consumed = history_adopted
+            if claimed_notifications_consumed and claimed_notification_ids:
+                _ack_consumed_deferred_notifications(
+                    session, claimed_notification_ids
+                )
+            with session["history_lock"]:
+                _clear_inflight_turn(session)
+                _clear_turn_origin_locked(session, turn_token)
+                turn_settle_revision = int(session.get("turn_state_revision", 0))
+            payload = {
+                "text": raw,
+                "usage": _get_usage(agent),
+                "status": status,
+                "turn_origin": origin,
+                "turn_generation": turn_token,
+                "turn_state_revision": turn_settle_revision,
+            }
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:
@@ -10928,8 +11528,6 @@ def _run_prompt_submit(
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
-            with session["history_lock"]:
-                _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -11024,7 +11622,7 @@ def _run_prompt_submit(
                     maybe_auto_title(
                         _get_db(),
                         _title_key,
-                        text,
+                        persist_user_message if persist_user_message is not None else text,
                         raw,
                         session.get("history", []),
                         # Keep auxiliary auto-detection aligned with the active
@@ -11115,14 +11713,42 @@ def _run_prompt_submit(
             # this turn can't fire during a later turn on the same agent.
             agent.interim_assistant_callback = None
             with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                _clear_inflight_turn(session)
-            _emit("session.info", sid, _session_info(agent, session))
+                if claimed_notifications and not claimed_notifications_consumed:
+                    concurrent_notifications = list(session.get("deferred_notification_texts") or [])
+                    session["deferred_notification_texts"] = [
+                        *claimed_notifications,
+                        *concurrent_notifications,
+                    ]
+                    concurrent_notification_ids = set(
+                        session.get("deferred_notification_event_ids") or ()
+                    )
+                    session["deferred_notification_event_ids"] = {
+                        *claimed_notification_ids,
+                        *concurrent_notification_ids,
+                    }
+                    session["defer_notifications_until_user"] = True
+                if session.get("turn_reservation_token") == turn_token:
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                    _clear_inflight_turn(session)
+                    _clear_turn_origin_locked(session, turn_token)
+                    session["turn_reservation_token"] = None
+                turn_snapshot = _turn_state_snapshot_locked(session)
+            info = _session_info(agent, session, turn_snapshot=turn_snapshot)
+            _emit("session.info", sid, info)
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
         # the goal judge / notifications re-evaluate at the end of that turn.
+        if session.get("defer_notifications_until_user"):
+            try:
+                _drain_post_turn_notifications(rid, sid, session)
+            except Exception as _defer_exc:
+                print(
+                    f"[tui_gateway] completion deferral drain failed: "
+                    f"{type(_defer_exc).__name__}: {_defer_exc}",
+                    file=sys.stderr,
+                )
         if _drain_queued_prompt(rid, sid, session):
             return
 
@@ -11133,23 +11759,14 @@ def _run_prompt_submit(
         # prompt.submit sets running=True under the history_lock and
         # we check that guard before re-firing.
         if goal_followup:
-            with session["history_lock"]:
-                if session.get("running"):
-                    # User already sent something — their turn wins,
-                    # the judge will re-run on the next turn anyway.
-                    return
-                session["running"] = True
             try:
-                _emit("message.start", sid)
-                _run_prompt_submit(rid, sid, session, goal_followup)
+                _dispatch_goal_followup(rid, sid, session, goal_followup)
             except Exception as _cont_exc:
                 print(
                     f"[tui_gateway] goal continuation dispatch failed: "
                     f"{type(_cont_exc).__name__}: {_cont_exc}",
                     file=sys.stderr,
                 )
-                with session["history_lock"]:
-                    session["running"] = False
 
         # Drain completion notifications that arrived during this turn.
         # The background poller handles between-turn delivery; this is
@@ -11160,44 +11777,7 @@ def _run_prompt_submit(
         # requeues every addressed event this session cannot positively claim;
         # the poller then delivers it to a live owner or drops an orphan.
         try:
-            from tools.process_registry import process_registry
-
-            # Positive-proof ownership (compression-chain aware) — the same
-            # fail-closed gate the poller uses, so the post-turn drain can't
-            # adopt another session's addressed notification while a
-            # post-compression session still claims its own pre-compression
-            # dispatches (#55578).
-            drained = process_registry.drain_notifications(
-                session_key=session.get("session_key", ""),
-                owns_event=lambda e: _session_owns_notification_event(sid, session, e),
-                skip_poll_observed=False,
-            )
-            for index, (_evt, synth) in enumerate(drained):
-                with session["history_lock"]:
-                    if session.get("running"):
-                        for pending_evt, _pending_synth in drained[index:]:
-                            process_registry.completion_queue.put(pending_evt)
-                        break
-                    session["running"] = True
-                from tools.async_delegation import (
-                    claim_event_delivery, complete_event_delivery, release_event_delivery,
-                )
-                _claim = claim_event_delivery(_evt, "tui-post-turn")
-                if _claim is None:
-                    continue
-                try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
-                    complete_event_delivery(_evt, _claim)
-                except Exception as _n_exc:
-                    release_event_delivery(_evt, _claim)
-                    print(
-                        f"[tui_gateway] completion notification dispatch failed: "
-                        f"{type(_n_exc).__name__}: {_n_exc}",
-                        file=sys.stderr,
-                    )
-                    with session["history_lock"]:
-                        session["running"] = False
+            _drain_post_turn_notifications(rid, sid, session)
         except Exception as _drain_exc:
             print(
                 f"[tui_gateway] completion queue drain failed: "

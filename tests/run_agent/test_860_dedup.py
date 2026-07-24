@@ -71,6 +71,37 @@ class TestFlushDeduplication:
             finally:
                 db.close()
 
+    def test_flush_persists_clean_multimodal_user_text_without_mutating_live_message(self):
+        """The DB override hides API-only context while retaining the media marker."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            try:
+                agent = self._make_agent(db)
+                content = [
+                    {
+                        "type": "text",
+                        "text": "[BACKGROUND COMPLETION CONTEXT]\nresult\nHuman question",
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                ]
+                messages = [{"role": "user", "content": content}]
+                agent._persist_user_message_idx = 0
+                agent._persist_user_message_override = "Human question"
+
+                agent._flush_messages_to_session_db(messages, [])
+
+                persisted = db.get_messages(agent.session_id)[0]["content"]
+                assert persisted == "Human question\n[screenshot]"
+                assert messages[0]["content"] is content
+                assert content[0]["text"].startswith("[BACKGROUND COMPLETION CONTEXT]")
+            finally:
+                db.close()
+
     def test_flush_writes_incrementally(self):
         """Messages added between flushes are written exactly once."""
         from hermes_state import SessionDB

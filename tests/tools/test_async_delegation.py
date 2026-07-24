@@ -323,6 +323,61 @@ assert ad.mark_completion_delivered({delegation_id!r})
     assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
+def test_restart_restores_launch_and_activated_profile_once(tmp_path, monkeypatch):
+    launch_home = tmp_path / "launch"
+    secondary_home = tmp_path / "secondary"
+
+    def persist(home, delegation_id, session_key):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        record = {
+            "delegation_id": delegation_id,
+            "session_key": session_key,
+            "origin_ui_session_id": "sid",
+            "parent_session_id": None,
+            "dispatched_at": 1.0,
+        }
+        ad._persist_dispatch(record)
+        event = {
+            "type": "async_delegation",
+            "delegation_id": delegation_id,
+            "session_key": session_key,
+            "origin_ui_session_id": "sid",
+            "status": "completed",
+            "completed_at": 2.0,
+            "summary": f"result for {session_key}",
+        }
+        ad._persist_completion(
+            event,
+            {"status": "completed", "summary": event["summary"]},
+        )
+
+    persist(launch_home, "deleg-launch-restart", "launch-session")
+    persist(secondary_home, "deleg-secondary-restart", "secondary-session")
+
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    import tools.process_registry as process_registry_module
+    from tools.process_registry import ProcessRegistry
+    from tui_gateway import server
+
+    restarted = ProcessRegistry()
+    monkeypatch.setattr(process_registry_module, "process_registry", restarted)
+
+    secondary_session = {"profile_home": str(secondary_home)}
+    assert server._restore_activated_profile_completions(secondary_session) == 1
+    assert server._restore_activated_profile_completions(secondary_session) == 0
+    assert restarted.restore_profile_home(launch_home) == 0
+
+    events = [
+        restarted.completion_queue.get_nowait(),
+        restarted.completion_queue.get_nowait(),
+    ]
+    assert [event["delegation_id"] for event in events] == [
+        "deleg-launch-restart",
+        "deleg-secondary-restart",
+    ]
+    assert restarted.completion_queue.empty()
+
+
 def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -489,6 +544,7 @@ def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-b")
     assert ad.release_completion_delivery("deleg_claim", "consumer-a")
     assert ad.claim_completion_delivery("deleg_claim", "consumer-b")
+    assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
     assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-c")
     assert ad.get_durable_delegation("deleg_claim")["delivery_state"] == "delivered"

@@ -368,7 +368,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
-    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None, **_kwargs: {"model": "test/model"})
 
     resp = server.handle_request(
         {
@@ -580,7 +580,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
-    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None, **_kwargs: {"model": "test/model"})
 
     resp = server.handle_request(
         {
@@ -920,7 +920,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     monkeypatch.setattr(
         server,
         "_session_info",
-        lambda _agent, _session=None: {"model": "test/model"},
+        lambda _agent, _session=None, **_kwargs: {"model": "test/model"},
     )
 
     fake_approval = types.SimpleNamespace(
@@ -1017,7 +1017,7 @@ def test_session_resume_reuses_live_agent_after_compression_rotation(server, mon
     monkeypatch.setattr(
         server,
         "_session_info",
-        lambda _agent, _session=None: {"model": "test/model"},
+        lambda _agent, _session=None, **_kwargs: {"model": "test/model"},
     )
 
     result = server.handle_request(
@@ -1136,7 +1136,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     monkeypatch.setattr(
         server,
         "_session_info",
-        lambda _agent, _session=None: {"model": "test/model"},
+        lambda _agent, _session=None, **_kwargs: {"model": "test/model"},
     )
 
     fake_approval = types.SimpleNamespace(
@@ -1211,7 +1211,7 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
     monkeypatch.setattr(
         server,
         "_session_info",
-        lambda _agent, _session=None: {"model": "test/model"},
+        lambda _agent, _session=None, **_kwargs: {"model": "test/model"},
     )
 
     resp = server.handle_request(

@@ -29,7 +29,7 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypeVar
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -1192,6 +1192,29 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claim TEXT,
     delivery_claimed_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS deferred_notifications (
+    event_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    event_json TEXT,
+    delivery_state TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    delivered_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS deferred_notification_adoptions (
+    event_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    adopted_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deferred_notifications_session
+    ON deferred_notifications(session_id, delivery_state, created_at, event_id);
+CREATE INDEX IF NOT EXISTS idx_deferred_notification_adoptions_session
+    ON deferred_notification_adoptions(session_id, adopted_at);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
@@ -5731,6 +5754,7 @@ class SessionDB:
         api_content: Optional[str] = None,
         display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None,
+        deferred_notification_ids: Optional[Iterable[str]] = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -5795,6 +5819,9 @@ class SessionDB:
         num_tool_calls = 0
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+        adoption_ids = sorted(
+            {str(event_id) for event_id in (deferred_notification_ids or ()) if event_id}
+        )
 
         def _do(conn):
             cursor = conn.execute(
@@ -5828,6 +5855,17 @@ class SessionDB:
                 ),
             )
             msg_id = cursor.lastrowid
+            if adoption_ids:
+                adopted_at = time.time()
+                conn.executemany(
+                    """INSERT OR IGNORE INTO deferred_notification_adoptions
+                       (event_id, session_id, message_id, adopted_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (
+                        (event_id, session_id, msg_id, adopted_at)
+                        for event_id in adoption_ids
+                    ),
+                )
 
             # Update counters
             if num_tool_calls > 0:

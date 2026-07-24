@@ -436,6 +436,37 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        # Reconstruct the cross-session-stable prefix for the early cache
+        # breakpoint. The static prefix is not persisted (only the full
+        # prompt is), so gateway surfaces that build a fresh AIAgent per
+        # turn would otherwise lose the two-block system layout after the
+        # first turn — flip-flopping the wire shape mid-conversation and
+        # silently degrading to the legacy single-breakpoint layout.
+        #
+        # Safety: the rebuilt stable tier is used ONLY when the restored
+        # prompt literally starts with it (checked here AND re-checked by
+        # ``_apply_system_cache_markers``'s ``startswith`` gate). If any
+        # stable-tier input changed since the prompt was persisted (skills
+        # edited, identity changed), the prefix mismatches, ``_static``
+        # stays None, and the request falls back to the legacy layout with
+        # the restored prompt bytes untouched — never a rewritten prompt.
+        #
+        # Gated on ``_use_prompt_caching`` so non-Anthropic routes skip the
+        # rebuild entirely (the static prefix is only consumed by
+        # ``apply_anthropic_cache_control``).
+        if getattr(agent, "_use_prompt_caching", False):
+            try:
+                from agent.system_prompt import build_system_prompt_parts as _build_parts
+
+                _static = _build_parts(agent, system_message=system_message)["stable"]
+                if _static and stored_prompt.startswith(_static):
+                    agent._cached_system_prompt_static = _static
+            except Exception:
+                # Fail-open: restore continues with the legacy cache layout.
+                logger.debug(
+                    "static system-prefix reconstruction failed on restore",
+                    exc_info=True,
+                )
         return
     if stored_prompt:
         stored_state = "stale_runtime"

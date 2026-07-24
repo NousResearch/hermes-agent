@@ -203,6 +203,37 @@ class TestScanSkillCommands:
             assert "/telegram-only" not in telegram_again
             assert "/discord-only" in telegram_again
 
+    def test_get_skill_commands_rescans_when_profile_home_changes(self, tmp_path):
+        """A multiplexed profile must not reuse another profile's skills."""
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        primary = tmp_path / "primary"
+        secondary = tmp_path / "secondary"
+        _make_skill(primary / "skills", "primary-only")
+        _make_skill(secondary / "skills", "secondary-only")
+
+        with (
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+        ):
+            token = set_hermes_home_override(str(primary))
+            try:
+                assert "/primary-only" in get_skill_commands()
+            finally:
+                reset_hermes_home_override(token)
+
+            token = set_hermes_home_override(str(secondary))
+            try:
+                commands = get_skill_commands()
+            finally:
+                reset_hermes_home_override(token)
+
+        assert "/secondary-only" in commands
+        assert "/primary-only" not in commands
+
     def test_get_skill_commands_rescans_when_session_platform_changes(self, tmp_path):
         """``HERMES_SESSION_PLATFORM`` from the gateway session context must
         also trigger a rescan, not just ``HERMES_PLATFORM`` (#14536).

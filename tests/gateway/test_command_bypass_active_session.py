@@ -493,3 +493,46 @@ class TestBypassWithBotnameSuffix:
 
         assert sk not in adapter._pending_messages
         assert any("handled:new" in r for r in adapter.sent_responses)
+
+
+class TestDynamicCommandBypass:
+    """Resolvable plugin and skill commands bypass the Level-1 guard."""
+
+    def test_skill_command_bypasses(self, monkeypatch):
+        from hermes_cli.commands import should_bypass_active_session
+
+        monkeypatch.setattr(
+            "agent.skill_commands.get_skill_commands",
+            lambda: {"/claude-code": {"name": "claude-code"}},
+        )
+
+        assert should_bypass_active_session("claude_code") is True
+
+    def test_skill_command_uses_the_routed_profile(self, tmp_path, monkeypatch):
+        import agent.skill_commands as sc_mod
+        from hermes_cli.commands import should_bypass_active_session
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "profiles" / "worker" / "skills" / "worker-only"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: worker-only\ndescription: worker skill.\n---\n# Worker\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands_platform", None)
+        monkeypatch.setattr(sc_mod, "_skill_commands_home", None)
+
+        assert should_bypass_active_session("worker-only", profile="worker") is True
+
+    def test_plugin_command_bypasses(self, monkeypatch):
+        from hermes_cli import commands
+
+        monkeypatch.setattr(
+            commands,
+            "_iter_plugin_command_entries",
+            lambda: [("plugin-command", "test plugin", "")],
+        )
+
+        assert commands.should_bypass_active_session("plugin_command") is True
+        assert commands.should_bypass_active_session("unknown-command") is False

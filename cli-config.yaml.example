@@ -840,6 +840,10 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # Include the cached system prompt's "Conversation started: ..." date line.
+  # Set false if a provider or proxy rejects that prompt content.
+  # system_prompt_timestamp: true
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,

@@ -1802,16 +1802,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # not only after a later credential-rotation rebuild.
                 agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
-        fallback_pool = getattr(agent, "_credential_pool", None)
-        if fallback_pool is not None:
-            try:
-                agent._credential_pool_entry_id = (
-                    fallback_pool.entry_id_for_api_key(agent.api_key)
-                )
-            except Exception:
-                agent._credential_pool_entry_id = None
-        else:
-            agent._credential_pool_entry_id = None
+        from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+        sync_credential_pool_entry_id(agent)
 
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (

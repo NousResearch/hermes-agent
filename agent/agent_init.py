@@ -1346,16 +1346,8 @@ def init_agent(
     # OAuth refreshes can replace the runtime token before a failed request is
     # recovered, so the mutable API-key value alone cannot reliably attribute
     # the failure to its source entry.
-    agent._credential_pool_entry_id = None
-    if agent._credential_pool is not None:
-        try:
-            agent._credential_pool_entry_id = (
-                agent._credential_pool.entry_id_for_api_key(
-                    getattr(agent, "api_key", None)
-                )
-            )
-        except Exception:
-            agent._credential_pool_entry_id = None
+    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    sync_credential_pool_entry_id(agent)
     
     # Provider fallback chain — ordered list of backup providers tried
     # when the primary is exhausted (rate-limit, overload, connection

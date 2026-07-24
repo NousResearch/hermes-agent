@@ -60,4 +60,34 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         action="store_true",
         help="Force a full rebuild even if the content stamp matches",
     )
+
+    # Nested subcommand: hermes desktop launcher install
+    launcher_subparsers = gui_parser.add_subparsers(
+        dest="gui_subcommand"
+    )
+    launcher_parser = launcher_subparsers.add_parser(
+        "launcher",
+        help="Install a macOS Spotlight-searchable launcher for Hermes Desktop",
+        description=(
+            "Create a macOS launcher that is searchable from Spotlight and "
+            "optionally visible on the Desktop. The launcher calls the existing "
+            "`hermes desktop` command with the specified --cwd."
+        ),
+    )
+    launcher_parser.add_argument(
+        "action",
+        choices=["install", "uninstall"],
+        help="Action to perform: install or uninstall the launcher",
+    )
+    launcher_parser.add_argument(
+        "--cwd",
+        default=None,
+        help="Project directory for the launcher to target (default: $HOME)",
+    )
+    launcher_parser.add_argument(
+        "--name",
+        default="Hermes Desktop",
+        help="Launcher filename without extension (default: 'Hermes Desktop')",
+    )
+
     gui_parser.set_defaults(func=cmd_gui)

@@ -5425,6 +5425,9 @@ class AIAgent:
             think_scrubber = getattr(self, "_stream_think_scrubber", None)
             if think_scrubber is not None:
                 text = think_scrubber.feed(text or "")
+                stripped_reasoning = think_scrubber.pop_stripped_reasoning()
+                if stripped_reasoning:
+                    self._fire_reasoning_delta(stripped_reasoning)
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = self._strip_think_blocks(text or "")

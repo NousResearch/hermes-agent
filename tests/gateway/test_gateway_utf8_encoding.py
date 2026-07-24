@@ -15,6 +15,9 @@ UPDATE_RESPONSE_FILES = (
     REPO_ROOT / "plugins/platforms/discord/adapter.py",
     REPO_ROOT / "plugins/platforms/telegram/adapter.py",
     REPO_ROOT / "plugins/platforms/feishu/adapter.py",
+    REPO_ROOT / "plugins/platforms/whatsapp/adapter.py",
+    REPO_ROOT / "plugins/platforms/google_chat/adapter.py",
+    REPO_ROOT / "plugins/platforms/google_chat/oauth.py",
 )
 METHODS = {"read_text", "write_text"}
 SUPPRESSION = "# gateway-utf8: ok"

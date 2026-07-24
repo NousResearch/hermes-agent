@@ -184,10 +184,15 @@ class TestClarifyDictChoices:
     def test_flatten_unwrap_order_label_over_description(self):
         assert _flatten_choice({"description": "verbose", "label": "tight"}) == "tight"
 
-    def test_flatten_drops_name_value_only_dict(self):
-        # name/value are component-shaped fields, not user-facing labels —
-        # picking them would leak raw enum values / short model ids.
-        assert _flatten_choice({"name": "tight", "value": "x"}) == ""
+    def test_flatten_drops_name_only_dict(self):
+        # name is a component-shaped field, not a user-facing label —
+        # picking it would leak raw enum values / short model ids.
+        assert _flatten_choice({"name": "tight"}) == ""
+
+    def test_flatten_unwraps_value_key(self):
+        # Some providers (e.g. GLM/ZhipuAI) emit choices as [{"value": "..."}].
+        # Without unwrapping "value", the entire choice is dropped to "".
+        assert _flatten_choice({"value": "Option A"}) == "Option A"
 
     def test_flatten_prefers_canonical_key_over_name(self):
         assert _flatten_choice({"name": "tight", "description": "Tight desc"}) == "Tight desc"
@@ -213,7 +218,7 @@ class TestClarifyDictChoices:
             choices=[
                 {"choice": "Tight", "description": "Tight, covers all 3 points"},
                 {"description": "Loose layout"},
-                {"name": "modelid", "value": "abc"},  # dropped, not leaked
+                {"name": "modelid"},  # dropped, not leaked (name is excluded)
                 "A plain string choice",
             ],
             callback=cb,

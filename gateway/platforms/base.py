@@ -6040,11 +6040,14 @@ class BasePlatformAdapter(ABC):
 
             chunks.append(full_chunk)
 
-        # Append chunk indicators when the response spans multiple messages
+        # Append chunk indicators when the response spans multiple messages.
+        # Keep the indicator on its own line: appending it to a closing code
+        # fence like "``` (1/3)" prevents Discord/CommonMark from recognizing
+        # the fence as closed, causing broken rendering across chunks.
         if len(chunks) > 1:
             total = len(chunks)
             chunks = [
-                f"{chunk} ({i + 1}/{total})" for i, chunk in enumerate(chunks)
+                f"{chunk}\n({i + 1}/{total})" for i, chunk in enumerate(chunks)
             ]
 
         return chunks

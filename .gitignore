@@ -10,6 +10,7 @@ act/
 .venv
 .tmp/
 .tools/
+.cache/
 .vscode/
 .env
 .op.env

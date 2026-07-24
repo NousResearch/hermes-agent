@@ -1561,6 +1561,16 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
+    # Gemini native-adapter settings (agent/gemini_native_adapter.py).
+    # context_cache: create/reuse a Gemini cachedContents resource for the
+    #   system instruction once it crosses Gemini's 32,768-token minimum,
+    #   instead of resending it uncached on every turn. TTL is shared with
+    #   prompt_caching.cache_ttl above ("5m" -> 300s, "1h" -> 3600s).
+    #   See: https://ai.google.dev/gemini-api/docs/caching
+    "gemini": {
+        "context_cache": True,
+    },
+
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
     #   When enabled, identical requests return cached responses for free (zero billing).

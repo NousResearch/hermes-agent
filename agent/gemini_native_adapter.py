@@ -487,6 +487,44 @@ def build_gemini_request(
     return request
 
 
+# Context caching (Gemini's cachedContents API) -----------------------------
+# Both AI Studio and Vertex reject a cache-create call below this size, so
+# the token-count gate must run before ever attempting one.
+# See: https://ai.google.dev/gemini-api/docs/caching
+GEMINI_MIN_CACHE_TOKENS = 32768
+
+_CACHE_TTL_SECONDS_BY_TIER = {"5m": 300, "1h": 3600}
+
+# In-memory registry of live cachedContents resources, keyed by
+# f"{base_url}|{model}|{sha256(system_instruction text)}". Module-level
+# (not per-client) because the cache resource lives on Google's side and
+# outlives any single GeminiNativeClient instance — reusing it after a
+# client eviction/reconnect is a pure win, not a correctness risk, since
+# the key already binds the resource to the exact system text it was
+# created from.
+_context_cache_registry: Dict[str, Dict[str, Any]] = {}
+
+
+def _gemini_cache_settings() -> tuple[bool, int]:
+    """Return (enabled, ttl_seconds) for Gemini context caching from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return True, 300
+    gemini_cfg = cfg.get("gemini") if isinstance(cfg.get("gemini"), dict) else {}
+    enabled = bool(gemini_cfg.get("context_cache", True))
+    pc_cfg = cfg.get("prompt_caching") if isinstance(cfg.get("prompt_caching"), dict) else {}
+    tier = str(pc_cfg.get("cache_ttl", "5m"))
+    return enabled, _CACHE_TTL_SECONDS_BY_TIER.get(tier, 300)
+
+
+def _context_cache_key(base_url: str, model: str, system_text: str) -> str:
+    import hashlib
+    digest = hashlib.sha256(system_text.encode("utf-8")).hexdigest()
+    return f"{base_url}|{model}|{digest}"
+
+
 def _map_gemini_finish_reason(reason: str) -> str:
     mapping = {
         "STOP": "stop",
@@ -931,6 +969,88 @@ class GeminiNativeClient:
         except StopIteration:
             return True, None
 
+    def _apply_context_cache(self, *, model: str, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace a large ``systemInstruction`` with a reused/created cache reference.
+
+        Only the system instruction is considered for caching, not the
+        (growing, per-turn) message history: Gemini's cachedContents API
+        caches an exact, immutable byte blob, and Hermes's message list
+        changes shape every turn. The system prompt is the one part of the
+        request that's genuinely stable within a session, so it's the only
+        part worth the round trip to create a cache resource for.
+        """
+        system_instruction = request.get("systemInstruction")
+        if not isinstance(system_instruction, dict):
+            return request
+        parts = system_instruction.get("parts")
+        if not isinstance(parts, list):
+            return request
+        text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str))
+        if not text:
+            return request
+
+        from agent.model_metadata import estimate_tokens_rough
+        if estimate_tokens_rough(text) < GEMINI_MIN_CACHE_TOKENS:
+            return request
+
+        enabled, ttl_seconds = _gemini_cache_settings()
+        if not enabled:
+            return request
+
+        key = _context_cache_key(self.base_url, model, text)
+        entry = _context_cache_registry.get(key)
+        if entry is None or entry["expires_at"] <= time.time():
+            entry = self._create_context_cache(model=model, system_instruction=system_instruction, ttl_seconds=ttl_seconds)
+            if entry is None:
+                return request
+            _context_cache_registry[key] = entry
+
+        cached_request = dict(request)
+        cached_request.pop("systemInstruction", None)
+        cached_request["cachedContent"] = entry["name"]
+        return cached_request
+
+    def _create_context_cache(
+        self, *, model: str, system_instruction: Dict[str, Any], ttl_seconds: int
+    ) -> Optional[Dict[str, Any]]:
+        url = f"{self.base_url}/cachedContents"
+        body = {
+            "model": f"models/{model}",
+            "systemInstruction": system_instruction,
+            "ttl": f"{ttl_seconds}s",
+        }
+        try:
+            response = self._http.post(url, json=body, headers=self._headers())
+        except Exception as exc:
+            logger.debug("Gemini context-cache create failed (network): %s", exc)
+            return None
+        if response.status_code != 200:
+            logger.debug(
+                "Gemini context-cache create failed (HTTP %s): %s",
+                response.status_code,
+                response.text[:300],
+            )
+            return None
+        try:
+            payload = response.json()
+            name = payload["name"]
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.debug("Gemini context-cache create returned unexpected payload: %s", exc)
+            return None
+        # expires_at trails the server TTL slightly so a request built just
+        # before expiry doesn't get sent with a reference that goes stale
+        # mid-flight.
+        return {"name": name, "expires_at": time.time() + max(1, ttl_seconds - 5)}
+
+    def _invalidate_context_cache(self, *, model: str, request: Dict[str, Any]) -> None:
+        """Drop a registry entry whose ``cachedContent`` the API just rejected."""
+        cached_name = request.get("cachedContent")
+        if not cached_name:
+            return
+        stale_keys = [k for k, v in _context_cache_registry.items() if v.get("name") == cached_name]
+        for k in stale_keys:
+            _context_cache_registry.pop(k, None)
+
     def _create_chat_completion(
         self,
         *,
@@ -963,13 +1083,26 @@ class GeminiNativeClient:
         )
 
         model = bare_gemini_model_id(model)
+        uncached_request = request
+        request = self._apply_context_cache(model=model, request=request)
+
         if stream:
             return self._stream_completion(model=model, request=request, timeout=timeout)
 
         url = f"{self.base_url}/models/{model}:generateContent"
         response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
-            raise gemini_http_error(response)
+            # A cachedContent reference can go stale between our local TTL
+            # check and the request actually landing (expiry race, or the
+            # resource was deleted server-side). Drop it from the registry
+            # and retry once with the original, uncached request (which still
+            # carries the real systemInstruction) instead of surfacing a hard
+            # failure for something Hermes can trivially recover from.
+            if response.status_code == 404 and request.get("cachedContent"):
+                self._invalidate_context_cache(model=model, request=request)
+                response = self._http.post(url, json=uncached_request, headers=self._headers(), timeout=timeout)
+            if response.status_code != 200:
+                raise gemini_http_error(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -991,6 +1124,8 @@ class GeminiNativeClient:
                 with self._http.stream("POST", url, json=request, headers=stream_headers, timeout=timeout) as response:
                     if response.status_code != 200:
                         body_text = read_streaming_error_body(response)
+                        if response.status_code == 404 and request.get("cachedContent"):
+                            self._invalidate_context_cache(model=model, request=request)
                         raise gemini_http_error(response, body_text=body_text)
                     tool_call_indices: Dict[str, Dict[str, Any]] = {}
                     for event in _iter_sse_events(response):

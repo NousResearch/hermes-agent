@@ -438,3 +438,45 @@ async def test_session_header_rejected_without_api_key(adapter, session_db):
         assert resp.status == 403
         data = await resp.json()
         assert "X-Hermes-Session-Key requires API key" in data["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_exclude_source(adapter, session_db):
+    """GET /api/sessions?exclude_source=cron filters out cron sessions.
+
+    The ``exclude_source`` query param is parsed as a comma-separated list
+    and forwarded to ``list_sessions_rich(exclude_sources=...)``.
+    """
+    session_db.create_session("chat-1", "cli")
+    session_db.create_session("cron-job-1", "cron")
+    session_db.create_session("chat-2", "telegram")
+    session_db.create_session("cron-job-2", "cron")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        # Without filter — all sessions returned
+        resp = await cli.get("/api/sessions?limit=50")
+        assert resp.status == 200
+        data = await resp.json()
+        ids = {s["id"] for s in data["data"]}
+        assert "chat-1" in ids
+        assert "cron-job-1" in ids
+
+        # Exclude cron — cron sessions hidden
+        resp = await cli.get("/api/sessions?limit=50&exclude_source=cron")
+        assert resp.status == 200
+        data = await resp.json()
+        ids = {s["id"] for s in data["data"]}
+        assert "chat-1" in ids
+        assert "chat-2" in ids
+        assert "cron-job-1" not in ids
+        assert "cron-job-2" not in ids
+
+        # Exclude multiple sources
+        resp = await cli.get("/api/sessions?limit=50&exclude_source=cron,cli")
+        assert resp.status == 200
+        data = await resp.json()
+        ids = {s["id"] for s in data["data"]}
+        assert "chat-2" in ids
+        assert "chat-1" not in ids
+        assert "cron-job-1" not in ids

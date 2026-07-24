@@ -80,6 +80,9 @@ Rules:
   - "parents" is a list of INDICES (0-based) into this same "tasks" list,
     expressing actual data dependencies. Tasks with no parents run in
     PARALLEL. Tasks with parents wait until every parent completes.
+  - A task that consumes another task's output MUST list that task in
+    "parents". A test or documentation task with no parents is dispatched
+    immediately and runs before the code it covers exists.
   - Prefer parallelism. If two tasks can be done independently, give
     them no parents so the dispatcher fans them out at once.
   - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Don't
@@ -89,6 +92,14 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Overall acceptance is owned by the ROOT task: when every child is done
+    it returns to its orchestrator to judge completion, so do not add a
+    child whose only job is to re-judge the original request. DO add a
+    task that executes mechanical checks the work produces (run the new
+    test suite, build, confirm promised artifacts exist), with the
+    producing tasks as its "parents" — that puts pass/fail evidence in
+    the graph instead of leaving claims for the root review to take on
+    faith.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:

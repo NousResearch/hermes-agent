@@ -1979,21 +1979,24 @@ function resolveGitBinary() {
   }
 
   const localAppData = process.env.LOCALAPPDATA || ''
-  const candidates = []
+    const candidates = []
 
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
-  }
+    if (localAppData) {
+      candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
+      candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
+    }
 
-  candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
-  candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
+    candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\\\Program Files', 'Git', 'cmd', 'git.exe'))
+    candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\\\Program Files', 'Git', 'bin', 'git.exe'))
+    candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
+    candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\\\Program Files (x86)', 'Git', 'bin', 'git.exe'))
 
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'cmd', 'git.exe'))
-  }
+    if (localAppData) {
+      candidates.push(path.join(localAppData, 'Programs', 'Git', 'cmd', 'git.exe'))
+      candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'git.exe'))
+    }
 
-  _gitBinaryCache = candidates.find(fileExists) || findOnPath('git') || 'git'
+    _gitBinaryCache = candidates.find(fileExists) || findOnPath('git') || 'git'
 
   return _gitBinaryCache
 }

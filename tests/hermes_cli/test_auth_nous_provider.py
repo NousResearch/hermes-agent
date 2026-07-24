@@ -183,6 +183,22 @@ def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke") -> s
     })
 
 
+@pytest.mark.parametrize("exp", [float("nan"), float("inf"), float("-inf")])
+def test_nous_invoke_jwt_rejects_non_finite_exp(exp):
+    import hermes_cli.auth as auth_mod
+
+    token = _jwt_with_claims({
+        "sub": "test-user",
+        "scope": auth_mod.NOUS_INFERENCE_INVOKE_SCOPE,
+        "exp": exp,
+    })
+
+    assert (
+        auth_mod._nous_invoke_jwt_status(token)
+        == "invoke_jwt_expiry_unknown_or_expiring"
+    )
+
+
 def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     tmp_path,
     monkeypatch,

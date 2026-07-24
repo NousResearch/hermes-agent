@@ -1717,10 +1717,26 @@ class HindsightMemoryProvider(MemoryProvider):
                 item.pop("retain_async", None)
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
-                self._run_hindsight_operation(
-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
-                )
-                logger.debug("Tool hindsight_retain: success")
+                bank_id = self._bank_id
+                retain_async_flag = self._retain_async
+
+                def _do_retain() -> None:
+                    self._run_hindsight_operation(
+                        lambda client: client.aretain_batch(
+                            bank_id=bank_id,
+                            items=[item],
+                            retain_async=retain_async_flag,
+                        )
+                    )
+
+                if retain_async_flag:
+                    self._ensure_writer()
+                    self._register_atexit()
+                    self._retain_queue.put(_do_retain)
+                    logger.debug("Tool hindsight_retain: queued async retain")
+                else:
+                    _do_retain()
+                    logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)

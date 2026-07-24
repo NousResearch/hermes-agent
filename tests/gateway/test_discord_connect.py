@@ -191,6 +191,44 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
 
 @pytest.mark.asyncio
+async def test_connect_declares_online_presence(monkeypatch):
+    """Discord IDENTIFY must explicitly declare Hermes as online (#64932)."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(
+        *, command_prefix, intents, status, proxy=None, allowed_mentions=None, **_
+    ):
+        created["status"] = status
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    assert await adapter.connect() is True
+    assert created["status"] is discord_platform.discord.Status.online
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "initial_allowed",
     [

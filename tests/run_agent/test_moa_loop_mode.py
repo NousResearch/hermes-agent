@@ -1832,13 +1832,15 @@ def test_reference_messages_drops_whitespace_only_string_user_turn():
     assert all(str(m["content"]).strip() for m in view)
 
 def test_moa_pre_api_compression_includes_reference_guidance(monkeypatch, tmp_path):
-    """The aggregator must not receive guidance that pushes it past compression.
+    """Compression must rebuild MoA guidance from the compacted transcript.
 
     The normal pre-API check sees only the persisted conversation.  MoA adds
     reference guidance later, inside ``MoAChatCompletions.create()``, so this
     regression drives a raw request just below the threshold and makes the
-    injected guidance cross it.  Compression must occur before the aggregator
-    request and leave the rebuilt request below the threshold.
+    injected guidance cross it.  The prepared request is bound to the original
+    transcript and must be discarded after compression; rebasing that stale
+    guidance made repeated compression passes remove almost no real prompt
+    tokens and eventually exhaust the retry guardrail.
     """
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -1909,7 +1911,10 @@ moa:
 
     assert result["final_response"] == "aggregator acted"
     assert events.index("compress") < events.index("aggregator")
-    assert events.count("reference") == 1
+    assert events.count("reference") == 2
+    assert events.index("compress") < max(
+        index for index, event in enumerate(events) if event == "reference"
+    )
     assert all("Mixture of Agents reference context" not in str(item) for item in compression_inputs)
     assert aggregator_request_tokens == [60]
 

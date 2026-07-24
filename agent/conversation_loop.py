@@ -973,11 +973,6 @@ def run_conversation(
     # reused as the final response — not merely because any interim was
     # streamed. (#65919 review: response-loss blocker)
     _pending_verification_response_previewed = False
-    # If pre-API compression fires after MoA advisors have produced guidance,
-    # retain that ephemeral output and rebase it onto the compacted transcript
-    # on the next loop iteration. This prevents a second advisor fan-out.
-    pending_moa_prepared_request = None
-
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
     # ``try_refresh_current()`` "succeed" forever on a single-entry OAuth pool,
@@ -1445,17 +1440,9 @@ def run_conversation(
         _moa_prepared_request = None
         if agent.provider == "moa":
             _moa_completions = getattr(getattr(agent.client, "chat", None), "completions", None)
-            if pending_moa_prepared_request is not None:
-                _rebase_moa_request = getattr(_moa_completions, "rebase_prepared_request", None)
-                if callable(_rebase_moa_request):
-                    _moa_prepared_request = _rebase_moa_request(
-                        pending_moa_prepared_request, api_messages
-                    )
-                pending_moa_prepared_request = None
-            if _moa_prepared_request is None:
-                _prepare_moa_request = getattr(_moa_completions, "prepare", None)
-                if callable(_prepare_moa_request):
-                    _moa_prepared_request = _prepare_moa_request(api_messages)
+            _prepare_moa_request = getattr(_moa_completions, "prepare", None)
+            if callable(_prepare_moa_request):
+                _moa_prepared_request = _prepare_moa_request(api_messages)
             if _moa_prepared_request is not None:
                 api_messages = _moa_prepared_request["messages"]
 
@@ -1551,8 +1538,6 @@ def run_conversation(
             and not _compression_cooldown
             and _compressor.should_compress(request_pressure_tokens)
         ):
-            if _moa_prepared_request is not None:
-                pending_moa_prepared_request = _moa_prepared_request
             compression_attempts += 1
             # Compression is actually running (block cleared / was never
             # blocked) — reset the blocked-overflow warning dedup so a future
@@ -1612,8 +1597,6 @@ def run_conversation(
                 # soft compression_deferred result with that stronger signal.
                 compression_attempts -= 1
                 _last_preflight_pressure = None
-                if pending_moa_prepared_request is _moa_prepared_request:
-                    pending_moa_prepared_request = None
             else:
                 # Reset retry/empty-response state so the compacted request
                 # gets a fresh chance instead of inheriting stale recovery

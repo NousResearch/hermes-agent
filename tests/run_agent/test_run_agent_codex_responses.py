@@ -1873,6 +1873,26 @@ def test_run_conversation_codex_continues_after_max_output_incomplete(monkeypatc
     )
 
 
+def test_run_conversation_codex_max_output_exhaustion_returns_mid_turn_steer(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = 0
+
+    def _always_incomplete(_api_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            agent.steer("stop and provide only the summary")
+        return _codex_max_output_incomplete_response("Partial final answer")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _always_incomplete)
+
+    result = agent.run_conversation("write a long final answer")
+
+    assert calls == 3
+    assert result["completed"] is False
+    assert result["pending_steer"] == "stop and provide only the summary"
+
+
 def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(monkeypatch):
     """Long tool-heavy turns should compact before the next API request.
 

@@ -142,6 +142,32 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
     }
 
 
+def test_provider_output_cap_failure_returns_mid_turn_steer(agent):
+    """The max_tokens-cap error exits before TurnFinalizer, so a steer that
+    arrives during the rejected provider call must be returned to the caller."""
+    class _OutputCapError(Exception):
+        status_code = 400
+
+    error = _OutputCapError("Error code: 400 - max_tokens should be less than or equal to 16384")
+
+    def _output_cap_error(*_args, **_kwargs):
+        agent.steer("retry with a shorter answer")
+        raise error
+
+    agent.client.chat.completions.create.side_effect = _output_cap_error
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("write a long answer")
+
+    assert result["completed"] is False
+    assert "max_tokens exceeds the provider's output cap" in result["error"]
+    assert result["pending_steer"] == "retry with a shorter answer"
+
+
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
 

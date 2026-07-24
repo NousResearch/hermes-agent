@@ -5767,6 +5767,42 @@ class SessionDB:
                 return content
         return content
 
+    @staticmethod
+    def _encode_display_metadata(
+        display_metadata: Optional[Dict[str, Any]], *, context: str,
+    ) -> Optional[str]:
+        """Serialize presentation metadata without emitting non-standard JSON."""
+        if display_metadata is None:
+            return None
+        if not isinstance(display_metadata, dict):
+            logger.warning("Ignoring non-object display metadata in %s", context)
+            return None
+        if not display_metadata:
+            return None
+        try:
+            return json.dumps(display_metadata, allow_nan=False)
+        except (RecursionError, TypeError, ValueError):
+            logger.warning("Ignoring invalid display metadata in %s", context)
+            return None
+
+    @staticmethod
+    def _decode_display_metadata(value: Any, *, context: str) -> Optional[Dict[str, Any]]:
+        """Decode object-shaped metadata that a strict JSON response can serialize."""
+        if value is None:
+            return None
+        try:
+            decoded = json.loads(value)
+            if not isinstance(decoded, dict):
+                raise TypeError("display metadata must decode to an object")
+            # Python accepts NaN/Infinity (and overflows like 1e400) while the
+            # REST serializer rejects them. Re-encode strictly to validate all
+            # nested values before returning the object to an API caller.
+            json.dumps(decoded, allow_nan=False)
+            return decoded
+        except (json.JSONDecodeError, RecursionError, TypeError, ValueError):
+            logger.warning("Ignoring invalid display metadata in %s", context)
+            return None
+
     def append_message(
         self,
         session_id: str,
@@ -5812,7 +5848,9 @@ class SessionDB:
         """
         # Display metadata is presentation-only and never changes the model
         # context role/content replayed to providers.
-        display_metadata_json = json.dumps(display_metadata) if display_metadata else None
+        display_metadata_json = self._encode_display_metadata(
+            display_metadata, context="append_message",
+        )
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
             json.dumps(reasoning_details)
@@ -5925,11 +5963,14 @@ class SessionDB:
             ).fetchone()
             if row is None:
                 return False
+            display_metadata_json = self._encode_display_metadata(
+                display_metadata, context="set_latest_matching_message_display_kind",
+            )
             conn.execute(
                 "UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
                 (
                     _scrub_surrogates(display_kind),
-                    json.dumps(display_metadata) if display_metadata else None,
+                    display_metadata_json,
                     row[0],
                 ),
             )
@@ -5995,6 +6036,9 @@ class SessionDB:
             )
 
             api_content = msg.get("api_content")
+            display_metadata_json = self._encode_display_metadata(
+                msg.get("display_metadata"), context="_insert_message_rows",
+            )
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -6023,7 +6067,7 @@ class SessionDB:
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                     _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
-                    json.dumps(msg["display_metadata"]) if msg.get("display_metadata") else None,
+                    display_metadata_json,
                 ),
             )
             inserted += 1
@@ -6227,6 +6271,10 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
+            if msg.get("display_metadata") is not None:
+                msg["display_metadata"] = self._decode_display_metadata(
+                    msg["display_metadata"], context="get_messages",
+                )
             result.append(msg)
         return result
 
@@ -6296,6 +6344,10 @@ class SessionDB:
                         "Failed to deserialize tool_calls in get_messages_around, falling back to []"
                     )
                     msg["tool_calls"] = []
+            if msg.get("display_metadata") is not None:
+                msg["display_metadata"] = self._decode_display_metadata(
+                    msg["display_metadata"], context="get_messages_around",
+                )
             result.append(msg)
 
         # before_rows includes the anchor itself; subtract 1 for the count of
@@ -6418,6 +6470,10 @@ class SessionDB:
                         "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
                     )
                     msg["tool_calls"] = []
+            if msg.get("display_metadata") is not None:
+                msg["display_metadata"] = self._decode_display_metadata(
+                    msg["display_metadata"], context="get_anchored_view",
+                )
             return msg
 
         return {
@@ -6615,11 +6671,12 @@ class SessionDB:
                 msg["api_content"] = row["api_content"]
             if row["display_kind"]:
                 msg["display_kind"] = row["display_kind"]
-            if row["display_metadata"]:
-                try:
-                    msg["display_metadata"] = json.loads(row["display_metadata"])
-                except (TypeError, json.JSONDecodeError):
-                    logger.warning("Ignoring invalid display metadata on message row")
+            if row["display_metadata"] is not None:
+                display_metadata = self._decode_display_metadata(
+                    row["display_metadata"], context="conversation replay",
+                )
+                if display_metadata is not None:
+                    msg["display_metadata"] = display_metadata
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

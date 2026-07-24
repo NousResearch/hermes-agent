@@ -179,6 +179,7 @@ describe('toChatMessages', () => {
         role: 'user',
         content: 'opaque delegation context payload',
         display_kind: 'async_delegation_complete',
+        display_metadata: { delegation_id: 'del-1', task_count: 2 },
         timestamp: 5
       }
     ])
@@ -188,8 +189,29 @@ describe('toChatMessages', () => {
       'real user turn',
       'real assistant reply',
       'model changed',
-      'background agent work finished'
+      '2 background agents finished'
     ])
+  })
+
+  it.each([
+    ['string metadata', '{"task_count":1}'],
+    ['array metadata', []],
+    ['null metadata', null],
+    ['NaN task count', { task_count: Number.NaN }],
+    ['positive infinite task count', { task_count: Number.POSITIVE_INFINITY }],
+    ['negative infinite task count', { task_count: Number.NEGATIVE_INFINITY }]
+  ])('falls back safely for %s', (_case, displayMetadata) => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'opaque delegation context payload',
+        display_kind: 'async_delegation_complete',
+        display_metadata: displayMetadata as never,
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('background agent work finished')
   })
 })
 

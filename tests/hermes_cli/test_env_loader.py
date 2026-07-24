@@ -20,6 +20,36 @@ def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
 
 
+def test_user_env_cannot_override_process_owned_dashboard_token(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-token")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") == "desktop-token"
+
+
+def test_user_env_does_not_create_process_owned_dashboard_token(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert "HERMES_DASHBOARD_SESSION_TOKEN" not in os.environ
+
+
 def test_project_env_overrides_stale_shell_values_when_user_env_missing(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     project_env = tmp_path / ".env"

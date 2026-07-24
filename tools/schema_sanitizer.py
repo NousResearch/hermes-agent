@@ -17,9 +17,11 @@ The failure modes we've seen in the wild:
   (malformed MCP server output, e.g. ``additionalProperties: "object"``).
 * ``"type": ["string", "null"]`` array types — many converters only accept
   single-string ``type``.
-* ``anyOf`` / ``oneOf`` unions whose only purpose is to permit ``null`` for
-  optional fields (common Pydantic/MCP shape). Anthropic rejects these at
-  the top of ``input_schema``; collapse them to the non-null branch.
+* ``anyOf`` / ``oneOf`` unions carrying a ``{"type": "null"}`` branch for
+  optional fields (common Pydantic/MCP shape). Anthropic rejects the null
+  branch; we drop it — collapsing to the lone non-null variant, or, for a
+  genuine multi-type union (``Optional[Union[str, int]]``), keeping the
+  remaining non-null branches.
 * Unconstrained ``additionalProperties`` on objects with empty properties.
 * ``default`` (and other annotation keywords) alongside ``$ref`` — strict
   backends (Fireworks-hosted Kimi, JSON Schema draft-07 validators) reject
@@ -168,7 +170,7 @@ def strip_nullable_unions(
     *,
     keep_nullable_hint: bool = True,
 ) -> Any:
-    """Collapse ``anyOf`` / ``oneOf`` nullable unions to the non-null branch.
+    """Strip the ``null`` branch from ``anyOf`` / ``oneOf`` nullable unions.
 
     MCP / Pydantic optional fields commonly arrive as::
 
@@ -176,10 +178,16 @@ def strip_nullable_unions(
 
     Anthropic's tool input-schema validator rejects the null branch. Tool
     optionality is already represented by the parent object's ``required``
-    array, so we collapse the union to the single non-null variant.
+    array, so the null branch is always removed:
 
-    Metadata (``title``, ``description``, ``default``, ``examples``) on the
-    outer union node is carried over to the replacement variant.
+    * **One** non-null branch survives (``Optional[str]``) → collapse the
+      union to that single variant. Metadata (``title``, ``description``,
+      ``default``, ``examples``) on the outer union node is carried over to
+      the replacement variant.
+    * **Two or more** non-null branches survive
+      (``Optional[Union[str, int]]`` → ``anyOf: [str, int, null]``) → keep
+      the union but drop only the null branch, leaving ``anyOf: [str, int]``.
+      The union itself is meaningful, so it is preserved rather than collapsed.
 
     Args:
         schema: JSON-Schema fragment (dict, list, or scalar).
@@ -211,10 +219,13 @@ def strip_nullable_unions(
             item for item in variants
             if not (isinstance(item, dict) and item.get("type") == "null")
         ]
-        # Only collapse when we actually dropped a null branch AND exactly
-        # one non-null branch survives (otherwise the union is meaningful
-        # and we leave it alone).
-        if len(non_null) == 1 and len(non_null) != len(variants):
+        # Nothing to do when there is no null branch to drop, or when the
+        # union is *only* null branches (degenerate — leave it untouched).
+        if len(non_null) == len(variants) or not non_null:
+            continue
+        if len(non_null) == 1:
+            # Single surviving branch → collapse the union down to it and
+            # carry the outer node's metadata onto the replacement.
             replacement = dict(non_null[0]) if isinstance(non_null[0], dict) else {}
             if keep_nullable_hint:
                 replacement.setdefault("nullable", True)
@@ -225,6 +236,17 @@ def strip_nullable_unions(
                         continue
                     replacement[meta_key] = stripped[meta_key]
             return strip_nullable_unions(replacement, keep_nullable_hint=keep_nullable_hint)
+        # Two or more surviving branches → the union is meaningful, so keep
+        # it as a union but drop just the null branch (which Anthropic
+        # rejects). Optionality is still carried by the parent ``required``
+        # array; preserve the ``nullable: true`` hint when requested so
+        # runtime coercion (``model_tools._schema_allows_null``) can still
+        # map a model-emitted ``"null"`` string to Python ``None``.
+        rebuilt = dict(stripped)
+        rebuilt[key] = non_null
+        if keep_nullable_hint:
+            rebuilt.setdefault("nullable", True)
+        return strip_nullable_unions(rebuilt, keep_nullable_hint=keep_nullable_hint)
     return stripped
 
 

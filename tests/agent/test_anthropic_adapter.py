@@ -857,6 +857,40 @@ class TestConvertTools:
         }
         assert result[0]["input_schema"]["required"] == ["command"]
 
+    def test_strips_null_branch_from_multivariant_union(self):
+        """Optional[Union[str, int]] keeps a {"type": "null"} branch that the
+        single-branch collapse misses; Anthropic rejects it, so the null
+        branch must be dropped while the remaining union is preserved."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "value": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "integer"},
+                                    {"type": "null"},
+                                ],
+                            },
+                        },
+                    },
+                },
+            }
+        ]
+
+        result = convert_tools_to_anthropic(tools)
+
+        prop = result[0]["input_schema"]["properties"]["value"]
+        variant_types = {v.get("type") for v in prop["anyOf"]}
+        assert variant_types == {"string", "integer"}
+        assert "null" not in variant_types
+        # Anthropic path uses keep_nullable_hint=False → no OpenAPI nullable key.
+        assert "nullable" not in prop
+
 
 # ---------------------------------------------------------------------------
 # Message conversion

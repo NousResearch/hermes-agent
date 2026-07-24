@@ -157,6 +157,107 @@ def test_anyof_nested_objects_sanitized():
     assert variants[1] == {"type": "string"}
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Nullable anyOf/oneOf unions. The single-non-null case collapses to that
+# branch; the multi-non-null case (Optional[Union[str, int]]) must still
+# drop the {"type": "null"} branch Anthropic rejects while keeping the rest
+# of the union intact.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_multivariant_nullable_anyof_drops_null_keeps_union():
+    """Optional[Union[str, int]] → null branch dropped, both types preserved."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "integer"},
+                    {"type": "null"},
+                ],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["value"]
+    assert all(v.get("type") != "null" for v in prop["anyOf"])
+    assert {v["type"] for v in prop["anyOf"]} == {"string", "integer"}
+    # keep_nullable_hint=True on this path → optionality still signalled so
+    # runtime coercion can map a model-emitted "null" to Python None.
+    assert prop.get("nullable") is True
+
+
+def test_multivariant_nullable_oneof_drops_null_keeps_union():
+    """Same as above but for oneOf."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "value": {
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "integer"},
+                    {"type": "null"},
+                ],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["value"]
+    assert all(v.get("type") != "null" for v in prop["oneOf"])
+    assert {v["type"] for v in prop["oneOf"]} == {"string", "integer"}
+    assert prop.get("nullable") is True
+
+
+def test_multivariant_nullable_union_stripped_in_nested_items():
+    """A nullable union nested under array items is also cleaned."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "bag": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "integer"},
+                        {"type": "null"},
+                    ],
+                },
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    items = out[0]["function"]["parameters"]["properties"]["bag"]["items"]
+    assert all(v.get("type") != "null" for v in items["anyOf"])
+    assert {v["type"] for v in items["anyOf"]} == {"string", "integer"}
+
+
+def test_null_less_multivariant_union_left_untouched():
+    """A union with no null branch is meaningful — leave it (and don't add nullable)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [{"type": "string"}, {"type": "integer"}],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["value"]
+    assert {v["type"] for v in prop["anyOf"]} == {"string", "integer"}
+    assert "nullable" not in prop
+
+
+def test_strip_nullable_unions_multivariant_keep_hint_false():
+    """keep_nullable_hint=False (the Anthropic path) drops null without a hint."""
+    from tools.schema_sanitizer import strip_nullable_unions
+
+    schema = {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}]}
+    out = strip_nullable_unions(schema, keep_nullable_hint=False)
+    assert {v["type"] for v in out["anyOf"]} == {"string", "integer"}
+    assert "nullable" not in out
+
+
 def test_missing_parameters_gets_default_object_schema():
     tools = [{"type": "function", "function": {"name": "t"}}]
     out = sanitize_tool_schemas(tools)

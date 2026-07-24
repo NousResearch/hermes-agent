@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -1459,6 +1460,46 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+_EMAIL_SUBJECT_DIRECTIVE_RE = re.compile(r"^\s*(?:Subject|Email-Subject)\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def _extract_email_subject_from_content(content: str) -> tuple[Optional[str], str]:
+    """Extract a leading Subject directive from cron output, if present."""
+    lines = (content or "").splitlines()
+    if not lines:
+        return None, content or ""
+    match = _EMAIL_SUBJECT_DIRECTIVE_RE.match(lines[0])
+    if not match:
+        return None, content or ""
+    subject = match.group(1).strip() or None
+    cleaned = "\n".join(lines[1:]).lstrip("\n")
+    return subject, cleaned
+
+
+def _render_email_subject_template(job: dict) -> Optional[str]:
+    """Render optional job-level email_subject_template for email delivery."""
+    template = (job.get("email_subject_template") or "").strip()
+    if not template:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now = datetime.now()
+    month_day_year = f"{now.strftime('%B')} {now.day}, {now.year}"
+    weekday_date = f"{now.strftime('%A')}, {month_day_year}"
+    try:
+        return template.format(
+            date=month_day_year,
+            weekday=now.strftime("%A"),
+            weekday_date=weekday_date,
+            iso_date=now.date().isoformat(),
+        )
+    except Exception:
+        logger.warning("Job '%s': invalid email_subject_template=%r", job.get("id", "?"), template)
+        return None
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1505,6 +1546,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
+
+    # Resolve explicit email subjects before adding the cron wrapper. This keeps
+    # `Subject: ...` directives out of the visible body and lets email adapters
+    # set a real SMTP Subject header instead of falling back to "Hermes Agent".
+    email_subject, content = _extract_email_subject_from_content(content)
+    if not email_subject:
+        email_subject = _render_email_subject_template(job)
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -1774,6 +1822,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
+            # Email is special: the live adapter path goes through DeliveryRouter
+            # and adapter.send(..., metadata=route_metadata). Carry the resolved
+            # SMTP subject and extracted MEDIA files in that metadata so the
+            # email adapter sends ONE multipart MIME message instead of a text
+            # email plus a separate attachment/fallback email.
+            if email_subject:
+                route_metadata["subject"] = email_subject
+            if platform == Platform.EMAIL and media_files:
+                route_metadata["media_files"] = media_files
+
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
@@ -1785,7 +1843,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
-                if text_to_send:
+                if text_to_send or (platform == Platform.EMAIL and media_files):
                     from agent.async_utils import safe_schedule_threadsafe
 
                     router = DeliveryRouter(config, adapters)
@@ -1928,7 +1986,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # payload is already assumed delivered (#38922).  Record the
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
-                if adapter_ok and not timed_out and media_files:
+                if adapter_ok and not timed_out and media_files and platform != Platform.EMAIL:
                     _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
@@ -1997,7 +2055,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, subject=email_subject)
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -2026,7 +2084,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, subject=email_subject))
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)

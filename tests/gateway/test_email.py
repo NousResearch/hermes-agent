@@ -891,6 +891,46 @@ class TestSendMethods(unittest.TestCase):
             mock_server.send_message.assert_called_once()
             mock_server.quit.assert_called_once()
 
+    def test_send_with_metadata_subject_and_attachment_builds_one_mime_email(self):
+        """EmailAdapter.send should turn subject/media metadata into one
+        multipart SMTP message with the requested subject and attachment."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"%PDF-1.4\nbrief")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                result = asyncio.run(adapter.send(
+                    "user@test.com",
+                    "",
+                    metadata={
+                        "subject": "Daily Meeting Prep — Tuesday, July 14, 2026",
+                        "media_files": [(tmp_path, False)],
+                    },
+                ))
+
+                self.assertTrue(result.success)
+                mock_server.send_message.assert_called_once()
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["Subject"], "Daily Meeting Prep — Tuesday, July 14, 2026")
+                parts = list(sent_msg.walk())
+                attachments = [
+                    p for p in parts
+                    if "attachment" in str(p.get("Content-Disposition", ""))
+                ]
+                self.assertEqual(len(attachments), 1)
+                disposition = attachments[0].get("Content-Disposition", "") or ""
+                self.assertIn(os.path.basename(tmp_path), disposition)
+        finally:
+            os.unlink(tmp_path)
+
     def test_send_failure_returns_error(self):
         """SMTP failure should return SendResult with error."""
         import asyncio

@@ -1002,17 +1002,26 @@ class TestResolveSessionNameLengthLimit:
 
 
 class TestResetHonchoClient:
-    def test_reset_clears_singleton(self):
+    def test_reset_clears_all_cached_clients(self):
         import plugins.memory.honcho.client as mod
+        from plugins.plugin_utils import SingletonSlot
 
-        # Seed the cached client through the slot's public surface, then
-        # verify reset_honcho_client() clears it. (The client is cached in
-        # mod._honcho_client_slot, a thread-safe SingletonSlot, not a bare
-        # module global anymore — see #24759.)
-        mod._honcho_client_slot.get(lambda: MagicMock())
-        assert mod._honcho_client_slot.peek() is not None
+        # Seed cached clients for two identities through the slot map's
+        # public surface, then verify reset_honcho_client() clears them all.
+        # (Clients are cached per config identity in mod._honcho_client_slots
+        # — one thread-safe SingletonSlot per identity — so multiplexed
+        # profiles don't share whichever client built first; see #24759 for
+        # the slot primitive.)
+        for key in (("explicit", "hermes", "ws-a", "", "production"),
+                    ("explicit", "hermes", "ws-b", "", "production")):
+            slot = SingletonSlot()
+            slot.get(lambda: MagicMock())
+            with mod._honcho_client_slots_lock:
+                mod._honcho_client_slots[key] = slot
+            assert slot.peek() is not None
         reset_honcho_client()
-        assert mod._honcho_client_slot.peek() is None
+        with mod._honcho_client_slots_lock:
+            assert not mod._honcho_client_slots
 
 
 class TestDialecticDepthParsing:

@@ -23,6 +23,8 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
+from cron.redaction import redact_exception_detail
+
 
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
@@ -240,7 +242,8 @@ class InProcessCronScheduler(CronScheduler):
                 # stop_event (set by the main thread's signal handler), not by
                 # an exception in this daemon thread, so swallowing it and
                 # re-checking stop_event keeps shutdown clean.
-                logger.error("Cron tick error: %s", e, exc_info=True)
+                error_detail, traceback_safe = redact_exception_detail(e)
+                logger.error("Cron tick error: %s", error_detail, exc_info=traceback_safe)
             # Record liveness every iteration; bump the success marker only on a
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
@@ -316,7 +319,8 @@ class InProcessCronScheduler(CronScheduler):
                             reset_hermes_home_override(home_token)
                 ok = True
             except BaseException as e:
-                logger.error("Cron tick error: %s", e, exc_info=True)
+                error_detail, traceback_safe = redact_exception_detail(e)
+                logger.error("Cron tick error: %s", error_detail, exc_info=traceback_safe)
             # Record per-profile heartbeat after each tick cycle.
             for entry in profile_homes:
                 home = entry[1] if isinstance(entry, tuple) else entry

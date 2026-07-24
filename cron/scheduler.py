@@ -44,16 +44,14 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
-from cron.redaction import redact_credential_text
+from cron.redaction import redact_credential_text, redact_exception_detail
 
 logger = logging.getLogger(__name__)
 
 
 def _redacted_exception_detail(error: BaseException | str) -> tuple[str, bool]:
     """Return safe exception text and whether its traceback is safe to log."""
-    detail = str(error)
-    redacted_detail = redact_credential_text(detail)
-    return redacted_detail, redacted_detail == detail
+    return redact_exception_detail(error)
 
 
 def _set_cron_session_title(session_db, session_id, base_title):
@@ -1458,11 +1456,12 @@ def _is_channel_dm_topic(
         # Lighter than a send (metadata-only Bot API call), so a shorter bound
         # than the 30s/60s send waits elsewhere in this file is intentional.
         info = future.result(timeout=10)
-    except Exception:
+    except Exception as error:
+        error_detail, traceback_safe = _redacted_exception_detail(error)
         logger.debug(
-            "Job '%s': get_chat_info probe failed for chat=%s — "
+            "Job '%s': get_chat_info probe failed for chat=%s (%s) — "
             "defaulting to message_thread_id routing",
-            job_id, chat_id, exc_info=True,
+            job_id, chat_id, error_detail, exc_info=traceback_safe,
         )
         return False
     is_channel = isinstance(info, dict) and str(info.get("type") or "").lower() == "channel"
@@ -4044,7 +4043,8 @@ def _notify_provider_jobs_changed() -> None:
         from cron.scheduler_provider import resolve_cron_scheduler
         resolve_cron_scheduler().on_jobs_changed()
     except Exception as e:
-        logger.debug("on_jobs_changed notify failed: %s", e)
+        error_detail, _ = _redacted_exception_detail(e)
+        logger.debug("on_jobs_changed notify failed: %s", error_detail)
 
 
 def tick(

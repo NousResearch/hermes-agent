@@ -405,23 +405,26 @@ def test_fire_due_missing_job_does_not_run(monkeypatch):
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──
 
 
-def test_ticker_survives_baseexception_from_tick():
+def test_ticker_survives_baseexception_from_tick(caplog):
     """A BaseException (e.g. SystemExit from a provider SDK) raised by tick()
     must NOT kill the ticker loop — it logs and keeps looping (#32612)."""
     from cron.scheduler_provider import InProcessCronScheduler
 
     calls = []
 
+    credential = "api_key=QWERTY1234567890"
+
     def _boom(*a, **k):
         calls.append(1)
         if len(calls) == 1:
-            raise SystemExit("provider SDK called sys.exit")
+            raise SystemExit(credential)
         return 0
 
     stop = threading.Event()
     prov = InProcessCronScheduler()
     with patch("cron.scheduler.tick", side_effect=_boom), \
-         patch("cron.jobs.record_ticker_heartbeat"):
+         patch("cron.jobs.record_ticker_heartbeat"), \
+         caplog.at_level("ERROR", logger="cron.scheduler_provider"):
         t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
         t.start()
         # Survive the BaseException AND keep ticking: wait for ≥2 calls.
@@ -432,6 +435,7 @@ def test_ticker_survives_baseexception_from_tick():
 
     assert not t.is_alive(), "ticker thread died on BaseException instead of surviving"
     assert len(calls) >= 2, "ticker did not keep ticking after the BaseException"
+    assert credential not in caplog.text
 
 
 def test_ticker_records_heartbeat_each_iteration():

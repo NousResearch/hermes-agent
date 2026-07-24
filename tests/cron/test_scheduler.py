@@ -1327,6 +1327,61 @@ def test_redacted_exception_detail_tracks_when_traceback_is_safe():
         "network timeout",
         True,
     )
+    try:
+        try:
+            raise RuntimeError(credential)
+        except RuntimeError as cause:
+            raise RuntimeError("safe wrapper") from cause
+    except RuntimeError as chained:
+        assert _redacted_exception_detail(chained) == ("safe wrapper", False)
+
+
+def test_channel_topic_probe_redacts_chained_credential_from_debug_traceback(caplog):
+    """A safe outer probe error must not re-expose a credential in its cause."""
+    from concurrent.futures import Future
+    from cron.scheduler import _is_channel_dm_topic
+
+    credential = "token: QWERTY1234567890"
+
+    class _Adapter:
+        async def get_chat_info(self, _chat_id):
+            return None
+
+    def failed_schedule(coro, _loop):
+        coro.close()
+        future = Future()
+        try:
+            try:
+                raise RuntimeError(credential)
+            except RuntimeError as cause:
+                raise RuntimeError("probe unavailable") from cause
+        except RuntimeError as chained:
+            future.set_exception(chained)
+        return future
+
+    with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=failed_schedule):
+        with caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+            assert _is_channel_dm_topic(_Adapter(), "123", MagicMock(), "probe-job") is False
+
+    assert credential not in caplog.text
+    assert "probe unavailable" in caplog.text
+
+
+def test_provider_job_change_notification_redacts_credential_exception(caplog):
+    """A provider callback failure must not expose its exception text in debug logs."""
+    import cron.scheduler as scheduler
+
+    credential = "token: QWERTY1234567890"
+
+    with patch(
+        "cron.scheduler_provider.resolve_cron_scheduler",
+        side_effect=RuntimeError(credential),
+    ):
+        with caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+            scheduler._notify_provider_jobs_changed()
+
+    assert credential not in caplog.text
+    assert "[redacted credential]" in caplog.text
 
 
 class TestRunJobSessionPersistence:

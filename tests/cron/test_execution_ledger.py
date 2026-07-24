@@ -167,6 +167,22 @@ def test_credential_detector_recognizes_common_provider_prefixes(credential):
     assert redact_credential_text(credential) == "[redacted credential]"
 
 
+@__import__("pytest").mark.parametrize(
+    "credential",
+    [
+        "api_key=QWERTY1234567890",
+        "token: QWERTY1234567890",
+        "https://api.example.test/v1?api_key=QWERTY1234567890",
+    ],
+)
+def test_credential_detector_redacts_key_value_and_query_forms(credential):
+    """Provider-shaped credentials must be removed before durable cron writes."""
+    from cron.redaction import contains_credential, redact_credential_text
+
+    assert contains_credential(credential)
+    assert redact_credential_text(credential) == "[redacted credential]"
+
+
 def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("still-live", source="builtin")

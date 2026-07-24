@@ -263,6 +263,240 @@ def build_models_payload(
     }
 
 
+def build_offline_models_payload(
+    ctx: ConfigContext,
+    *,
+    include_unconfigured: bool = False,
+) -> dict:
+    """Build a static provider/model inventory without touching the network.
+
+    This is deliberately separate from :func:`build_models_payload`.  The
+    picker payload is allowed to consult models.dev, remote model catalogs,
+    and configured custom endpoints.  A script running with ``--offline``
+    needs a stronger guarantee: it may inspect local config and environment
+    variable *names*, but never contacts a provider or reads the credential
+    pool.
+
+    The resulting row shape is intentionally compatible with the regular
+    payload's provider rows, so command-line callers can use the same
+    serializer for live and offline inventories.
+    """
+    import os
+
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.models import (
+        CANONICAL_PROVIDERS,
+        OPENROUTER_MODELS,
+        _PROVIDER_MODELS,
+    )
+
+    current_slug = str(ctx.current_provider or "").strip().lower()
+    configured = {
+        str(slug).strip().lower()
+        for slug, value in ctx.user_providers.items()
+        if isinstance(value, dict) and str(slug).strip()
+    }
+    if current_slug:
+        configured.add(current_slug)
+
+    def _config_model_ids(value: object) -> list[str]:
+        """Read model IDs from the supported, local config shapes."""
+        candidates: list[object]
+        if isinstance(value, dict):
+            candidates = list(value)
+        elif isinstance(value, (list, tuple)):
+            candidates = list(value)
+        else:
+            candidates = [value]
+
+        ids: list[str] = []
+        for item in candidates:
+            if isinstance(item, dict):
+                item = item.get("id") or item.get("name")
+            if not isinstance(item, str):
+                continue
+            model_id = item.strip()
+            if model_id and model_id not in ids:
+                ids.append(model_id)
+        return ids
+
+    def _provider_config(slug: str):
+        config = PROVIDER_REGISTRY.get(slug)
+        if config is not None:
+            return config
+        try:
+            from hermes_cli.providers import get_provider
+
+            return get_provider(slug)
+        except Exception:
+            return None
+
+    def _env_vars(slug: str) -> tuple[str, ...]:
+        config = _provider_config(slug)
+        raw = getattr(config, "api_key_env_vars", ()) if config else ()
+        return tuple(name for name in raw if isinstance(name, str) and name)
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for entry in CANONICAL_PROVIDERS:
+        slug = entry.slug.lower()
+        env_vars = _env_vars(slug)
+        is_configured = slug in configured or any(
+            os.environ.get(name, "").strip() for name in env_vars
+        )
+        if not include_unconfigured and not is_configured:
+            continue
+
+        configured_row = ctx.user_providers.get(entry.slug)
+        configured_models: list[str] = []
+        if isinstance(configured_row, dict):
+            configured_models.extend(_config_model_ids(configured_row.get("default_model")))
+            configured_models.extend(_config_model_ids(configured_row.get("model")))
+            configured_models.extend(_config_model_ids(configured_row.get("models")))
+        if slug == current_slug and ctx.current_model:
+            configured_models.insert(0, ctx.current_model)
+
+        static_models = list(_PROVIDER_MODELS.get(slug, ()))
+        if slug == "openrouter":
+            static_models = [model_id for model_id, _ in OPENROUTER_MODELS]
+        models = list(dict.fromkeys([*configured_models, *static_models]))
+        config = _provider_config(slug)
+        rows.append(
+            {
+                "slug": entry.slug,
+                "name": entry.label,
+                "is_current": slug == current_slug,
+                "is_user_defined": False,
+                "models": models,
+                "total_models": len(models),
+                "source": "static",
+                "authenticated": is_configured,
+                "auth_type": getattr(config, "auth_type", "api_key"),
+                "key_env": env_vars[0] if env_vars else "",
+            }
+        )
+        seen.add(slug)
+
+    # Named providers are local configuration and may not be in the canonical
+    # registry.  Keep their explicitly declared models, but never probe their
+    # endpoint in offline mode.
+    for slug, value in ctx.user_providers.items():
+        if not isinstance(value, dict) or not str(slug).strip():
+            continue
+        normalized = str(slug).strip().lower()
+        if normalized in seen:
+            continue
+        models = _config_model_ids(value.get("default_model"))
+        models.extend(model for model in _config_model_ids(value.get("model")) if model not in models)
+        models.extend(model for model in _config_model_ids(value.get("models")) if model not in models)
+        rows.append(
+            {
+                "slug": str(slug),
+                "name": str(value.get("name") or slug),
+                "is_current": normalized == current_slug,
+                "is_user_defined": True,
+                "models": models,
+                "total_models": len(models),
+                "source": "user-config",
+                "authenticated": True,
+                "auth_type": "api_key",
+                "key_env": str(value.get("key_env") or ""),
+            }
+        )
+        seen.add(normalized)
+
+    # The legacy ``custom_providers`` list remains valid config.  It can be
+    # present alongside the keyed ``providers`` form, so suppress only entries
+    # with the same endpoint, credential, protocol, and headers as a named
+    # provider.  Matching by URL alone would hide distinct tenants or API
+    # modes that happen to share a gateway.
+    from hermes_cli.config import normalize_extra_headers
+
+    def _provider_identity(entry: dict) -> tuple:
+        api_url = str(
+            entry.get("base_url") or entry.get("api") or entry.get("url") or ""
+        ).strip().rstrip("/")
+        inline_api_key = str(entry.get("api_key") or "").strip()
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        credential_identity = (
+            inline_api_key
+            if inline_api_key
+            else f"env:{key_env}" if key_env else ""
+        )
+        api_mode = str(
+            entry.get("api_mode") or entry.get("transport") or ""
+        ).strip().lower()
+        headers_identity = tuple(sorted(normalize_extra_headers(
+            entry.get("extra_headers")
+        ).items()))
+        return api_url, credential_identity, api_mode, headers_identity
+
+    known_provider_identities = {
+        _provider_identity(value)
+        for value in ctx.user_providers.values()
+        if isinstance(value, dict)
+    }
+    for entry in ctx.custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        base_url = str(
+            entry.get("base_url") or entry.get("api") or entry.get("url") or ""
+        ).strip().rstrip("/")
+        if not name or (base_url and _provider_identity(entry) in known_provider_identities):
+            continue
+        slug = "custom:" + name.lower().replace(" ", "-")
+        normalized = slug.lower()
+        if normalized in seen:
+            continue
+        models = _config_model_ids(entry.get("model"))
+        models.extend(
+            model for model in _config_model_ids(entry.get("models"))
+            if model not in models
+        )
+        is_current = normalized == current_slug or (
+            current_slug == "custom" and bool(ctx.current_base_url)
+            and base_url.lower() == str(ctx.current_base_url).strip().rstrip("/").lower()
+        )
+        rows.append(
+            {
+                "slug": slug,
+                "name": name,
+                "is_current": is_current,
+                "is_user_defined": True,
+                "models": models,
+                "total_models": len(models),
+                "source": "user-config",
+                "authenticated": True,
+                "auth_type": "api_key",
+                "key_env": str(entry.get("key_env") or ""),
+            }
+        )
+        seen.add(normalized)
+
+    if current_slug and current_slug not in seen:
+        rows.append(
+            {
+                "slug": ctx.current_provider,
+                "name": ctx.current_provider,
+                "is_current": True,
+                "is_user_defined": True,
+                "models": [ctx.current_model] if ctx.current_model else [],
+                "total_models": 1 if ctx.current_model else 0,
+                "source": "model-config",
+                "authenticated": True,
+                "auth_type": "api_key",
+                "key_env": "",
+            }
+        )
+
+    return {
+        "providers": rows,
+        "model": ctx.current_model,
+        "provider": ctx.current_provider,
+    }
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
     """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
 

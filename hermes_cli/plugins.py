@@ -386,6 +386,27 @@ class PluginContext:
         except Exception:
             return "default"
 
+    async def rebind_gateway_session_credentials(
+        self,
+        *,
+        session_id: str,
+        provider: str,
+        credential_id: str,
+    ) -> dict[str, Any]:
+        """Refresh one idle Gateway session after a credential-pool switch.
+
+        ``credential_id`` must be the selected pool entry's stable id. The
+        Gateway verifies that selection through normal runtime resolution,
+        updates only ephemeral credential fields, and returns no secrets.
+        """
+        from gateway.run import rebind_gateway_session_credentials
+
+        return await rebind_gateway_session_credentials(
+            session_id=session_id,
+            provider=provider,
+            credential_id=credential_id,
+        )
+
     # -- tool registration --------------------------------------------------
 
     def register_tool(

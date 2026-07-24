@@ -86,6 +86,112 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
+def _file_uri_to_path(uri: str, *, windows: bool | None = None) -> str:
+    """
+    Parse a ``file://`` URI into a local OS path with strict authority handling.
+
+    Rules:
+        * Empty authority or ``localhost`` (case-insensitive) is local.
+        * Windows only: an authority matching ``[A-Za-z]:`` is treated as a
+          drive-letter part of the path (not as a remote host).
+        * Every other non-empty authority is rejected as a non-local
+          authority (would map to ``\\\\host\\share`` on Windows or to a
+          remote path on POSIX).
+        * Windows only: a drive-relative URI — one whose path begins with
+          a drive letter and no separator (e.g. ``C:image.png`` or the
+          percent-encoded ``C%3Aimage.png``) — is rejected *before* the
+          path is handed to ``nturl2path.url2pathname``. ``stdlib``
+          behavior for that helper changed across Python 3.11 → 3.13
+          (3.11 silently rewrites it to ``C:\\image.png``, 3.13 returns
+          the raw drive-relative ``C:image.png``); we reject in both
+          cases for a stable, version-independent contract.
+        * After platform-specific percent-decoding and path conversion,
+          the result is checked again: on Windows, anything starting
+          with two or more backslashes is a UNC or device-path shape
+          and is rejected; on POSIX, anything starting with ``//`` or
+          ``\\\\`` is rejected. A single leading backslash on Windows
+          is a root-relative path on the current drive and is legal.
+
+    No filesystem access (no ``Path.resolve()``, ``is_file()``, ``stat()``,
+    or read) happens here — the check fires before the path is handed to
+    :func:`resolve_image_source`'s downstream readers.
+    """
+    from urllib.parse import urlparse, unquote
+    import platform
+    import re as _re
+
+    if windows is None:
+        windows = platform.system() == "Windows"
+
+    # Pre-normalize backslashes so ``file://C:\\foo`` parses cleanly.
+    parsed = urlparse(uri.replace("\\", "/"))
+
+    # Drive-letter authority is only meaningful on Windows. POSIX must
+    # reject ``file://C:/...`` outright — ``C:`` is not a hostname there.
+    is_drive_authority = bool(
+        windows and _re.fullmatch(r"[A-Za-z]:", parsed.netloc or "")
+    )
+
+    if parsed.netloc and parsed.netloc.lower() != "localhost" and not is_drive_authority:
+        raise ValueError(
+            f"Resolving non-local authority '{parsed.netloc}' in file:// URI "
+            "is not allowed for security."
+        )
+
+    # Re-stitch the path if ``urlparse`` ate the drive letter into the netloc.
+    path_part = ("/" + parsed.netloc + parsed.path) if is_drive_authority else parsed.path
+
+    if windows:
+        # Reject percent-encoded drive delimiters (``%3A`` / ``%3a``)
+        # because ``nturl2path.url2pathname`` identifies the literal
+        # colon BEFORE percent-decoding — the result of e.g.
+        # ``file:///C%3A%2Fimage.png`` differs across Python 3.11 →
+        # 3.13. The check fires on the raw encoded ``path_part`` so it
+        # does not depend on stdlib behavior.
+        if _re.match(r"^/[A-Za-z]%3[Aa]", path_part):
+            raise ValueError(
+                "Percent-encoded Windows drive delimiters are not supported"
+            )
+        # Validate drive-relative shape on a single-pass decoded copy.
+        # Pattern: leading ``/`` + ASCII drive letter + ``:`` + EITHER
+        # nothing OR a non-separator character. This catches
+        # ``/C:foo`` (raw) and rejects it before any stdlib version-
+        # dependent conversion.
+        validation_path = unquote(path_part).replace("\\", "/")
+        if _re.match(r"^/[A-Za-z]:(?:$|[^/])", validation_path):
+            raise ValueError(
+                "Drive-relative file URI paths are not allowed"
+            )
+        import nturl2path
+        converted = nturl2path.url2pathname(path_part)
+        # ``url2pathname`` does a single percent-decode. The Windows
+        # output is a backslash path. Compute a normalized form for
+        # the security check so mixed ``\`` / ``/`` (e.g. from an
+        # encoded ``%2F`` slipping through) doesn't mask a leading
+        # double-backslash. UNC (``\\server\share``), device paths
+        # (``\\?\C:\...``, ``\\.\COM1``), and any 3+ backslash
+        # variant all start with ``\\``. A single leading backslash
+        # is a root-relative path on the current drive and is legal.
+        security_path = converted.replace("/", "\\")
+        if security_path.startswith("\\\\"):
+            raise ValueError(
+                "Remote UNC and Windows device paths are not allowed"
+            )
+        return converted
+
+    # POSIX: emulate ``urllib.request.url2pathname`` so the helper is
+    # deterministic on Linux CI (where ``url2pathname`` would dispatch to
+    # ``nturl2path`` on a Windows host). Reject any leading ``//`` or
+    # ``\\`` — both shapes can be smuggled through empty / localhost
+    # authority + encoded slashes.
+    converted = unquote(path_part)
+    if converted.startswith("//") or converted.startswith("\\"):
+        raise ValueError(
+            "Remote UNC and Windows device paths are not allowed"
+        )
+    return converted
+
+
 async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
@@ -108,7 +214,18 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
 
     # Everything else is a filesystem path — including bare relative names
     # like "pic.png" (accepted on main; a path-shape gate here regressed them).
-    candidate = s[len("file://"):] if s.lower().startswith("file://") else s
+    # Only treat the input as a file:// URI when it actually starts with the
+    # authority-bearing ``file://`` prefix; bare ``file:foo`` is a legitimate
+    # POSIX filename ("file:logo.png") and must NOT enter the URI helper.
+    candidate = s
+    if s.lower().startswith("file://"):
+        try:
+            candidate = _file_uri_to_path(s)
+        except ValueError as exc:
+            raise SourceNotFound(f"Invalid file URI: {s}", src=s) from exc
+        except OSError as exc:
+            raise SourceNotFound(f"Invalid file URI: {s}", src=s) from exc
+
     p = Path(os.path.expanduser(candidate))
     # Confinement decision (see module docstring). Under a non-local backend
     # a path is host-readable ONLY if it lands in a media cache (after

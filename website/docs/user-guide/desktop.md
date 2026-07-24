@@ -123,6 +123,31 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Search sessions by id** — find a specific session directly by its id.
 - **Concurrent multi-profile sessions** — run sessions across multiple [profiles](./profiles.md) at the same time, and reference a session in another profile with cross-profile `@session` links.
 
+#### Launch a blank chat in an installed profile
+
+Local integrations can ask Hermes Desktop to focus and open a new, blank chat
+in an already-installed profile:
+
+```text
+hermes://profile/<profile-name>?new=1
+```
+
+Percent-encode the profile path segment when constructing the URL. The name
+must be a valid Hermes profile identifier and must already appear in the local
+profile list. A missing profile produces a visible error and leaves the current
+chat untouched.
+
+This link selects the profile only for the new Desktop chat. It does not change
+Desktop's persistent primary profile, does not run `hermes profile use`, and
+does not change the CLI's sticky default. It also cannot carry or send a prompt:
+the only accepted query is exactly `new=1`. Treat `hermes://` URLs as untrusted
+external input; Desktop allow-lists the route, validates the identifier at the
+native boundary, verifies that the profile is installed, and then uses the
+existing live multi-profile session/gateway path.
+
+Existing `hermes://blueprint/...` links continue to preload a reviewable
+`/blueprint` command in the composer without sending it.
+
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when one is ready.

@@ -12,7 +12,7 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 
 import { refreshRepoStatus } from './coding-status'
 import { $busy, $currentCwd } from './session'
-import { $workspaceChangeTick } from './workspace-events'
+import { $workspaceChangeTick, notifyWorkspaceChanged } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
 // file's diff, and the git mutations (stage / unstage / revert). The active
@@ -284,6 +284,10 @@ export function toggleReview(): void {
 // Run a git mutation then re-sync both the review list and the rail's +/- (the
 // working tree changed). A failure is swallowed by the caller's notify wrapper.
 async function afterMutation(): Promise<void> {
+  // Bump the shared tick so the other git-mirroring surfaces (verification
+  // panel, file tree) re-check too, exactly like file-actions.ts mutations.
+  // The tick is throttled upstream, so this can't storm.
+  notifyWorkspaceChanged()
   await refreshReview()
   void refreshRepoStatus()
 
@@ -359,6 +363,9 @@ export async function commitChanges(message: string, opts: { push?: boolean } = 
 
   await runShip(async () => {
     await ctx.review.commit(ctx.cwd, message.trim(), Boolean(opts.push))
+    // Commit bypasses afterMutation (it adds the ship re-check instead), so it
+    // bumps the shared workspace tick itself.
+    notifyWorkspaceChanged()
     await refreshReview()
     void refreshRepoStatus()
     void refreshShipInfo()

@@ -87,6 +87,43 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 }
 ```
 
+### POST /v1/chat/completions/restricted
+
+Authenticated gateway-proxy endpoint. It requires a configured API server key,
+an `enabled_toolsets` array, and a `gateway_source` object. Hermes intersects
+requested toolsets with toolsets enabled for the API server, so callers can
+reduce capabilities but cannot grant new ones.
+
+```json
+{
+  "model": "hermes-agent",
+  "messages": [{"role": "user", "content": "Summarize this conversation"}],
+  "enabled_toolsets": ["context_engine"],
+  "gateway_source": {
+    "platform": "whatsapp",
+    "chat_id": "15551234567@s.whatsapp.net",
+    "user_id": "15551234567@s.whatsapp.net",
+    "profile": "default",
+    "session_key": "agent:main:whatsapp:dm:15551234567"
+  }
+}
+```
+
+Use this versioned endpoint when a gateway or other trusted proxy must enforce
+a narrower tool surface. Older servers return 404 instead of silently running
+the request with their full configured toolset. `gateway_source` accepts only
+`platform`, `chat_id`, `session_key`, `profile`, and optional `user_id`,
+`user_id_alt`, `thread_id`, and `message_id` string fields. Missing required
+fields, malformed values, and extra fields are rejected; `session_key` has the same
+256-character limit as `X-Hermes-Session-Key`. `profile` must match both the URL
+profile prefix and the active server profile. Proxy mode appends the URL-quoted
+`/p/<profile>` scope to every regular and restricted proxy request when
+`gateway.proxy_url` is unscoped, and preserves an existing matching scope
+without adding a second one. Mismatches fail before HTTP locally or with 400
+before agent execution remotely. The regular chat-completions endpoint rejects
+`gateway_source`; it still accepts `enabled_toolsets` as an optional capability
+reduction.
+
 **Inline image input:** user messages may send `content` as an array of `text` and `image_url` parts. Both remote `http(s)` URLs and `data:image/...` URLs are supported:
 
 ```json

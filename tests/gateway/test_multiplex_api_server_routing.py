@@ -64,10 +64,12 @@ class TestApiServerRouteTable:
         paths = {path for _method, path, _handler in adapter._http_route_table()}
         assert "/v1/models" in paths
         assert "/v1/chat/completions" in paths
+        assert "/v1/chat/completions/restricted" in paths
         # connect() mirrors every native path under /p/{profile}/…
         mirrored = {f"/p/{{profile}}{path}" for path in paths}
         assert "/p/{profile}/v1/models" in mirrored
         assert "/p/{profile}/v1/chat/completions" in mirrored
+        assert "/p/{profile}/v1/chat/completions/restricted" in mirrored
 
 
 class TestApiServerModelsUnderProfile:

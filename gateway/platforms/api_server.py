@@ -3,6 +3,7 @@ OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
 - POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
+- POST /v1/chat/completions/restricted — same API with mandatory server-enforced enabled_toolsets
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
@@ -57,6 +58,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
 # (no prefix / multiplexing off → handle as the default profile).
@@ -93,6 +96,71 @@ from agent.redact import redact_sensitive_text
 from gateway.readiness import collect_runtime_readiness
 
 logger = logging.getLogger(__name__)
+
+_MAX_GATEWAY_SESSION_KEY_LEN = 256
+
+
+class _GatewaySource(BaseModel):
+    """Authenticated gateway origin carried only by restricted proxy calls."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    platform: str
+    chat_id: str
+    session_key: str
+    user_id: Optional[str] = None
+    user_id_alt: Optional[str] = None
+    thread_id: Optional[str] = None
+    message_id: Optional[str] = None
+    profile: str
+
+    @field_validator(
+        "platform",
+        "chat_id",
+        "session_key",
+        "user_id",
+        "user_id_alt",
+        "thread_id",
+        "message_id",
+        "profile",
+    )
+    @classmethod
+    def _validate_identifier(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not value or not value.strip():
+            raise ValueError("must not be empty")
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("must not contain control characters")
+        return value
+
+    @field_validator("platform")
+    @classmethod
+    def _validate_platform(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", value):
+            raise ValueError("must be a canonical platform identifier")
+        try:
+            Platform(value)
+        except ValueError as exc:
+            raise ValueError("must be a registered platform") from exc
+        return value
+
+    @field_validator("session_key")
+    @classmethod
+    def _validate_session_key(cls, value: str) -> str:
+        if len(value) > _MAX_GATEWAY_SESSION_KEY_LEN:
+            raise ValueError("must not exceed 256 characters")
+        return value
+
+    @field_validator("profile")
+    @classmethod
+    def _validate_profile(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        from hermes_cli.profiles import validate_profile_name
+
+        validate_profile_name(value)
+        return value
 
 
 def _hermes_version() -> str:
@@ -1571,6 +1639,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
+            ("POST", "/v1/chat/completions/restricted", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
             ("DELETE", "/v1/responses/{response_id}", self._handle_delete_response),
@@ -1609,7 +1678,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # 256 chars is well above any realistic stable channel identifier
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
-    _MAX_SESSION_HEADER_LEN = 256
+    _MAX_SESSION_HEADER_LEN = _MAX_GATEWAY_SESSION_KEY_LEN
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -1829,6 +1898,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        requested_toolsets: Optional[List[str]] = None,
+        gateway_source: Optional[Dict[str, str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1849,6 +1920,10 @@ class APIServerAdapter(BasePlatformAdapter):
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+
+        ``gateway_source`` is validated origin metadata accepted only by the
+        restricted chat-completions endpoint. It changes agent/session identity,
+        never API-server toolset resolution.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1924,12 +1999,18 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if requested_toolsets is not None:
+            requested = set(requested_toolsets)
+            enabled_toolsets = [
+                toolset for toolset in enabled_toolsets if toolset in requested
+            ]
 
         max_iterations = _current_max_iterations()
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
+        source = gateway_source or {}
 
         agent = AIAgent(
             model=model,
@@ -1941,7 +2022,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=source.get("platform", "api_server"),
+            user_id=source.get("user_id"),
+            user_id_alt=source.get("user_id_alt"),
+            chat_id=source.get("chat_id"),
+            thread_id=source.get("thread_id"),
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1949,7 +2034,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
-            gateway_session_key=gateway_session_key,
+            gateway_session_key=source.get("session_key", gateway_session_key),
         )
         return agent
 
@@ -2102,6 +2187,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
+                "chat_completions_enabled_toolsets": True,
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
@@ -2130,6 +2216,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+                "chat_completions_restricted": {
+                    "method": "POST",
+                    "path": "/v1/chat/completions/restricted",
+                },
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
@@ -2741,6 +2831,92 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
+        restricted = str(getattr(request, "path", "")).endswith(
+            "/v1/chat/completions/restricted"
+        )
+        if restricted and not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "The restricted endpoint requires API key authentication",
+                    code="api_key_required",
+                ),
+                status=403,
+            )
+        gateway_source = None
+        if not restricted and "gateway_source" in body:
+            return web.json_response(
+                _openai_error(
+                    "gateway_source is only accepted on the restricted endpoint",
+                    param="gateway_source",
+                ),
+                status=400,
+            )
+        if restricted:
+            if "gateway_source" not in body:
+                return web.json_response(
+                    _openai_error(
+                        "gateway_source is required on the restricted endpoint",
+                        param="gateway_source",
+                    ),
+                    status=400,
+                )
+            try:
+                gateway_source = _GatewaySource.model_validate(
+                    body["gateway_source"]
+                ).model_dump(exclude_none=True)
+            except ValidationError as exc:
+                issues = sorted(
+                    {
+                        f"{'.'.join(str(part) for part in error['loc']) or 'value'}: "
+                        f"{error['type']}"
+                        for error in exc.errors(include_input=False)
+                    }
+                )
+                return web.json_response(
+                    _openai_error(
+                        f"Invalid gateway_source ({'; '.join(issues)})",
+                        param="gateway_source",
+                    ),
+                    status=400,
+                )
+
+            source_profile = gateway_source.get("profile")
+            route_profile = (
+                str(request.match_info.get("profile") or "").strip() or None
+            )
+            scoped_profile = _api_request_profile.get()
+            if (
+                route_profile is not None and source_profile != route_profile
+            ) or (
+                scoped_profile is not None and source_profile != scoped_profile
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "gateway_source.profile must match the URL profile scope",
+                        param="gateway_source.profile",
+                    ),
+                    status=400,
+                )
+            if source_profile is not None:
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+
+                    active_profile = get_active_profile_name()
+                except Exception:
+                    logger.warning(
+                        "Could not resolve the restricted request profile scope",
+                        exc_info=True,
+                    )
+                    active_profile = None
+                if source_profile != active_profile:
+                    return web.json_response(
+                        _openai_error(
+                            "gateway_source.profile does not match the active profile scope",
+                            param="gateway_source.profile",
+                        ),
+                        status=400,
+                    )
+
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
@@ -2749,6 +2925,31 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+
+        requested_toolsets = None
+        if "enabled_toolsets" in body:
+            raw_toolsets = body.get("enabled_toolsets")
+            if not isinstance(raw_toolsets, list) or not all(
+                isinstance(value, str) for value in raw_toolsets
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "enabled_toolsets must be an array of strings",
+                        err_type="invalid_request_error",
+                    ),
+                    status=400,
+                )
+            requested_toolsets = [
+                value.strip() for value in raw_toolsets if value.strip()
+            ]
+        elif restricted:
+            return web.json_response(
+                _openai_error(
+                    "enabled_toolsets is required on the restricted endpoint",
+                    err_type="invalid_request_error",
+                ),
+                status=400,
+            )
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -2793,6 +2994,17 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        if gateway_source is not None:
+            source_session_key = gateway_source["session_key"]
+            if gateway_session_key and gateway_session_key != source_session_key:
+                return web.json_response(
+                    _openai_error(
+                        "X-Hermes-Session-Key must match gateway_source.session_key",
+                        param="gateway_source.session_key",
+                    ),
+                    status=400,
+                )
+            gateway_session_key = source_session_key
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -2945,6 +3157,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                requested_toolsets=requested_toolsets,
+                gateway_source=gateway_source,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2965,11 +3179,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                requested_toolsets=requested_toolsets,
+                gateway_source=gateway_source,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=[
+                    "model",
+                    "messages",
+                    "tools",
+                    "tool_choice",
+                    "stream",
+                    "enabled_toolsets",
+                    "gateway_source",
+                ],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -4709,16 +4936,15 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        gateway_source: Optional[Dict[str, str]] = None,
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
         This is the SINGLE structural chokepoint every API-server agent-entry
-        path must use to seed session context — it hardwires
-        ``platform="api_server"`` and ``async_delivery=False`` so a new route
-        physically cannot reintroduce the silent-no-op bug (#10760) by
-        forgetting to mark the channel as non-delivering. There is no
-        ``async_delivery`` parameter to get wrong; the stateless HTTP path can
-        never wake the agent after the turn ends, on ANY route.
+        path must use to seed session context. Normal API requests bind as
+        ``api_server``; restricted proxy calls bind their validated origin.
+        ``async_delivery=False`` is hardwired because every HTTP path is
+        stateless and cannot wake the agent after the turn ends.
 
         Returns reset tokens; pass them to ``clear_session_vars`` in a
         ``finally`` block (the binding is request-scoped and must not outlive
@@ -4727,11 +4953,17 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from gateway.session_context import set_session_vars
 
+        source = gateway_source or {}
+
         return set_session_vars(
-            platform="api_server",
-            chat_id=chat_id,
-            session_key=session_key,
+            platform=source.get("platform", "api_server"),
+            chat_id=source.get("chat_id", chat_id),
+            thread_id=source.get("thread_id", ""),
+            user_id=source.get("user_id", ""),
+            session_key=source.get("session_key", session_key),
             session_id=session_id,
+            message_id=source.get("message_id", ""),
+            profile=source.get("profile", ""),
             async_delivery=False,
         )
 
@@ -4748,6 +4980,8 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        requested_toolsets: Optional[List[str]] = None,
+        gateway_source: Optional[Dict[str, str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4778,6 +5012,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     chat_id=session_id or "",
                     session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
+                    gateway_source=gateway_source,
                 )
                 try:
                     agent = self._create_agent(
@@ -4789,6 +5024,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        requested_toolsets=requested_toolsets,
+                        gateway_source=gateway_source,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent

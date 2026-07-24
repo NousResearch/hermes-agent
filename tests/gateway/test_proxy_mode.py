@@ -69,8 +69,10 @@ class _FakeSession:
         self.captured_url = None
         self.captured_json = None
         self.captured_headers = None
+        self.post_calls = 0
 
     def post(self, url, json=None, headers=None, **kwargs):
+        self.post_calls += 1
         self.captured_url = url
         self.captured_json = json
         self.captured_headers = headers
@@ -188,19 +190,54 @@ class TestRunAgentProxyDispatch:
 
         runner._run_agent_via_proxy = AsyncMock(return_value=expected_result)
 
-        result = await runner._run_agent(
-            message="hi",
-            context_prompt="",
-            history=[],
-            source=source,
-            session_id="test-session-123",
-            session_key="test-key",
-            run_generation=7,
-        )
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = await runner._run_agent(
+                message="hi",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="test-session-123",
+                session_key="test-key",
+                run_generation=7,
+            )
 
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
+        assert runner._run_agent_via_proxy.call_args.kwargs["enabled_toolsets"] is None
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_nonowner_toolsets_are_forwarded_to_proxy(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "owner")
+        runner = _make_runner()
+        runner._run_agent_via_proxy = AsyncMock(
+            return_value={"final_response": "ok", "messages": [], "api_calls": 1}
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="guest@s.whatsapp.net",
+            chat_type="dm",
+            user_id="guest@s.whatsapp.net",
+        )
+        config = {
+            "platform_toolsets": {"whatsapp": ["context_engine"]},
+            "whatsapp": {"nonowner_enabled_toolsets": ["context_engine"]}
+        }
+
+        with patch("gateway.run._load_gateway_config", return_value=config):
+            await runner._run_agent(
+                message="hi",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="test-session",
+                session_key="agent:main:whatsapp:dm:guest",
+            )
+
+        assert runner._run_agent_via_proxy.call_args.kwargs["enabled_toolsets"] == [
+            "context_engine"
+        ]
 
     @pytest.mark.asyncio
     async def test_run_agent_skips_proxy_when_not_configured(self, monkeypatch):
@@ -227,12 +264,29 @@ class TestRunAgentProxyDispatch:
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
 
+    @pytest.mark.parametrize(
+        ("proxy_url", "expected_url"),
+        [
+            (
+                "http://host:8642",
+                "http://host:8642/p/business/v1/chat/completions/restricted",
+            ),
+            (
+                "http://host:8642/p/business/",
+                "http://host:8642/p/business/v1/chat/completions/restricted",
+            ),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_builds_correct_request(self, monkeypatch):
-        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+    async def test_builds_correct_request(self, monkeypatch, proxy_url, expected_url):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", proxy_url)
         monkeypatch.setenv("GATEWAY_PROXY_KEY", "test-key-123")
         runner = _make_runner()
         source = _make_source()
+        source.user_id_alt = "user-alt-7"
+        source.thread_id = "thread-9"
+        source.profile = "business"
+        source.api_key = "must-not-cross-proxy-boundary"
 
         resp = _FakeSSEResponse(
             status=200,
@@ -256,10 +310,13 @@ class TestRunAgentViaProxy:
                         ],
                         source=source,
                         session_id="session-abc",
+                        session_key="agent:business:matrix:thread:room:thread-9",
+                        event_message_id="message-11",
+                        enabled_toolsets=["context_engine"],
                     )
 
         # Verify request URL
-        assert session.captured_url == "http://host:8642/v1/chat/completions"
+        assert session.captured_url == expected_url
 
         # Verify auth header
         assert session.captured_headers["Authorization"] == "Bearer test-key-123"
@@ -276,9 +333,48 @@ class TestRunAgentViaProxy:
 
         # Verify streaming is requested
         assert session.captured_json["stream"] is True
+        assert session.captured_json["enabled_toolsets"] == ["context_engine"]
+        assert session.captured_json["gateway_source"] == {
+            "platform": "matrix",
+            "chat_id": "!room:server.org",
+            "session_key": "agent:business:matrix:thread:room:thread-9",
+            "user_id": "@user:server.org",
+            "user_id_alt": "user-alt-7",
+            "thread_id": "thread-9",
+            "message_id": "message-11",
+            "profile": "business",
+        }
+        assert "api_key" not in session.captured_json["gateway_source"]
+        assert "user_name" not in session.captured_json["gateway_source"]
+        assert "chat_name" not in session.captured_json["gateway_source"]
 
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_restricted_request_fails_closed_on_older_remote(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        session = _FakeSession(_FakeSSEResponse(status=404, error_text="Not Found"))
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=_make_source(Platform.WHATSAPP),
+                        session_id="test",
+                        session_key="agent:main:whatsapp:dm:user",
+                        enabled_toolsets=["context_engine"],
+                    )
+
+        assert "Proxy error (404)" in result["final_response"]
+        assert session.captured_url == (
+            "http://host:8642/p/default/v1/chat/completions/restricted"
+        )
+        assert session.post_calls == 1
 
     @pytest.mark.asyncio
     async def test_handles_http_error(self, monkeypatch):
@@ -303,6 +399,60 @@ class TestRunAgentViaProxy:
 
         assert "Proxy error (401)" in result["final_response"]
         assert result["api_calls"] == 0
+        assert session.captured_url == (
+            "http://host:8642/p/default/v1/chat/completions"
+        )
+        assert "gateway_source" not in session.captured_json
+
+    @pytest.mark.asyncio
+    async def test_restricted_request_without_session_identity_fails_before_http(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        session = _FakeSession(_FakeSSEResponse(status=200))
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                result = await runner._run_agent_via_proxy(
+                    message="hi",
+                    context_prompt="",
+                    history=[],
+                    source=_make_source(Platform.WHATSAPP),
+                    session_id="test",
+                    enabled_toolsets=["context_engine"],
+                )
+
+        assert "missing session identity" in result["final_response"]
+        assert session.post_calls == 0
+
+    @pytest.mark.parametrize(
+        "enabled_toolsets", [None, ["context_engine"]]
+    )
+    @pytest.mark.asyncio
+    async def test_scoped_proxy_url_profile_mismatch_fails_before_http(
+        self, monkeypatch, enabled_toolsets
+    ):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642/p/default")
+        runner = _make_runner()
+        source = _make_source(Platform.WHATSAPP)
+        source.profile = "coder"
+        session = _FakeSession(_FakeSSEResponse(status=200))
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                result = await runner._run_agent_via_proxy(
+                    message="hi",
+                    context_prompt="",
+                    history=[],
+                    source=source,
+                    session_id="test",
+                    session_key="agent:coder:whatsapp:dm:user",
+                    enabled_toolsets=enabled_toolsets,
+                )
+
+        assert "profile mismatch" in result["final_response"]
+        assert session.post_calls == 0
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):

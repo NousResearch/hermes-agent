@@ -64,6 +64,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["chat_completions_enabled_toolsets"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
@@ -72,6 +73,10 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+    }
+    assert data["endpoints"]["chat_completions_restricted"] == {
+        "method": "POST",
+        "path": "/v1/chat/completions/restricted",
     }
 
 

@@ -1,0 +1,4 @@
+name: knowledge_base
+version: 0.1.0
+kind: backend
+description: "File-backed knowledge-base tools for persistent declarative notes."

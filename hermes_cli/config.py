@@ -2314,6 +2314,12 @@ DEFAULT_CONFIG = {
         "engine": "compressor",
     },
 
+    # File-backed declarative knowledge notes. Relative paths are resolved
+    # against the active profile's HERMES_HOME.
+    "knowledge_base": {
+        "path": "knowledge-base",
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,

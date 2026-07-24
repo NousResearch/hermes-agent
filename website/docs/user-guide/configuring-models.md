@@ -153,6 +153,19 @@ auxiliary:
 
 When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain before the built-in auxiliary discovery chain.
 
+### Restricting the picker to configured providers
+
+By default, the model picker shows the full provider universe — every canonical provider Hermes knows about, with "paste KEY to activate" affordances for the ones you haven't configured yet. This is useful for discovering new providers, but if you only have a few API keys it means scrolling past dozens of unconfigured entries every time you open `/model`.
+
+Set `model.picker_explicit_only: true` to restrict every picker (CLI, TUI, dashboard) to only the providers you've explicitly configured:
+
+```yaml
+model:
+  picker_explicit_only: true
+```
+
+Only providers with a saved API key, a custom entry, or your current active provider will appear. Ambient/auto-seeded credentials (e.g. GitHub CLI → Copilot) are hidden.
+
 ## When does it take effect?
 
 - **CLI** (`hermes chat`): next `hermes chat` invocation.

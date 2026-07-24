@@ -7,7 +7,7 @@ Covers:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -75,6 +75,66 @@ class _AsyncCM:
 
     async def __aexit__(self, *exc):
         return False
+
+
+class _FakeAiohttpContent:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self._offset = 0
+        self.bytes_read = 0
+
+    async def read(self, size: int = -1):
+        if size is None or size < 0:
+            size = len(self._payload) - self._offset
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        self.bytes_read += len(chunk)
+        return chunk
+
+
+class _FakeErrorResponse:
+    def __init__(self, status: int = 500, text: str = ""):
+        self.status = status
+        self._text = text or (("whatsapp bridge failure " * 1000) + "tail-marker")
+        self.content = _FakeAiohttpContent(self._text.encode("utf-8"))
+        self.text_calls = 0
+        self.released = False
+
+    async def text(self):
+        self.text_calls += 1
+        return "should not be called"
+
+    def release(self):
+        self.released = True
+
+
+class _FakeClientSession:
+    def __init__(self, *responses):
+        self._responses = list(responses)
+        self.post = MagicMock(side_effect=self._post)
+
+    def _post(self, *args, **kwargs):
+        if not self._responses:
+            raise AssertionError("No scripted WhatsApp bridge response")
+        return _AsyncCM(self._responses.pop(0))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _assert_limited_error_response(response: _FakeErrorResponse, error: str):
+    from plugins.platforms.whatsapp import adapter as whatsapp_mod
+
+    assert "tail-marker" not in error
+    assert response.text_calls == 0
+    assert (
+        response.content.bytes_read
+        == whatsapp_mod._WHATSAPP_ERROR_BODY_LIMIT_BYTES + 1
+    )
+    assert response.released is True
 
 
 # ---------------------------------------------------------------------------
@@ -293,12 +353,97 @@ class TestSendChunking:
     async def test_bridge_error_returns_failure(self):
         adapter = _make_adapter()
         resp = MagicMock(status=500)
+        resp.content = None
         resp.text = AsyncMock(return_value="Internal Server Error")
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         result = await adapter.send("chat1", "hello")
         assert not result.success
         assert "Internal Server Error" in result.error
+
+    @pytest.mark.asyncio
+    async def test_bridge_error_limits_response_body(self):
+        adapter = _make_adapter()
+        resp = _FakeErrorResponse(500)
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "hello")
+
+        assert not result.success
+        _assert_limited_error_response(resp, result.error)
+
+    @pytest.mark.asyncio
+    async def test_edit_message_limits_error_body(self):
+        adapter = _make_adapter()
+        resp = _FakeErrorResponse(500)
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.edit_message("chat1", "msg1", "updated")
+
+        assert not result.success
+        _assert_limited_error_response(resp, result.error)
+
+    @pytest.mark.asyncio
+    async def test_send_media_bridge_limits_error_body(self, tmp_path):
+        adapter = _make_adapter()
+        media_path = tmp_path / "image.png"
+        media_path.write_bytes(b"fake image")
+        resp = _FakeErrorResponse(500)
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter._send_media_to_bridge(
+            "chat1",
+            str(media_path),
+            "image",
+        )
+
+        assert not result.success
+        _assert_limited_error_response(resp, result.error)
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_limits_text_error_body(self):
+        from plugins.platforms.whatsapp.adapter import _standalone_send
+
+        resp = _FakeErrorResponse(503)
+        session = _FakeClientSession(resp)
+
+        with (
+            patch("aiohttp.ClientSession", return_value=session),
+            patch("aiohttp.ClientTimeout", lambda total: total),
+        ):
+            result = await _standalone_send(
+                MagicMock(extra={"bridge_port": 3000}),
+                "chat1",
+                "hello",
+            )
+
+        assert "error" in result
+        assert "503" in result["error"]
+        _assert_limited_error_response(resp, result["error"])
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_limits_media_error_body(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _standalone_send
+
+        media_path = tmp_path / "image.png"
+        media_path.write_bytes(b"fake image")
+        resp = _FakeErrorResponse(502)
+        session = _FakeClientSession(resp)
+
+        with (
+            patch("aiohttp.ClientSession", return_value=session),
+            patch("aiohttp.ClientTimeout", lambda total: total),
+        ):
+            result = await _standalone_send(
+                MagicMock(extra={"bridge_port": 3000}),
+                "chat1",
+                "",
+                media_files=[(str(media_path), False)],
+            )
+
+        assert "error" in result
+        assert "502" in result["error"]
+        _assert_limited_error_response(resp, result["error"])
 
     @pytest.mark.asyncio
     async def test_not_connected_returns_failure(self):

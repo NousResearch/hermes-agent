@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 
 from tools.vision_tools import (
+    VISION_ANALYZE_SCHEMA,
     _build_native_vision_tool_result,
     _handle_vision_analyze,
     _supports_media_in_tool_results,
@@ -26,6 +27,18 @@ from tools.vision_tools import (
 _TINY_PNG = base64.b64decode(
     b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
+
+
+# ─── Tool guidance ────────────────────────────────────────────────────────────
+
+
+def test_schema_does_not_prompt_duplicate_native_attachment_load():
+    """A native attachment path is a tool handle, not a reload instruction."""
+    description = VISION_ANALYZE_SCHEMA["description"].lower()
+
+    assert "already attached" in description
+    assert "answer directly" in description
+    assert "call this any time the user references an image" not in description
 
 
 # ─── _supports_media_in_tool_results ─────────────────────────────────────────

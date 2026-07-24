@@ -1447,14 +1447,14 @@ from tools.registry import registry, tool_error
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
     "description": (
-        "Load an image into the conversation so you can see it. Accepts a "
-        "URL, local file path, or data URL. When your active model has "
-        "native vision, the image is attached to your context directly "
-        "and you read the pixels yourself on the next turn — call this "
-        "any time the user references an image (filepath in their message, "
-        "URL in tool output, screenshot from the browser, etc.). For "
-        "non-vision models, falls back to an auxiliary vision model that "
-        "returns a text description."
+        "Load an image that is not already visible in the conversation. "
+        "Accepts a URL, local file path, or data URL. If the image is already "
+        "attached natively in the current user turn, answer directly; its local "
+        "path is only a tool handle, not a reason to reload it. Use this for "
+        "path/URL-only references in prose or tool output, browser screenshots "
+        "not yet attached, or deliberate reinspection. Native-vision models "
+        "receive the pixels directly; other models get an auxiliary text "
+        "description."
     ),
     "parameters": {
         "type": "object",

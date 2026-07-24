@@ -4091,6 +4091,23 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "ONEBOT_HTTP_URL": {
+        "description": "OneBot HTTP API URL for QQ/QZone tools (NapCat or Lagrange)",
+        "prompt": "OneBot HTTP URL (e.g. http://127.0.0.1:3000)",
+        "url": None,
+        "tools": ["qzone_publish"],
+        "password": False,
+        "category": "tool",
+    },
+    "ONEBOT_ACCESS_TOKEN": {
+        "description": "OneBot access token for QQ/QZone tools (optional)",
+        "prompt": "OneBot access token (optional)",
+        "url": None,
+        "tools": ["qzone_publish"],
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
     "SEARXNG_URL": {
         "description": "URL of your SearXNG instance for free self-hosted web search",
         "prompt": "SearXNG URL (e.g. http://localhost:8080)",

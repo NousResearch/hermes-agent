@@ -260,6 +260,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "qzone": {
+        "description": (
+            "QQ空间 (QZone) publishing — post text/image 说说 status updates "
+            "by borrowing QQ login state from a running OneBot instance."
+        ),
+        "tools": ["qzone_publish"],
+        "includes": []
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

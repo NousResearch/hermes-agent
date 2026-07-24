@@ -1,7 +1,8 @@
 """Gateway lifecycle guard for cron job creation (#30719).
 
 An agent running inside a gateway can schedule a cron job that calls
-``hermes gateway restart`` (or ``launchctl kickstart ai.hermes.gateway``
+``hermes gateway start`` or ``hermes gateway restart`` (or
+``launchctl kickstart ai.hermes.gateway``
 or ``systemctl restart hermes-gateway``).  When the cron fires, the
 gateway dies, the supervisor (launchd KeepAlive / systemd Restart=)
 revives it, auto-resume picks up the offending session, and the resumed
@@ -25,7 +26,7 @@ command shape.
 
 This is a defence-in-depth layer.  ``tools/terminal_tool.py`` already
 blocks these commands at *execution* time when ``_HERMES_GATEWAY=1``, and
-``hermes gateway stop|restart`` refuse to self-target from inside the
+``hermes gateway start|stop|restart`` refuse to self-target from inside the
 gateway.  Blocking at *creation* time as well means the agent gets an
 immediate, informative rejection instead of scheduling a job that will
 only fail (silently) when it fires.
@@ -47,11 +48,10 @@ class GatewayLifecycleBlocked(ValueError):
 # actual shell-command-shaped strings, not on prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: `hermes gateway restart|stop` — the canonical foot-gun.
-    # `start` is intentionally excluded: starting a gateway from inside a
-    # gateway is benign (a no-op or "already running" error), and a
-    # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop))"
+    # Branch A: `hermes gateway start|restart|stop` — canonical lifecycle
+    # operations. Even `start` may reload supervisor state and terminate the
+    # currently running gateway before the command completes.
+    r"(?:hermes\s+gateway\s+(?:start|restart|stop))"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
@@ -134,8 +134,8 @@ def check_gateway_lifecycle(
     if contains_gateway_lifecycle_command(combined):
         raise GatewayLifecycleBlocked(
             "Blocked: cron job contains a gateway lifecycle command "
-            "(restart/stop/kill). This is blocked to prevent agent-driven "
+            "(start/stop/restart/kill). This is blocked to prevent agent-driven "
             "SIGTERM-respawn loops under launchd/systemd supervision "
-            "(#30719). Run `hermes gateway restart` from a shell outside "
+            "(#30719). Run gateway lifecycle commands from a shell outside "
             "the running gateway instead."
         )

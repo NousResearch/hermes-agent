@@ -144,6 +144,90 @@ def _expand_acp_enabled_toolsets(
     return expanded
 
 
+# Compatibility values keep the historical coding-focused ACP toolset.
+_ACP_COMPAT_TOOL_POLICIES = frozenset({"", "hermes-acp", "compat", "default"})
+_ACP_PROFILE_TOOL_POLICY = "profile"
+
+
+def resolve_acp_tool_policy(config: dict | None) -> str:
+    """Return the effective ACP tool policy for *config*.
+
+    ``hermes-acp`` (default) preserves the coding-focused ACP toolset used by
+    editor hosts. ``profile`` resolves the selected Hermes profile's local CLI
+    tool configuration so remote ACP hosts can match interactive Hermes.
+
+    Absent, invalid, or unknown values fall back to the compatibility default.
+    """
+    if not isinstance(config, dict):
+        return "hermes-acp"
+    acp_cfg = config.get("acp")
+    if not isinstance(acp_cfg, dict):
+        return "hermes-acp"
+    raw = acp_cfg.get("tool_policy")
+    if raw is None:
+        return "hermes-acp"
+    if not isinstance(raw, str):
+        return "hermes-acp"
+    policy = raw.strip().lower()
+    if policy in _ACP_COMPAT_TOOL_POLICIES:
+        return "hermes-acp"
+    if policy == _ACP_PROFILE_TOOL_POLICY:
+        return _ACP_PROFILE_TOOL_POLICY
+    return "hermes-acp"
+
+
+def resolve_acp_base_toolsets(config: dict | None) -> List[str]:
+    """Resolve base ACP toolsets for *config* without host-provided MCP names.
+
+    Profile mode uses the canonical platform tool resolver against the
+    profile's local interactive policy (``platform_toolsets.cli``), or an
+    explicit ``platform_toolsets.acp`` list when the profile defines one.
+    Profile-configured MCP servers are included by that resolver. Host MCP
+    expansion is intentionally not applied here.
+    """
+    config = config if isinstance(config, dict) else {}
+    if resolve_acp_tool_policy(config) != _ACP_PROFILE_TOOL_POLICY:
+        return ["hermes-acp"]
+
+    from hermes_cli.tools_config import _get_platform_tools
+
+    platform_toolsets = config.get("platform_toolsets") or {}
+    # Explicit acp platform list wins when present; otherwise mirror CLI so a
+    # profile that already works interactively keeps the same capability set.
+    if isinstance(platform_toolsets.get("acp"), list):
+        platform = "acp"
+    else:
+        platform = "cli"
+
+    resolved = sorted(
+        _get_platform_tools(
+            config,
+            platform,
+            include_default_mcp_servers=True,
+        )
+    )
+    return resolved or ["hermes-acp"]
+
+
+def resolve_acp_enabled_toolsets(config: dict | None) -> List[str]:
+    """Resolve the full ACP enabled-toolset list for session creation/restore."""
+    config = config if isinstance(config, dict) else {}
+    base = resolve_acp_base_toolsets(config)
+    if resolve_acp_tool_policy(config) == _ACP_PROFILE_TOOL_POLICY:
+        # Profile MCP membership already lives in *base* via _get_platform_tools.
+        return _expand_acp_enabled_toolsets(base, mcp_server_names=None)
+
+    configured_mcp_servers = [
+        name
+        for name, cfg in (config.get("mcp_servers") or {}).items()
+        if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
+    ]
+    return _expand_acp_enabled_toolsets(
+        base,
+        mcp_server_names=configured_mcp_servers,
+    )
+
+
 def _clear_task_cwd(task_id: str) -> None:
     """Remove task-specific cwd overrides for an ACP session."""
     if not task_id:
@@ -614,18 +698,9 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
-        configured_mcp_servers = [
-            name
-            for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
-        ]
-
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
-            ),
+            "enabled_toolsets": resolve_acp_enabled_toolsets(config),
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),

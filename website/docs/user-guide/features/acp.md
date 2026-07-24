@@ -19,7 +19,7 @@ ACP is a good fit when you want Hermes to behave like an editor-native coding ag
 
 ## What Hermes exposes in ACP mode
 
-Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. It includes:
+By default Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. It includes:
 
 - file tools: `read_file`, `write_file`, `patch`, `search_files`
 - terminal tools: `terminal`, `process`
@@ -30,6 +30,32 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 - vision
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
+
+### Full-capability hosts (`acp.tool_policy`)
+
+Editor hosts usually want that coding-focused default. Remote ACP hosts that attach
+an existing Hermes profile (for example a messaging desktop surface) often need the
+**same tools as interactive CLI** for that profile.
+
+In `~/.hermes/config.yaml` (or the selected profile home):
+
+```yaml
+acp:
+  # hermes-acp (default) — coding-focused editor toolset
+  # profile — use this profile's local CLI tool configuration
+  tool_policy: profile
+```
+
+When `tool_policy` is `profile`:
+
+- tools resolve through the canonical platform resolver against
+  `platform_toolsets.cli`, or an explicit `platform_toolsets.acp` list when set
+- host-provided MCP servers cannot expand the capability set (profile owns policy)
+- skills, memory, cron, kanban, delegation, and other profile-enabled surfaces
+  match interactive Hermes for that home
+
+Absent or invalid values keep `hermes-acp` (no behaviour change for existing
+editor installs).
 
 ## Installation
 

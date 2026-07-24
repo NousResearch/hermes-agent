@@ -941,6 +941,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
     "computer_use": "agent",
+    # `acp.tool_policy` is the only schema-surfaced ACP host field — fold it
+    # into the agent tab rather than spawning a one-field orphan category.
+    "acp": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

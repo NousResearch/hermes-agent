@@ -3584,6 +3584,17 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
 
+    # ACP host integration (Zed, Buzz, and other Agent Client Protocol hosts).
+    # tool_policy:
+    #   "hermes-acp" (default) — coding-focused ACP toolset for editor hosts.
+    #   "profile" — use this profile's local CLI tool configuration so a remote
+    #               ACP host gets the same capability surface as interactive
+    #               Hermes (skills, memory, cron, kanban, etc. as configured).
+    # Absent or invalid values preserve the hermes-acp default. No migration.
+    "acp": {
+        "tool_policy": "hermes-acp",
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 33,
 }

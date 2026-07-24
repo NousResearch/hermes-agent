@@ -353,6 +353,22 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         assert task.last_failure_error is None
 
 
+def test_complete_task_cannot_accept_a_blocked_task(kanban_home):
+    """A blocker is not an acceptance receipt and must not promote children."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        assert kb.block_task(conn, parent, reason="needs operator input")
+
+        assert kb.complete_task(conn, parent, summary="looks finished") is False
+
+        assert kb.get_task(conn, parent).status == "blocked"
+        assert kb.get_task(conn, child).status == "todo"
+        events = kb.list_events(conn, parent)
+        assert any(e.kind == "completion_rejected" for e in events)
+        assert not any(e.kind == "completed" for e in events)
+
+
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")

@@ -184,10 +184,22 @@ class TestClarifyDictChoices:
     def test_flatten_unwrap_order_label_over_description(self):
         assert _flatten_choice({"description": "verbose", "label": "tight"}) == "tight"
 
-    def test_flatten_drops_name_value_only_dict(self):
-        # name/value are component-shaped fields, not user-facing labels —
-        # picking them would leak raw enum values / short model ids.
-        assert _flatten_choice({"name": "tight", "value": "x"}) == ""
+    def test_flatten_unwraps_value_when_no_canonical_key(self):
+        # ``value`` is now accepted as a fallback because some LLM tool-call
+        # conventions pair it with ``key`` (e.g. [{"key": "A", "value": "..."}])
+        # and treat the value as the user-facing string. Without this, every
+        # renderer would have to handle that shape differently.
+        assert _flatten_choice({"key": "A", "value": "the option text"}) == "the option text"
+
+    def test_flatten_unwraps_value_after_canonical_keys(self):
+        # When both a canonical key and ``value`` are present, the canonical
+        # key wins — ``value`` is just the last-resort fallback.
+        assert _flatten_choice({"label": "Short", "value": "long text"}) == "Short"
+
+    def test_flatten_drops_name_only_dict(self):
+        # ``name`` is still excluded — it's component-shaped and often carries
+        # raw enum values / short model ids, not human-readable labels.
+        assert _flatten_choice({"name": "tight"}) == ""
 
     def test_flatten_prefers_canonical_key_over_name(self):
         assert _flatten_choice({"name": "tight", "description": "Tight desc"}) == "Tight desc"
@@ -195,13 +207,28 @@ class TestClarifyDictChoices:
     def test_flatten_drops_keyless_dict(self):
         assert _flatten_choice({"foo": "bar", "n": 1}) == ""
 
+    def test_flatten_skips_empty_or_non_string_value(self):
+        # ``value`` must hold a non-empty string to be picked. A None / int /
+        # empty-string value is treated as missing and the dict is dropped.
+        assert _flatten_choice({"key": "A", "value": None}) == ""
+        assert _flatten_choice({"key": "A", "value": ""}) == ""
+        assert _flatten_choice({"key": "A", "value": 42}) == ""
+        assert _flatten_choice({"key": "A", "value": "  "}) == ""
+
     def test_flatten_passthrough_string_and_scalar(self):
         assert _flatten_choice("plain") == "plain"
         assert _flatten_choice(7) == "7"
         assert _flatten_choice(None) == ""
 
     def test_dict_choices_reach_callback_as_clean_text(self):
-        """The whole point: the UI callback never sees a dict repr."""
+        """The whole point: the UI callback never sees a dict repr.
+
+        Since ``value`` is now accepted as a fallback unwrap key, a dict
+        whose only canonical field is ``value`` (e.g. LLM ``[{"key": "A",
+        "value": "..."}]`` shape) becomes a real choice instead of being
+        dropped. ``name`` alone is still dropped (component-shaped raw
+        enum), so a ``{"name": "..."}``-only dict still doesn't leak.
+        """
         seen = []
 
         def cb(question, choices):
@@ -213,7 +240,7 @@ class TestClarifyDictChoices:
             choices=[
                 {"choice": "Tight", "description": "Tight, covers all 3 points"},
                 {"description": "Loose layout"},
-                {"name": "modelid", "value": "abc"},  # dropped, not leaked
+                {"name": "modelid", "value": "abc"},  # value accepted, name ignored
                 "A plain string choice",
             ],
             callback=cb,
@@ -221,6 +248,7 @@ class TestClarifyDictChoices:
         assert seen == [
             "Tight, covers all 3 points",
             "Loose layout",
+            "abc",  # came from {"name": "modelid", "value": "abc"} via the value fallback
             "A plain string choice",
         ]
         # and the resolved answer is clean text, not a dict repr

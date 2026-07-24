@@ -1621,8 +1621,8 @@ delegation:
   # api_key: "local-key"                    # base_url 的 API 密钥（回退到 OPENAI_API_KEY）
   # api_mode: ""                            # base_url 的线路协议："chat_completions"、"codex_responses" 或 "anthropic_messages"。空 = 从 URL 自动检测（例如 /anthropic 后缀 → anthropic_messages）。对启发式无法检测的非标准端点显式设置。
   max_concurrent_children: 3                # 每批并行子 agent 数（下限 1，无上限）。也可通过 DELEGATION_MAX_CONCURRENT_CHILDREN 环境变量设置。
-  max_spawn_depth: 1                        # 委托树深度上限（1-3，截断）。1 = 扁平（默认）：父级生成无法委托的叶子。2 = 编排器子级可以生成叶子孙级。3 = 三级。
-  orchestrator_enabled: true                # 全局终止开关。为 false 时，role="orchestrator" 被忽略，每个子级无论 max_spawn_depth 如何都被强制为叶子。
+  max_spawn_depth: 1                        # 0 完全禁用委托；1 = 扁平（默认）；2+ 启用嵌套。无上限。
+  orchestrator_enabled: true                # 独立禁用嵌套；为 false 时强制所有子级为叶子。
 ```
 
 **子 agent provider:model 覆盖：** 默认情况下，子 agent 继承父 agent 的 provider 和模型。设置 `delegation.provider` 和 `delegation.model` 将子 agent 路由到不同的 provider:model 对 —— 例如，在您的主 agent 运行昂贵推理模型时，为范围较窄的子任务使用便宜/快速的模型。
@@ -1635,7 +1635,7 @@ delegation:
 
 **优先级：** 配置中的 `delegation.base_url` → 配置中的 `delegation.provider` → 父 provider（继承）。配置中的 `delegation.model` → 父模型（继承）。仅设置 `model` 而不设置 `provider` 仅更改模型名称，同时保留父级凭据（适用于在同一 provider（如 OpenRouter）内切换模型）。
 
-**宽度和深度：** `max_concurrent_children` 限制每批并行运行的子 agent 数量（默认 `3`，下限 1，无上限）。也可通过 `DELEGATION_MAX_CONCURRENT_CHILDREN` 环境变量设置。当模型提交的 `tasks` 数组超过上限时，`delegate_task` 返回工具错误解释限制，而不是静默截断。`max_spawn_depth` 控制委托树深度（截断到 1-3）。在默认 `1` 时，委托是扁平的：子级无法生成孙级，传递 `role="orchestrator"` 静默降级为 `leaf`。提升到 `2` 使编排器子级可以生成叶子孙级；`3` 用于三级树。Agent 通过 `role="orchestrator"` 按调用选择编排；`orchestrator_enabled: false` 强制每个子级回到叶子，无论如何。成本呈乘法增长 —— 在 `max_spawn_depth: 3` 和 `max_concurrent_children: 3` 时，树可以达到 3×3×3 = 27 个并发叶子 agent。使用模式请参阅[子 Agent 委托 → 深度限制和嵌套编排](features/delegation.md#depth-limit-and-nested-orchestration)。
+**宽度和深度：** `max_concurrent_children` 限制每批并行运行的子 agent 数量（默认 `3`，下限 1，无上限）。也可通过 `DELEGATION_MAX_CONCURRENT_CHILDREN` 环境变量设置。当模型提交的 `tasks` 数组超过上限时，`delegate_task` 返回工具错误解释限制，而不是静默截断。`max_spawn_depth` 控制委托树深度：`0` 完全禁用委托；`1` 是扁平委托（默认），因此子级无法生成孙级；`2+` 允许嵌套编排，且没有上限。`orchestrator_enabled` 独立控制原本符合条件的 `role="orchestrator"` 子级能否继续委托；设为 `false` 时，无论深度上限如何都会强制所有子级为叶子。成本呈乘法增长 —— 在 `max_spawn_depth: 3` 和 `max_concurrent_children: 3` 时，树可以达到 3×3×3 = 27 个并发叶子 agent。使用模式请参阅[子 Agent 委托 → 深度限制和嵌套编排](features/delegation.md#depth-limit-and-nested-orchestration)。
 
 ## 澄清
 

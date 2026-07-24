@@ -631,7 +631,6 @@ export const pt: Translations = {
     allProfiles: "Todos os perfis",
     showArchived: "Mostrar arquivados",
     lanesByProfile: "Faixas por perfil",
-    nudgeDispatcher: "Despertar o dispatcher",
     refresh: "Atualizar",
     selected: "selecionado(s)",
     complete: "Concluir",

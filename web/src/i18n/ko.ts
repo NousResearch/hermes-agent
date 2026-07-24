@@ -629,7 +629,6 @@ export const ko: Translations = {
     allProfiles: "모든 프로필",
     showArchived: "보관된 항목 표시",
     lanesByProfile: "프로필별 레인",
-    nudgeDispatcher: "디스패처 깨우기",
     refresh: "새로 고침",
     selected: "선택됨",
     complete: "완료",

@@ -630,7 +630,6 @@ export const tr: Translations = {
     allProfiles: "Tüm profiller",
     showArchived: "Arşivlenenleri göster",
     lanesByProfile: "Profile göre şeritler",
-    nudgeDispatcher: "Dispatcher'ı dürt",
     refresh: "Yenile",
     selected: "seçili",
     complete: "Tamamla",

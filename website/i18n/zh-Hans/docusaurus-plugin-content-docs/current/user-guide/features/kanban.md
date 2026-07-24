@@ -463,7 +463,7 @@ GUI 严格是一个**通过 DB 读取 + 通过 kanban_db 写入**的层，没有
 | `PUT` | `/orchestration` | 在 `config.yaml` 中更新三个编排键中的一个或多个。验证非空配置文件名实际存在。 |
 | `POST` | `/links` | 添加依赖关系（`parent_id` → `child_id`） |
 | `DELETE` | `/links?parent_id=…&child_id=…` | 删除依赖关系 |
-| `POST` | `/dispatch?max=…&dry_run=…` | 推动调度器 —— 跳过 60 秒等待 |
+| `POST` | `/dispatch?max=…&dry_run=…` | 独立调度 API。`dry_run=true` 和 `dry_run=false` 都只能在独立模式使用：当 `kanban.dispatch_in_gateway: true` 时均返回 409，且两者都持有调度器单例锁。`dry_run` 会抑制认领和启动，但调度器维护仍可能写入。 |
 | `GET` | `/config` | 从 `config.yaml` 读取 `dashboard.kanban` 偏好设置 —— `default_tenant`、`lane_by_profile`、`include_archived_by_default`、`render_markdown` |
 | `WS` | `/events?since=<event_id>` | `task_events` 行的实时流 |
 

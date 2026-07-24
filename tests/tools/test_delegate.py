@@ -1172,7 +1172,7 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(MAX_DEPTH, 1)
         self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
         self.assertTrue(_get_orchestrator_enabled())      # default
-        self.assertEqual(_MIN_SPAWN_DEPTH, 1)
+        self.assertEqual(_MIN_SPAWN_DEPTH, 0)
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):
@@ -2223,7 +2223,13 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         parent = _make_mock_parent()
         touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
+        first_touch = threading.Event()
+
+        def touch_activity(desc):
+            touch_calls.append(desc)
+            first_touch.set()
+
+        parent._touch_activity = touch_activity
 
         child = MagicMock()
         child.get_activity_summary.return_value = {
@@ -2234,7 +2240,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            time.sleep(0.15)
+            first_touch.wait(timeout=2)
             return {"final_response": "done", "completed": True, "api_calls": 5}
 
         child.run_conversation.side_effect = slow_run
@@ -2267,7 +2273,14 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         parent = _make_mock_parent()
         touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
+        third_touch = threading.Event()
+
+        def touch_activity(desc):
+            touch_calls.append(desc)
+            if len(touch_calls) == 3:
+                third_touch.set()
+
+        parent._touch_activity = touch_activity
 
         child = MagicMock()
         # Child is stuck inside a single terminal call for the whole run.
@@ -2280,10 +2293,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            third_touch.wait(timeout=2)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -2308,7 +2318,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         self.assertGreater(
             len(touch_calls), 2,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches before child completed",
         )
 
 
@@ -2675,11 +2685,11 @@ class TestAsyncCapUnified(unittest.TestCase):
 
 
 # =========================================================================
-# max_spawn_depth clamping
+# max_spawn_depth parsing
 # =========================================================================
 
 class TestMaxSpawnDepth(unittest.TestCase):
-    """Tests for _get_max_spawn_depth clamping and fallback behavior."""
+    """Tests for _get_max_spawn_depth parsing and fallback behavior."""
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_max_spawn_depth_defaults_to_1(self, mock_cfg):
@@ -2687,14 +2697,14 @@ class TestMaxSpawnDepth(unittest.TestCase):
         self.assertEqual(_get_max_spawn_depth(), 1)
 
     @patch("tools.delegate_tool._load_config",
-           return_value={"max_spawn_depth": 0})
-    def test_max_spawn_depth_clamped_below_one(self, mock_cfg):
+           return_value={"max_spawn_depth": -1})
+    def test_negative_max_spawn_depth_falls_back_to_default(self, mock_cfg):
         import logging
         from tools.delegate_tool import _get_max_spawn_depth
         with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
             result = _get_max_spawn_depth()
         self.assertEqual(result, 1)
-        self.assertTrue(any("below floor 1" in m for m in cm.output))
+        self.assertTrue(any("is negative" in m for m in cm.output))
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_spawn_depth": 99})

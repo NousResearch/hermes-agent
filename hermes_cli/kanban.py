@@ -999,7 +999,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 1
         board_scope = kb.scoped_current_board(normed)
 
-    # Auto-initialize the DB before dispatching any subcommand. init_db
+    # Auto-initialize the DB before dispatching every non-dispatch subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
     # SELECT against sqlite_master when tables already exist) and
     # prevents "no such table: tasks" on first use from a fresh
@@ -1007,12 +1007,14 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
-        # `repair` must dispatch BEFORE the auto-init below: on a corrupt DB
-        # init_db() itself raises KanbanDbCorruptError, which would turn
-        # every `hermes kanban repair` into "could not initialize database"
-        # without ever reaching the repair path.
-        if action == "repair":
-            return _cmd_repair(args)
+        # Standalone dispatchers must be admitted before touching the DB. Their
+        # handlers initialize only after they hold the machine-global lock.
+        if action in {"dispatch", "daemon"}:
+            try:
+                return (_cmd_dispatch if action == "dispatch" else _cmd_daemon)(args)
+            except (ValueError, RuntimeError) as exc:
+                print(f"kanban: {exc}", file=sys.stderr)
+                return 1
         try:
             kb.init_db()
         except Exception as exc:
@@ -1047,8 +1049,6 @@ def kanban_command(args: argparse.Namespace) -> int:
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
-            "dispatch": _cmd_dispatch,
-            "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
             "log":      _cmd_log,
@@ -2423,6 +2423,16 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         from hermes_cli.config import load_config
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        if not isinstance(_kanban_cfg, dict):
+            _kanban_cfg = {}
+        if _kanban_cfg.get("dispatch_in_gateway", True) is not False:
+            print(
+                "kanban: manual dispatch is disabled while "
+                "kanban.dispatch_in_gateway=true; use the singleton gateway "
+                "(`hermes gateway start`) or set it to false first.",
+                file=sys.stderr,
+            )
+            return 2
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
 
         def _coerce_positive_int(value):
@@ -2445,20 +2455,49 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_spawn")
         )
     except Exception:
-        default_assignee = None
-        max_in_progress_per_profile = None
-        max_in_progress = None
-        max_spawn = getattr(args, "max", None)
-    with kb.connect_closing() as conn:
-        res = kb.dispatch_once(
-            conn,
-            dry_run=args.dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
+        print(
+            "kanban: manual dispatch is disabled while "
+            "kanban.dispatch_in_gateway=true; use the singleton gateway "
+            "(`hermes gateway start`) or set it to false first.",
+            file=sys.stderr,
         )
+        return 2
+    try:
+        from gateway.kanban_watchers import (
+            _acquire_singleton_lock,
+            _release_singleton_lock,
+        )
+
+        lock_handle, lock_state = _acquire_singleton_lock(
+            kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        )
+    except Exception:
+        lock_handle, lock_state = None, "unavailable"
+    if lock_state != "held":
+        print(
+            "kanban: dispatcher singleton lock is unavailable; "
+            "refusing standalone dispatch.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        try:
+            kb.init_db()
+        except Exception as exc:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+            return 1
+        with kb.connect_closing() as conn:
+            res = kb.dispatch_once(
+                conn,
+                dry_run=args.dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+    finally:
+        _release_singleton_lock(lock_handle)
     if getattr(args, "json", False):
         print(json.dumps({
             "reclaimed": res.reclaimed,
@@ -2555,10 +2594,55 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Legacy path — same logic as before, kept behind --force.
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        kanban_config = config.get("kanban", {}) if isinstance(config, dict) else {}
+        if not isinstance(kanban_config, dict):
+            kanban_config = {}
+    except Exception:
+        print(
+            "hermes kanban daemon: dispatcher admission is unavailable; refusing standalone dispatch.",
+            file=sys.stderr,
+        )
+        return 2
+    if kanban_config.get("dispatch_in_gateway", True) is not False:
+        print(
+            "hermes kanban daemon: refusing --force while "
+            "kanban.dispatch_in_gateway=true; use the gateway dispatcher or set it false first.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        from gateway.kanban_watchers import (
+            _acquire_singleton_lock,
+            _release_singleton_lock,
+        )
+
+        lock_handle, lock_state = _acquire_singleton_lock(
+            kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        )
+    except Exception:
+        lock_handle, lock_state = None, "unavailable"
+    if lock_state != "held":
+        print(
+            "hermes kanban daemon: dispatcher singleton lock is unavailable; "
+            "refusing standalone dispatch.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Legacy path — same logic as before, kept behind --force and the
+    # gateway's machine-global singleton lock.
     # Make sure the DB exists before printing "started" so the user sees the
     # correct DB path and any init error surfaces immediately.
-    kb.init_db()
+    try:
+        kb.init_db()
+    except Exception:
+        _release_singleton_lock(lock_handle)
+        raise
 
     pidfile = getattr(args, "pidfile", None)
     if pidfile:
@@ -2655,6 +2739,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 Path(pidfile).unlink()
             except OSError:
                 pass
+        _release_singleton_lock(lock_handle)
     print("(dispatcher stopped)")
     return 0
 

@@ -200,14 +200,14 @@ delegate_task(
 ## 约束条件
 
 - **默认 3 个并行任务**：批次默认并发 3 个子代理（可通过 config.yaml 中的 `delegation.max_concurrent_children` 配置，无硬性上限，最低为 1）
-- **嵌套委托需显式启用**：叶子子代理（默认）无法调用 `delegate_task`、`clarify`、`memory`、`send_message` 或 `execute_code`。编排器子代理（`role="orchestrator"`）保留 `delegate_task` 以支持进一步委托，但仅在 `delegation.max_spawn_depth` 高于默认值 1 时生效（支持 1-3）；其余四项仍被禁用。可通过 `delegation.orchestrator_enabled: false` 全局禁用。
+- **嵌套委托需显式启用**：叶子子代理（默认）无法调用 `delegate_task`、`clarify`、`memory`、`send_message` 或 `execute_code`。将 `delegation.max_spawn_depth` 设为 `0` 可完全禁用委托；`1`（默认）表示扁平委托；`2+` 允许嵌套编排且没有上限。编排器子代理（`role="orchestrator"`）仅在深度高于 1 时保留 `delegate_task`；其余四项仍被禁用。可通过 `delegation.orchestrator_enabled: false` 全局禁用编排。
 
 ### 调整并发数与深度
 
 | 配置项 | 默认值 | 范围 | 效果 |
 |--------|---------|-------|--------|
 | `max_concurrent_children` | 3 | >=1 | 每次 `delegate_task` 调用的并行批次大小 |
-| `max_spawn_depth` | 1 | 1-3 | 可进一步生成子代理的委托层级数 |
+| `max_spawn_depth` | 1 | >=0 | `0` 禁用委托；`1` 表示扁平委托；`2+` 允许嵌套编排 |
 
 示例：运行 30 个并行 worker 并启用嵌套子代理：
 

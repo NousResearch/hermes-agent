@@ -251,3 +251,45 @@ class TestMain:
         monkeypatch.setattr(m, "_build_server", lambda: CrashingServer())
         rc = m.main([])
         assert rc == 1
+
+
+def test_build_server_registers_kanban_worker_tools(monkeypatch):
+    import asyncio
+
+    from tools import registry as registry_module
+
+    # The callback must own Kanban registration even when model_tools was
+    # initialized without its broad builtin-discovery side effects.
+    with monkeypatch.context() as no_builtin_discovery:
+        no_builtin_discovery.setattr(registry_module, "discover_builtin_tools", lambda: [])
+        import model_tools  # noqa: F401
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    from agent.transports.hermes_tools_mcp_server import _build_server
+
+    server = _build_server()
+    registered = {tool.name for tool in asyncio.run(server.list_tools())}
+    required = {
+        "kanban_complete",
+        "kanban_block",
+        "kanban_comment",
+        "kanban_heartbeat",
+    }
+    assert required <= registered
+
+
+def test_build_server_omits_kanban_worker_tools_without_task_authority(monkeypatch):
+    import asyncio
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from agent.transports.hermes_tools_mcp_server import _build_server
+
+    server = _build_server()
+    registered = {tool.name for tool in asyncio.run(server.list_tools())}
+    worker_tools = {
+        "kanban_complete",
+        "kanban_block",
+        "kanban_comment",
+        "kanban_heartbeat",
+    }
+    assert worker_tools.isdisjoint(registered)

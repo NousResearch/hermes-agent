@@ -213,8 +213,9 @@ delegate_task(
 ```
 
 - `role="leaf"`（默认）：子智能体无法进一步委派——与扁平委派行为相同。
-- `role="orchestrator"`：子智能体保留 `delegation` 工具集。受 `delegation.max_spawn_depth` 约束（默认 **1** = 扁平，因此在默认设置下 `role="orchestrator"` 无效）。将 `max_spawn_depth` 提高到 2 可允许编排者子智能体生成叶子孙智能体；设为 3 则允许三层（上限）。
-- `delegation.orchestrator_enabled: false`：全局开关，无论 `role` 参数如何，强制所有子智能体为 `leaf`。
+- `role="orchestrator"`：仅在启用嵌套时保留 `delegation` 工具集；否则会变为叶子。
+- `max_spawn_depth`：`0` 完全禁用委托；`1` 是扁平委托（默认）；`2+` 允许嵌套编排。没有上限，实际限制是成本。
+- `orchestrator_enabled` 独立控制原本符合条件的 `role="orchestrator"` 子智能体是否保留 `delegation` 工具集。设为 `false` 时，无论 `role` 参数如何都会强制所有子智能体为 `leaf`。
 
 **费用警告：** 在 `max_spawn_depth: 3` 和 `max_concurrent_children: 3` 的情况下，树可达到 3×3×3 = 27 个并发叶子智能体。每增加一层都会成倍增加开销——请谨慎提高 `max_spawn_depth`。
 
@@ -239,7 +240,7 @@ delegate_task(
 
 - 每个子智能体获得其**独立的终端会话**（与父智能体分离）
 - 子智能体继承父智能体已启用的工具集；模型无法按调用选择或扩大这些工具集
-- **嵌套委派为可选项**——只有 `role="orchestrator"` 的子智能体可以进一步委派，且仅在 `max_spawn_depth` 从默认值 1（扁平）提高后才生效。可通过 `orchestrator_enabled: false` 全局禁用。
+- **嵌套委派为可选项**——只有 `role="orchestrator"` 的子智能体可以进一步委派，且仅在 `max_spawn_depth` 从默认值 1（扁平）提高到 `2+` 后才生效。`max_spawn_depth: 0` 会完全禁用委托；可通过 `orchestrator_enabled: false` 独立禁用嵌套。
 - 叶子子智能体**不能**调用：`delegate_task`、`clarify`、`memory`、`send_message`、`execute_code`。编排者子智能体保留 `delegate_task`，但仍不能使用其他四个。
 - **取消遵循所有权**——`/stop` 或关闭/重置所属会话会取消其后台子智能体；编排者下的同步后代会跟随父智能体的中断状态
 - 只有最终摘要进入父智能体的上下文，保持 token 使用高效
@@ -266,8 +267,8 @@ delegate_task(
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
-  # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3 for three levels.
-  # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # max_spawn_depth: 1                      # 0 disables delegation; 1 is flat (default); 2+ enables nesting. No upper ceiling.
+  # orchestrator_enabled: true              # Independently disable nesting by forcing all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

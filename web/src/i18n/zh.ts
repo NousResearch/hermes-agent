@@ -625,7 +625,6 @@ export const zh: Translations = {
     allProfiles: "全部配置",
     showArchived: "显示已归档",
     lanesByProfile: "按配置分组",
-    nudgeDispatcher: "触发调度器",
     refresh: "刷新",
     selected: "已选中",
     complete: "完成",

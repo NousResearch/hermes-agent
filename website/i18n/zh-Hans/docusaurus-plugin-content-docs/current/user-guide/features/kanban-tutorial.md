@@ -29,7 +29,7 @@ dashboard 是**你**观察系统最便捷的地方。dispatcher 生成的 agent 
 - **Blocked（阻塞）** — worker 请求人工输入，或熔断器触发。
 - **Done（完成）** — 已完成。
 
-顶部栏提供搜索、租户和负责人的筛选器，以及 `Lanes by profile` 切换按钮和 `Nudge dispatcher` 按钮——后者会立即执行一次调度 tick，而无需等待守护进程的下一个间隔。点击任意卡片会在右侧打开其详情抽屉。
+顶部栏提供搜索、租户和负责人的筛选器，以及 `Lanes by profile` 切换按钮。点击任意卡片会在右侧打开其详情抽屉。
 
 ### 平铺视图
 
@@ -61,7 +61,7 @@ hermes kanban create "Write auth integration tests" \
 
 由于 `API` 以 `SCHEMA` 为父任务，`tests` 以 `API` 为父任务，只有 `SCHEMA` 从 `ready` 状态开始。其他两个任务在 `todo` 中等待，直到其父任务完成。这正是依赖提升引擎在发挥作用——在有 API 可测试之前，不会有其他 worker 去接手测试编写工作。
 
-在下一次 dispatcher tick 时（默认 60 秒，或点击 **Nudge dispatcher** 立即触发），`backend-dev` profile 会以 `HERMES_KANBAN_TASK=$SCHEMA` 作为环境变量生成一个 worker。以下是该 worker 在 agent 内部的工具调用循环：
+在下一次 dispatcher tick 时（默认 60 秒），`backend-dev` profile 会以 `HERMES_KANBAN_TASK=$SCHEMA` 作为环境变量生成一个 worker。以下是该 worker 在 agent 内部的工具调用循环：
 
 ```python
 # worker tool calls — NOT commands you run

@@ -149,6 +149,34 @@ class TestTurnInputCoercion:
         assert text == "caption\n\n[image attached]"
 
 
+class TestLeafReasoningEffortNormalization:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("low", "low"),
+            ("Medium", "medium"),
+            ("HIGH", "high"),
+            (" xhigh", "xhigh"),
+            ("max ", "max"),
+            ("ULTRA", "ultra"),
+        ],
+    )
+    def test_leaf_efforts_are_normalized(self, raw, expected):
+        assert session_mod._normalize_leaf_effort(raw) == expected
+
+    @pytest.mark.parametrize("raw", [None, "", " ", "\t"])
+    def test_absent_effort_stays_absent(self, raw):
+        assert session_mod._normalize_leaf_effort(raw) is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [False, 1, [], {}, "garbage", "none", "minimal"],
+    )
+    def test_invalid_effort_raises_value_error(self, raw):
+        with pytest.raises(ValueError):
+            session_mod._normalize_leaf_effort(raw)
+
+
 # ---- lifecycle ----
 
 class TestLifecycle:
@@ -162,6 +190,21 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
+    def test_client_factory_receives_workspace_cwd(self):
+        client = FakeClient()
+        captured = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        s = CodexAppServerSession(
+            cwd="/tmp/worktree", client_factory=factory  # type: ignore[arg-type]
+        )
+        s.ensure_started()
+
+        assert captured["workspace_cwd"] == "/tmp/worktree"
+
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
@@ -173,6 +216,23 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+        assert "model" not in params
+
+    def test_thread_start_passes_configured_model(self):
+        client = FakeClient()
+        s = make_session(client, model="  gpt-5.4  ")
+        s.ensure_started()
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert method == "thread/start"
+        assert params["model"] == "gpt-5.4"
+
+    def test_thread_start_omits_whitespace_only_model(self):
+        client = FakeClient()
+        s = make_session(client, model=" \t ")
+        s.ensure_started()
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert method == "thread/start"
+        assert "model" not in params
 
     def test_close_idempotent(self):
         client = FakeClient()
@@ -438,6 +498,32 @@ class TestRunTurn:
         assert isinstance(text, str)
         assert "[Image attached at: /tmp/a.png]" in text
         assert "[image attached]" in text
+
+    def test_turn_start_passes_configured_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client, effort=" HIGH ")
+        s.run_turn("hi", turn_timeout=2.0)
+        method, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert method == "turn/start"
+        assert params["effort"] == "high"
+
+    def test_turn_start_omits_absent_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+        s.run_turn("hi", turn_timeout=2.0)
+        method, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert method == "turn/start"
+        assert "effort" not in params
 
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()

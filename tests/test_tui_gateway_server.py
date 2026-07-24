@@ -3313,7 +3313,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
         ):
             seen["prompt"] = prompt
             seen["history"] = conversation_history

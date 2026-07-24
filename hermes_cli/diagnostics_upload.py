@@ -35,8 +35,21 @@ NAS_BASE = os.environ.get(
 # (a gzipped log bundle), so the PUT gets a more generous window.
 _REQUEST_TIMEOUT = 30
 _UPLOAD_TIMEOUT = 120
+_MAX_UPLOAD_URL_RESPONSE_BYTES = 1024 * 1024
 
 _USER_AGENT = "hermes-agent/debug-share"
+
+
+def _read_bounded_text_response(resp, *, limit: int = _MAX_UPLOAD_URL_RESPONSE_BYTES) -> str:
+    headers = getattr(resp, "headers", None)
+    raw_length = headers.get("Content-Length") if hasattr(headers, "get") else None
+    if isinstance(raw_length, (str, bytes, int)) and int(raw_length) > limit:
+        raise RuntimeError("diagnostics upload-url response body is too large")
+
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise RuntimeError("diagnostics upload-url response body is too large")
+    return body.decode("utf-8")
 
 
 def request_upload_url(
@@ -75,7 +88,7 @@ def request_upload_url(
             raise RuntimeError(
                 f"diagnostics upload-url request failed: HTTP {status}"
             )
-        body = resp.read().decode("utf-8")
+        body = _read_bounded_text_response(resp)
 
     try:
         result = json.loads(body)

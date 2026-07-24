@@ -58,6 +58,39 @@ class TestRequestUploadUrl:
         # urllib lower-cases header keys.
         assert req.headers["Content-type"] == "application/json"
 
+    def test_rejects_oversized_upload_url_response_before_reading(self):
+        import hermes_cli.diagnostics_upload as mod
+
+        resp = _resp(status=200, body=b"{}")
+        resp.headers = {
+            "Content-Length": str(mod._MAX_UPLOAD_URL_RESPONSE_BYTES + 1)
+        }
+        resp.read.side_effect = AssertionError("body should not be read")
+
+        with patch(
+            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            return_value=resp,
+        ):
+            with pytest.raises(RuntimeError, match="too large"):
+                mod.request_upload_url()
+
+        resp.read.assert_not_called()
+
+    def test_missing_content_length_uses_bounded_read(self):
+        import hermes_cli.diagnostics_upload as mod
+
+        payload = {"uploadUrl": "u", "id": "i", "viewUrl": "v"}
+        resp = _resp(status=200, body=json.dumps(payload).encode())
+        resp.headers = {}
+
+        with patch(
+            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            return_value=resp,
+        ):
+            assert mod.request_upload_url() == payload
+
+        resp.read.assert_called_once_with(mod._MAX_UPLOAD_URL_RESPONSE_BYTES + 1)
+
     def test_non_2xx_raises(self):
         from hermes_cli.diagnostics_upload import request_upload_url
 

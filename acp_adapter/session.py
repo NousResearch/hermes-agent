@@ -620,10 +620,14 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        acp_toolsets = list(config.get("platform_toolsets", {}).get("acp", ["hermes-acp"]))
+        if "hermes-acp" not in acp_toolsets:
+            acp_toolsets.insert(0, "hermes-acp")
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                acp_toolsets,
                 mcp_server_names=configured_mcp_servers,
             ),
             "quiet_mode": True,

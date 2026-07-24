@@ -93,6 +93,66 @@ def get_camofox_url() -> str:
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
+def _camofox_health_payload_is_valid(data: Any) -> bool:
+    """Return True when a /health payload looks like a Camofox response.
+
+    Camofox health responses are JSON objects. Current releases return fields
+    such as ``ok``, ``engine``, ``browserConnected``, ``browserRunning``, and
+    ``activeTabs``; ``vncPort`` is optional and may be absent.
+    """
+    if not isinstance(data, dict):
+        return False
+
+    seen_marker = False
+
+    if "ok" in data:
+        seen_marker = True
+        if not bool(data["ok"]):
+            return False
+
+    if "browserConnected" in data:
+        seen_marker = True
+        if not bool(data["browserConnected"]):
+            return False
+
+    if "browserRunning" in data:
+        seen_marker = True
+        if not bool(data["browserRunning"]):
+            return False
+
+    if "status" in data:
+        seen_marker = True
+        status = str(data["status"]).strip().lower()
+        if status in {"down", "error", "failed", "fail", "degraded", "unhealthy"}:
+            return False
+
+    if "vncPort" in data:
+        seen_marker = True
+        vnc_port = data["vncPort"]
+        if vnc_port is not None and (not isinstance(vnc_port, int) or not (1 <= vnc_port <= 65535)):
+            return False
+
+    if "engine" in data or "activeTabs" in data:
+        seen_marker = True
+
+    return seen_marker
+
+
+def _camofox_health_response_vnc_url(data: Any, url: str) -> Optional[str]:
+    """Extract a VNC URL from a validated health payload, if present."""
+    if not isinstance(data, dict):
+        return None
+    vnc_port = data.get("vncPort")
+    if not isinstance(vnc_port, int) or not (1 <= vnc_port <= 65535):
+        return None
+
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = parsed.hostname or "localhost"
+    return f"http://{host}:{vnc_port}"
+
+
 def _config_cdp_url() -> str:
     """Persistent ``browser.cdp_url`` from config.yaml, or empty string.
 
@@ -138,19 +198,21 @@ def check_camofox_available() -> bool:
         return False
     try:
         resp = requests.get(f"{url}/health", timeout=5)
-        if resp.status_code == 200 and not _vnc_url_checked:
-            try:
-                data = resp.json()
-                vnc_port = data.get("vncPort")
-                if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(url)
-                    host = parsed.hostname or "localhost"
-                    _vnc_url = f"http://{host}:{vnc_port}"
-            except (ValueError, KeyError):
-                pass
+        if resp.status_code != 200:
+            return False
+
+        try:
+            data: Any = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return False
+
+        if not _camofox_health_payload_is_valid(data):
+            return False
+
+        if not _vnc_url_checked:
+            _vnc_url = _camofox_health_response_vnc_url(data, url)
             _vnc_url_checked = True
-        return resp.status_code == 200
+        return True
     except Exception:
         return False
 

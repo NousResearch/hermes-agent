@@ -3,7 +3,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 
+import tools.browser_camofox as browser_camofox
 from tools.browser_camofox import (
     camofox_back,
     camofox_click,
@@ -48,9 +50,63 @@ class TestCamofoxMode:
         monkeypatch.setenv("BROWSER_CDP_URL", "  ")
         assert is_camofox_mode() is True
 
-    def test_health_check_unreachable(self, monkeypatch):
+    @patch("tools.browser_camofox.requests.get")
+    def test_health_check_unreachable(self, mock_get, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
+        mock_get.side_effect = browser_camofox.requests.ConnectionError("boom")
         assert check_camofox_available() is False
+
+    @patch("tools.browser_camofox.requests.get")
+    def test_health_check_rejects_html_response(self, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
+        mock_get.return_value = _mock_health_response(
+            body="<html><body>Netdata</body></html>",
+            content_type="text/html; charset=utf-8",
+            json_side_effect=ValueError("Expecting value: line 1 column 1 (char 0)"),
+        )
+
+        assert check_camofox_available() is False
+
+    @patch("tools.browser_camofox.requests.get")
+    def test_health_check_rejects_malformed_json_response(self, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
+        mock_get.return_value = _mock_health_response(
+            body="not-json",
+            content_type="application/json",
+            json_side_effect=ValueError("No JSON object could be decoded"),
+        )
+
+        assert check_camofox_available() is False
+
+    @patch("tools.browser_camofox.requests.get")
+    def test_health_check_accepts_json_without_vnc_port(self, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_get.return_value = _mock_health_response(
+            json_data={
+                "ok": True,
+                "engine": "camoufox",
+                "browserConnected": True,
+                "browserRunning": True,
+                "activeTabs": 0,
+            },
+        )
+
+        assert check_camofox_available() is True
+        assert browser_camofox.get_vnc_url() is None
+
+    @patch("tools.browser_camofox.requests.get")
+    def test_health_check_accepts_json_with_null_vnc_port(self, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_get.return_value = _mock_health_response(
+            json_data={
+                "ok": True,
+                "engine": "camoufox",
+                "vncPort": None,
+            },
+        )
+
+        assert check_camofox_available() is True
+        assert browser_camofox.get_vnc_url() is None
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +125,26 @@ def _mock_response(status=200, json_data=None):
     resp.content = b"\x89PNG\r\n\x1a\nfake"
     resp.raise_for_status = MagicMock()
     return resp
+
+
+def _mock_health_response(*, status=200, json_data=None, body="", content_type="application/json", json_side_effect=None):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.headers = {"Content-Type": content_type}
+    resp.text = body
+    resp.content = body.encode()
+    if json_side_effect is not None:
+        resp.json.side_effect = json_side_effect
+    else:
+        resp.json.return_value = json_data or {}
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+@pytest.fixture(autouse=True)
+def reset_camofox_health_cache(monkeypatch):
+    monkeypatch.setattr(browser_camofox, "_vnc_url", None)
+    monkeypatch.setattr(browser_camofox, "_vnc_url_checked", False)
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +247,10 @@ class TestCamofoxNavigate:
         assert result["success"] is True
         assert result["url"] == "https://b.com"
 
-    def test_connection_error_returns_helpful_message(self, monkeypatch):
+    @patch("tools.browser_camofox.requests.post")
+    def test_connection_error_returns_helpful_message(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
+        mock_post.side_effect = browser_camofox.requests.ConnectionError("boom")
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]

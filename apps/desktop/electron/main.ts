@@ -132,6 +132,7 @@ import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRoutePr
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -8199,11 +8200,12 @@ function createInstanceWindow() {
     instanceWindows.delete(win)
   })
 
-  if (DEV_SERVER) {
-    win.loadURL(DEV_SERVER)
-  } else {
-    win.loadURL(pathToFileURL(resolveRendererIndex()).toString())
-  }
+  win.loadURL(
+    buildInstanceWindowUrl({
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    })
+  )
 
   return win
 }

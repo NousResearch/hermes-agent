@@ -14,7 +14,7 @@ import {
 } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isSecondaryWindow } from '@/store/windows'
+import { isFreshInstanceWindow, isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
@@ -28,6 +28,18 @@ interface DesktopIntegrationsParams {
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
+}
+
+export function shouldRestoreRememberedRoute({
+  freshInstanceWindow,
+  locationPathname,
+  restored
+}: {
+  freshInstanceWindow: boolean
+  locationPathname: string
+  restored: boolean
+}): boolean {
+  return !freshInstanceWindow && !restored && locationPathname === NEW_CHAT_ROUTE
 }
 
 /**
@@ -45,6 +57,7 @@ export function useDesktopIntegrations({
   routedSessionId,
   runtimeIdByStoredSessionId
 }: DesktopIntegrationsParams): void {
+  const freshInstanceWindow = isFreshInstanceWindow()
   // Update polling — populates $desktopVersion/$updateStatus, which feed the
   // statusbar version pill and the update toasts. Also honors the main
   // process's "open updates" menu request.
@@ -70,6 +83,13 @@ export function useDesktopIntegrations({
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
   // you don't want to boot into a modal.
   useEffect(() => {
+    // A new peer instance starts at `/` by design. Do not overwrite the
+    // primary's remembered route before the restore guard below gets to run;
+    // once this instance has a real routed chat it participates normally.
+    if (freshInstanceWindow && locationPathname === NEW_CHAT_ROUTE && !routedSessionId) {
+      return
+    }
+
     if (routedSessionId) {
       setRememberedSessionId(
         routedSessionId,
@@ -80,7 +100,7 @@ export function useDesktopIntegrations({
     if (!isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname)
     }
-  }, [locationPathname, routedSessionId])
+  }, [freshInstanceWindow, locationPathname, routedSessionId])
 
   const restoredRef = useRef(false)
 
@@ -88,7 +108,7 @@ export function useDesktopIntegrations({
   // route (a hidden-then-shown window keeps its own route). Prefer the full
   // remembered route (covers pages); fall back to the last session id.
   useEffect(() => {
-    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
+    if (!shouldRestoreRememberedRoute({ freshInstanceWindow, locationPathname, restored: restoredRef.current })) {
       restoredRef.current = true
 
       return
@@ -108,7 +128,7 @@ export function useDesktopIntegrations({
     if (last) {
       navigate(sessionRoute(last), { replace: true })
     }
-  }, [locationPathname, navigate])
+  }, [freshInstanceWindow, locationPathname, navigate])
 
   useEffect(() => {
     if (!resumeExhaustedSessionId) {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -86,6 +87,18 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', watch: true })
 
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
+})
+
+test('buildInstanceWindowUrl marks a full peer as a fresh instance before the default hash route', () => {
+  const url = buildInstanceWindowUrl({ devServer: 'http://localhost:5173' })
+
+  assert.equal(url, 'http://localhost:5173/?win=instance#/')
+})
+
+test('buildInstanceWindowUrl marks packaged peer windows too', () => {
+  const url = buildInstanceWindowUrl({ rendererIndexPath: '/opt/app/index.html' })
+
+  assert.match(url, /^file:\/\/.*index\.html\?win=instance#\/$/)
 })
 
 test('instanceWindowBounds cascades a new window off its source bounds', () => {

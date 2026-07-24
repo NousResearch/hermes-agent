@@ -4027,18 +4027,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         server-side queue) from a watcher reconnect after a prolonged outage
         (preserve the queue so messages sent during the outage are delivered
         rather than silently dropped — #46621).
+
+        The connect is run detach-on-timeout, mirroring
+        ``_await_adapter_cleanup_with_timeout``: ``asyncio.wait_for`` cancels an
+        overdue child but then *awaits* it, so a ``connect()`` that swallows
+        ``CancelledError`` would block the reconnect watcher forever. Instead we
+        release the runner at the deadline and raise ``TimeoutError`` — the
+        watcher then disposes the unowned adapter and backs off exactly as it
+        already does for this exception. The detached connect task is cancelled
+        and drained; a timed-out connect is never installed on ``self.adapters``,
+        so a late-completing swallowed-cancel connect stays unowned and is
+        disposed rather than leaving a half-registered adapter (#55992).
         """
         timeout = self._platform_connect_timeout_secs()
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
+
+        task = asyncio.ensure_future(adapter.connect(is_reconnect=is_reconnect))
         try:
-            return await asyncio.wait_for(
-                adapter.connect(is_reconnect=is_reconnect), timeout=timeout
-            )
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"{platform.value} connect timed out after {timeout:g}s"
-            ) from exc
+            done, _pending = await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            task.cancel()
+            task.add_done_callback(consume_detached_task_result)
+            raise
+        if task in done:
+            # Propagates the connect result, or re-raises whatever connect raised
+            # (same surface as the previous ``await asyncio.wait_for``).
+            return task.result()
+
+        task.cancel()
+        task.add_done_callback(consume_detached_task_result)
+        raise TimeoutError(
+            f"{platform.value} connect timed out after {timeout:g}s"
+        )
 
     async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
         """Connect one cold-start adapter with tightly scoped replace intent.

@@ -154,6 +154,55 @@ class TestStartupPlatformIsolation:
         with pytest.raises(TimeoutError, match="telegram connect timed out"):
             await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
 
+    @pytest.mark.asyncio
+    async def test_connect_timeout_releases_when_connect_swallows_cancel(self, monkeypatch):
+        """A connect() that traps CancelledError must not wedge the caller.
+
+        ``asyncio.wait_for`` cancels an overdue child and then *awaits* it, so a
+        connect() whose teardown swallows CancelledError (a broad ``except``)
+        keeps the reconnect watcher blocked forever — the gateway stays alive
+        but never rebuilds the deaf adapter. ``_connect_adapter_with_timeout``
+        runs connect detach-on-timeout instead, so it releases the runner at the
+        deadline and raises ``TimeoutError`` regardless of the child's behavior.
+
+        On the unhardened plain-``wait_for`` implementation the inner call hangs;
+        the 2s outer bound then trips with a bare ``asyncio.TimeoutError`` whose
+        message does NOT match, so this test fails. With the detach fix the inner
+        call raises the bounded ``"... connect timed out"`` error promptly.
+        """
+        runner = _make_runner()
+        adapter = StubAdapter()
+        release = asyncio.Event()
+
+        async def swallow(*, is_reconnect: bool = False):
+            adapter.connect_calls.append(is_reconnect)
+            try:
+                await asyncio.Event().wait()  # never completes on its own
+            except asyncio.CancelledError:
+                # Trap the cancellation and keep "connecting" — reproduces a
+                # connect() that does not propagate CancelledError. ``release``
+                # only lets the detached task finish during test teardown.
+                await release.wait()
+                return False
+
+        adapter.connect = swallow
+        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "0.001")
+
+        try:
+            with pytest.raises(TimeoutError, match="telegram connect timed out"):
+                await asyncio.wait_for(
+                    runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM),
+                    timeout=2,
+                )
+            # connect was attempted, but the timed-out adapter is left unowned
+            # for the caller's failure path to dispose (never half-registered).
+            assert adapter.connect_calls == [False]
+            assert Platform.TELEGRAM not in runner.adapters
+        finally:
+            # Let the detached connect task complete so no task lingers.
+            release.set()
+            await asyncio.sleep(0)
+
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""

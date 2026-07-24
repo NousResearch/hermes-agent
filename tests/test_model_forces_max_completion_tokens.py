@@ -36,6 +36,15 @@ class TestPositiveCases:
     def test_gpt_4o_mini(self):
         assert model_forces_max_completion_tokens("gpt-4o-mini") is True
 
+    def test_chatgpt_4o_latest(self):
+        # OpenAI's ChatGPT-4o snapshot is a gpt-4o-family model whose name
+        # starts with "chatgpt-" rather than "gpt-", so the gpt-4o prefix
+        # missed it and it would have been sent the rejected max_tokens.
+        assert model_forces_max_completion_tokens("chatgpt-4o-latest") is True
+
+    def test_chatgpt_4o_latest_vendor_prefixed(self):
+        assert model_forces_max_completion_tokens("openai/chatgpt-4o-latest") is True
+
     def test_gpt_4_1(self):
         assert model_forces_max_completion_tokens("gpt-4.1") is True
 
@@ -75,6 +84,11 @@ class TestNegativeCases:
 
     def test_gpt_4_turbo(self):
         assert model_forces_max_completion_tokens("gpt-4-turbo") is False
+
+    def test_bare_chatgpt_is_not_matched(self):
+        # The match is anchored to the chatgpt-4o family, not a bare "chatgpt"
+        # prefix, so an unrelated "chatgpt"-named model is not coerced.
+        assert model_forces_max_completion_tokens("chatgpt") is False
 
     def test_claude_family(self):
         assert model_forces_max_completion_tokens("claude-3-opus") is False

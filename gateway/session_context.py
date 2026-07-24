@@ -90,6 +90,9 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+# Approval routing: cron state must be context-local so a scheduler tick in the
+# gateway process cannot leak into unrelated live turns.
+_CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
@@ -132,6 +135,7 @@ _VAR_MAP = {
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
+    "HERMES_CRON_SESSION": _CRON_SESSION,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -168,6 +172,7 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
+    cron_session: Any = _UNSET,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -183,6 +188,11 @@ def set_session_vars(
     background completion back to the agent after the turn ends (see
     ``_SESSION_ASYNC_DELIVERY`` / ``async_delivery_supported``). Stateless
     request/response adapters (the API server) pass ``False``.
+
+    ``cron_session`` is intentionally separate from ordinary session cleanup:
+    ``_UNSET`` leaves cron scope untouched, while ``"1"`` binds cron policy
+    for a nested context and returns a token that ``clear_session_vars`` resets.
+    This preserves the legacy process-environment fallback after cleanup.
     """
     # Mark the session-context machinery engaged for this process. The
     # subprocess-env bridge uses this to switch from "os.environ fallback" to
@@ -204,6 +214,8 @@ def set_session_vars(
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
+    if cron_session is not _UNSET:
+        tokens.append(_CRON_SESSION.set(cron_session))
     try:
         from agent.runtime_cwd import set_session_cwd
 
@@ -216,13 +228,10 @@ def set_session_vars(
 def clear_session_vars(tokens: list) -> None:
     """Mark session context variables as explicitly cleared.
 
-    Sets all variables to ``""`` so that ``get_session_env`` returns an empty
-    string instead of falling back to (potentially stale) ``os.environ``
-    values.  The *tokens* argument is accepted for API compatibility with
-    callers that saved the return value of ``set_session_vars``, but the
-    actual clearing uses ``var.set("")`` rather than ``var.reset(token)``
-    to ensure the "explicitly cleared" state is distinguishable from
-    "never set" (which holds the ``_UNSET`` sentinel).
+    Sets ordinary session variables to ``""`` so that ``get_session_env``
+    does not fall back to stale ``os.environ`` values. Dedicated nested scope
+    variables such as ``HERMES_CRON_SESSION`` instead reset their saved token,
+    preserving the pre-scope state and legacy fallback semantics.
     """
     for var in (
         _SESSION_PLATFORM,
@@ -239,6 +248,11 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PROFILE,
     ):
         var.set("")
+    # Some legacy/mock gateway paths pass ``None`` because the old cleanup
+    # implementation ignored this argument entirely. Preserve that contract.
+    for token in tokens or ():
+        if getattr(token, "var", None) is _CRON_SESSION:
+            _CRON_SESSION.reset(token)
     # Reset async-delivery capability to the "never set" sentinel rather than a
     # falsy value: a cleared context should fall back to the default-supported
     # behavior (CLI / unaware paths), not be mistaken for an opted-out

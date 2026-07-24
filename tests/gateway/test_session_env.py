@@ -139,6 +139,26 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
 
 
+def test_scoped_cron_session_restores_env_fallback(monkeypatch):
+    """Cron scope cleanup must restore, not permanently mask, env fallback."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+    tokens = set_session_vars(platform="telegram", cron_session="")
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+
+def test_clear_session_vars_accepts_legacy_none_tokens():
+    """Mock/legacy callers may have no saved token list to provide."""
+    clear_session_vars(None)
+
+    assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+
+
 def test_get_session_env_default_when_nothing_set(monkeypatch):
     """get_session_env returns default when neither contextvar nor env is set."""
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
@@ -393,4 +413,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

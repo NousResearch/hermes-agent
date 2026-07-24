@@ -1,0 +1,16 @@
+name: gotify-notify
+version: "1.1.0"
+description: "Send high-value Hermes notifications to Gotify with markdown rendering. Configurable via GOTIFY_CONTENT_TYPE env var."
+author: "redoracle"
+provides_tools:
+  - gotify_send
+requires_env:
+  - name: GOTIFY_URL
+    description: Gotify base URL (e.g. http://gotify.local)
+  - name: GOTIFY_APP_TOKEN
+    description: Gotify application token
+    secret: true
+optional_env:
+  - name: GOTIFY_CONTENT_TYPE
+    description: "Content type for message rendering (default: text/markdown)"
+    default: text/markdown

@@ -284,6 +284,52 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 
 **Opting out:** Delete or rename `plugins/hermes-achievements/dashboard/manifest.json`, or override it with a user plugin of the same name in `~/.hermes/plugins/hermes-achievements/` that ships no dashboard. The plugin's state files under `$HERMES_HOME/plugins/hermes-achievements/` survive — reinstalling preserves your unlock history.
 
+### gotify-notify
+
+Sends high-value, actionable notifications to a [Gotify](https://gotify.net/) server. Messages are rendered as **markdown** in the Gotify client by default (via the `extras.client::display.contentType` field).
+
+**When to use:** completed long-running tasks, failures, blocked tasks, human approval requests, auth/API key/quota errors, cost anomalies, security findings, failed CI/CD/backup/scheduled jobs, daily/weekly summaries, or artifacts ready for review. The agent decides when to notify — you don't need to call it manually.
+
+**Prerequisites:**
+
+- A running Gotify server (self-hosted or any instance)
+- An Application Token from Gotify's **Apps** page
+
+**Configuration:**
+
+Add to `~/.hermes/.env`:
+
+```bash
+GOTIFY_URL=http://gotify.local
+GOTIFY_APP_TOKEN=your_application_token
+# Optional: override content type (default: text/markdown)
+# GOTIFY_CONTENT_TYPE=text/plain
+```
+
+**Enable:**
+
+```bash
+hermes plugins enable gotify-notify
+```
+
+Or via `config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - gotify-notify
+```
+
+**Environment variables:**
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GOTIFY_URL` | Yes | — | Gotify server base URL |
+| `GOTIFY_APP_TOKEN` | Yes | — | Application token from Gotify |
+| `GOTIFY_CONTENT_TYPE` | No | `text/markdown` | Content-Type for message rendering |
+
+The plugin auto-loads when `GOTIFY_URL` and `GOTIFY_APP_TOKEN` are both set. Messages include `extras.client::display.contentType` so the Gotify client renders markdown formatting (**bold**, *italic*, `code`, [links], lists, headings). Set `GOTIFY_CONTENT_TYPE=text/plain` to disable markdown rendering.
+
 ## Adding a bundled plugin
 
 Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](/developer-guide/plugins). The only differences are:

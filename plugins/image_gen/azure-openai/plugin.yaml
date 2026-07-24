@@ -1,0 +1,5 @@
+name: azure-openai
+version: 1.0.0
+description: "Azure OpenAI image generation backend for configured image deployments."
+author: Hermes Agent
+kind: backend

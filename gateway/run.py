@@ -10632,6 +10632,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
+        #   {"action": "reply",   "text": ..., "reply_to": bool} -> direct reply, drop
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
@@ -10660,6 +10661,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source.platform.value if source.platform else "unknown",
                         source.chat_id or "unknown",
                     )
+                    return None
+                if _action == "reply":
+                    # Send a direct reply before auth/agent dispatch, then drop.
+                    # Route through _adapter_for_source(source) so a secondary
+                    # profile is answered by its own adapter, not the platform
+                    # default. Rate-limited per platform+chat; invalid text or a
+                    # missing adapter is logged and the message falls through.
+                    _reply_text = _result.get("text")
+                    if not isinstance(_reply_text, str) or not _reply_text.strip():
+                        logger.warning(
+                            "pre_gateway_dispatch reply ignored: invalid text "
+                            "reason=%s platform=%s chat=%s",
+                            _result.get("reason"),
+                            source.platform.value if source.platform else "unknown",
+                            source.chat_id or "unknown",
+                        )
+                        continue
+                    platform_name = source.platform.value if source.platform else "unknown"
+                    rate_key = source.chat_id or source.user_id or "unknown"
+                    if self.pairing_store._is_rate_limited(platform_name, rate_key):
+                        logger.warning(
+                            "pre_gateway_dispatch reply rate-limited: "
+                            "reason=%s platform=%s chat=%s",
+                            _result.get("reason"),
+                            platform_name,
+                            source.chat_id or "unknown",
+                        )
+                        return None
+                    _adapter = self._adapter_for_source(source)
+                    if _adapter is None:
+                        logger.warning(
+                            "pre_gateway_dispatch reply skipped: no adapter "
+                            "reason=%s platform=%s chat=%s",
+                            _result.get("reason"),
+                            source.platform.value if source.platform else "unknown",
+                            source.chat_id or "unknown",
+                        )
+                        return None
+                    _reply_to = event.message_id if _result.get("reply_to") is True else None
+                    try:
+                        await _adapter.send(source.chat_id, _reply_text, reply_to=_reply_to)
+                        self.pairing_store._record_rate_limit(platform_name, rate_key)
+                    except Exception as _reply_exc:
+                        logger.warning(
+                            "pre_gateway_dispatch reply send failed: %s",
+                            _reply_exc,
+                        )
                     return None
                 if _action == "rewrite":
                     _new_text = _result.get("text")

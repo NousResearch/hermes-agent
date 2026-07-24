@@ -1022,6 +1022,7 @@ def my_callback(event, gateway, session_store, **kwargs):
 |--------|--------|
 | `{"action": "skip", "reason": "..."}` | Drop the message — no agent reply, no pairing flow, no auth. Plugin is assumed to have handled it (e.g. silent-ingested into the transcript). |
 | `{"action": "rewrite", "text": "new text"}` | Replace `event.text`, then continue normal dispatch with the modified event. Useful for collapsing buffered ambient messages into a single prompt. |
+| `{"action": "reply", "text": "...", "reply_to": bool}` | Send `text` straight back to the originating chat **before** auth/agent dispatch, then drop the message (no agent loop). Delivery is routed through the message's own profile via `_adapter_for_source(source)`, so a secondary-profile chat is answered by that profile, not the platform default. `reply_to: true` quotes the inbound message. Rate-limited per platform+chat; empty/invalid `text` or a missing adapter is logged and the message falls through as a no-op. |
 | `{"action": "allow"}` / `None` | Normal dispatch — runs the full auth / pairing / agent-loop chain. |
 
 **Use cases:** Listen-only group chats (only respond when tagged; buffer ambient messages into context); human handover (silent-ingest customer messages while owner handles the chat manually); per-profile rate limiting; policy-driven routing.

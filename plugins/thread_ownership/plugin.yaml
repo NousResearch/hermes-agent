@@ -1,0 +1,7 @@
+name: thread_ownership
+version: 1.0.0
+description: "Coordinate Slack thread ownership across multiple Hermes agents that share a channel — prevents reply storms. Gates pre_gateway_dispatch with 'the most-recently @-mentioned bot owns the thread': the owner answers plain follow-ups, everyone else stays silent. Fully local (each bot derives the same owner from the message's mention list), no lock service, no operator knobs."
+author: "CoreSpeed (https://github.com/corespeed-io)"
+kind: standalone
+hooks:
+  - pre_gateway_dispatch

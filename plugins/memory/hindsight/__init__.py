@@ -504,6 +504,14 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
+_EMBEDDED_PROFILE_ENV_CONFIG_KEYS = {
+    "embeddings_provider": "HINDSIGHT_API_EMBEDDINGS_PROVIDER",
+    "embeddings_local_model": "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL",
+    "reranker_provider": "HINDSIGHT_API_RERANKER_PROVIDER",
+    "reranker_local_model": "HINDSIGHT_API_RERANKER_LOCAL_MODEL",
+}
+
+
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
@@ -529,6 +537,16 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     }
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
+
+    for config_key, env_key in _EMBEDDED_PROFILE_ENV_CONFIG_KEYS.items():
+        value = config.get(config_key)
+        if value is not None and value != "":
+            env_values[env_key] = str(value)
+
+    # Preserve advanced daemon settings if users configure raw Hindsight env keys.
+    for key, value in config.items():
+        if key.startswith("HINDSIGHT_") and value is not None and value != "":
+            env_values[key] = str(value)
 
     idle_timeout = (
         config.get("idle_timeout")

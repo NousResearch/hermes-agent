@@ -417,6 +417,30 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_preserves_embedding_and_reranker_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embeddings_provider": "local",
+            "embeddings_local_model": "BAAI/bge-m3",
+            "reranker_provider": "local",
+            "reranker_local_model": "BAAI/bge-reranker-v2-m3",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "local"
+        assert env["HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL"] == "BAAI/bge-m3"
+        assert env["HINDSIGHT_API_RERANKER_PROVIDER"] == "local"
+        assert env["HINDSIGHT_API_RERANKER_LOCAL_MODEL"] == "BAAI/bge-reranker-v2-m3"
+
+    def test_embedded_profile_env_preserves_raw_hindsight_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU": "true",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] == "true"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

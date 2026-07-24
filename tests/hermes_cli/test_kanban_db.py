@@ -2163,6 +2163,45 @@ def test_worktree_workspace_repo_root_anchor_materializes_linked_worktree(kanban
     assert f"branch refs/heads/wt/{t}" in listed
 
 
+def test_parallel_tasks_use_isolated_worktrees_without_touching_main(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    main_readme = (repo / "README.md").read_text(encoding="utf-8")
+
+    with kb.connect() as conn:
+        first = kb.create_task(
+            conn, title="first", workspace_kind="worktree", workspace_path=str(repo)
+        )
+        second = kb.create_task(
+            conn, title="second", workspace_kind="worktree", workspace_path=str(repo)
+        )
+        first_task = kb.get_task(conn, first)
+        second_task = kb.get_task(conn, second)
+        assert first_task is not None
+        assert second_task is not None
+        first_ws = kb.resolve_workspace(first_task)
+        second_ws = kb.resolve_workspace(second_task)
+
+    (first_ws / "parallel.txt").write_text("first", encoding="utf-8")
+    (second_ws / "parallel.txt").write_text("second", encoding="utf-8")
+    first_branch = subprocess.run(
+        ["git", "-C", str(first_ws), "branch", "--show-current"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    second_branch = subprocess.run(
+        ["git", "-C", str(second_ws), "branch", "--show-current"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    assert first_ws != second_ws
+    assert (first_ws / "parallel.txt").read_text(encoding="utf-8") == "first"
+    assert (second_ws / "parallel.txt").read_text(encoding="utf-8") == "second"
+    assert not (repo / "parallel.txt").exists()
+    assert (repo / "README.md").read_text(encoding="utf-8") == main_readme
+    assert first_branch == f"wt/{first}"
+    assert second_branch == f"wt/{second}"
+
+
 def test_worktree_no_path_anchors_on_board_default_workdir(kanban_home, tmp_path):
     """A worktree task created with no explicit path inherits the board's
     default_workdir as its anchor and materializes a per-task linked worktree
@@ -2344,6 +2383,109 @@ def test_dispatch_worktree_task_rerun_reuses_existing_linked_worktree_and_branch
     assert listed.count(f"worktree {expected}\n") == 1
     assert f"worktree {expected}/.worktrees/{tid}" not in listed
     assert f"branch refs/heads/{actual_branch}" in listed
+
+
+def test_complete_task_removes_clean_managed_worktree_but_keeps_branch(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="ship", workspace_kind="worktree", workspace_path=str(repo)
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        assert kb.complete_task(conn, tid, result="done")
+
+    assert not ws.exists()
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", f"wt/{tid}"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert f"wt/{tid}" in branches
+
+
+def test_complete_task_preserves_dirty_managed_worktree(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="ship", workspace_kind="worktree", workspace_path=str(repo)
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        (ws / "unfinished.txt").write_text("keep", encoding="utf-8")
+        assert kb.complete_task(conn, tid, result="done")
+
+    assert ws.exists()
+    assert (ws / "unfinished.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_archive_task_removes_clean_managed_worktree(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="cancel me", workspace_kind="worktree", workspace_path=str(repo)
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        assert kb.archive_task(conn, tid)
+
+    assert not ws.exists()
+
+
+def test_spawn_failure_removes_clean_managed_worktree(
+    kanban_home, tmp_path, all_assignees_spawnable
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+
+    def boom(task, workspace):
+        raise RuntimeError("spawn failed")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="cannot start",
+            assignee="sentinel",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+        )
+        result = kb.dispatch_once(conn, spawn_fn=boom)
+        task = kb.get_task(conn, tid)
+
+    expected = repo / ".worktrees" / tid
+    assert not expected.exists()
+    assert result.spawned == []
+    assert task is not None
+    assert task.workspace_path == str(expected)
+
+
+def test_complete_task_preserves_explicit_custom_worktree(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    custom = repo / ".worktrees" / "custom-checkout"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="custom",
+            workspace_kind="worktree",
+            workspace_path=str(custom),
+            branch_name="wt/custom-checkout",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        assert kb.complete_task(conn, tid, result="done")
+
+    assert custom.exists()
 
 
 # ---------------------------------------------------------------------------

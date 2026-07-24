@@ -5090,12 +5090,13 @@ def _is_managed_scratch_path(p: Path) -> bool:
 
 
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
-    """Remove a task's scratch workspace dir and kill its stale tmux session.
+    """Remove a task-owned workspace and kill its stale tmux session.
 
     Called from :func:`complete_task` after the DB transaction commits.
     Best-effort — any error is swallowed so cleanup never blocks task completion.
-    Only ``scratch`` workspaces are removed; ``worktree`` and ``dir`` workspaces
-    are intentionally preserved.
+    Managed ``scratch`` directories and clean, task-id-keyed ``worktree``
+    checkouts are removed. Explicit/custom worktrees, dirty worktrees, branches,
+    and ``dir`` workspaces are intentionally preserved.
     """
     try:
         row = conn.execute(
@@ -5106,8 +5107,13 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
+        if kind == "worktree" and path:
+            _cleanup_managed_worktree(task_id, Path(path))
+            _cleanup_worker_tmux(conn, task_id)
+            _try_cleanup_parent_workspaces(conn, task_id)
+            return
         if kind != "scratch" or not path:
-            # This task's own workspace isn't a removable scratch dir, but its
+            # This task's own workspace isn't a removable managed workspace, but its
             # completion may still unblock a deferred parent scratch cleanup
             # (e.g. a 'dir' child whose scratch parent was waiting on it). #33774
             _try_cleanup_parent_workspaces(conn, task_id)
@@ -6067,6 +6073,10 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
     recompute_ready(conn)
+    # Archiving is the Kanban cancellation path. Reap any clean task-owned
+    # worktree, but preserve dirty/custom worktrees so cancellation can never
+    # discard uncommitted user or worker changes.
+    _cleanup_workspace(conn, task_id)
     return True
 
 
@@ -6106,6 +6116,9 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
+    # Capture/clean the workspace while the task row still exists. Cleanup is
+    # best-effort and refuses dirty or non-managed worktrees.
+    _cleanup_workspace(conn, task_id)
     with write_txn(conn):
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
@@ -6241,6 +6254,46 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _cleanup_managed_worktree(task_id: str, target: Path) -> bool:
+    """Remove a clean Hermes-owned linked worktree, preserving its branch.
+
+    Ownership is intentionally structural: only ``<repo>/.worktrees/<task-id>``
+    is eligible. This keeps explicit ``worktree:<custom-path>`` checkouts out of
+    automatic lifecycle cleanup. Dirty/untracked worktrees are retained to avoid
+    data loss and can be inspected or removed manually.
+    """
+    target = target.expanduser().resolve(strict=False)
+    if target.name != task_id or target.parent.name != ".worktrees":
+        return False
+    if not target.exists() or not _is_linked_worktree_checkout(target):
+        return False
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if status.returncode != 0 or (status.stdout or "").strip():
+        _log.warning("Preserving dirty worktree for task %s: %s", task_id, target)
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(target), "worktree", "remove", str(target)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        _log.warning(
+            "Failed to remove worktree for task %s at %s: %s",
+            task_id, target, (result.stderr or result.stdout or "").strip(),
+        )
+        return False
+    _log.debug("Removed managed worktree for task %s: %s", task_id, target)
+    return True
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
@@ -6249,6 +6302,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         target_common = _git_common_dir(target)
         if target_common == repo_common:
             return
+    target_existed = target.exists()
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
@@ -6266,6 +6320,25 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     )
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
+        # ``git worktree add`` can fail after creating administration data or a
+        # partial target. Roll back only paths that did not predate this call.
+        if not target_existed:
+            subprocess.run(
+                ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(target)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if target.exists() and not _is_linked_worktree_checkout(target):
+                shutil.rmtree(target, ignore_errors=True)
+            subprocess.run(
+                ["git", "-C", str(repo_root), "worktree", "prune"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
@@ -8327,6 +8400,11 @@ def _dispatch_once_locked(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
             )
+            # A worker that never spawned cannot own useful new state. Remove a
+            # clean managed worktree now; dirty/custom worktrees are preserved.
+            if claimed.workspace_kind == "worktree":
+                with contextlib.suppress(Exception):
+                    _cleanup_managed_worktree(claimed.id, workspace)
             if auto:
                 result.auto_blocked.append(claimed.id)
 
@@ -8408,6 +8486,9 @@ def _dispatch_once_locked(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
             )
+            if claimed.workspace_kind == "worktree":
+                with contextlib.suppress(Exception):
+                    _cleanup_managed_worktree(claimed.id, workspace)
             if auto:
                 result.auto_blocked.append(claimed.id)
     return result

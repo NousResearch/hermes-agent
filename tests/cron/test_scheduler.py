@@ -5509,3 +5509,165 @@ class TestSetCronSessionTitle:
         from cron.scheduler import _set_cron_session_title
         assert _set_cron_session_title(None, "sess-1", "X") is None
         assert _set_cron_session_title(MagicMock(), "", "X") is None
+
+
+class TestSummarizeCronFailureForDelivery:
+    """Test the _summarize_cron_failure_for_delivery auth/rate-limit detection."""
+
+    # ------------------------------------------------------------------
+    # no_agent=True — no provider involved, so auth errors are impossible
+    # ------------------------------------------------------------------
+
+    def test_no_agent_with_401_does_not_match_auth(self):
+        """no_agent=True + bare 401 in output → NOT auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job", "no_agent": True},
+            "The script returned 401 for some request in its test suite",
+        )
+        assert "authentication error" not in result
+        assert "my-job" in result
+        assert "failed" in result  # should fall through to generic message
+
+    def test_no_agent_with_403_does_not_match_auth(self):
+        """no_agent=True + bare 403 in output → NOT auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job", "no_agent": True},
+            "test returns 403 — expected behavior",
+        )
+        assert "authentication error" not in result
+
+    def test_no_agent_with_auth_word_does_not_match_auth(self):
+        """no_agent=True + 'authorization' in output → NOT auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job", "no_agent": True},
+            "authorization check failed: permission denied",
+        )
+        assert "authentication error" not in result
+
+    # ------------------------------------------------------------------
+    # no_agent=False or no key — provider involved, should match HTTP
+    # ------------------------------------------------------------------
+
+    def test_http_401_matches_auth(self):
+        """HTTP 401 in error text → auth error (HTTP status context)."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "HTTP/1.1 401 Unauthorized",
+        )
+        assert "authentication error" in result
+
+    def test_http_403_matches_auth(self):
+        """HTTP 403 in error text → auth error (HTTP status context)."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "HTTP/2 403 Forbidden",
+        )
+        assert "authentication error" in result
+
+    def test_status_401_matches_auth(self):
+        """"status 401" in error text → auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "Provider responded with status 401 Unauthorized",
+        )
+        assert "authentication error" in result
+
+    def test_status_403_matches_auth(self):
+        """"status 403" in error text → auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "provider status 403 forbidden",
+        )
+        assert "authentication error" in result
+
+    def test_response_401_matches_auth(self):
+        """"response 401" in error text → auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "got response 401 from upstream",
+        )
+        assert "authentication error" in result
+
+    def test_authenticat_word_matches_auth(self):
+        """'authenticat' keyword → auth error (no provider context needed)."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "Authentication failed for provider",
+        )
+        assert "authentication error" in result
+
+    def test_authoriz_word_matches_auth(self):
+        """'authoriz' keyword → auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "Authorization token expired",
+        )
+        assert "authentication error" in result
+
+    # ------------------------------------------------------------------
+    # Bare 401/403 WITHOUT HTTP context — should NOT match auth
+    # ------------------------------------------------------------------
+
+    def test_bare_401_does_not_match_auth(self):
+        """Bare '401' without HTTP/status/response prefix → NOT auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "script output: returns 401 on invalid input",
+        )
+        assert "authentication error" not in result
+
+    def test_bare_403_does_not_match_auth(self):
+        """Bare '403' without HTTP/status/response prefix → NOT auth error."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "expected 403, got 200 in test_case_17",
+        )
+        assert "authentication error" not in result
+
+    # ------------------------------------------------------------------
+    # Rate limit / timeout detection still works (unaffected by change)
+    # ------------------------------------------------------------------
+
+    def test_rate_limit_still_detected(self):
+        """Rate limit detection is unaffected."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "rate limit exceeded",
+        )
+        assert "rate limit" in result
+
+    def test_timeout_still_detected(self):
+        """Timeout detection is unaffected."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        result = _summarize_cron_failure_for_delivery(
+            {"name": "my-job"},
+            "ReadTimeout: connection timed out",
+        )
+        assert "timeout" in result

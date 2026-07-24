@@ -190,6 +190,152 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
     ".envrc",
 }
 
+# Broadened secret-bearing credential material denied to the read-file tool
+# anywhere on disk: cloud service-account JSON, private keys, and cloud-CLI
+# credential dirs. Defense-in-depth only — the terminal tool can still cat
+# these; L2 (DANGEROUS_PATTERNS in tools/approval.py) routes that through
+# approval, and L3 (the secret not being in the agent's mount) is the real
+# boundary.
+_SECRET_READ_DENY_BASENAMES: frozenset[str] = frozenset({
+    # Bare "credentials" is broad (may block non-secret project files) but the
+    # DiD error is recoverable; cloud-CLI stores (~/.aws/credentials, gcloud)
+    # warrant the blanket block.
+    "credentials",
+    ".git-credentials",
+    ".netrc",
+    ".pgpass",
+    ".npmrc",
+    ".pypirc",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+})
+
+# Read-side credential dirs, matched as path *components* (see
+# ``_looks_like_secret_read``). Intentionally narrower than the write denylist
+# (build_write_denied_prefixes) — dirs like ~/.docker, ~/.azure, ~/.config/gh
+# are write-guarded but hold little plaintext-secret material the agent would
+# read, so they are omitted here.
+#
+# These are single-component names compared against ``resolved.parts`` (each
+# lowercased). Using pathlib components instead of a POSIX substring match is
+# separator-proof: on Windows ``resolved`` is a ``WindowsPath`` whose ``.parts``
+# split on ``\``, so a path like ``C:\Users\bob\.aws\credentials`` is caught —
+# the old ``"/.aws/" in str(resolved)`` check silently missed backslash paths.
+_SECRET_READ_DENY_DIR_COMPONENTS: frozenset[str] = frozenset({
+    ".aws",
+    ".kube",
+    ".gnupg",
+    ".ssh",
+})
+
+# Extensions that are always private-key / keystore material.
+_SECRET_READ_DENY_EXTENSIONS: frozenset[str] = frozenset({
+    ".key",
+    ".pfx",
+    ".p12",
+    ".keystore",
+    ".jks",
+})
+
+# Public-cert extensions that must stay readable. ``.pem`` is intentionally
+# NOT here — a ``.pem`` may hold either a public cert or a private key, so it
+# is disambiguated by filename (see ``_looks_like_secret_read``).
+_PUBLIC_CERT_EXTENSIONS: frozenset[str] = frozenset({
+    ".crt",
+    ".cer",
+    ".cert",
+})
+
+# Public-cert ``.pem`` basenames (lowercased) that must stay readable even
+# though other ``.pem`` files are treated as private-key material. These are
+# the conventional Let's Encrypt / OpenSSL public-chain filenames.
+_PUBLIC_CERT_PEM_NAMES: frozenset[str] = frozenset({
+    "fullchain.pem",
+    "chain.pem",
+    "cert.pem",
+    "ca-bundle.pem",
+    "cacert.pem",
+    "ca.pem",
+})
+
+
+def _pem_is_private_key(name: str) -> bool:
+    """Return True when a ``.pem`` *name* (lowercased) looks like private-key
+    material rather than a public certificate.
+
+    Rule (name-only, no file I/O — the helper stays pure-path):
+
+      * ALLOW the conventional public-chain names in
+        ``_PUBLIC_CERT_PEM_NAMES`` (``fullchain.pem``, ``cert.pem`` …).
+      * Otherwise DENY when the name signals a private key: it is exactly
+        ``key.pem`` / ``privkey.pem``, ends with ``-key.pem`` or ``_key.pem``,
+        or contains the substring ``private`` (e.g. ``my-private-thing.pem``).
+      * Everything else (an unrecognised ``*.pem``) is treated as a PUBLIC
+        cert and ALLOWED — the blanket deny that used to block public certs
+        was the over-broad behavior this replaces.
+    """
+    if name in _PUBLIC_CERT_PEM_NAMES:
+        return False
+    if name in ("key.pem", "privkey.pem"):
+        return True
+    if name.endswith("-key.pem") or name.endswith("_key.pem"):
+        return True
+    if "private" in name:
+        return True
+    return False
+
+
+def _looks_like_secret_read(resolved: Path) -> bool:
+    """True when *resolved* points at credential / key material the agent
+    should never read raw (cloud SA keys, private keys, credential dirs).
+
+    Defense-in-depth heuristic, not a boundary — see module docstring.
+    """
+    name = resolved.name.lower()
+    if name in _SECRET_READ_DENY_BASENAMES:
+        return True
+
+    suffix = resolved.suffix.lower()
+
+    # Public certs are explicitly allowed (return False before any deny that
+    # might otherwise catch a name substring).
+    if suffix in _PUBLIC_CERT_EXTENSIONS:
+        return False
+
+    # Private-key / keystore extensions are always denied.
+    if suffix in _SECRET_READ_DENY_EXTENSIONS:
+        return True
+
+    # ``.pem`` is ambiguous — disambiguate by filename.
+    if suffix == ".pem":
+        return _pem_is_private_key(name)
+
+    # Both hyphen (Google Cloud Console canonical) and underscore (Terraform,
+    # some SDKs) forms of service-account key filenames.
+    if suffix == ".json" and (
+        "service-account" in name or "service_account" in name
+    ):
+        return True
+
+    # Credential-directory check using path COMPONENTS (separator-proof; see
+    # ``_SECRET_READ_DENY_DIR_COMPONENTS``). Each part lowercased so the match
+    # is case-insensitive on case-preserving filesystems.
+    parts = [p.lower() for p in resolved.parts]
+    if any(seg in parts for seg in _SECRET_READ_DENY_DIR_COMPONENTS):
+        return True
+
+    # gcloud credentials live under ``.config/gcloud/``. Deny only on the
+    # adjacency of ``.config`` immediately followed by ``gcloud`` so a plain
+    # ``.config`` dir (which holds lots of non-secret app config) is not
+    # blanket-blocked.
+    for i in range(len(parts) - 1):
+        if parts[i] == ".config" and parts[i + 1] == "gcloud":
+            return True
+
+    return False
+
 
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
@@ -332,6 +478,16 @@ def get_read_block_error(path: str) -> Optional[str]:
             "and cannot be read to prevent credential leakage. "
             "If you need to check the file structure, read .env.example instead. "
             "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
+        )
+
+    # Broadened secret-bearing credential material anywhere on disk.
+    if _looks_like_secret_read(resolved):
+        return (
+            f"Access denied: {path} looks like secret-bearing credential "
+            "material and cannot be read directly to prevent credential "
+            "leakage. Provider tools consume credentials through internal "
+            "channels. (Defense-in-depth — not a security boundary; the "
+            "terminal tool can still bypass.)"
         )
 
     return None

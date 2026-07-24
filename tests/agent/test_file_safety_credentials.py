@@ -433,3 +433,215 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     root_tok.parent.mkdir(parents=True, exist_ok=True)
     root_tok.write_text("x")
     assert "MCP token" in (get_read_block_error(str(root_tok)) or "")
+
+
+# ---------------------------------------------------------------------------
+# Broadened read-deny: secret-bearing credential material anywhere on disk
+# ---------------------------------------------------------------------------
+
+
+class TestBroadenedSecretReadDeny:
+    """Credential material beyond .env is denied to read_file.
+
+    Cloud service-account JSON keys, private keys, and cloud-CLI credential
+    directories (``~/.aws``, ``~/.ssh``, ``~/.config/gcloud`` …) live outside
+    HERMES_HOME, so the existing per-location gates never saw them. A prompt
+    injection reaching ``read_file`` could exfiltrate them verbatim. These
+    assert the broadened ``_looks_like_secret_read`` denial — defense-in-depth,
+    not a boundary (the terminal tool can still read these paths).
+    """
+
+    def test_gcloud_service_account_json_denied(self):
+        from agent.file_safety import get_read_block_error
+        err = get_read_block_error("~/.config/gcloud/my-app-service-account.json")
+        assert err is not None
+        assert "secret" in err.lower()
+
+    def test_aws_credentials_denied(self):
+        from agent.file_safety import get_read_block_error
+        assert get_read_block_error("~/.aws/credentials") is not None
+
+    def test_ssh_private_key_denied(self):
+        from agent.file_safety import get_read_block_error
+        assert get_read_block_error("~/.ssh/id_rsa") is not None
+
+    def test_private_key_pem_denied(self):
+        """A private-key-named PEM (privkey.pem) stays denied after the
+        blanket ``.pem`` deny is replaced by the private-key name heuristic."""
+        from agent.file_safety import get_read_block_error
+        assert get_read_block_error("/tmp/some/privkey.pem") is not None
+
+    def test_mounted_service_account_denied(self):
+        from agent.file_safety import get_read_block_error
+        assert get_read_block_error("/secrets/prod-service-account.json") is not None
+
+    def test_ordinary_json_allowed(self):
+        from agent.file_safety import get_read_block_error
+        assert get_read_block_error("/tmp/project/data.json") is None
+
+    def test_env_example_still_allowed(self):
+        from agent.file_safety import get_read_block_error
+        assert get_read_block_error("/tmp/project/.env.example") is None
+
+    def test_underscore_service_account_denied(self):
+        from agent.file_safety import get_read_block_error
+        assert get_read_block_error("/secrets/foo_service_account.json") is not None
+
+
+class TestSecretReadWindowsPaths:
+    """FIX 1 — the dir-segment check must use path *components*, not POSIX
+    substring matching, so it survives Windows backslash separators.
+
+    The helper receives an already-resolved ``Path``. On Windows that is a
+    ``WindowsPath`` whose ``.parts`` split on ``\\``; the old substring check
+    (``"/.aws/" in str(resolved).lower()``) never matched a backslash path
+    even on Windows. We drive ``_looks_like_secret_read`` with a
+    ``PureWindowsPath`` to reproduce the Windows ``.parts`` shape on any host.
+    """
+
+    def test_windows_aws_config_denied(self):
+        from pathlib import PureWindowsPath
+
+        from agent.file_safety import _looks_like_secret_read
+
+        # config is NOT a denied basename, so a hit here is purely the
+        # ``.aws`` directory-component rule (not the basename rule).
+        p = PureWindowsPath(r"C:\Users\bob\.aws\config")
+        assert _looks_like_secret_read(p) is True
+
+    def test_windows_ssh_dir_denied(self):
+        from pathlib import PureWindowsPath
+
+        from agent.file_safety import _looks_like_secret_read
+
+        p = PureWindowsPath(r"C:\Users\bob\.ssh\known_hosts")
+        assert _looks_like_secret_read(p) is True
+
+    def test_ssh_config_still_denied(self):
+        """Regression anchor for the parts refactor: a POSIX ``~/.ssh/config``
+        (non-basename file under ``.ssh``) must stay denied."""
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("~/.ssh/config") is not None
+
+    def test_gcloud_tokens_denied(self):
+        """gcloud dir denies only on ``.config`` + ``gcloud`` adjacency."""
+        from agent.file_safety import get_read_block_error
+
+        assert (
+            get_read_block_error("~/.config/gcloud/access_tokens.db") is not None
+        )
+
+    def test_config_without_gcloud_not_blocked(self):
+        """A plain ``.config`` file (no adjacent ``gcloud``) is not a
+        credential dir — the adjacency rule must stay precise."""
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/home/bob/.config/app/settings.toml") is None
+
+
+class TestSecretReadPemScoping:
+    """FIX 2 — the blanket ``.pem`` deny is replaced by a name heuristic:
+    private-key material is denied, public certs are allowed.
+    """
+
+    # ---- allowed public certs ------------------------------------------
+    def test_public_fullchain_pem_allowed(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/letsencrypt/certs/fullchain.pem") is None
+
+    def test_public_chain_pem_allowed(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/chain.pem") is None
+
+    def test_public_cert_pem_allowed(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/cert.pem") is None
+
+    def test_ca_bundle_pem_allowed(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/ca-bundle.pem") is None
+
+    def test_crt_allowed(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/server.crt") is None
+
+    def test_cer_allowed(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/server.cer") is None
+
+    def test_cert_ext_allowed(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/server.cert") is None
+
+    # ---- denied private keys / keystores -------------------------------
+    def test_private_key_pem_still_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/private/privkey.pem") is not None
+
+    def test_key_pem_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/key.pem") is not None
+
+    def test_hyphen_key_pem_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/server-key.pem") is not None
+
+    def test_underscore_key_pem_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/server_key.pem") is not None
+
+    def test_private_named_pem_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/my-private-thing.pem") is not None
+
+    def test_dot_key_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/etc/ssl/server.key") is not None
+
+    def test_pfx_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/certs/bundle.pfx") is not None
+
+    def test_p12_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/certs/bundle.p12") is not None
+
+    def test_keystore_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/app/config/app.keystore") is not None
+
+    def test_jks_denied(self):
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/app/config/app.jks") is not None
+
+    def test_existing_basename_keys_still_denied(self):
+        """id_rsa etc. basename denials survive the PEM refactor."""
+        from agent.file_safety import get_read_block_error
+
+        assert get_read_block_error("/home/bob/keys/id_rsa") is not None
+
+    def test_service_account_json_still_denied(self):
+        """Service-account JSON check survives the PEM refactor."""
+        from agent.file_safety import get_read_block_error
+
+        assert (
+            get_read_block_error("/secrets/prod-service-account.json") is not None
+        )

@@ -988,5 +988,127 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         self.assertEqual(_read_tracker["t"]["dedup"], {})
 
 
+# ---------------------------------------------------------------------------
+# Secret-file read deny — tool-level end-to-end (PR #47583 review, FIX 3)
+# ---------------------------------------------------------------------------
+
+class TestReadFileToolSecretDeny(unittest.TestCase):
+    """Drive the secret-file deny path end-to-end through read_file_tool.
+
+    These complement the helper-level tests in
+    tests/agent/test_file_safety_credentials.py by asserting the guard fires
+    inside the real tool (returning an ``error`` JSON), and that a public cert
+    is NOT blocked at the tool level.
+    """
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-secret-deny-")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_read_file_tool_blocks_ssh_private_key(self):
+        ssh_dir = os.path.join(self._tmpdir, ".ssh")
+        os.makedirs(ssh_dir, exist_ok=True)
+        key = os.path.join(ssh_dir, "id_rsa")
+        with open(key, "w", encoding="utf-8") as f:
+            f.write("-----BEGIN OPENSSH PRIVATE KEY-----\nDUMMY\n"
+                    "-----END OPENSSH PRIVATE KEY-----\n")
+
+        out = json.loads(read_file_tool(key, task_id="ssh-key-deny"))
+        self.assertIn("error", out)
+        err = out["error"].lower()
+        self.assertTrue(
+            "secret" in err or "credential" in err,
+            f"error should mention secret/credential: {out['error']!r}",
+        )
+        self.assertNotIn("DUMMY", json.dumps(out))
+
+    def test_read_file_tool_blocks_service_account_json(self):
+        sa = os.path.join(self._tmpdir, "app-service-account.json")
+        with open(sa, "w", encoding="utf-8") as f:
+            f.write('{"private_key": "PLACEHOLDER"}\n')
+
+        out = json.loads(read_file_tool(sa, task_id="sa-json-deny"))
+        self.assertIn("error", out)
+        err = out["error"].lower()
+        self.assertTrue("secret" in err or "credential" in err)
+        self.assertNotIn("PLACEHOLDER", json.dumps(out))
+
+    def test_read_file_tool_allows_public_cert(self):
+        """A public fullchain.pem must NOT trip the guard (FIX 2)."""
+        cert = os.path.join(self._tmpdir, "fullchain.pem")
+        with open(cert, "w", encoding="utf-8") as f:
+            f.write("-----BEGIN CERTIFICATE-----\nPUBLIC\n"
+                    "-----END CERTIFICATE-----\n")
+
+        out = json.loads(read_file_tool(cert, task_id="pubcert-allow"))
+        self.assertNotIn(
+            "error", out,
+            f"public cert must not be blocked, got: {out}",
+        )
+
+
+class TestSearchToolSecretOmit(unittest.TestCase):
+    """Drive the search-result deny filter end-to-end through search_tool
+    with the real search backend (FIX 3)."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-search-omit-")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_search_tool_omits_credential_files(self):
+        from tools.file_tools import search_tool
+
+        # Ordinary matching file — must survive.
+        with open(os.path.join(self._tmpdir, "notes.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write("SEARCHTOKEN in an ordinary note\n")
+
+        # A credential file that also matches. Placed in a NON-hidden dir so
+        # the search backend actually descends into it (ripgrep skips dotdirs
+        # by default) — the omission must come from the read-deny filter, not
+        # from the searcher skipping a hidden path.
+        keys_dir = os.path.join(self._tmpdir, "keys")
+        os.makedirs(keys_dir, exist_ok=True)
+        with open(os.path.join(keys_dir, "id_rsa"), "w",
+                  encoding="utf-8") as f:
+            f.write("SEARCHTOKEN PLACEHOLDER PRIVATE KEY\n")
+
+        raw = search_tool(
+            pattern="SEARCHTOKEN",
+            path=self._tmpdir,
+            task_id="search-omit-creds",
+        )
+        out = json.loads(raw.split("\n\n[Hint:", 1)[0])
+
+        returned_paths = {
+            m["path"] for m in out.get("matches", [])
+        } | set(out.get("files", []))
+
+        # The ordinary file is present; id_rsa is filtered out.
+        self.assertTrue(
+            any("notes.txt" in p for p in returned_paths),
+            f"ordinary file should be in results: {returned_paths}",
+        )
+        self.assertFalse(
+            any("id_rsa" in p for p in returned_paths),
+            f"id_rsa must be omitted from results: {returned_paths}",
+        )
+        # The credential payload must not appear anywhere in the response.
+        self.assertNotIn("PLACEHOLDER PRIVATE KEY", raw)
+        # The impl sets an _omitted flag when it drops results.
+        self.assertIn("_omitted", out)
+        self.assertIn("omitted", out["_omitted"])
+
+
 if __name__ == "__main__":
     unittest.main()

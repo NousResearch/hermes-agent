@@ -59,7 +59,11 @@ class TestNormalizeVisionProvider:
 
     def test_custom_colon_named_provider_preserved(self):
         from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("custom:beans") == "beans"
+        assert _normalize_vision_provider("custom:beans") == "custom:beans"
+
+    def test_custom_colon_named_provider_does_not_hit_builtin_alias(self):
+        from agent.auxiliary_client import _normalize_vision_provider
+        assert _normalize_vision_provider("custom:moonshot") == "custom:moonshot"
 
     def test_codex_alias_still_works(self):
         from agent.auxiliary_client import _normalize_vision_provider

@@ -3235,8 +3235,8 @@ SELECT pg_catalog.jsonb_build_object(
         pg_catalog.convert_to(acl_projection.identity::text, 'UTF8')), 'hex'),
     'index_identity_sha256', pg_catalog.encode(pg_catalog.sha256(
         pg_catalog.convert_to(index_projection.identity::text, 'UTF8')), 'hex'),
-    'observed_at_unix', pg_catalog.floor(pg_catalog.extract(
-        epoch FROM pg_catalog.clock_timestamp()))::bigint
+    'observed_at_unix', pg_catalog.floor(pg_catalog.date_part(
+        'epoch', pg_catalog.clock_timestamp()))::bigint
 )::text
 FROM content CROSS JOIN relation_projection CROSS JOIN acl_projection
 CROSS JOIN index_projection CROSS JOIN cutoffs;

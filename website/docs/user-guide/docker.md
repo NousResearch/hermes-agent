@@ -525,6 +525,34 @@ Each profile created with `hermes profile create <name>` automatically gets an s
 
 `hermes status` inside the container reports `Manager: s6 (container supervisor)`. Use `/command/s6-svstat /run/service/gateway-<name>` for the raw supervisor view (note `/command/` is on PATH for supervision-tree processes only; pass the absolute path when calling from `docker exec`).
 
+## Image variants
+
+Hermes publishes two Docker image variants:
+
+| Image | Purpose |
+|------|----------|
+| `nousresearch/hermes-agent:latest` | Lean/default image. This is the current official image and stays focused on the core Hermes runtime. |
+| `nousresearch/hermes-agent:complete-latest` | Lean image plus extra global npm CLIs and lightweight bundled-skill Python packages. |
+
+The `complete` image adds these extra packages on top of `latest`:
+
+| Type | Packages |
+|------|----------|
+| npm | `claude`, `gemini`, `codex`, `opencode` |
+| Python | `pygount`, `jupyterlab`, `youtube-transcript-api`, `markitdown[pptx]`, `Pillow`, `python-docx`, `pyfiglet` |
+
+The `complete` image is intentionally narrow. It does **not** add:
+
+- extra system packages beyond the current image
+- Docker / GitHub / vendor binary additions
+- heavy ML, OCR, or LaTeX stacks
+- `pptxgenjs` in this pass, because the bundled PowerPoint skill documents it as a Node module workflow rather than a clear CLI requirement
+
+Release tags follow the same split:
+
+- `nousresearch/hermes-agent:latest` and `nousresearch/hermes-agent:<tag>` for the lean image
+- `nousresearch/hermes-agent:complete-latest` and `nousresearch/hermes-agent:complete-<tag>` for the constrained complete image
+
 ## Upgrading
 
 Pull the latest image and recreate the container. Your data directory is

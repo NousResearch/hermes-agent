@@ -15,7 +15,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 import asyncio
 import signal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -81,6 +81,25 @@ def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
     mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
 
     return MagicMock(return_value=_AsyncCM(mock_session))
+
+
+def _mock_http_response(*, status=200, json_data=None):
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.json = AsyncMock(return_value=json_data or {})
+    return mock_resp
+
+
+def _mock_http_session(routes):
+    session = MagicMock()
+
+    def get(url, **kwargs):
+        if url not in routes:
+            raise AssertionError(f"Unexpected GET {url}")
+        return _AsyncCM(routes[url])
+
+    session.get = MagicMock(side_effect=get)
+    return session
 
 
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
@@ -329,6 +348,38 @@ class TestBridgeRuntimeFailure:
         fatal_handler.assert_awaited_once()
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_marks_retryable_fatal_when_bridge_health_is_degraded(self):
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = _mock_http_session({
+            "http://127.0.0.1:19876/health": _mock_http_response(
+                json_data={
+                    "status": "degraded",
+                    "connectionState": "connected",
+                    "disconnectCount60s": 6,
+                    "disconnectWindowSeconds": 60,
+                }
+            ),
+        })
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        adapter._bridge_process = mock_proc
+
+        await adapter._poll_messages()
+
+        assert adapter.fatal_error_code == "whatsapp_bridge_degraded"
+        assert adapter.fatal_error_retryable is True
+        assert "disconnects=6/60s" in adapter.fatal_error_message
+        fatal_handler.assert_awaited_once()
+        adapter._http_session.get.assert_called_once_with(
+            "http://127.0.0.1:19876/health",
+            timeout=ANY,
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("returncode", [0, -2, -15])

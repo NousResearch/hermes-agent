@@ -378,6 +378,42 @@ function rememberSentId(id) {
 
 let sock = null;
 let connectionState = 'disconnected';
+let disconnectTimestamps = [];
+
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const HEALTH_FLAP_WINDOW_MS = parsePositiveInt(
+  process.env.WHATSAPP_HEALTH_FLAP_WINDOW_MS,
+  60_000,
+);
+const HEALTH_FLAP_THRESHOLD = parsePositiveInt(
+  process.env.WHATSAPP_HEALTH_FLAP_THRESHOLD,
+  5,
+);
+
+function pruneRecentDisconnects(now = Date.now()) {
+  disconnectTimestamps = disconnectTimestamps.filter(
+    (timestamp) => now - timestamp <= HEALTH_FLAP_WINDOW_MS,
+  );
+  return disconnectTimestamps;
+}
+
+function buildHealthSnapshot(now = Date.now()) {
+  const recentDisconnects = pruneRecentDisconnects(now).length;
+  const isDegraded = recentDisconnects > HEALTH_FLAP_THRESHOLD;
+  return {
+    status: isDegraded ? 'degraded' : connectionState,
+    connectionState,
+    disconnectCount60s: recentDisconnects,
+    disconnectWindowSeconds: Math.floor(HEALTH_FLAP_WINDOW_MS / 1000),
+    queueLength: messageQueue.length,
+    uptime: process.uptime(),
+    scriptHash: SCRIPT_HASH,
+  };
+}
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -425,6 +461,8 @@ async function startSocket() {
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       connectionState = 'disconnected';
+      disconnectTimestamps.push(Date.now());
+      pruneRecentDisconnects();
 
       if (reason === DisconnectReason.loggedOut) {
         emitPairEvent({ event: 'error', error: 'logged_out', reason });
@@ -1069,12 +1107,7 @@ app.get('/chat/:id', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({
-    status: connectionState,
-    queueLength: messageQueue.length,
-    uptime: process.uptime(),
-    scriptHash: SCRIPT_HASH,
-  });
+  res.json(buildHealthSnapshot());
 });
 
 // Start

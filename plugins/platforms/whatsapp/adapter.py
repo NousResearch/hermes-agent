@@ -779,6 +779,52 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             await self._notify_fatal_error()
         return self.fatal_error_message or message
 
+    async def _check_bridge_health_degraded(self) -> Optional[str]:
+        """Surface sustained bridge flapping as a retryable fatal error."""
+        if not self._http_session:
+            return None
+
+        import aiohttp
+
+        try:
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/health",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+
+        if data.get("status") != "degraded":
+            return None
+
+        disconnect_count = data.get("disconnectCount60s")
+        disconnect_window = data.get("disconnectWindowSeconds")
+        connection_state = data.get("connectionState", "unknown")
+        detail_bits = [f"connectionState={connection_state}"]
+        if disconnect_count is not None:
+            if disconnect_window is not None:
+                detail_bits.append(
+                    f"disconnects={disconnect_count}/{disconnect_window}s"
+                )
+            else:
+                detail_bits.append(f"disconnects={disconnect_count}")
+        message = (
+            "WhatsApp bridge health is degraded after repeated reconnects "
+            f"({', '.join(detail_bits)})."
+        )
+        if not self.has_fatal_error:
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error(
+                "whatsapp_bridge_degraded", message, retryable=True
+            )
+            await self._notify_fatal_error()
+        return self.fatal_error_message or message
+
     async def disconnect(self) -> None:
         """Stop the WhatsApp bridge and clean up any orphaned processes."""
         # Flip the shutdown flag BEFORE signalling the child so the exit-check
@@ -1240,6 +1286,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_exit = await self._check_managed_bridge_exit()
             if bridge_exit:
                 print(f"[{self.name}] {bridge_exit}")
+                break
+            bridge_health = await self._check_bridge_health_degraded()
+            if bridge_health:
+                print(f"[{self.name}] {bridge_health}")
                 break
             try:
                 async with self._http_session.get(

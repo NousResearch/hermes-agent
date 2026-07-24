@@ -359,6 +359,74 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -d '{"input": "what files changed in the last hour?"}'
 ```
 
+## Native voice turn stream
+
+`POST /api/voice/turns/stream` is a **text-only** SSE endpoint for voice UIs
+(for example HAL Voice). Hermes owns turn reasoning and session continuity;
+the client remains responsible for browser audio capture, STT, TTS, and
+playback. Audio synthesis is not implemented in this first increment —
+`features.native_voice_audio` stays `false` and completed events carry
+`"audio": null`.
+
+`/v1/capabilities` advertises:
+
+- `features.native_voice_turn_streaming: true`
+- `features.native_voice_audio: false`
+- `endpoints.voice_turn_stream` → `POST /api/voice/turns/stream`
+
+### Request body
+
+```json
+{
+  "text": "What's the weather?",
+  "session_id": "voice-session-1",
+  "input_mode": "typed_stream",
+  "synthesize_audio": false,
+  "voice": {
+    "assistant": "HAL",
+    "spoken": true,
+    "tts_friendly": true,
+    "default_units": "imperial",
+    "default_timezone": "America/Denver"
+  },
+  "metadata": { "channel": "web_voice" }
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `text` | yes | Non-blank user utterance (already transcribed or typed) |
+| `session_id` | no | When omitted, Hermes mints `voice_<uuid>`. When provided, the ID is validated like Sessions API create (`control chars`, unsafe path shapes, max 256 chars) |
+| `input_mode` | no | Defaults to `typed_stream`; included in the ephemeral voice system prompt |
+| `synthesize_audio` | no | Accepted and echoed in `voice.started`; ignored for audio output until `native_voice_audio` is true |
+| `voice` | no | Assistant name / spoken-style defaults for the ephemeral system prompt |
+| `metadata` | no | Free-form key/value pairs copied into the voice system prompt |
+
+Optional `X-Hermes-Session-Key` is accepted (same rules as chat/completions) for long-term memory scoping.
+
+### SSE events
+
+The response is `text/event-stream` with keepalives and these event names:
+
+| Event | Purpose |
+|-------|---------|
+| `voice.started` | Turn accepted (`message_id`, `input_mode`, `synthesize_audio`) |
+| `voice.text.delta` | Token/text delta (`message_id`, `delta`) |
+| `voice.text.completed` | Final assistant text for the turn |
+| `voice.completed` | Terminal success envelope (`completed`, `audio: null`, `usage`) |
+| `voice.error` | Failure; `message` is redacted via the same API error redaction path as session chat streams |
+| `done` | Stream finished (always last payload event before close) |
+
+Every event payload includes `session_id`, `run_id`, monotonic `seq`, and `ts`.
+The response also echoes `X-Hermes-Session-Id` (and `X-Hermes-Session-Key` when supplied).
+
+```bash
+curl -N -X POST http://localhost:8642/api/voice/turns/stream \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Say hello.","session_id":"voice-session-1"}'
+```
+
 ## Skills and toolsets discovery
 
 `GET /v1/skills` and `GET /v1/toolsets` let external clients enumerate the agent's capabilities deterministically over REST instead of asking the model. Both are read-only and gated by `API_SERVER_KEY`.

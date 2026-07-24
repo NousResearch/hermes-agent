@@ -13,7 +13,9 @@ transient network failures:
 """
 
 import asyncio
+import gc
 import time
+import weakref
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -791,3 +793,184 @@ async def test_disconnect_closes_rest_session_when_cancelled_during_ws_close():
     await _await_tracked_teardown(tracked)
     assert rest_close_completed.is_set(), "the REST session close must have completed"
     assert adapter._rest_session is None
+
+
+@pytest.mark.asyncio
+async def test_bounded_close_abandons_cancellation_suppressing_close(monkeypatch):
+    """A close() that catches its own cancellation and keeps polling a stop
+    signal (rather than actually finishing) must not be AWAITED to
+    completion by _bounded_close.
+
+    Pre-fix, `asyncio.wait_for(closeable.close(), timeout=_DRAIN_TIMEOUT)`
+    cancels close() on timeout and then WAITS for that cancellation to
+    actually finish -- so a close() that swallows the cancellation and
+    keeps running left `_bounded_close` pending until close() eventually
+    decides to stop on its own, which is exactly the boundedness violation
+    the bounded-abandon mechanism removes (#67470 Sol xhigh mechanism
+    review, gap 1)."""
+    adapter = _make_adapter()
+    monkeypatch.setattr(ha_adapter, "_DRAIN_TIMEOUT", 0.05, raising=False)
+
+    stop = asyncio.Event()
+    close_truly_finished = asyncio.Event()
+
+    async def _suppresses_cancellation_until_stopped():
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=0.05)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                continue  # rude close(): swallows cancellation, keeps going
+        close_truly_finished.set()
+
+    closeable = MagicMock()
+    closeable.close = AsyncMock(side_effect=_suppresses_cancellation_until_stopped)
+
+    # Run _bounded_close as its OWN task (mirrors the bounded-abandon
+    # mechanism itself) and observe it with asyncio.wait(timeout=...)
+    # rather than wrapping the bare coroutine in another wait_for.
+    # asyncio.wait_for cancels the CURRENT task on timeout, not a separate
+    # one, for a bare coroutine argument -- nesting it around another
+    # wait_for(bare coroutine) that itself swallows cancellation forever
+    # (the exact defect under test) would make the outer wait_for's own
+    # cancellation land in that same swallow loop too and never escape,
+    # hanging the TEST instead of failing it. asyncio.wait() on an actual
+    # Task has no such trap: it only observes, never cancels.
+    bounded_close_task = asyncio.ensure_future(
+        adapter._bounded_close(closeable, "suppressing")
+    )
+    try:
+        done, pending = await asyncio.wait({bounded_close_task}, timeout=1)
+
+        assert not pending, (
+            "_bounded_close must return on its own within a bounded window "
+            "instead of hanging behind a cancellation-suppressing close "
+            "(pre-fix: asyncio.wait_for waits for the close's actual "
+            "completion after cancelling it, which a suppressing close "
+            "never delivers)"
+        )
+        assert not close_truly_finished.is_set(), (
+            "_bounded_close must abandon a cancellation-suppressing close "
+            "after _DRAIN_TIMEOUT instead of waiting for it to actually "
+            "finish"
+        )
+
+        # Corroborate durable retention alongside boundedness (Sol xhigh
+        # mechanism re-review: the first version of this test "does not
+        # prove module-level retention because it never forces GC after
+        # abandonment"; the second version kept a strong local reference
+        # to the task throughout, so surviving gc.collect() proved
+        # nothing about the registry -- it would have survived from the
+        # local alone). Find the abandoned inner close task (separate
+        # from bounded_close_task, the outer _bounded_close() call, which
+        # already completed above) in the module registry, take only a
+        # WEAK reference, drop every strong local including the list
+        # itself, force a collection, and confirm the weakref is still
+        # alive. NOTE (Sol xhigh follow-up, negative-control probe): this
+        # is corroborating evidence, not an isolated proof that
+        # _TEARDOWN_REGISTRY specifically is what kept it alive -- a task
+        # that is still actively scheduled (a live callback pending on
+        # its current await) can also survive collection via asyncio's
+        # own internal bookkeeping, independent of any registry. The
+        # DEFINITIVE proof of the retention mechanism is the direct `in
+        # _TEARDOWN_REGISTRY` membership check in
+        # test_abandoned_reconnect_does_not_publish_after_disconnect
+        # below; this assertion is a secondary sanity check, not the
+        # sole evidence.
+        abandoned = [t for t in ha_adapter._TEARDOWN_REGISTRY if not t.done()]
+        assert abandoned, "the abandoned close task must be rooted in the module registry"
+        abandoned_ref = weakref.ref(abandoned[0])
+        del abandoned
+        gc.collect()
+        still_alive = abandoned_ref()
+        assert still_alive is not None, (
+            "a forced gc.collect() destroyed the abandoned close task after "
+            "every local strong reference was dropped"
+        )
+        assert not still_alive.done(), (
+            "a forced gc.collect() must not destroy an abandoned close "
+            "that is still rooted in _TEARDOWN_REGISTRY"
+        )
+    finally:
+        # Test hygiene: let the abandoned close actually finish instead of
+        # leaving a zombie task behind -- unconditionally, even if an
+        # assertion above failed (on pre-fix code the close is genuinely
+        # still running at that point; without this in `finally`, the
+        # loop's own teardown would gather it, and it never finishes on
+        # its own since `stop` was never set, hanging the WHOLE suite
+        # instead of just failing this one test).
+        stop.set()
+        await asyncio.wait_for(close_truly_finished.wait(), timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_ws_session_close_runs_when_ws_close_raises_cancellederror():
+    """A close() that raises CancelledError ON ITS OWN -- not from an
+    external task.cancel() -- must not abort the surrounding cleanup
+    sequence: the session close must still run after it (#67470 Sol xhigh
+    mechanism review, gap 3). Pre-fix, `_bounded_close` awaited
+    `closeable.close()` inline inside `_close_both()`; a self-raised
+    CancelledError propagated straight out of `_close_both()`, skipping
+    the session close entirely."""
+    adapter = _make_adapter()
+
+    ws = MagicMock()
+    ws.closed = False
+
+    async def _raises_cancelled_from_close():
+        raise asyncio.CancelledError("close() itself raises, not externally cancelled")
+
+    ws.close = AsyncMock(side_effect=_raises_cancelled_from_close)
+
+    session = MagicMock()
+    session.closed = False
+    session.close = AsyncMock()
+
+    adapter._ws = ws
+    adapter._session = session
+
+    await asyncio.wait_for(adapter._cleanup_ws(), timeout=2)
+
+    session.close.assert_awaited_once()
+    assert adapter._ws is None
+    assert adapter._session is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_rest_close_runs_when_ws_close_raises_cancellederror():
+    """The same close-originated-CancelledError protection must hold across
+    the whole disconnect() sequence, not just _cleanup_ws()'s own two
+    closes: the REST session close must still run after a WS close that
+    raises CancelledError on its own (#67470 Sol xhigh mechanism review,
+    gap 3)."""
+    adapter = _make_adapter()
+    adapter._running = True
+
+    ws = MagicMock()
+    ws.closed = False
+
+    async def _raises_cancelled_from_close():
+        raise asyncio.CancelledError("close() itself raises, not externally cancelled")
+
+    ws.close = AsyncMock(side_effect=_raises_cancelled_from_close)
+    adapter._ws = ws
+    adapter._session = None
+
+    rest_session = MagicMock()
+    rest_session.closed = False
+    rest_session.close = AsyncMock()
+    adapter._rest_session = rest_session
+
+    async def _noop():
+        return
+
+    adapter._listen_task = asyncio.ensure_future(_noop())
+    adapter._watchdog_task = asyncio.ensure_future(_noop())
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(adapter.disconnect(), timeout=2)
+
+    rest_session.close.assert_awaited_once()
+    assert adapter._rest_session is None
+

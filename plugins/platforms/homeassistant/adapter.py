@@ -61,6 +61,113 @@ _WATCHDOG_INTERVAL = 60.0
 _PING_GRACE = 10.0
 
 
+# Durable, module-level (NOT adapter-instance-level) retention for in-flight
+# teardown tasks. An adapter-local set is collected right along with the
+# adapter itself once nothing else roots it -- e.g. a platform reload
+# dropping the old adapter object while one of its closes is still running
+# detached in the background silently destroys that task mid-flight (probe:
+# GC removed both the adapter and the tracked task's weak references and
+# emitted "Task was destroyed but it is pending!"). Rooting tasks here
+# instead means a close keeps running to completion -- or forever, if it's
+# fundamentally broken, see the IRREDUCIBLE RESIDUAL note in
+# _run_bounded_close below -- even after the adapter that started it is
+# gone. Entries remove themselves via a done-callback once the task
+# actually finishes. Refs: NousResearch/hermes-agent#67470 (Sol xhigh
+# mechanism review).
+_TEARDOWN_REGISTRY: Set["asyncio.Task"] = set()
+
+
+def _retain(task: "asyncio.Task") -> "asyncio.Task":
+    """Root *task* at module scope so it outlives whatever created it."""
+    _TEARDOWN_REGISTRY.add(task)
+    task.add_done_callback(_TEARDOWN_REGISTRY.discard)
+    return task
+
+
+async def _close_quietly(closeable: Any, label: str, context: str) -> None:
+    """Run ``closeable.close()`` to completion, swallowing every outcome.
+
+    Including a close-originated ``CancelledError`` (#67470 Sol xhigh
+    mechanism review): a ``close()`` that raises ``CancelledError`` on its
+    own -- not from an external ``task.cancel()`` -- must not abort
+    whatever cleanup sequence is waiting on it (previously it aborted
+    ``_close_both()``/``_full_teardown()`` and skipped every close after
+    it). Because this always runs as its own task, that exception only
+    marks THIS task done; it never propagates into the caller's control
+    flow the way it did when ``close()`` was awaited inline.
+    """
+    try:
+        await closeable.close()
+    except asyncio.CancelledError:
+        logger.debug(
+            "[%s] %s close raised CancelledError from within close() "
+            "itself (non-fatal, swallowed; best-effort teardown, #67470)",
+            context, label,
+        )
+    except Exception as e:
+        logger.debug("[%s] %s close failed (non-fatal): %s", context, label, e)
+
+
+async def _run_bounded_close(closeable: Any, label: str, *, context: str) -> None:
+    """Bounded-abandon close of *closeable*: bounds the CALLER's wait to
+    ``_DRAIN_TIMEOUT`` without ever waiting for a cancellation-resistant
+    close to finish.
+
+    Replaces the previous ``asyncio.wait_for(closeable.close(),
+    timeout=...)`` (#67470 review, egilewski): ``wait_for``'s timeout path
+    cancels the awaited coroutine and then WAITS for that cancellation to
+    actually complete -- so a ``close()`` that catches/suppresses
+    ``CancelledError`` and keeps running its own cleanup left ``wait_for``
+    (and everything downstream of it) pending indefinitely (probe:
+    ``_DRAIN_TIMEOUT=0.05``, still pending after 0.20s -- confirmed by Sol
+    xhigh's exhaustive mechanism review, #67470).
+
+    The fix creates the close as its OWN task before any await (so no
+    cancellation can land before the task exists), retains it durably
+    (``_retain``), and observes it with ``asyncio.wait(timeout=...)``
+    instead. ``asyncio.wait`` just watches with a deadline -- on timeout it
+    returns without touching the task, so on deadline we simply return: the
+    close keeps running, detached, retained so it isn't garbage collected
+    mid-flight (rather than cancelled, which could destroy its only
+    remaining chance to finish). A cancellation landing on the CALLER of
+    this function propagates normally out of the ``asyncio.wait`` above,
+    but likewise never reaches the inner close task -- ``asyncio.wait``
+    does not cancel its members on the waiter's own cancellation, which is
+    exactly the "abandon, don't wait" behavior this mechanism needs.
+
+    IRREDUCIBLE RESIDUAL: this bounds the CALLER's progress, not physical
+    closure -- it does NOT prove the resource was ever actually released.
+    That is true even for a single, ordinary ``close()`` failure (an
+    exception, a ``TimeoutError``, a self-raised ``CancelledError``): only
+    one close attempt is ever made per call site, so any failure on that
+    one attempt already means physical closure is unproven, not just the
+    hangs-or-raises-forever case (Sol xhigh mechanism re-review, #67470).
+    No generic wrapper can distinguish "close() failed but the resource is
+    actually fine" from "close() failed and it's still open" -- best-effort
+    abandonment/swallowing is the correct behavior here, not a workaround.
+    Two more properties of the SAME residual, not new gaps: (1) an
+    event-loop shutdown that force-cancels every remaining task
+    (``asyncio.run()``'s own teardown) can still block on a
+    cancellation-resistant orphan, or skip creating a later close's task
+    entirely if it cancels an outer ``_close_both()``/``_full_teardown()``
+    sequence before that later close is even reached -- both are
+    properties of the runner's shutdown, not of this adapter, and no
+    per-close mechanism here can change them; (2) this function cannot
+    tell a close-originated ``CancelledError`` (see ``_close_quietly``)
+    apart from one delivered by an external shutdown cancelling this exact
+    task, so its log message is a best guess, not a certainty.
+    """
+    task = _retain(asyncio.create_task(_close_quietly(closeable, label, context)))
+    _, pending = await asyncio.wait({task}, timeout=_DRAIN_TIMEOUT)
+    if pending:
+        logger.warning(
+            "[%s] %s close did not finish within %.0fs; abandoning it "
+            "(best-effort teardown, #67470)",
+            context, label, _DRAIN_TIMEOUT,
+        )
+
+
+
 def check_ha_requirements() -> bool:
     """Check if Home Assistant runtime dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -271,22 +378,19 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         return True
 
     async def _bounded_close(self, closeable: Any, label: str) -> None:
-        """Await ``closeable.close()`` bounded by ``_DRAIN_TIMEOUT``.
+        """Bound the caller's wait on ``closeable.close()`` to ``_DRAIN_TIMEOUT``
+        via the bounded-abandon primitive.
 
-        A wedged CLOSE-WAIT socket can make ``close()`` hang forever, which
-        would otherwise stall the reconnect ladder or ``disconnect()``
-        indefinitely. Timeout and any other close-time error are swallowed —
-        teardown is best-effort by design. Refs: NousResearch/hermes-agent#67470
+        The previous ``asyncio.wait_for(closeable.close(), ...)`` cancels
+        close() on timeout and then WAITS for that cancellation to finish, so a
+        close() that suppresses its own cancellation left this pending
+        indefinitely (probe: still pending after 0.20s at ``_DRAIN_TIMEOUT=0.05``;
+        #67470, egilewski). ``_run_bounded_close`` runs the close as its own
+        retained task and only observes it with ``asyncio.wait(timeout=...)``,
+        abandoning it on deadline. See ``_run_bounded_close`` for the mechanism
+        and its documented residual.
         """
-        try:
-            await asyncio.wait_for(closeable.close(), timeout=_DRAIN_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "[%s] %s close timed out after %.0fs; abandoning it",
-                self.name, label, _DRAIN_TIMEOUT,
-            )
-        except Exception as e:
-            logger.debug("[%s] %s close failed (non-fatal): %s", self.name, label, e)
+        await _run_bounded_close(closeable, label, context=self.name)
 
     def _track_teardown(self, coro: Any) -> "asyncio.Task":
         """Wrap *coro* in a task retained in ``self._teardown_tasks``.

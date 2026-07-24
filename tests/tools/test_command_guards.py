@@ -430,6 +430,9 @@ class TestGatewayApprovalAllowPermanent:
         payload = self._capture_gateway_payload("rm -rf /important", "gw-allow-perm")
         assert payload["command"] == "rm -rf /important"
         assert payload["allow_permanent"] is True
+        assert payload["approval_id"]
+        from tools.approval import _get_approval_timeout
+        assert payload["approval_timeout_seconds"] == _get_approval_timeout()
 
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",

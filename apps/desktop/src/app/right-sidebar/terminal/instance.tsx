@@ -48,7 +48,9 @@ export function TerminalInstance({
   return (
     <div
       className={cn(INSTANCE_CLASS, active ? 'visible' : 'invisible pointer-events-none')}
-      // Focus-scope marker so isFocusWithin('[data-terminal]') can route ⌘W here.
+      // The shared marker routes close-tab commands here. The interactive
+      // marker leaves Ctrl+W to the PTY as readline word erase.
+      data-interactive-terminal=""
       data-terminal=""
     >
       {status === 'starting' && (
@@ -103,8 +105,8 @@ export function AgentTerminalInstance({ active, id, procId }: AgentTerminalInsta
   return (
     <div
       className={cn(INSTANCE_CLASS, active ? 'visible' : 'invisible pointer-events-none')}
-      // Same focus-scope marker as the user terminal so isFocusWithin('[data-terminal]')
-      // routes ⌘W here and closes the focused agent tab (not a preview).
+      // No interactive marker: this mirror has no PTY input, so close-tab
+      // commands still close the focused agent tab.
       data-terminal=""
     >
       <div

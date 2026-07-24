@@ -39,6 +39,7 @@ import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
+import { createClickOnlyWindowCloseItem, shouldInterceptCloseTabShortcut } from './close-tab-shortcut'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   authModeFromStatus,
@@ -4995,7 +4996,7 @@ function buildApplicationMenu() {
     label: 'Window',
     submenu: IS_MAC
       ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      : [{ role: 'minimize' }, createClickOnlyWindowCloseItem()]
   })
   template.push({
     label: 'Help',
@@ -5041,13 +5042,9 @@ function installDevToolsShortcut(window) {
 
 function installPreviewShortcut(window) {
   window.webContents.on('before-input-event', (event, input) => {
-    const key = String(input.key || '').toLowerCase()
-    const isCloseTabShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
-
-    // Always claim ⌘W here (the File>Close item deliberately has no
-    // accelerator, so nothing else does). The renderer decides tab-vs-window
-    // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    if (!isCloseTabShortcut) {
+    // macOS needs main-process routing because its native menu owns Cmd+W.
+    // Win/Linux Ctrl+W must reach the renderer and the focused terminal.
+    if (!shouldInterceptCloseTabShortcut(input, IS_MAC)) {
       return
     }
 

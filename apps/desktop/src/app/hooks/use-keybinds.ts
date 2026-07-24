@@ -6,7 +6,7 @@ import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/stor
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { activateTreeTabSlot, cycleTreeTabInFocusedZone, layoutHasRootSide } from '@/components/pane-shell/tree/store'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
-import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { comboAllowedInInput, comboFromEvent, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
@@ -271,6 +271,20 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         event.preventDefault()
         requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
 
+        return
+      }
+
+      // An interactive terminal owns plain Ctrl+W as readline word erase.
+      // Agent terminals and rebound close-tab chords keep the close action.
+      if (
+        actionId === 'view.closeTab' &&
+        event.code === 'KeyW' &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        isFocusWithin('[data-interactive-terminal]')
+      ) {
         return
       }
 

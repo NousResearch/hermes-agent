@@ -354,8 +354,9 @@ class TestSlackNativeSlashes:
         slashes = slack_native_slashes()
         names = {n for n, _d, _h in slashes}
         # The pinned priority aliases are guaranteed to survive the clamp.
+        # "bg" was unpinned from _SLACK_PRIORITY_ALIASES when /cron joined
+        # gateway commands; it stays reachable via /hermes bg or /background.
         assert "btw" in names
-        assert "bg" in names
         # And at least one alias is surfaced as an alias entry (description
         # carries the "Alias for /…" marker), proving the alias pass ran.
         assert any(d.startswith("Alias for /") for _n, d, _h in slashes)

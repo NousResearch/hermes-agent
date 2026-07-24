@@ -1490,19 +1490,20 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
-    job = resolve_job_ref(job_id)
-    if not job:
-        return None
-    return update_job(
-        job["id"],
-        {
-            "enabled": True,
-            "state": "scheduled",
-            "paused_at": None,
-            "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
-        },
-    )
+    with _jobs_file_lock:
+        job = resolve_job_ref(job_id)
+        if not job:
+            return None
+        return update_job(
+            job["id"],
+            {
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "next_run_at": _hermes_now().isoformat(),
+            },
+        )
 
 
 def remove_job(job_id: str) -> bool:

@@ -1736,6 +1736,92 @@ class TestSaveJobOutput:
         """Absolute paths as job IDs must fail closed."""
         with pytest.raises(ValueError, match="output path"):
             save_job_output(str(tmp_cron_dir / "outside"), "# Results")
+
+
+class TestTriggerJobLocking:
+    """trigger_job must hold _jobs_file_lock around its read-modify-write.
+
+    Without the lock a gateway-thread trigger racing a scheduler tick can
+    be silently overwritten (load→modify→save clobber).
+    """
+
+    def test_trigger_job_acquires_jobs_file_lock(self, tmp_cron_dir, monkeypatch):
+        """Assert _jobs_file_lock is held during trigger_job's write cycle."""
+        import threading
+        import cron.jobs as jobs_mod
+        from cron.jobs import trigger_job, create_job
+
+        acquired = []
+
+        real_lock = threading.Lock()
+
+        class SpyLock:
+            def acquire(self, *args, **kwargs):
+                return real_lock.acquire(*args, **kwargs)
+
+            def release(self):
+                return real_lock.release()
+
+            def __enter__(self):
+                acquired.append(True)
+                return real_lock.__enter__()
+
+            def __exit__(self, *args):
+                return real_lock.__exit__(*args)
+
+        monkeypatch.setattr(jobs_mod, "_jobs_file_lock", SpyLock())
+
+        job = create_job(prompt="Lock test", schedule="every 1h")
+        result = trigger_job(job["id"])
+
+        assert result is not None, "trigger_job returned None — job not found"
+        assert acquired, (
+            "trigger_job did not acquire _jobs_file_lock around its "
+            "read-modify-write; concurrent scheduler ticks can overwrite it"
+        )
+
+    def test_trigger_job_concurrent_with_mark_job_run_no_clobber(self, tmp_cron_dir):
+        """Stress: concurrent trigger_job + mark_job_run must not clobber each other.
+
+        trigger_job sets state='scheduled'; mark_job_run sets last_status.
+        After both complete the job must reflect both writes.
+        """
+        import threading
+        from cron.jobs import trigger_job, create_job, mark_job_run, get_job
+
+        job_a = create_job(prompt="Job A", schedule="every 1h")
+        job_b = create_job(prompt="Job B", schedule="every 1h")
+
+        errors: list = []
+
+        def do_trigger():
+            try:
+                trigger_job(job_a["id"])
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        def do_mark():
+            try:
+                mark_job_run(job_b["id"], success=True)
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=do_trigger),
+            threading.Thread(target=do_mark),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Thread errors: {errors}"
+        a = get_job(job_a["id"])
+        b = get_job(job_b["id"])
+        assert a is not None, "Job A missing after trigger"
+        assert b is not None, "Job B missing after mark_job_run"
+        assert a["state"] == "scheduled", f"Job A state wrong: {a['state']}"
+        assert b["last_status"] == "ok", f"Job B last_status wrong: {b['last_status']}"
         assert not (tmp_cron_dir / "outside").exists()
 
 

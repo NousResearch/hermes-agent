@@ -85,6 +85,37 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
+def _resolve_cron_query(jobs, query):
+    """Resolve a /cron run query against job records.
+
+    Returns ("match", job), ("ambiguous", [jobs]), or ("none", None).
+    Stages, each requiring uniqueness: exact ID, ID prefix, then
+    case-insensitive name substring.
+
+    Args:
+        jobs: iterable of job dicts with at least "id" and "name" keys.
+        query: user-supplied string; None and whitespace-only both
+            return ("none", None).
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return ("none", None)
+    exact = [j for j in jobs if (j.get("id") or "").lower() == q]
+    if exact:
+        return ("match", exact[0])
+    prefix = [j for j in jobs if (j.get("id") or "").lower().startswith(q)]
+    if len(prefix) == 1:
+        return ("match", prefix[0])
+    if len(prefix) > 1:
+        return ("ambiguous", prefix)
+    sub = [j for j in jobs if q in (j.get("name") or "").lower()]
+    if len(sub) == 1:
+        return ("match", sub[0])
+    if len(sub) > 1:
+        return ("ambiguous", sub)
+    return ("none", None)
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -1431,6 +1462,93 @@ class GatewaySlashCommandsMixin:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    async def _handle_cron_command(self, event: MessageEvent) -> str:
+        """Handle /cron — list this profile's jobs or trigger one now.
+
+        ``/cron list`` shows id, name, schedule, next run, and state.
+        ``/cron run <query>`` resolves <query> (ID, ID prefix, or name
+        substring) and schedules the job for the next scheduler tick
+        (≤60s); delivery then flows through the live adapters exactly
+        like a scheduled run (threaded on Slack).
+        """
+        import cron.jobs as _cron_jobs
+
+        usage = (
+            "Usage:\n"
+            "• `/cron list` — this profile's cron jobs\n"
+            "• `/cron run <job id or name>` — trigger a job now "
+            "(runs on next tick, ≤60s)"
+        )
+        raw = (event.get_command_args() or "").strip()
+        parts = raw.split(None, 1)
+        sub = parts[0].lower() if parts else ""
+
+        try:
+            if sub == "list":
+                jobs = await asyncio.to_thread(_cron_jobs.list_jobs, include_disabled=True)
+                if not jobs:
+                    return "No cron jobs on this profile."
+                jobs.sort(key=lambda j: j.get("next_run_at") or "~")
+                lines = ["**Cron jobs on this profile:**"]
+                for j in jobs:
+                    healthy = (
+                        j.get("enabled", True)
+                        and j.get("state") == "scheduled"
+                    )
+                    state = "" if healthy else f" — {j.get('state', 'disabled')}"
+                    lines.append(
+                        f"• **{j.get('name', '(unnamed)')}** (`{j.get('id')}`)"
+                        f"{state}\n"
+                        f"   {j.get('schedule_display', '?')} · next "
+                        f"{j.get('next_run_at', '?')}"
+                    )
+                return "\n".join(lines)
+
+            if sub == "run":
+                query = parts[1].strip() if len(parts) > 1 else ""
+                if not query:
+                    return "Usage: `/cron run <job id or name>`"
+                jobs = await asyncio.to_thread(_cron_jobs.list_jobs, include_disabled=True)
+                status, payload = _resolve_cron_query(jobs, query)
+                if status == "none":
+                    return (
+                        f"No job matches `{query}` — try `/cron list`."
+                    )
+                if status == "ambiguous":
+                    lines = [
+                        f"`{query}` matches {len(payload)} jobs — "
+                        "narrow it down:"
+                    ]
+                    lines += [
+                        f"• {j.get('name', '(unnamed)')} (`{j.get('id')}`)"
+                        for j in payload
+                    ]
+                    return "\n".join(lines)
+                job = payload
+                prior_state = job.get("state", "scheduled")
+                prior_enabled = job.get("enabled", True)
+                if not prior_enabled or prior_state == "paused":
+                    note = " (was paused — re-enabled)"
+                elif prior_state not in ("scheduled", "running"):
+                    note = f" (was {prior_state} — re-scheduled)"
+                else:
+                    note = ""
+                updated = await asyncio.to_thread(_cron_jobs.trigger_job, job["id"])
+                if updated is None:
+                    return (
+                        f"Failed to trigger `{job['id']}` — job not "
+                        "found on re-read. Try `/cron list`."
+                    )
+                return (
+                    f"Triggered **{updated.get('name', job['id'])}** "
+                    f"(`{job['id']}`){note} — report should land "
+                    "in-channel within a minute."
+                )
+
+            return usage
+        except Exception as e:
+            return f"/cron error: {e}"
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.

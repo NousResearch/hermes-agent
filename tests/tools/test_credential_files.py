@@ -173,6 +173,71 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["host_path"] == str(skills_dir)
 
+    def test_mount_source_is_stable_across_calls(self, tmp_path):
+        """Regression for #53630: sanitized mount source must be stable.
+
+        Once Hermes has returned a sanitized mount source for a skills dir
+        that contains a symlink, every subsequent call must return the *same*
+        path — never a fresh temp directory.  Otherwise a long-lived Docker
+        container that was bind-mounted to the old source loses its mount
+        contents the moment Hermes refreshes the copy.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "legit.md").write_text("# real skill")
+        # Force the symlink-sanitized code path.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["host_path"]
+            second = get_skills_directory_mount()[0]["host_path"]
+            third = get_skills_directory_mount()[0]["host_path"]
+
+        # The mount source must be stable across all calls.
+        assert first == second == third
+        # And it must live under a stable hermes-relative path, never
+        # /var/folders or /tmp (which is what broke long-lived containers).
+        assert first.startswith(str(hermes_home))
+        assert "hermes-skills-safe-" not in first
+        # The directory itself must still exist on disk.
+        assert Path(first).is_dir()
+        # And the legitimate file must be present.
+        assert (Path(first) / "legit.md").is_file()
+
+    def test_mount_source_refreshes_in_place(self, tmp_path):
+        """Regression for #53630: contents must be refreshed in place.
+
+        Adding a new non-symlink file to the source skills dir must show up
+        in the sanitized copy on the next call — without the copy's path
+        changing and without any prior files being lost.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "old.md").write_text("old content")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["host_path"]
+            # Add a new file after the first call.
+            (skills_dir / "new.md").write_text("new content")
+            second = get_skills_directory_mount()[0]["host_path"]
+
+        # The path is stable.
+        assert first == second
+        safe_path = Path(first)
+        # Old content survives.
+        assert (safe_path / "old.md").read_text() == "old content"
+        # New content is present.
+        assert (safe_path / "new.md").read_text() == "new content"
+        # Symlink remains excluded.
+        assert not (safe_path / "evil_link").exists()
+
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):

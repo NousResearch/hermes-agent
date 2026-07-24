@@ -245,7 +245,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao",
+    "qqbot", "yuanbao", "simplex",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -267,6 +267,7 @@ _HOME_TARGET_ENV_VARS = {
     "qqbot": "QQBOT_HOME_CHANNEL",
     "whatsapp": "WHATSAPP_HOME_CHANNEL",
     "whatsapp_cloud": "WHATSAPP_CLOUD_HOME_CHANNEL",
+    "simplex": "SIMPLEX_HOME_CHANNEL",
 }
 
 # Legacy env var names kept for back-compat.  Each entry is the current

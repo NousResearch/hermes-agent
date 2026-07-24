@@ -44,9 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -111,6 +109,56 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _numeric_pending_id(value: str) -> Optional[int]:
+    if not value.isdecimal():
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
+
+
+def _highest_numeric_pending_file_id(d: Path) -> int:
+    highest = 0
+    if d.exists():
+        for p in d.glob("*.json"):
+            parsed = _numeric_pending_id(p.stem)
+            if parsed is not None:
+                highest = max(highest, parsed)
+    return highest
+
+
+def _write_pending_record(path: Path, contents: str) -> None:
+    try:
+        with path.open("x", encoding="utf-8") as f:
+            f.write(contents)
+    except FileExistsError:
+        raise
+    except Exception:
+        try:
+            path.unlink()
+        except Exception:
+            pass
+        raise
+
+
+def _build_pending_record(
+    pid: str,
+    subsystem: str,
+    payload: Dict[str, Any],
+    *,
+    summary: str,
+    origin: str,
+) -> Dict[str, Any]:
+    return {
+        "id": pid,
+        "subsystem": subsystem,
+        "action": payload.get("action", ""),
+        "summary": (summary or "").strip(),
+        "origin": origin or "foreground",
+        "created_at": time.time(),
+        "payload": payload,
+    }
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -129,23 +177,21 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     logs and still returns a record (the write is simply lost, which is the
     safe failure for an approval gate — nothing is silently committed).
     """
-    pid = uuid.uuid4().hex[:8]
-    record = {
-        "id": pid,
-        "subsystem": subsystem,
-        "action": payload.get("action", ""),
-        "summary": (summary or "").strip(),
-        "origin": origin or "foreground",
-        "created_at": time.time(),
-        "payload": payload,
-    }
+    record = _build_pending_record("1", subsystem, payload, summary=summary, origin=origin)
     try:
         d = _pending_dir(subsystem)
         d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{pid}.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        next_id = _highest_numeric_pending_file_id(d) + 1
+        while True:
+            pid = str(next_id)
+            record = _build_pending_record(pid, subsystem, payload, summary=summary, origin=origin)
+            path = d / f"{pid}.json"
+            body = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
+            try:
+                _write_pending_record(path, body)
+                break
+            except FileExistsError:
+                next_id = max(next_id + 1, _highest_numeric_pending_file_id(d) + 1)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record

@@ -81,7 +81,28 @@ class SubdirectoryHintTracker:
         """Check tool call arguments for new directories and load any hint files.
 
         Returns formatted hint text to append to the tool result, or None.
+
+        Never raises: hint discovery is a best-effort enrichment, and both
+        tool_executor call sites run it after the tool result has already
+        been computed — an exception escaping here aborts the entire agent
+        turn and loses that result (see the ``Path.expanduser()``
+        RuntimeError class of crashes). Any failure is logged and swallowed.
         """
+        try:
+            return self._check_tool_call(tool_name, tool_args)
+        except Exception:
+            logger.debug(
+                "Subdirectory hint discovery failed for tool %r; skipping",
+                tool_name,
+                exc_info=True,
+            )
+            return None
+
+    def _check_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> Optional[str]:
         dirs = self._extract_directories(tool_name, tool_args)
         if not dirs:
             return None

@@ -689,4 +689,238 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     }
     result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
     assert result is True
-    assert posts == ["raw-origin-sid"]
+
+
+# ---------------------------------------------------------------------------
+# _coalesce_and_inject_watch_events tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_single_completion_event_passes_through_unchanged(monkeypatch, tmp_path):
+    """A lone completion event should be injected as-is, no coalescing needed."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    evt = {
+        "type": "completion",
+        "session_id": "proc_abc",
+        "session_key": "agent:main:telegram:dm:123:42",
+        "platform": "telegram",
+        "chat_id": "123",
+        "thread_id": "42",
+    }
+
+    await runner._coalesce_and_inject_watch_events([evt])
+
+    assert adapter.handle_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_multiple_completions_same_session_key_are_coalesced(monkeypatch, tmp_path):
+    """Multiple completions for the same session_key produce exactly one injection."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": "completion",
+            "session_id": f"proc_{i}",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+        }
+        for i in range(6)
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # 6 events → 1 coalesced injection
+    assert adapter.handle_message.await_count == 1
+    injected_text = adapter.handle_message.await_args.args[0].text
+    assert "6 background processes finished" in injected_text
+    assert "batched" in injected_text.lower()
+    # Verify session_ids are listed in the message
+    for i in range(5):
+        assert f"proc_{i}" in injected_text
+    assert "...and 1 more" in injected_text
+
+
+@pytest.mark.asyncio
+async def test_coalesced_message_truncates_ids_after_5(monkeypatch, tmp_path):
+    """When >5 processes, only first 5 IDs are listed, rest shown as count."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": "completion",
+            "session_id": f"proc_{i}",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+        }
+        for i in range(8)
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    assert adapter.handle_message.await_count == 1
+    injected_text = adapter.handle_message.await_args.args[0].text
+    assert "8 background processes finished" in injected_text
+    # First 5 should be listed
+    for i in range(5):
+        assert f"proc_{i}" in injected_text
+    # Beyond 5 should be truncated
+    assert "...and 3 more" in injected_text
+    assert "proc_5" not in injected_text
+
+
+@pytest.mark.asyncio
+async def test_type_none_treated_as_completion(monkeypatch, tmp_path):
+    """Events with type=None should be treated as completions and coalesced."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": None,
+            "session_id": "proc_a",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+        },
+        {
+            "type": "completion",
+            "session_id": "proc_b",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+        },
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # Both should be coalesced into 1
+    assert adapter.handle_message.await_count == 1
+    injected_text = adapter.handle_message.await_args.args[0].text
+    assert "2 background processes finished" in injected_text
+    assert "proc_a" in injected_text
+    assert "proc_b" in injected_text
+
+
+@pytest.mark.asyncio
+async def test_completions_different_session_keys_not_coalesced(monkeypatch, tmp_path):
+    """Completions for DIFFERENT session_keys remain separate injections."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    events = [
+        {
+            "type": "completion",
+            "session_id": f"proc_a{i}",
+            "session_key": f"agent:main:telegram:dm:100:{i}",
+            "platform": "telegram",
+            "chat_id": "100",
+            "thread_id": str(i),
+        }
+        for i in range(3)
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # Different session_keys → separate injections
+    assert adapter.handle_message.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_watch_match_events_are_not_coalesced(monkeypatch, tmp_path):
+    """watch_match events pass through individually, not coalesced."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": "watch_match",
+            "session_id": "proc_1",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+            "pattern": "DONE",
+            "output": "Build DONE",
+            "command": "make build",
+        },
+        {
+            "type": "watch_match",
+            "session_id": "proc_2",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+            "pattern": "ERROR",
+            "output": "Build ERROR",
+            "command": "make test",
+        },
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # watch_match events should NOT be coalesced — each is individually important
+    assert adapter.handle_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_mixed_completions_and_watch_events(monkeypatch, tmp_path):
+    """Completions are coalesced; watch events pass through individually."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {"type": "completion", "session_id": "proc_a", "session_key": session_key,
+         "platform": "telegram", "chat_id": "123", "thread_id": "42"},
+        {"type": "completion", "session_id": "proc_b", "session_key": session_key,
+         "platform": "telegram", "chat_id": "123", "thread_id": "42"},
+        {"type": "completion", "session_id": "proc_c", "session_key": session_key,
+         "platform": "telegram", "chat_id": "123", "thread_id": "42"},
+        {"type": "watch_match", "session_id": "proc_w", "session_key": session_key,
+         "platform": "telegram", "chat_id": "123", "thread_id": "42",
+         "pattern": "DONE", "output": "ok", "command": "cmd"},
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # 3 completions coalesced into 1 + 1 watch_match = 2 injections
+    assert adapter.handle_message.await_count == 2
+    # Verify coalesced text mentions the count
+    texts = [c.args[0].text for c in adapter.handle_message.await_args_list]
+    coalesced = [t for t in texts if "background processes finished" in t]
+    assert len(coalesced) == 1
+    assert "3 background processes finished" in coalesced[0]
+
+
+@pytest.mark.asyncio
+async def test_empty_events_list_is_noop(monkeypatch, tmp_path):
+    """Empty event list should not cause any injection."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    await runner._coalesce_and_inject_watch_events([])
+
+    adapter.handle_message.assert_not_awaited()

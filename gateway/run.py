@@ -2983,6 +2983,11 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         from tools.process_registry import format_process_notification
         return format_process_notification(evt)
 
+    if evt_type == "completion" or evt_type is None:
+        # Standard process completions — also use the rich formatter.
+        from tools.process_registry import format_process_notification
+        return format_process_notification(evt)
+
     return None
 
 
@@ -13974,13 +13979,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from tools.process_registry import process_registry as _pr
                 _watch_events = _drain_gateway_watch_events(_pr.completion_queue)
-                for evt in _watch_events:
-                    synth_text = _format_gateway_process_notification(evt)
-                    if synth_text:
-                        try:
-                            await self._inject_watch_notification(synth_text, evt)
-                        except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
+                await self._coalesce_and_inject_watch_events(_watch_events)
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
@@ -17657,6 +17656,82 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
+
+    async def _coalesce_and_inject_watch_events(
+        self, watch_events: list[dict],
+    ) -> None:
+        """Inject watch events, coalescing completion notifications by session_key.
+
+        When multiple background processes finish in the same gateway tick,
+        injecting each one individually floods the agent session with redundant
+        notifications.  Instead, group standard completions by session_key and
+        deliver a single batched message.
+        """
+        if not watch_events:
+            return
+
+        # Separate standard completions from watch/wake events.
+        completions: list[dict] = []
+        others: list[dict] = []
+        for evt in watch_events:
+            if evt.get("type") in (None, "completion"):
+                completions.append(evt)
+            else:
+                others.append(evt)
+
+        # Coalesce completions by session_key.
+        by_key: dict[str, list[dict]] = {}
+        for evt in completions:
+            sk = str(evt.get("session_key") or evt.get("session_id") or "")
+            by_key.setdefault(sk, []).append(evt)
+
+        for sk, group in by_key.items():
+            if len(group) == 1:
+                evt = group[0]
+                synth_text = _format_gateway_process_notification(evt)
+                if synth_text:
+                    try:
+                        await self._inject_watch_notification(synth_text, evt)
+                    except Exception as e:
+                        logger.error(
+                            "Watch notification injection error: %s", e,
+                        )
+            else:
+                # Batched completion notification.
+                count = len(group)
+                first = group[0]
+                ids = [str(evt.get("session_id", "?")) for evt in group]
+                if len(ids) <= 5:
+                    id_list = ", ".join(ids)
+                else:
+                    id_list = ", ".join(ids[:5]) + f", ...and {len(ids)-5} more"
+                logger.debug(
+                    "Coalesced %d completion events into 1 notification for session_key=%s",
+                    count, sk,
+                )
+                synth_text = (
+                    f"[IMPORTANT: {count} background processes finished "
+                    f"({id_list}) — results batched to avoid session flood. "
+                    f"Use process(id=N, action='log') to inspect individual outputs.]"
+                )
+                coalesced_evt = dict(first)
+                coalesced_evt["coalesced"] = True
+                coalesced_evt["coalesced_count"] = count
+                try:
+                    await self._inject_watch_notification(synth_text, coalesced_evt)
+                except Exception as e:
+                    logger.error(
+                        "Coalesced watch notification injection error: %s", e,
+                    )
+
+        # Non-completion events (watch_disabled, watch_match, async_delegation).
+        for evt in others:
+            synth_text = _format_gateway_process_notification(evt)
+            if synth_text:
+                try:
+                    await self._inject_watch_notification(synth_text, evt)
+                except Exception as e:
+                    logger.error("Watch notification injection error: %s", e)
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict,

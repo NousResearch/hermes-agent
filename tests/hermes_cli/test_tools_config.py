@@ -1717,6 +1717,27 @@ def test_apply_provider_selection_does_not_prompt_or_post_setup(monkeypatch):
 #    reported as added/removed by `hermes tools` ──────────────────────────
 
 
+def test_xai_grok_post_setup_noninteractive_without_credentials_fails_cleanly(monkeypatch):
+    """Desktop/Dashboard post-setup runs without stdin; xAI setup must not prompt."""
+    from hermes_cli import tools_config
+
+    monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
+    monkeypatch.setattr(tools_config, "get_env_value", lambda key, default=None: None)
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_xai_oauth_auth_status",
+        lambda: {"logged_in": False},
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        tools_config._run_post_setup("xai_grok")
+
+    msg = str(exc.value)
+    assert "xAI credentials are not configured" in msg
+    assert "cannot prompt" in msg
+    assert "hermes auth add xai-oauth" in msg
+    assert "XAI_API_KEY" in msg
+
+
 def test_checklist_toolset_keys_excludes_kanban():
     """``kanban`` is check_fn-gated and never appears in the checklist, so it
     must not be in the checklist's offered universe for any platform."""

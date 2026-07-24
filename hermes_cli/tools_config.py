@@ -1529,6 +1529,14 @@ def _run_post_setup(post_setup_key: str):
             _print_success("    xAI will use your existing XAI_API_KEY")
             return
 
+        if os.environ.get("HERMES_NONINTERACTIVE") == "1" or not sys.stdin.isatty():
+            raise RuntimeError(
+                "xAI credentials are not configured. This setup step cannot "
+                "prompt from the Desktop/Dashboard background runner. Run "
+                "`hermes auth add xai-oauth` in a terminal, or save XAI_API_KEY "
+                "from Settings / ~/.hermes/.env, then retry."
+            )
+
         _print_info("    xAI needs credentials. Choose one:")
         try:
             from hermes_cli.setup import (

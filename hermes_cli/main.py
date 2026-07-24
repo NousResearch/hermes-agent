@@ -7470,6 +7470,54 @@ def _create_committed_local_changes_backup(
     return backup_ref
 
 
+def _rebase_conflict_summary(
+    git_cmd: list[str],
+    cwd: Path,
+    result: subprocess.CompletedProcess,
+) -> tuple[str, list[str]]:
+    """Summarize a failed ``git rebase`` BEFORE ``--abort`` destroys the state.
+
+    git splits rebase-conflict output across streams: stdout carries
+    ``Auto-merging`` / ``CONFLICT (content): Merge conflict in <path>``, while
+    stderr carries ``Rebasing (n/m)``, ``error: could not apply <sha>...`` and
+    ``hint:`` lines. Reading ``stderr or stdout`` always discards stdout (stderr
+    is non-empty), and taking only its first line then yields ``Rebasing (1/6)``
+    — which tells the user nothing about what actually conflicted. Scan both
+    streams for the failing commit, and read the unmerged paths out of the index
+    while the conflicted rebase is still in progress.
+    """
+    combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+    lines = [ln.strip() for ln in combined.splitlines() if ln.strip()]
+    detail = next(
+        (
+            ln
+            for ln in lines
+            if ln.startswith(("error: could not apply", "Could not apply"))
+        ),
+        "",
+    )
+    if not detail:
+        detail = next(
+            (ln for ln in lines if not ln.startswith(("hint:", "Rebasing ("))),
+            "",
+        )
+    unmerged = subprocess.run(
+        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    files = [path.strip() for path in unmerged.stdout.splitlines() if path.strip()]
+    if not files:
+        # Rename/delete conflicts do not always leave unmerged index entries.
+        files = [
+            ln.rpartition(" in ")[2]
+            for ln in lines
+            if ln.startswith("CONFLICT") and " in " in ln
+        ]
+    return detail or "git rebase failed", files
+
+
 def _reconcile_committed_local_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -7587,10 +7635,17 @@ def _reconcile_committed_local_changes(
             "rebased", ahead_count=ahead_count, backup_ref=backup_ref
         )
 
-    detail = (rebased.stderr or rebased.stdout or "git rebase failed").strip()
+    detail, conflicts = _rebase_conflict_summary(git_cmd, cwd, rebased)
     print("✗ Could not rebase committed local patches automatically.")
-    if detail:
-        print(f"  {detail.splitlines()[0]}")
+    print(f"  {detail}")
+    if conflicts:
+        shown = conflicts[:5]
+        extra = (
+            f" (+{len(conflicts) - len(shown)} more)"
+            if len(conflicts) > len(shown)
+            else ""
+        )
+        print(f"  Conflicting file(s): {', '.join(shown)}{extra}")
     aborted = subprocess.run(
         git_cmd + ["rebase", "--abort"],
         cwd=cwd,
@@ -7610,6 +7665,10 @@ def _reconcile_committed_local_changes(
     )
     if restored:
         print("  ✓ Rebase aborted; the original committed state is restored.")
+        print("    Resolve by hand with:")
+        print(
+            f"      git -C {cwd} rebase --empty=drop --no-keep-empty {remote_ref}"
+        )
     else:
         print("  ✗ Automatic rebase abort did not restore the original HEAD.")
         print("    Do not run another update. Recover with:")

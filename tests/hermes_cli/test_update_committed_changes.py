@@ -139,6 +139,53 @@ def test_reconcile_conflict_aborts_and_restores_original_head(tmp_path):
     assert not (local / ".git" / "rebase-merge").exists()
 
 
+def test_reconcile_conflict_reports_the_conflicting_files(tmp_path, capsys):
+    """A failed rebase must name the failing commit and the conflicting paths.
+
+    Regression: git puts ``CONFLICT (content): ...`` on stdout and
+    ``Rebasing (n/m)`` first on stderr, so ``(stderr or stdout).splitlines()[0]``
+    surfaced only the progress banner and the operator learned nothing.
+    """
+    local, seed = _diverged_repositories(tmp_path)
+    _commit(local, "conflict.txt", "base\n", "shared starting point")
+    _git(local, "push", "origin", "main")
+    _git(seed, "pull", "--ff-only", "origin", "main")
+    original_head = _commit(local, "conflict.txt", "local\n", "local conflict")
+    _commit(seed, "conflict.txt", "upstream\n", "upstream conflict")
+    _git(seed, "push", "origin", "main")
+    _git(local, "fetch", "origin", "main")
+
+    outcome = hermes_main._reconcile_committed_local_changes(
+        ["git"], local, "main", "rebase", original_head
+    )
+    output = capsys.readouterr().out
+
+    assert outcome.status == "failed"
+    # The unmerged path is read before --abort destroys it.
+    assert "conflict.txt" in output
+    # The progress banner must no longer be the whole story.
+    assert "could not apply" in (outcome.detail or "").lower()
+    assert not (outcome.detail or "").startswith("Rebasing (")
+    # And the operator gets a copy-pasteable way to finish by hand.
+    assert f"git -C {local} rebase --empty=drop --no-keep-empty" in output
+
+
+def test_rebase_conflict_summary_falls_back_to_stdout_conflict_lines(tmp_path):
+    """Rename/delete conflicts leave no unmerged index entry — scrape stdout."""
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    result = SimpleNamespace(
+        stdout="Auto-merging a/b.py\nCONFLICT (content): Merge conflict in a/b.py\n",
+        stderr="Rebasing (1/3)\nerror: could not apply deadbee... some patch\nhint: blah\n",
+    )
+
+    detail, files = hermes_main._rebase_conflict_summary(["git"], repo, result)
+
+    assert detail == "error: could not apply deadbee... some patch"
+    assert files == ["a/b.py"]
+
+
 def test_reconcile_abort_failure_preserves_backup_without_reset(
     tmp_path, monkeypatch, capsys
 ):

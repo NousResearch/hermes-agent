@@ -2219,7 +2219,8 @@ def terminal_tool(
 
         # Guardrail: long-lived server/watch commands should run as managed
         # background sessions, not foreground shell hacks.
-        if not background:
+        # Gated by terminal.foreground_guard in config.yaml (default: true).
+        if not background and os.environ.get("TERMINAL_FOREGROUND_GUARD", "true").lower() not in ("false", "0"):
             guidance = _foreground_background_guidance(command)
             if guidance:
                 return json.dumps({

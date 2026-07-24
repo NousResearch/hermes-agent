@@ -1179,6 +1179,10 @@ DEFAULT_CONFIG = {
         # this off if your rc files misbehave when sourced
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
+        # When true (default), Hermes blocks foreground commands that look
+        # like long-lived server/watch processes and suggests background
+        # mode. Set to false to allow docker compose up -d and similar.
+        "foreground_guard": True,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
         # Explicit environment variables to set inside Docker containers.
@@ -7390,6 +7394,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    "foreground_guard": "TERMINAL_FOREGROUND_GUARD",
 }
 
 

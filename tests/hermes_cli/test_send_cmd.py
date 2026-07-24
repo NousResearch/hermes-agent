@@ -399,3 +399,34 @@ def test_load_hermes_env_handles_missing_files(tmp_path, monkeypatch):
 
     # Should not raise.
     send_cmd._load_hermes_env()
+
+
+# ---------------------------------------------------------------------------
+# Telegram Secretary Mode (--business-connection-id)
+# ---------------------------------------------------------------------------
+
+
+def test_business_connection_id_forwarded_to_tool(fake_tool):
+    """--business-connection-id must reach the send_message tool args
+    (PR #60809 review: the flag was parsed but never delivered)."""
+    args = _parse(
+        [
+            "--to",
+            "telegram:123",
+            "--business-connection-id",
+            "biz_conn_42",
+            "reply as owner",
+        ]
+    )
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert fake_tool.calls[0]["business_connection_id"] == "biz_conn_42"
+
+
+def test_business_connection_id_omitted_by_default(fake_tool):
+    args = _parse(["--to", "telegram:123", "plain send"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert "business_connection_id" not in fake_tool.calls[0]

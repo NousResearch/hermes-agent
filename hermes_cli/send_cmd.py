@@ -355,6 +355,9 @@ def cmd_send(args: argparse.Namespace) -> None:
         "target": target,
         "message": message,
     }
+    business_conn_id = getattr(args, "business_connection_id", None)
+    if business_conn_id:
+        tool_args["business_connection_id"] = business_conn_id
 
     result = send_message_tool(tool_args)
     exit_code = _emit_result(
@@ -462,6 +465,17 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Emit raw JSON result instead of human-readable output.",
+    )
+
+    parser.add_argument(
+        "--business-connection-id",
+        metavar="ID",
+        default=None,
+        help=(
+            "Telegram Secretary Mode: send as the business owner's personal "
+            "account via this connection ID (not as the bot). Read from the "
+            "Chat Automation connection — see the Telegram Secretary Mode doc."
+        ),
     )
 
     parser.set_defaults(func=cmd_send)

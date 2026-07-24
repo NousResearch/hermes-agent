@@ -114,6 +114,9 @@ def _make_update(msg):
     """Wrap a message in a mock Update."""
     update = MagicMock()
     update.message = msg
+    # Mirror real PTB semantics: effective_message resolves to the message.
+    # The media handler reads it (Secretary Mode business media support).
+    update.effective_message = msg
     return update
 
 

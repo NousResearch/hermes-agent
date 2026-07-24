@@ -700,6 +700,11 @@ class TelegramAdapter(BasePlatformAdapter):
             min_value=1.0,
             max_value=300.0,
         )
+        # Secretary Mode: tracks active business connections by ID. Keyed by
+        # connection_id, value is {can_reply, user_chat_id}. Updated by the
+        # BusinessConnection lifecycle handler when the owner connects,
+        # disconnects, or edits the bot's settings in Chat Automation.
+        self._business_connections: Dict[str, dict] = {}
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
@@ -870,6 +875,20 @@ class TelegramAdapter(BasePlatformAdapter):
             return {}
         return {"disable_notification": True}
 
+    def _business_kwargs(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Return business_connection_id kwargs for Secretary Mode sends.
+
+        Text AND media sends must carry the connection ID, or a reply's
+        attachments are delivered as the bot while its text went out as the
+        business owner.
+        """
+        business_conn_id = (metadata or {}).get("business_connection_id")
+        if business_conn_id:
+            return {"business_connection_id": business_conn_id}
+        return {}
+
     def _is_callback_user_authorized(
         self,
         user_id: str,
@@ -1004,6 +1023,15 @@ class TelegramAdapter(BasePlatformAdapter):
         context-aware decision the runner would make. Unknown DMs with no
         allowlist still pass through so the normal pairing flow can run.
         """
+        # Secretary Mode: messages carrying a business_connection_id are
+        # pre-authorized by the owner connecting the bot via Chat Automation.
+        # The external client's user ID will never be in the allowlist, but
+        # the owner has explicitly scoped which chats the bot sees. The
+        # business_connection_id is set by Telegram server-side and cannot
+        # be spoofed by the client.
+        if self._business_connection_id_of(message):
+            return True
+
         source = self._source_from_message_for_auth(message)
         user_id = source.user_id
         # No identity at all → genuine group service message (pin, delete,
@@ -3617,6 +3645,15 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
+            # Secretary Mode: handle BusinessConnection lifecycle updates
+            # (connect/disconnect/settings changes). These arrive as
+            # update.business_connection, not as message updates.
+            from telegram.ext import TypeHandler
+            self._app.add_handler(
+                TypeHandler(Update, self._handle_business_connection),
+                group=-1,  # run before message handlers
+            )
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -4145,6 +4182,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
+                # Secretary Mode: pass business_connection_id so the message
+                # is sent as the business owner's personal account, not as
+                # the bot. Extracted from metadata (set by the gateway from
+                # the session source).
+                business_kwargs = self._business_kwargs(metadata)
+
                 msg = None
                 for _send_attempt in range(3):
                     try:
@@ -4156,6 +4199,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
+                                **business_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
@@ -4170,6 +4214,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
+                                    **business_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
                                 )
@@ -4850,6 +4895,11 @@ class TelegramAdapter(BasePlatformAdapter):
         fall back to the edit path even on DMs.
         """
         if not self._bot or not hasattr(self._bot, "send_message_draft"):
+            return False
+        # Secretary Mode: the draft API has no business_connection_id
+        # parameter, so drafts cannot be posted into a business chat. Route
+        # business replies through the plain ``send`` path instead.
+        if (metadata or {}).get("business_connection_id"):
             return False
         return (chat_type or "").lower() in {"dm", "private"}
 
@@ -5903,6 +5953,36 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    async def _handle_business_connection(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle BusinessConnection updates (Secretary Mode lifecycle).
+
+        Fired when the owner connects/disconnects the bot via Chat Automation,
+        or edits the connection settings. We track active connections so we
+        know whether we have reply permission (can_reply) for each.
+        """
+        conn = getattr(update, "business_connection", None)
+        if conn is None:
+            return
+
+        conn_id = getattr(conn, "id", None)
+        if conn_id is None:
+            return
+
+        if getattr(conn, "is_enabled", False):
+            self._business_connections[conn_id] = {
+                "can_reply": getattr(conn, "can_reply", False),
+                "user_chat_id": getattr(conn, "user_chat_id", None),
+            }
+            logger.info(
+                "[Telegram] Business connection active: id=%s can_reply=%s",
+                conn_id, getattr(conn, "can_reply", False),
+            )
+        else:
+            self._business_connections.pop(conn_id, None)
+            logger.info("[Telegram] Business connection removed: id=%s", conn_id)
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -6484,6 +6564,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "duration": _duration_secs,
                             **voice_thread_kwargs,
                             **self._notification_kwargs(metadata),
+                            **self._business_kwargs(metadata),
                         },
                         metadata,
                         reply_to_id,
@@ -6511,6 +6592,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "duration": _duration_secs,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
+                            **self._business_kwargs(metadata),
                         },
                         metadata,
                         reply_to_id,
@@ -6649,6 +6731,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
+                        **self._business_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -6708,6 +6791,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
+                        **self._business_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -6805,6 +6889,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
+                        **self._business_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -6855,6 +6940,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
+                        **self._business_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -6910,6 +6996,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "reply_to_message_id": reply_to_id,
                     **photo_thread_kwargs,
                     **self._notification_kwargs(metadata),
+                    **self._business_kwargs(metadata),
                 },
                 metadata,
                 reply_to_id,
@@ -6952,6 +7039,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "reply_to_message_id": reply_to_id,
                         **upload_thread_kwargs,
                         **self._notification_kwargs(metadata),
+                        **self._business_kwargs(metadata),
                     },
                     metadata,
                     reply_to_id,
@@ -6999,6 +7087,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "reply_to_message_id": reply_to_id,
                     **animation_thread_kwargs,
                     **self._notification_kwargs(metadata),
+                    **self._business_kwargs(metadata),
                 },
                 metadata,
                 reply_to_id,
@@ -7999,6 +8088,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         try:
             event = event or self._build_message_event(message, msg_type, update_id=update_id)
+            if event is None:
+                return
             shared_source = self._telegram_group_observe_shared_source(event.source)
             session_entry = store.get_or_create_session(shared_source)
             entry = {
@@ -8020,6 +8111,103 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             adapter_name = getattr(self, "name", "telegram")
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
+
+    @staticmethod
+    def _business_connection_id_of(message: Message) -> Optional[str]:
+        """The message's business_connection_id as a string, or None.
+
+        Telegram always delivers the ID as a non-empty string; anything else
+        (None, or a test double's auto-generated attribute) means "not a
+        business message". Every Secretary Mode gate must go through this so
+        non-business traffic can never be misclassified.
+        """
+        conn_id = getattr(message, "business_connection_id", None)
+        if isinstance(conn_id, str) and conn_id:
+            return conn_id
+        return None
+
+    def _classify_business_message(self, message: Message) -> Optional[str]:
+        """Classify a Secretary Mode ``business_message`` by author (#42400).
+
+        Returns ``None`` for non-business messages, otherwise one of:
+
+        - ``"bot_echo"`` — a business bot's send relayed back by Telegram
+          (``sender_business_bot`` set). Never re-enters the agent path; our
+          own sends are already recorded by the send path.
+        - ``"owner_outgoing"`` — typed manually by the business owner from one
+          of their devices. Retained as session context so the agent sees the
+          conversation state, but never enqueued: the owner isn't asking us.
+        - ``"customer"`` — inbound from the chat peer; the normal agent path.
+
+        Owner detection prefers the BusinessConnection state tracked by
+        ``_handle_business_connection``. When that state is missing (Telegram
+        does not replay BusinessConnection updates after a gateway restart) it
+        falls back to the structural signal that in a private business chat
+        the peer's ``from_user.id`` equals ``chat.id`` while the owner's does
+        not.
+        """
+        conn_id = self._business_connection_id_of(message)
+        if not conn_id:
+            return None
+        if getattr(message, "sender_business_bot", None) is not None:
+            return "bot_echo"
+        from_id = getattr(getattr(message, "from_user", None), "id", None)
+        if from_id is None:
+            return "customer"
+        conn = self._business_connections.get(conn_id) or {}
+        owner_id = conn.get("user_chat_id")
+        if owner_id is not None and str(from_id) == str(owner_id):
+            return "owner_outgoing"
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        if chat_id is not None and str(from_id) != str(chat_id):
+            return "owner_outgoing"
+        return "customer"
+
+    def _observe_business_owner_message(
+        self,
+        message: Message,
+        msg_type: MessageType,
+        update_id: Optional[int] = None,
+        event: Optional[MessageEvent] = None,
+    ) -> None:
+        """Append the owner's manual business reply to the chat session (#42400).
+
+        Secretary Mode: when the owner answers a customer themselves, the
+        agent must see that reply as context — so it doesn't answer again or
+        contradict the owner — without treating it as a prompt. Unlike
+        ``_observe_unmentioned_group_message`` this keeps the event's own
+        source: for DMs the session key ignores user fields, so the entry
+        lands in the same session the customer's messages are processed in.
+        """
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            event = event or self._build_message_event(message, msg_type, update_id=update_id)
+            if event is None:
+                return
+            session_entry = store.get_or_create_session(event.source)
+            sender = event.source.user_name or event.source.user_id or "owner"
+            entry = {
+                "role": "user",
+                "content": f"[business owner {sender} replied manually]\n{event.text or ''}",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = str(event.message_id)
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "[%s] Observed manual owner reply in business chat %s",
+                getattr(self, "name", "telegram"),
+                getattr(getattr(message, "chat", None), "id", "unknown"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to observe business owner message: %s",
+                getattr(self, "name", "telegram"),
+                exc,
+            )
 
     def _is_own_message(self, message: Message) -> bool:
         """Return True when the message was sent by this bot itself.
@@ -8181,13 +8369,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        biz_class = self._classify_business_message(msg)
+        if biz_class == "bot_echo":
+            return
+        if biz_class == "owner_outgoing":
+            self._observe_business_owner_message(msg, MessageType.TEXT, update_id=update.update_id)
+            return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
-        await self._ensure_forum_commands(update.message)
+        await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        if event is None:
+            return
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -8207,9 +8403,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        biz_class = self._classify_business_message(msg)
+        if biz_class == "bot_echo":
+            return
+        if biz_class == "owner_outgoing":
+            self._observe_business_owner_message(msg, MessageType.TEXT, update_id=update.update_id)
+            return
+        if biz_class == "customer":
+            # Secretary Mode: the business connection pre-authorizes the
+            # *conversation*, not operator authority — a customer must never
+            # drive slash commands. Route the text to the agent as an
+            # ordinary message instead of the command executor.
+            event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+            if event is None:
+                return
+            event.text = self._clean_bot_trigger_text(event.text)
+            await self._cache_replied_media(msg, event)
+            self._enqueue_text_event(event)
+            return
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
+        if event is None:
+            return
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -8226,6 +8442,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        biz_class = self._classify_business_message(msg)
+        if biz_class == "bot_echo":
+            return
+        if biz_class == "owner_outgoing":
+            event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+            if event is not None:
+                loc = getattr(msg, "location", None)
+                lat = getattr(loc, "latitude", None)
+                lon = getattr(loc, "longitude", None)
+                event.text = (
+                    f"[shared a location pin: {lat}, {lon}]"
+                    if lat is not None and lon is not None
+                    else "[shared a location pin]"
+                )
+                self._observe_business_owner_message(
+                    msg, MessageType.LOCATION, update_id=update.update_id, event=event
+                )
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -8258,6 +8492,8 @@ class TelegramAdapter(BasePlatformAdapter):
         parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
 
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+        if event is None:
+            return
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
@@ -8421,21 +8657,44 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages, downloading images to local cache."""
-        if not update.message:
+        """Handle incoming media messages, downloading images to local cache.
+
+        Uses ``effective_message`` (not ``update.message``) so Secretary Mode
+        business media — delivered as ``update.business_message`` — reaches
+        the same download/caching path as normal media.
+        """
+        msg = self._effective_update_message(update)
+        if not msg:
             return
-        if not self._is_user_authorized_from_message(update.message):
+        if not self._is_user_authorized_from_message(msg):
             logger.info(
                 "[Telegram] Blocked media from unauthorized user %s in chat %s",
-                getattr(getattr(update.message, "from_user", None), "id", None),
-                getattr(getattr(update.message, "chat", None), "id", None),
+                getattr(getattr(msg, "from_user", None), "id", None),
+                getattr(getattr(msg, "chat", None), "id", None),
             )
             return
-        if not self._should_process_message(update.message):
-            if self._should_observe_unmentioned_group_message(update.message):
-                _m = update.message
+        biz_class = self._classify_business_message(msg)
+        if biz_class == "bot_echo":
+            return
+        if biz_class == "owner_outgoing":
+            _observe_type = self._media_message_type(msg)
+            _event = self._build_message_event(msg, _observe_type, update_id=update.update_id)
+            if _event is None:
+                return
+            if msg.caption:
+                _event.text = self._clean_bot_trigger_text(msg.caption)
+            await self._cache_observed_media(msg, _event)
+            self._observe_business_owner_message(
+                msg, _event.message_type, update_id=update.update_id, event=_event
+            )
+            return
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                _m = msg
                 _observe_type = self._media_message_type(_m)
                 _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
+                if _event is None:
+                    return
                 if _m.caption:
                     _event.text = self._clean_bot_trigger_text(_m.caption)
                 await self._cache_observed_media(_m, _event)
@@ -8444,11 +8703,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return
 
-        msg = update.message
-
         msg_type = self._media_message_type(msg)
 
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
+        if event is None:
+            return
         
         # Add caption as text
         if msg.caption:
@@ -8988,14 +9247,31 @@ class TelegramAdapter(BasePlatformAdapter):
         message: Message,
         msg_type: MessageType,
         update_id: Optional[int] = None,
-    ) -> MessageEvent:
+    ) -> Optional[MessageEvent]:
         """Build a MessageEvent from a Telegram message.
 
         ``update_id`` is the ``Update.update_id`` from PTB; passing it through
         lets ``/restart`` record the triggering offset so the new gateway
         process can advance past it (prevents ``/restart`` being re-delivered
         when PTB's graceful-shutdown ACK fails).
+
+        Returns ``None`` for bot-echo business messages (the bot's own sends
+        relayed back as ``business_message`` updates) so callers can skip
+        enqueue without duplicating the classification at every call site
+        (#42400).
         """
+        # Secretary Mode: skip bot-echo business messages (#42400).
+        # When the bot sends via business_connection, Telegram relays the
+        # message back as a business_message with sender_business_bot set.
+        # Without this guard the gateway re-processes its own output.
+        if self._business_connection_id_of(message):
+            if getattr(message, "sender_business_bot", None) is not None:
+                logger.debug(
+                    "[Telegram] Skipping bot-echo business message %s",
+                    getattr(message, "message_id", None),
+                )
+                return None
+
         chat = message.chat
         user = message.from_user
         
@@ -9068,6 +9344,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
 
         # Build source
+        # Extract business_connection_id for Secretary Mode messages.
+        # Present on business_message updates; None for normal messages.
+        business_conn_id = self._business_connection_id_of(message)
+
         source = self.build_source(
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
@@ -9090,6 +9370,7 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
             message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False,
+            business_connection_id=business_conn_id,
         )
         
         # Extract reply context if this message is a reply.

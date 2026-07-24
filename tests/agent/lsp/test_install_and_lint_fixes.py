@@ -316,5 +316,155 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
     assert "TS2322" in lint.output
 
 
+# ---------------------------------------------------------------------------
+# Fix 4: terminal.npmCommand / HERMES_NODE_PACKAGE_MANAGER are respected by
+# the LSP install path (issue #35448 — supply-chain protection via pnpm)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_npm_command_defaults_to_npm(monkeypatch):
+    """No config, no env var -> resolves npm via shutil.which."""
+    monkeypatch.delenv("HERMES_NODE_PACKAGE_MANAGER", raising=False)
+    from agent.lsp import install as install_mod
+
+    # Force load_config to return an empty dict (no terminal section)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {}, raising=False,
+    )
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda c: "/usr/bin/npm" if c == "npm" else None)
+
+    assert install_mod._resolve_npm_command() == "/usr/bin/npm"
+
+
+def test_resolve_npm_command_honours_env_var(monkeypatch):
+    """HERMES_NODE_PACKAGE_MANAGER=pnpm -> pnpm wins over the npm default."""
+    monkeypatch.setenv("HERMES_NODE_PACKAGE_MANAGER", "pnpm")
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {}, raising=False,
+    )
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda c: "/usr/local/bin/pnpm" if c == "pnpm"
+                        else "/usr/bin/npm" if c == "npm"
+                        else None)
+
+    assert install_mod._resolve_npm_command() == "/usr/local/bin/pnpm"
+
+
+def test_resolve_npm_command_config_beats_env(monkeypatch):
+    """terminal.npmCommand in config.yaml takes precedence over the env var."""
+    monkeypatch.setenv("HERMES_NODE_PACKAGE_MANAGER", "npm")
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"terminal": {"npmCommand": "pnpm"}},
+        raising=False,
+    )
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda c: f"/usr/local/bin/{c}" if c in {"pnpm", "npm"}
+                        else None)
+
+    assert install_mod._resolve_npm_command() == "/usr/local/bin/pnpm"
+
+
+def test_resolve_npm_command_falls_back_when_configured_missing(monkeypatch, caplog):
+    """Configured pnpm not on PATH -> fall back to npm with a warning."""
+    monkeypatch.delenv("HERMES_NODE_PACKAGE_MANAGER", raising=False)
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"terminal": {"npmCommand": "pnpm"}},
+        raising=False,
+    )
+    # pnpm not installed; npm is
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda c: "/usr/bin/npm" if c == "npm" else None)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        result = install_mod._resolve_npm_command()
+
+    assert result == "/usr/bin/npm"
+    assert any("pnpm" in rec.message and "not on PATH" in rec.message
+               for rec in caplog.records), \
+        "expected a one-line warning naming the missing configured command"
+
+
+def test_build_install_argv_npm_uses_install_subcommand():
+    """npm path: the historical npm install flag set is unchanged."""
+    from agent.lsp.install import _build_install_argv
+    argv = _build_install_argv(
+        "/usr/bin/npm", "/staging",
+        ["typescript-language-server", "typescript"],
+    )
+    assert argv[0] == "/usr/bin/npm"
+    assert argv[1] == "install"
+    assert "--prefix" in argv and argv[argv.index("--prefix") + 1] == "/staging"
+    assert "--silent" in argv and "--no-fund" in argv and "--no-audit" in argv
+    # Targets come AFTER the flags
+    assert argv[-2:] == ["typescript-language-server", "typescript"]
+
+
+def test_build_install_argv_pnpm_uses_add_subcommand_and_save_exact():
+    """pnpm path: subcommand is `add`, --save-exact present, npm-only flags absent."""
+    from agent.lsp.install import _build_install_argv
+    argv = _build_install_argv(
+        "/usr/local/bin/pnpm", "/staging",
+        ["typescript-language-server", "typescript"],
+    )
+    assert argv[0] == "/usr/local/bin/pnpm"
+    assert argv[1] == "add"
+    assert "--save-exact" in argv
+    assert "--reporter=silent" in argv
+    # Must NOT carry npm-only flags
+    assert "--no-fund" not in argv
+    assert "--no-audit" not in argv
+    assert argv[-2:] == ["typescript-language-server", "typescript"]
+
+
+def test_build_install_argv_strips_windows_suffixes():
+    """pnpm.cmd on Windows is still recognised as pnpm, not as a generic binary."""
+    from agent.lsp.install import _build_install_argv
+    argv = _build_install_argv(
+        r"C:\\bin\\pnpm.cmd", "C:\\staging", ["intelephense"],
+    )
+    assert argv[1] == "add", \
+        f"pnpm.cmd should resolve as pnpm and use `add`, got: {argv[1]}"
+    assert "--save-exact" in argv
+
+
+def test_install_npm_uses_pnpm_when_configured(tmp_path, monkeypatch):
+    """End-to-end: with terminal.npmCommand=pnpm the install argv uses pnpm add."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_NODE_PACKAGE_MANAGER", raising=False)
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"terminal": {"npmCommand": "pnpm"}},
+        raising=False,
+    )
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_mod.shutil, "which",
+                        lambda c: f"/opt/{c}" if c in {"pnpm", "npm"} else None)
+
+    install_mod._install_npm("intelephense", "intelephense")
+
+    cmd = captured["cmd"]
+    assert cmd[0] == "/opt/pnpm"
+    assert cmd[1] == "add"
+    assert "intelephense" in cmd
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

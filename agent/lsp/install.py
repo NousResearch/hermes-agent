@@ -235,6 +235,87 @@ def _do_install(pkg: str) -> Optional[str]:
     return None
 
 
+def _resolve_npm_command() -> Optional[str]:
+    """Resolve the npm-compatible package manager to use for LSP installs.
+
+    Resolution order (first hit wins):
+      1. ``terminal.npmCommand`` from ``~/.hermes/config.yaml`` (string, e.g.
+         ``"pnpm"`` or ``"npm"``).
+      2. ``HERMES_NODE_PACKAGE_MANAGER`` environment variable (same values).
+      3. ``npm`` (legacy default).
+
+    Returns the resolved binary path via ``shutil.which`` so we honour the
+    user's PATH, or ``None`` when the requested binary is not installed.
+    Logs a one-line warning when the configured command is not on PATH so
+    the user can diagnose without having to read installer source.
+
+    Users who standardise on pnpm 11+ for its supply-chain defaults
+    (``minimumReleaseAge``, ``blockExoticSubdeps``, ``allowBuilds``) can
+    extend that protection to the LSP install path by setting
+    ``terminal.npmCommand: pnpm``.
+    """
+    configured: Optional[str] = None
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg.get("terminal"), dict) else {}
+        candidate = terminal_cfg.get("npmCommand")
+        if isinstance(candidate, str) and candidate.strip():
+            configured = candidate.strip()
+    except Exception:  # noqa: BLE001 — config read is best-effort
+        logger.debug("[install] config load failed while resolving npm command", exc_info=True)
+    if not configured:
+        env_candidate = os.environ.get("HERMES_NODE_PACKAGE_MANAGER", "").strip()
+        if env_candidate:
+            configured = env_candidate
+    cmd_name = configured or "npm"
+    resolved = shutil.which(cmd_name)
+    if resolved is None and cmd_name != "npm":
+        logger.warning(
+            "[install] configured npm command %r is not on PATH — "
+            "falling back to npm",
+            cmd_name,
+        )
+        resolved = shutil.which("npm")
+        cmd_name = "npm"
+    return resolved
+
+
+def _build_install_argv(npm_cmd: str, prefix: str, targets: list) -> list:
+    """Build the install argv for ``npm`` or ``pnpm``.
+
+    Both invoke ``<cmd> add`` or ``<cmd> install``. We standardise on the
+    quiet/no-network-side-effects flag set per package manager:
+
+    * ``npm install --prefix <p> --silent --no-fund --no-audit <targets...>``
+    * ``pnpm add --prefix <p> --save-exact --reporter=silent <targets...>``
+
+    ``--save-exact`` for pnpm matches our intent of installing a specific
+    set of LSP servers without ranged updates on a subsequent install.
+    """
+    binary = os.path.basename(npm_cmd).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    # Strip Windows .cmd / .exe / .ps1 suffix when present
+    for suffix in (".cmd", ".exe", ".ps1"):
+        if binary.endswith(suffix):
+            binary = binary[: -len(suffix)]
+            break
+    if binary == "pnpm":
+        return [
+            npm_cmd, "add",
+            "--prefix", prefix,
+            "--save-exact",
+            "--reporter=silent",
+            *targets,
+        ]
+    # Default + npm path
+    return [
+        npm_cmd, "install",
+        "--prefix", prefix,
+        "--silent", "--no-fund", "--no-audit",
+        *targets,
+    ]
+
+
 def _install_npm(
     pkg: str,
     bin_name: str,
@@ -242,8 +323,10 @@ def _install_npm(
 ) -> Optional[str]:
     """Install an npm package into our staging dir.
 
-    Uses ``npm install --prefix`` so the binaries land in
-    ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up
+    Uses the configured npm-compatible package manager (``terminal.npmCommand``
+    in config.yaml, or ``HERMES_NODE_PACKAGE_MANAGER`` env var, defaulting to
+    ``npm``). The binary is invoked with ``--prefix`` so the executables land
+    in ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up
     one level for direct PATH-style access.
 
     ``extra_pkgs`` is a list of sibling packages to install in the
@@ -251,20 +334,22 @@ def _install_npm(
     peer deps that npm doesn't auto-pull (typescript-language-server
     needs ``typescript`` next to it; intelephense ships standalone).
     """
-    npm = shutil.which("npm")
+    npm = _resolve_npm_command()
     if npm is None:
         logger.info("[install] cannot install %s: npm not on PATH", pkg)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
+    argv = _build_install_argv(npm, str(staging), install_targets)
     try:
         logger.info(
-            "[install] npm install --prefix %s %s",
+            "[install] %s install --prefix %s %s",
+            os.path.basename(npm),
             staging,
             " ".join(install_targets),
         )
         proc = subprocess.run(
-            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
+            argv,
             check=False,
             capture_output=True,
             text=True,

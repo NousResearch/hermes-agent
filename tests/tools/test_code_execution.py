@@ -19,6 +19,7 @@ import json
 import os
 import socket
 import time
+import types
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -46,6 +47,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _generate_autoinject_runner,
 )
 
 
@@ -140,6 +142,43 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("with _seq_lock:", src)
 
 
+class TestAutoInjectedRunner(unittest.TestCase):
+    def test_runner_supplies_only_enabled_sandbox_tools_as_globals(self):
+        runner = _generate_autoinject_runner(["terminal", "read_file", "vision_analyze"])
+        fake_tools = types.ModuleType("hermes_tools")
+        fake_tools.terminal = object()
+        fake_tools.read_file = object()
+
+        with patch.dict(sys.modules, {"hermes_tools": fake_tools}), \
+             patch("runpy.run_path") as run_path:
+            exec(compile(runner, "runner.py", "exec"), {"__file__": "/tmp/runner.py"})
+
+        init_globals = run_path.call_args.kwargs["init_globals"]
+        self.assertEqual(set(init_globals), {"read_file", "terminal"})
+        self.assertEqual(run_path.call_args.kwargs["run_name"], "__main__")
+        self.assertEqual(
+            os.path.normpath(run_path.call_args.args[0]),
+            os.path.normpath("/tmp/script.py"),
+        )
+
+    def test_runner_without_available_tools_uses_empty_globals(self):
+        runner = _generate_autoinject_runner([])
+
+        with patch("runpy.run_path") as run_path:
+            exec(compile(runner, "runner.py", "exec"), {"__file__": "/tmp/runner.py"})
+
+        self.assertEqual(run_path.call_args.kwargs["init_globals"], {})
+
+    def test_schema_describes_tools_as_automatically_available(self):
+        schema = build_execute_code_schema(["terminal"])
+        description = schema["description"]
+        code_description = schema["parameters"]["properties"]["code"]["description"]
+
+        self.assertIn("automatically available", description)
+        self.assertIn("available directly without imports", code_description)
+        self.assertNotIn("Import tools with", code_description)
+
+
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
     def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):
         class FakeEnv:
@@ -153,7 +192,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
-                if "python3 script.py" in command:
+                if "python3 runner.py" in command:
                     return {"output": "hello\n", "returncode": 0}
                 return {"output": ""}
 
@@ -162,7 +201,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._ship_file_to_remote") as ship_file, \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
@@ -171,12 +210,17 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertFalse(result["stdout_truncated"])
         self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
         mkdir_cmd = env.commands[1][0]
-        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 runner.py" in cmd)
         cleanup_cmd = env.commands[-1][0]
         self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
         self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
+        shipped = {call.args[1]: call.args[2] for call in ship_file.call_args_list}
+        script_path = next(path for path in shipped if path.endswith("/script.py"))
+        runner_path = next(path for path in shipped if path.endswith("/runner.py"))
+        self.assertEqual(shipped[script_path], "print('hello')")
+        self.assertIn("from hermes_tools import terminal", shipped[runner_path])
 
     def test_timezone_shell_quoted_in_remote_execution(self):
         """HERMES_TIMEZONE must be shell-quoted in remote env_prefix to prevent injection."""
@@ -191,7 +235,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
-                if "python3 script.py" in command:
+                if "python3 runner.py" in command:
                     return {"output": "hello\n", "returncode": 0}
                 return {"output": ""}
 
@@ -211,7 +255,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
-        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 runner.py" in cmd)
         # The TZ value must be shell-quoted — it should NOT contain unescaped semicolons
         self.assertNotIn("TZ=US/Eastern; echo PWNED", run_cmd,
                          "TZ value with shell metacharacters must not appear unquoted")
@@ -632,22 +676,21 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertIn("terminal(", desc)
         self.assertNotIn("web_search(", desc)
 
-    def test_import_examples_prefer_web_search_and_terminal(self):
+    def test_code_description_does_not_request_tool_imports(self):
         enabled = {"web_search", "terminal", "read_file"}
         schema = build_execute_code_schema(enabled)
         code_desc = schema["parameters"]["properties"]["code"]["description"]
-        self.assertIn("web_search", code_desc)
-        self.assertIn("terminal", code_desc)
+        self.assertIn("available directly without imports", code_desc)
+        self.assertNotIn("from hermes_tools import web_search", code_desc)
+        self.assertNotIn("from hermes_tools import terminal", code_desc)
 
-    def test_import_examples_fallback_when_no_preferred(self):
-        """When neither web_search nor terminal are enabled, falls back to
-        sorted first two tools."""
-        enabled = {"read_file", "write_file", "patch"}
-        schema = build_execute_code_schema(enabled)
+    def test_code_description_shows_convenience_helper_imports(self):
+        schema = build_execute_code_schema({"terminal"})
         code_desc = schema["parameters"]["properties"]["code"]["description"]
-        # Should use sorted first 2: patch, read_file
-        self.assertIn("patch", code_desc)
-        self.assertIn("read_file", code_desc)
+        self.assertIn(
+            "from hermes_tools import json_parse, shell_quote, retry",
+            code_desc,
+        )
 
     def test_empty_set_produces_valid_description(self):
         """build_execute_code_schema(set()) must not produce 'import , ...'
@@ -1034,7 +1077,7 @@ for i in range(15000):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
-                if "python3 script.py" in command:
+                if "python3 runner.py" in command:
                     return {"output": "HEAD\n" + ("x" * 80_000) + "\nTAIL\n", "returncode": 0}
                 return {"output": ""}
 

@@ -4,6 +4,14 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Required Session State
+
+Before making any change, every Codex session must read the root `STATE.md` in
+full. Treat it as the canonical operational snapshot and update it when work
+materially changes the inventory, completed milestones, blockers, priorities,
+next recommended task, or verification time. If live evidence conflicts with
+the snapshot, trust the evidence and reconcile `STATE.md` in the same change.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

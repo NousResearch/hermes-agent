@@ -7174,9 +7174,13 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     # with the stripped GET response, but be defensive)
     config.pop("_model_meta", None)
 
-    # Extract and remove model_context_length before processing model
+    # Extract and remove model_context_length before processing model.  Absence
+    # means "older/partial client did not send this virtual field" and should
+    # preserve the on-disk model.context_length.  An explicit 0 means the user
+    # chose auto-detect and should clear the override.
+    ctx_override_present = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)
-    if not isinstance(ctx_override, int):
+    if ctx_override_present and not isinstance(ctx_override, int):
         try:
             ctx_override = int(ctx_override)
         except (TypeError, ValueError):
@@ -7216,11 +7220,15 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                         model_val = norm_model
                 # Preserve all subkeys, update default with the new value
                 disk_model["default"] = model_val
-                # Write context_length into the model dict (0 = remove/auto)
-                if ctx_override > 0:
-                    disk_model["context_length"] = ctx_override
-                else:
-                    disk_model.pop("context_length", None)
+                # Write context_length into the model dict when the web payload
+                # explicitly includes the virtual field.  If it is absent,
+                # preserve the existing disk value; otherwise stale/cached
+                # clients can erase the user's configured cap.
+                if ctx_override_present:
+                    if ctx_override > 0:
+                        disk_model["context_length"] = ctx_override
+                    else:
+                        disk_model.pop("context_length", None)
                 config["model"] = disk_model
             # Model was previously a bare string — upgrade to dict if
             # user is setting a context_length override

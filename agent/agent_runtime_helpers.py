@@ -2077,10 +2077,27 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
 
     try:
-        # Clear the per-config context_length override so the new model's
-        # actual context window is resolved via get_model_context_length()
-        # instead of inheriting the stale value from the previous model.
-        agent._config_context_length = None
+        # Re-read the active global context_length override.  A live model
+        # switch must not blindly inherit a stale per-model value from the
+        # previous agent, but it also must not drop an explicit
+        # ``model.context_length`` cap that is still present in config.yaml.
+        # Without this, switching from one GPT-5.x model to another resets the
+        # compressor to the model's native context window instead of the user's
+        # configured cap.
+        _config_context_length = None
+        try:
+            from hermes_cli.config import load_config
+
+            _ctx_cfg = load_config()
+            _model_cfg = _ctx_cfg.get("model", {}) if isinstance(_ctx_cfg, dict) else {}
+            _raw_ctx = _model_cfg.get("context_length") if isinstance(_model_cfg, dict) else None
+            if _raw_ctx is not None:
+                _parsed_ctx = int(_raw_ctx)
+                if _parsed_ctx > 0:
+                    _config_context_length = _parsed_ctx
+        except Exception:
+            _config_context_length = None
+        agent._config_context_length = _config_context_length
 
         # ── Swap core runtime fields ──
         agent.model = new_model

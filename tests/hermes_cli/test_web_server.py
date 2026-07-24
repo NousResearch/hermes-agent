@@ -2839,6 +2839,36 @@ class TestWebServerEndpoints:
         defaults = resp.json()
         assert "model" in defaults
 
+    def test_update_config_preserves_model_context_length_when_field_omitted(self):
+        """A stale/partial Desktop config payload must not erase model.context_length."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "default": "gpt-5.5",
+            "provider": "novacode",
+            "base_url": "https://api.example.test/v1",
+            "context_length": 256_000,
+        }
+        save_config(cfg)
+
+        resp = self.client.put(
+            "/api/config",
+            json={
+                "config": {
+                    "model": "gpt-5.4",
+                    # Deliberately omit model_context_length to mimic an older
+                    # cached Desktop settings form or partial save payload.
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["default"] == "gpt-5.4"
+        assert model_cfg["provider"] == "novacode"
+        assert model_cfg["context_length"] == 256_000
+
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
         assert resp.status_code == 200

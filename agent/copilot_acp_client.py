@@ -1,14 +1,23 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""OpenAI-compatible shim that forwards Hermes requests to ACP servers.
 
-This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Each request starts a short-lived ACP session, sends the formatted
-conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Hermes expects from an OpenAI client.
+This adapter lets Hermes treat ACP-compatible servers (GitHub Copilot, etc.) as
+a chat-style backend.  Two transport modes are supported:
+
+* **stdio** (default): Hermes spawns the ACP command as a subprocess and
+  communicates via stdin/stdout newline-delimited JSON-RPC.
+* **streamable-http**: Hermes connects to a running ACP HTTP server (e.g.
+  started with ``--acp --acp-transport streamable-http`` or via a daemon)
+  and communicates via SSE over HTTP.
+
+The transport is auto-detected from ``base_url``:
+  - ``acp://…`` or absent  → stdio subprocess
+  - ``acp+http://…``, ``acp+https://…``, or ``acp+tcp://…`` → streamable-http
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -21,6 +30,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+try:
+    import httpx  # Optional — only needed for streamable-http transport
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
 from openai.types.chat.chat_completion_message_tool_call import (
     ChatCompletionMessageToolCall,
     Function,
@@ -32,6 +48,23 @@ from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+
+
+def _is_http_base_url(base_url: str) -> bool:
+    """Return True when base_url points to a running HTTP ACP server."""
+    return base_url.startswith(("acp+http://", "acp+https://", "acp+tcp://"))
+
+
+def _normalize_http_base_url(base_url: str) -> str:
+    """Convert ``acp+http://`` / ``acp+https://`` / ``acp+tcp://`` to real HTTP URLs."""
+    if base_url.startswith("acp+https://"):
+        return ("https://" + base_url[len("acp+https://"):]).rstrip("/")
+    if base_url.startswith("acp+http://"):
+        return ("http://" + base_url[len("acp+http://"):]).rstrip("/")
+    if base_url.startswith("acp+tcp://"):
+        return ("http://" + base_url[len("acp+tcp://"):]).rstrip("/")
+    return base_url.rstrip("/")
+
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
@@ -393,8 +426,195 @@ class _ACPChatNamespace:
         self.completions = _ACPChatCompletions(client)
 
 
+class _HttpACPSession:
+    """HTTP client for ACP streamable-http transport.
+
+    Protocol (as implemented by ACP-compatible servers):
+
+      1. ``POST <base>/api/v1/acp/connect``  → ``{connectionId, sessionToken}``
+      2. ``POST <base>/api/v1/acp``
+             ``acp-connection-id: <connectionId>``
+             ``Accept: application/json, text/event-stream``
+         Body: JSON-RPC 2.0 message.
+         Response: chunked SSE stream — the server keeps the connection open;
+         we stop reading once we receive the response event that matches our
+         request id or an ``agent_turn_complete`` notification.
+    """
+
+    def __init__(self, base_url: str, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> None:
+        if httpx is None:
+            raise RuntimeError(
+                "httpx is required for ACP streamable-http transport. "
+                "Install it with: pip install httpx"
+            )
+        self._base = _normalize_http_base_url(base_url)
+        self._timeout = timeout
+        self._next_id = 0
+
+    def _next_msg_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    def _connect(self) -> str:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(f"{self._base}/api/v1/acp/connect", json={})
+            resp.raise_for_status()
+            data = resp.json()
+        conn_id = data.get("connectionId")
+        if not conn_id:
+            raise RuntimeError(f"ACP HTTP connect did not return connectionId: {data}")
+        logger.debug("ACP HTTP connected: connectionId=%s", conn_id)
+        return conn_id
+
+    def _rpc_sse(self, conn_id: str, method: str, params: dict[str, Any],
+                 msg_id: int, *, timeout: float = 30.0) -> list[dict[str, Any]]:
+        """Send one JSON-RPC request and preserve events through its response."""
+        payload = {"jsonrpc": "2.0", "method": method, "id": msg_id, "params": params}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "acp-connection-id": conn_id,
+        }
+        events: list[dict[str, Any]] = []
+        with httpx.Client(timeout=timeout) as client:
+            with client.stream("POST", f"{self._base}/api/v1/acp",
+                               json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    line = line.rstrip("\r\n")
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        msg = json.loads(data_str)
+                    except Exception:
+                        logger.debug("ACP HTTP: ignoring non-JSON SSE data: %s", data_str[:100])
+                        continue
+                    events.append(msg)
+                    if msg.get("id") == msg_id and ("result" in msg or "error" in msg):
+                        break
+        # Check for JSON-RPC error in the response
+        for ev in events:
+            if ev.get("id") == msg_id and "error" in ev:
+                err = ev["error"]
+                logger.warning("ACP HTTP RPC error on %s: %s", method, err)
+                raise RuntimeError(f"ACP HTTP {method} failed: {err.get('message', err)}")
+        return events
+
+    def prompt(self, prompt_text: str, model: str | None = None,
+               timeout: float | None = None) -> tuple[str, str]:
+        """Send a prompt via ACP HTTP and collect streamed chunks.
+
+        Returns ``(text, reasoning)``.
+        """
+        t = timeout or self._timeout
+        conn_id = self._connect()
+
+        # 1. initialize
+        init_id = self._next_msg_id()
+        self._rpc_sse(conn_id, "initialize", {
+            "protocolVersion": 1,
+            "capabilities": {},
+            "clientInfo": {"name": "hermes", "version": "1.0"},
+        }, init_id, timeout=10)
+
+        # 2. session/new — ``mcpServers`` is required (empty = no extra tools)
+        new_id = self._next_msg_id()
+        session_events = self._rpc_sse(conn_id, "session/new", {
+            "mcpServers": [],
+            "cwd": os.getcwd(),
+        }, new_id, timeout=15)
+
+        # sessionId arrives in a session/update notification
+        session_id: str | None = None
+        for ev in session_events:
+            params_ev = ev.get("params") or {}
+            sid = params_ev.get("sessionId")
+            if sid:
+                session_id = sid
+                break
+            result_ev = ev.get("result") or {}
+            sid = result_ev.get("sessionId") or result_ev.get("session_id")
+            if sid:
+                session_id = sid
+                break
+
+        if not session_id:
+            raise RuntimeError("ACP HTTP: failed to obtain sessionId from session/new")
+        logger.debug("ACP HTTP session created: %s", session_id)
+
+        # 3. session/prompt — prompt must be an array of content blocks
+        prompt_id = self._next_msg_id()
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "acp-connection-id": conn_id,
+        }
+        payload = {"jsonrpc": "2.0", "method": "session/prompt", "id": prompt_id, "params": {
+            "sessionId": session_id,
+            "prompt": [{"type": "text", "text": prompt_text}],
+        }}
+
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        with httpx.Client(timeout=t) as client:
+            with client.stream("POST", f"{self._base}/api/v1/acp",
+                               json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    line = line.rstrip("\r\n")
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        msg = json.loads(data_str)
+                    except Exception:
+                        logger.debug("ACP HTTP: ignoring non-JSON SSE data: %s", data_str[:100])
+                        continue
+
+                    # Notification: streamed chunks
+                    if msg.get("method") == "session/update":
+                        p = msg.get("params") or {}
+                        update = p.get("update") or {}
+                        kind = str(update.get("sessionUpdate") or "").strip()
+                        content = update.get("content") or {}
+                        chunk = str(content.get("text") or "") if isinstance(content, dict) else ""
+                        if kind == "agent_message_chunk" and chunk:
+                            text_parts.append(chunk)
+                        elif kind == "agent_thought_chunk" and chunk:
+                            reasoning_parts.append(chunk)
+                        elif kind in ("agent_turn_complete", "session_update_complete"):
+                            break
+                        continue
+
+                    # Response to session/prompt
+                    if msg.get("id") == prompt_id:
+                        if "error" in msg:
+                            raise RuntimeError(f"ACP prompt error: {msg['error']}")
+                        result = msg.get("result") or {}
+                        direct = result.get("message") or result.get("text") or ""
+                        if direct and not text_parts:
+                            text_parts.append(str(direct))
+                        break
+
+        return "".join(text_parts), "".join(reasoning_parts)
+
+
 class CopilotACPClient:
-    """Minimal OpenAI-client-compatible facade for Copilot ACP."""
+    """Minimal OpenAI-client-compatible facade for ACP servers.
+
+    Supports two transport modes, auto-detected from ``base_url``:
+
+    * **Subprocess (stdio)**: ``base_url`` is ``acp://copilot`` or similar
+      marker — a child process is spawned for each request.
+    * **HTTP (streamable-http)**: ``base_url`` starts with ``acp+http://``,
+      ``acp+https://``, or ``acp+tcp://`` — connects to a running ACP server.
+    """
 
     def __init__(
         self,
@@ -501,7 +721,13 @@ class CopilotACPClient:
             return _completion_to_stream_chunks(completion)
         return completion
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(self, prompt_text: str, *, model: str | None = None, timeout_seconds: float) -> tuple[str, str]:
+        # HTTP mode: base_url points to a running ACP streamable-http server
+        if _is_http_base_url(self.base_url):
+            session = _HttpACPSession(self.base_url, timeout=timeout_seconds)
+            return session.prompt(prompt_text, model=model, timeout=timeout_seconds)
+
+        # Subprocess (stdio) mode
         try:
             # Hide the console the CLI child would otherwise flash on Windows
             # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.

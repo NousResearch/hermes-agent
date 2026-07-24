@@ -6734,14 +6734,14 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 
     resolved_command = shutil.which(command) if command else None
     return {
-        "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "configured": bool(resolved_command or base_url.startswith(("acp+http://", "acp+https://", "acp+tcp://"))),
         "provider": provider_id,
         "name": pconfig.name,
         "command": command,
         "args": args,
         "resolved_command": resolved_command,
         "base_url": base_url,
-        "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "logged_in": bool(resolved_command or base_url.startswith(("acp+http://", "acp+https://", "acp+tcp://"))),
     }
 
 
@@ -6953,7 +6953,8 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
     args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
     resolved_command = shutil.which(command) if command else None
-    if not resolved_command and not base_url.startswith("acp+tcp://"):
+    _is_http_url = base_url.startswith(("acp+http://", "acp+https://", "acp+tcp://"))
+    if not resolved_command and not _is_http_url:
         raise AuthError(
             f"Could not find the Copilot CLI command '{command}'. "
             "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",

@@ -404,6 +404,28 @@ class TestApiKeyProviderStatus:
         assert status["args"] == ["--acp", "--stdio", "--debug"]
         assert status["base_url"] == "acp://copilot"
 
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "acp+http://127.0.0.1:3100",
+            "acp+https://copilot.example.test",
+        ],
+    )
+    def test_copilot_acp_status_accepts_http_server_without_local_cli(
+        self,
+        monkeypatch,
+        base_url,
+    ):
+        monkeypatch.setenv("COPILOT_ACP_BASE_URL", base_url)
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda _command: None)
+
+        status = get_external_process_provider_status("copilot-acp")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["resolved_command"] is None
+        assert status["base_url"] == base_url
+
     def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
 
@@ -518,6 +540,28 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
         assert creds["source"] == "process"
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "acp+http://127.0.0.1:3100",
+            "acp+https://copilot.example.test",
+        ],
+    )
+    def test_resolve_copilot_acp_http_server_without_local_cli(
+        self,
+        monkeypatch,
+        base_url,
+    ):
+        monkeypatch.setenv("COPILOT_ACP_BASE_URL", base_url)
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda _command: None)
+
+        creds = resolve_external_process_provider_credentials("copilot-acp")
+
+        assert creds["provider"] == "copilot-acp"
+        assert creds["api_key"] == "copilot-acp"
+        assert creds["base_url"] == base_url
+        assert creds["command"] == "copilot"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-secret-key")
@@ -730,6 +774,31 @@ class TestRuntimeProviderResolution:
 # =============================================================================
 
 class TestHasAnyProviderConfigured:
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "acp+http://127.0.0.1:3100",
+            "acp+https://copilot.example.test",
+        ],
+    )
+    def test_copilot_acp_http_base_url_counts(
+        self,
+        monkeypatch,
+        tmp_path,
+        base_url,
+    ):
+        from hermes_cli import config as config_module
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("COPILOT_ACP_BASE_URL", base_url)
+
+        from hermes_cli.main import _has_any_provider_configured
+
+        assert _has_any_provider_configured() is True
 
     def test_glm_key_counts(self, monkeypatch, tmp_path):
         from hermes_cli import config as config_module

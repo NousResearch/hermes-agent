@@ -39,6 +39,12 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             thread = _mcp_discovery_thread
             if thread is not None and thread.is_alive():
                 return
+            if not _has_configured_mcp_servers():
+                # No MCP servers configured: the first call intentionally
+                # returned without spawning a thread, so a threadless
+                # "started" state is expected here — not a failed
+                # discovery run to warn about and retry.
+                return
             try:
                 from tools.mcp_tool import get_mcp_status
 

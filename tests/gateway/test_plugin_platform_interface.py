@@ -7,14 +7,16 @@ enumeration — and verifies each one implements the required contract.
 
 import importlib
 import sys
-from pathlib import Path
 from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock
+from collections.abc import Callable
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli.config import get_project_root
+
+PROJECT_ROOT = get_project_root()
 PLATFORMS_DIR = PROJECT_ROOT / "plugins" / "platforms"
 
 
@@ -75,6 +77,25 @@ class _MockPluginContext:
         )
         platform_registry.register(entry)
         self.registered_names.append(name)
+
+    def register_cli_command(
+        self,
+        name: str,
+        help: str,
+        setup_fn: Callable,
+        handler_fn: Callable | None = None,
+        description: str = "",
+    ) -> None:
+        """Stub method for some plugin platforms to register a cli command
+
+        Tests do not verify cli comand registration. This method does nothing.
+        """
+
+    def register_hook(self, hook_name: str, callback: Callable) -> None:
+        """Stub method for some plugin platforms to register a hook
+
+        Tests do not verify hook registration. This method does nothing.
+        """
 
 
 def _import_platform_module(name: str) -> ModuleType:
@@ -139,8 +160,13 @@ def test_platform_entry_has_required_fields(platform_name: str, clean_registry):
 
 
 @pytest.mark.parametrize("platform_name", _PLATFORM_NAMES)
-def test_adapter_factory_produces_valid_adapter(platform_name: str, clean_registry):
+def test_adapter_factory_produces_valid_adapter(platform_name: str, clean_registry, monkeypatch):
     """The adapter factory must return an object with the base interface."""
+
+    # Make SmsAdapter.__init__ run
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "auth_token")
+
     module = _import_platform_module(platform_name)
     ctx = _MockPluginContext()
     module.register(ctx)

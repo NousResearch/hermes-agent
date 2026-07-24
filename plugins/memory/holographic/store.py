@@ -397,7 +397,16 @@ class MemoryStore:
                 LIMIT ?
             """
             rows = self._conn.execute(sql, params).fetchall()
-            return [self._row_to_dict(r) for r in rows]
+            results = [self._row_to_dict(r) for r in rows]
+            if results:
+                ids = [r["fact_id"] for r in results]
+                placeholders = ",".join("?" * len(ids))
+                self._conn.execute(
+                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                    ids,
+                )
+                self._conn.commit()
+            return results
 
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Record user feedback and adjust trust asymmetrically.

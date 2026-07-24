@@ -1,0 +1,141 @@
+---
+slug: /
+sidebar_position: 0
+title: "Documentação do Hermes Agent"
+description: "O agente de IA auto-melhorável construído pela Nous Research. Um loop de aprendizado integrado que cria skills a partir da experiência, as melhora durante o uso e lembra entre sessões."
+hide_table_of_contents: true
+displayed_sidebar: docs
+---
+
+import Link from "@docusaurus/Link";
+
+# Hermes Agent
+
+O agente de IA auto-melhorável construído pela [Nous Research](https://nousresearch.com). O único agente com um loop de aprendizado integrado — ele cria skills a partir da experiência, as melhora durante o uso, se estimula a persistir conhecimento e constrói um modelo cada vez mais profundo de quem você é entre as sessões.
+
+<div
+  style={{
+    display: "flex",
+    gap: "1rem",
+    marginBottom: "2rem",
+    flexWrap: "wrap",
+  }}
+>
+  <Link
+    to="/getting-started/installation"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      backgroundColor: "#FFD700",
+      color: "#07070d",
+      borderRadius: "8px",
+      fontWeight: 600,
+      textDecoration: "none",
+    }}
+  >
+    Comece por aqui →
+  </Link>
+  <a
+    href="https://hermes-agent.nousresearch.com/"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    Baixar Desktop
+  </a>
+  <a
+    href="https://github.com/NousResearch/hermes-agent"
+    style={{
+      display: "inline-block",
+      padding: "0.6rem 1.2rem",
+      border: "1px solid rgba(255,215,0,0.2)",
+      borderRadius: "8px",
+      textDecoration: "none",
+    }}
+  >
+    Ver no GitHub
+  </a>
+</div>
+
+## Instalação
+
+### Windows ou macOS
+
+Para instalar facilmente os aplicativos de linha de comando e desktop, [baixe o instalador do Hermes Desktop](https://hermes-agent.nousresearch.com/) do nosso site e execute-o.
+
+### Sem o Hermes Desktop:
+
+Para uma instalação apenas com linha de comando sem o Hermes Desktop, execute:
+
+#### Linux / macOS / WSL2 / Android (Termux)
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+#### Windows (nativo)
+
+Execute no powershell:
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+Veja o **[Guia de Instalação](/getting-started/installation)** completo para saber o que o instalador faz, a estrutura de diretórios por-usuário vs root, e notas específicas para Windows. Para a matriz completa de suporte a plataformas, veja **[Suporte a Plataformas](/getting-started/platform-support)**.
+
+:::tip Caminho mais rápido para um agente funcional
+Após instalar, execute `hermes setup --portal` — um único OAuth cobre um modelo mais todas as quatro ferramentas do Tool Gateway (pesquisa web, geração de imagem, TTS, navegador). Veja [Nous Portal](/integrations/nous-portal).
+:::
+
+## O que é o Hermes Agent?
+
+Não é um copiloto de programação preso a uma IDE ou um wrapper de chatbot em torno de uma única API. É um **agente autônomo** que se torna mais capaz quanto mais tempo executa. Ele vive onde você o colocar — um VPS de $5, um cluster de GPU, ou infraestrutura serverless (Daytona, Modal) que custa quase nada quando ociosa. Converse com ele pelo Telegram enquanto ele trabalha em uma VM na nuvem na qual você nunca faz SSH diretamente. Ele não está preso ao seu laptop.
+
+## Links Rápidos
+
+|                                                                                |                                                                              |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| 🚀 **[Instalação](/getting-started/installation)**                             | Instale em 60 segundos no Linux, macOS, WSL2, Windows nativo ou Android      |
+| 📖 **[Tutorial Início Rápido](/getting-started/quickstart)**                   | Sua primeira conversa e principais recursos para testar                      |
+| 🗺️ **[Rota de Aprendizado](/getting-started/learning-path)**                  | Encontre a documentação certa para seu nível de experiência                  |
+| ⚙️ **[Configuração](/user-guide/configuration)**                              | Arquivo de config, providers, modelos e opções                               |
+| 💬 **[Gateway de Mensagens](/user-guide/messaging)**                          | Configure Telegram, Discord, Slack, WhatsApp, Teams e muito mais             |
+| 🔧 **[Ferramentas e Toolsets](/user-guide/features/tools)**                   | Mais de 60 ferramentas integradas e como configurá-las                       |
+| 🧠 **[Sistema de Memória](/user-guide/features/memory)**                      | Memória persistente que cresce entre as sessões                              |
+| 📚 **[Sistema de Skills](/user-guide/features/skills)**                       | Memória procedural que o agente cria e reutiliza                             |
+| 🔌 **[Integração MCP](/user-guide/features/mcp)**                             | Conecte-se a servidores MCP, filtre suas ferramentas e estenda o Hermes com segurança |
+| 🧭 **[Usar MCP com Hermes](/guides/use-mcp-with-hermes)**                     | Padrões práticos de configuração MCP, exemplos e tutoriais                   |
+| 🎙️ **[Modo de Voz](/user-guide/features/voice-mode)**                        | Interação por voz em tempo real no CLI, Telegram, Discord e Discord VC       |
+| 🗣️ **[Usar Modo de Voz com Hermes](/guides/use-voice-mode-with-hermes)**      | Configuração prática e padrões de uso para fluxos de voz do Hermes           |
+| 🎭 **[Personalidade e SOUL.md](/user-guide/features/personality)**            | Defina a voz padrão do Hermes com um SOUL.md global                          |
+| 📄 **[Arquivos de Contexto](/user-guide/features/context-files)**             | Arquivos de contexto de projeto que moldam cada conversa                     |
+| 🔒 **[Segurança](/user-guide/security)**                                      | Aprovação de comandos, autorização, isolamento por container                 |
+| 💡 **[Dicas e Melhores Práticas](/guides/tips)**                              | Ganhos rápidos para extrair o máximo do Hermes                               |
+| 🏗️ **[Arquitetura](/developer-guide/architecture)**                          | Como funciona por baixo dos panos                                            |
+| ❓ **[FAQ e Solução de Problemas](/reference/faq)**                           | Perguntas comuns e soluções                                                  |
+
+## Principais Recursos
+
+- **Um loop de aprendizado fechado** — Memória curada pelo agente com estímulos periódicos, criação autônoma de skills, auto-melhoria de skills durante o uso, recuperação entre sessões via FTS5 com sumarização por LLM, e modelagem dialética de usuário com [Honcho](https://github.com/plastic-labs/honcho) dialectic user modeling
+- **Funciona em qualquer lugar, não apenas no seu laptop** — 6 backends de terminal: local, Docker, SSH, Daytona, Singularity, Modal. Daytona e Modal oferecem persistência serverless — seu ambiente hiberna quando ocioso, custando quase nada
+- **Vive onde você vive** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, Email, SMS, DingTalk, Feishu, WeCom, Weixin, QQ Bot, Yuanbao, BlueBubbles, Home Assistant, Microsoft Teams, Google Chat e muito mais — mais de 20 plataformas a partir de um único gateway
+- **Construído por treinadores de modelos** — Criado pela [Nous Research](https://nousresearch.com), o laboratório por trás dos modelos Hermes, Nomos e Psyche. Funciona com [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), OpenAI ou qualquer endpoint
+- **Automações agendadas** — Cron integrado com entrega para qualquer plataforma
+- **Delegação e paralelização** — Crie subagentes isolados para fluxos de trabalho paralelos. Programmatic Tool Calling via `execute_code` colapsa pipelines de múltiplas etapas em chamadas de inferência únicas
+- **Skills de padrão aberto** — Compatível com [agentskills.io](https://agentskills.io). Skills são portáteis, compartilháveis e contribuídas pela comunidade através do Skills Hub
+- **Controle web completo** — Pesquisa, extração, navegação, visão, geração de imagem, TTS — uma assinatura via [Nous Portal](/integrations/nous-portal) agrupa todos eles
+- **Suporte MCP** — Conecte-se a qualquer servidor MCP para capacidades estendidas de ferramentas
+- **Pronto para pesquisa** — Processamento em lote, exportação de trajetórias, treinamento RL com Atropos. Construído pela [Nous Research](https://nousresearch.com) — o laboratório por trás dos modelos Hermes, Nomos e Psyche
+
+## Para LLMs e agentes de código
+
+Pontos de entrada legíveis por máquina para esta documentação:
+
+- **[`/llms.txt`](/llms.txt)** — Índice curado de cada página de documentação com descrições curtas. ~17 KB, seguro para carregar no contexto de um LLM.
+- **[`/llms-full.txt`](/llms-full.txt)** — Todas as páginas de documentação concatenadas em um único arquivo markdown para ingestão única. ~1.8 MB.
+
+Ambos os arquivos também resolvem em `/docs/llms.txt` e `/docs/llms-full.txt`. Gerados novamente a cada deploy.

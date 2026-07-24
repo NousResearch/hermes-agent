@@ -432,7 +432,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             return False
 
-        client = httpx.AsyncClient(timeout=30.0)
+        client = httpx.AsyncClient(timeout=30.0, trust_env=False)
         self._http_client = client
 
         # The sidecar holds the gRPC stream for BOTH directions, so it is
@@ -875,7 +875,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if sys.platform == "win32":  # lsof/ps; orphaning is a POSIX-only path
             return
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
                 await client.post(
                     f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
                     headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
@@ -1001,7 +1001,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Wait for /healthz to come up — give it up to 15s on cold start.
         deadline = time.time() + 15.0
         last_err: Optional[Exception] = None
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
             while time.time() < deadline:
                 if self._sidecar_proc.poll() is not None:
                     raise RuntimeError(
@@ -1564,7 +1564,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # _http_client directly — it always runs on the gateway's loop.
         url = f"http://{self._sidecar_bind}:{self._sidecar_port}{path}"
         headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(
@@ -1704,7 +1704,7 @@ async def _standalone_send(
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             # 1. Text body first (if any), so it leads the conversation.
             if message:
                 send_body: Dict[str, Any] = {

@@ -963,6 +963,12 @@ def kanban_command(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if _is_kanban_worker_cli_mutation(args):
+        print(
+            "kanban: running Kanban workers cannot mutate board state through the CLI; use the structured Kanban tools",
+            file=sys.stderr,
+        )
+        return 1
 
     # Board-management commands operate on board metadata and the persisted
     # current-board pointer itself. They must ignore the shared `--board`
@@ -1096,6 +1102,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "create",
     "swarm",
     "assign",
+    "set-model",
     "reclaim",
     "reassign",
     "link",
@@ -1149,6 +1156,23 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
         return is_delegated_child_process_context()
     except Exception:
         return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+
+
+def _is_kanban_worker_cli_mutation(args: argparse.Namespace) -> bool:
+    """Reject shell-based board mutations from a running Kanban worker.
+
+    Workers receive structured Kanban tools whose calls can be inspected by
+    plugin policy hooks. Allowing the same worker to invoke mutating CLI
+    commands through ``terminal`` would bypass those hooks.
+    """
+    action = getattr(args, "kanban_action", None)
+    if action == "boards":
+        boards_action = getattr(args, "boards_action", None) or "list"
+        if boards_action not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
+            return False
+    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
+        return False
+    return bool(os.environ.get("HERMES_KANBAN_TASK"))
 
 
 # ---------------------------------------------------------------------------
@@ -1554,9 +1578,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if args.mine and not assignee:
         assignee = _profile_author()
     with kb.connect_closing() as conn:
-        # Cheap "mini-dispatch": recompute ready so list output reflects
-        # dependencies that may have cleared since the last dispatcher tick.
-        kb.recompute_ready(conn)
+        # Cheap "mini-dispatch" for interactive callers. Running workers get a
+        # genuinely read-only list path so terminal-based reads cannot mutate the
+        # board behind structured tool policy hooks.
+        if not os.environ.get("HERMES_KANBAN_TASK"):
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn,
             assignee=assignee,

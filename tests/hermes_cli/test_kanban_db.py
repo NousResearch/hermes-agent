@@ -222,6 +222,40 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.workspace_kind == "scratch"
 
 
+def test_create_task_initial_block_is_atomic_and_survives_recompute(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="hold for release",
+            assignee="alice",
+            initial_status="blocked",
+        )
+        events = kb.list_events(conn, tid)
+        promoted = kb.recompute_ready(conn)
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.block_kind is None
+    assert task.block_recurrences == 0
+    assert promoted == 0
+    assert [event.kind for event in events[-2:]] == ["created", "blocked"]
+    assert events[-1].payload is not None
+    assert events[-1].payload["kind"] is None
+    assert events[-1].payload["recurrences"] == 0
+
+    with kb.connect() as conn:
+        assert kb.unblock_task(conn, tid)
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.block_task(conn, tid, reason="still held", kind="needs_input")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+    assert task.block_recurrences == 1
+
+
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
     with kb.connect() as conn:
         p = kb.create_task(conn, title="parent")

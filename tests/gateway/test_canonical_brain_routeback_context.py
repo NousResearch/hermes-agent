@@ -1,5 +1,6 @@
 from gateway.canonical_brain_routeback_context import (
     attach_routeback_context_to_user_turn,
+    build_canonical_runtime_posture_prompt,
     build_routeback_context_prompt_for_session,
     lookup_routeback_cases_for_thread,
     lookup_routeback_context_for_thread,
@@ -212,6 +213,27 @@ def test_enabled_context_surfaces_lookup_failure_as_incomplete_blocker(monkeypat
     assert "INCOMPLETE/BLOCKED" in prompt
     assert "exact route-back context lookup failed" in prompt
     assert "do not create a duplicate case" in prompt
+
+
+def test_compatibility_posture_is_operational_but_not_privileged(monkeypatch):
+    import gateway.canonical_writer_boundary as boundary
+
+    monkeypatch.setattr(
+        boundary,
+        "canonical_runtime_posture",
+        lambda: {
+            "data_plane": "operational",
+            "transport": "legacy_direct_helper_compat",
+            "privileged_isolation": "pending",
+            "compatibility_fallback_active": True,
+        },
+    )
+
+    prompt = build_canonical_runtime_posture_prompt()
+
+    assert "Canonical data plane: OPERATIONAL" in prompt
+    assert "Privileged writer isolation: PENDING" in prompt
+    assert "Do not report Canonical linkage as unreadable or unwritable" in prompt
 
 
 def test_disabled_context_remains_absent_without_writer_probe(monkeypatch):

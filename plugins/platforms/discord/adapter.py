@@ -849,14 +849,148 @@ def _discord_public_target_error(
     return None
 
 
+def _discord_explicitly_allowed_guild_target(channel: Any) -> bool:
+    """Return whether an operator allowlisted this guild channel or its parent."""
+
+    if channel is None or getattr(channel, "guild", None) is None:
+        return False
+    target_ids = {
+        str(value).strip()
+        for value in (
+            getattr(channel, "id", None),
+            getattr(channel, "parent_id", None),
+            getattr(getattr(channel, "parent", None), "id", None),
+        )
+        if value
+    }
+    allowed_channel_ids = {
+        value.strip()
+        for value in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(",")
+        if value.strip()
+    }
+    return bool(target_ids & allowed_channel_ids)
+
+
+def _discord_private_target_with_bot_access(channel: Any) -> bool:
+    """Prove a guild target is private and writable by this bot."""
+
+    guild = getattr(channel, "guild", None)
+    if channel is None or guild is None or _is_discord_private_thread(channel):
+        return False
+    channel_type = getattr(channel, "type", None)
+    type_value = getattr(channel_type, "value", channel_type)
+    type_name = str(getattr(channel_type, "name", "") or "").strip().casefold()
+    allowed_type_values = {0, 5, 10, 11, 15}
+    allowed_type_names = {
+        "text",
+        "news",
+        "news_thread",
+        "public_thread",
+        "forum",
+    }
+    if type_value not in allowed_type_values and type_name not in allowed_type_names:
+        return False
+    permission_target = getattr(channel, "parent", None) or channel
+    permissions_for = getattr(permission_target, "permissions_for", None)
+    default_role = getattr(guild, "default_role", None)
+    bot_member = getattr(guild, "me", None)
+    if default_role is None or bot_member is None or not callable(permissions_for):
+        return False
+    try:
+        everyone_permissions = permissions_for(default_role)
+        bot_permissions = channel.permissions_for(bot_member)
+    except Exception:
+        return False
+    if getattr(everyone_permissions, "view_channel", None) is not False:
+        return False
+    if getattr(bot_permissions, "view_channel", None) is not True:
+        return False
+    if getattr(bot_permissions, "read_message_history", None) is not True:
+        return False
+    if type_value in {10, 11} or type_name in {"news_thread", "public_thread"}:
+        return getattr(bot_permissions, "send_messages_in_threads", None) is True
+    return getattr(bot_permissions, "send_messages", None) is True
+
+
+def _discord_bot_has_explicit_channel_grant(channel: Any) -> bool:
+    """Prove the bot/member or one of its roles is explicitly granted view."""
+
+    guild = getattr(channel, "guild", None)
+    bot_member = getattr(guild, "me", None)
+    permission_target = getattr(channel, "parent", None) or channel
+    overwrites_for = getattr(permission_target, "overwrites_for", None)
+    if bot_member is None or not callable(overwrites_for):
+        return False
+    principals = [bot_member, *(getattr(bot_member, "roles", None) or ())]
+    for principal in principals:
+        try:
+            overwrite = overwrites_for(principal)
+        except Exception:
+            continue
+        if getattr(overwrite, "view_channel", None) is True:
+            return True
+    return False
+
+
+def _discord_guild_has_allowlisted_anchor(channel: Any) -> bool:
+    """Return whether this guild already contains an allowlisted channel."""
+
+    guild = getattr(channel, "guild", None)
+    get_channel = getattr(guild, "get_channel", None)
+    if guild is None or not callable(get_channel):
+        return False
+    for raw_id in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(","):
+        try:
+            channel_id = int(raw_id.strip())
+        except (TypeError, ValueError):
+            continue
+        try:
+            if get_channel(channel_id) is not None:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _discord_approved_private_guild_target(channel: Any) -> bool:
+    """Allow approved private targets, including newly permissioned channels."""
+
+    if not _discord_private_target_with_bot_access(channel):
+        return False
+    if _discord_explicitly_allowed_guild_target(channel):
+        return True
+    return (
+        _discord_guild_has_allowlisted_anchor(channel)
+        and _discord_bot_has_explicit_channel_grant(channel)
+    )
+
+
 def _discord_policy_public_target_error(
     channel: Any,
     default_role: Any = None,
 ) -> Optional[str]:
-    """Apply the public-only proof when the Muncho writer policy is active."""
+    """Apply the approved-private-channel policy, then the public fallback."""
 
+    if os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip():
+        if _discord_approved_private_guild_target(channel):
+            return None
+        return (
+            "Discord target is not an approved private guild channel with "
+            "explicit bot access, or one of that channel's threads."
+        )
     if not _discord_public_only_policy_required():
         return None
+    return _discord_public_target_error(channel, default_role)
+
+
+def _discord_delivery_target_error(
+    channel: Any,
+    default_role: Any = None,
+) -> Optional[str]:
+    """Apply dynamic private-channel policy without weakening send safety."""
+
+    if os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip():
+        return _discord_policy_public_target_error(channel, default_role)
     return _discord_public_target_error(channel, default_role)
 
 
@@ -1242,17 +1376,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
-                if _discord_public_only_policy_required():
-                    public_target_error = _discord_public_target_error(
-                        getattr(message, "channel", None)
+                public_target_error = _discord_policy_public_target_error(
+                    getattr(message, "channel", None)
+                )
+                if public_target_error:
+                    logger.warning(
+                        "[%s] Ignoring forbidden Discord ingress target: %s",
+                        adapter_self.name,
+                        public_target_error,
                     )
-                    if public_target_error:
-                        logger.warning(
-                            "[%s] Ignoring forbidden Discord ingress target: %s",
-                            adapter_self.name,
-                            public_target_error,
-                        )
-                        return
+                    return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
@@ -1295,6 +1428,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         guild=_msg_guild,
                         is_dm=_is_dm,
                         channel_ids=_msg_channel_ids,
+                        channel=message.channel,
                     ):
                         self._warn_if_fail_closed_default()
                         return
@@ -2198,7 +2332,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 metadata and metadata.get("require_single_public_receipt")
             )
 
-            public_target_error = _discord_public_target_error(channel)
+            public_target_error = _discord_delivery_target_error(channel)
             if public_target_error:
                 return SendResult(success=False, error=public_target_error)
 
@@ -2240,7 +2374,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("Could not fetch reply-to message: %s", e)
 
             for i, chunk in enumerate(chunks):
-                public_target_error = _discord_public_target_error(channel)
+                public_target_error = _discord_delivery_target_error(channel)
                 if public_target_error:
                     return SendResult(
                         success=False,
@@ -2274,7 +2408,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        public_target_error = _discord_public_target_error(channel)
+                        public_target_error = _discord_delivery_target_error(channel)
                         if public_target_error:
                             return SendResult(
                                 success=False,
@@ -2397,7 +2531,7 @@ class DiscordAdapter(BasePlatformAdapter):
         message_ids = [message_id]
         warnings: list[str] = []
         for chunk in chunks[1:]:
-            public_target_error = _discord_public_target_error(forum_channel)
+            public_target_error = _discord_delivery_target_error(forum_channel)
             if public_target_error:
                 warnings.append(public_target_error)
                 break
@@ -3935,6 +4069,7 @@ class DiscordAdapter(BasePlatformAdapter):
         guild=None,
         is_dm: bool = False,
         channel_ids: Optional[set[str]] = None,
+        channel: Any = None,
     ) -> bool:
         """Check if user is allowed via DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES.
 
@@ -3959,6 +4094,8 @@ class DiscordAdapter(BasePlatformAdapter):
             is_dm: True if the message came from a DM channel.
             channel_ids: Resolved text-channel ids for guild traffic when an
                 upstream gate has already scoped the message to a channel.
+            channel: Resolved guild channel object for the dynamic approved-
+                private-channel policy.
         """
         # ``getattr`` fallbacks here guard against test fixtures that build
         # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
@@ -3986,7 +4123,14 @@ class DiscordAdapter(BasePlatformAdapter):
             if (
                 not is_dm
                 and channel_ids is not None
-                and self._discord_channel_ids_allowed(channel_ids)
+                and (
+                    self._discord_channel_ids_allowed(channel_ids)
+                    or (
+                        bool(os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip())
+                        and channel is not None
+                        and not _discord_policy_public_target_error(channel)
+                    )
+                )
             ):
                 return True
             return False
@@ -4104,13 +4248,12 @@ class DiscordAdapter(BasePlatformAdapter):
         an opaque interaction failure rather than a clean rejection.
         """
         chan_obj = getattr(interaction, "channel", None)
-        if _discord_public_only_policy_required():
-            public_target_error = _discord_public_target_error(chan_obj)
-            if public_target_error:
-                return (
-                    False,
-                    f"public_target_forbidden: {public_target_error}",
-                )
+        public_target_error = _discord_policy_public_target_error(chan_obj)
+        if public_target_error:
+            return (
+                False,
+                f"discord_target_forbidden: {public_target_error}",
+            )
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
 
         channel_ids: set = set()
@@ -4152,7 +4295,10 @@ class DiscordAdapter(BasePlatformAdapter):
                             False,
                             "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
                         )
-                    if not (channel_keys & allowed):
+                    if (
+                        not (channel_keys & allowed)
+                        and not _discord_approved_private_guild_target(chan_obj)
+                    ):
                         return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
 
             # Ignored beats allowed: even when a thread's parent channel
@@ -4187,6 +4333,7 @@ class DiscordAdapter(BasePlatformAdapter):
             guild=interaction_guild,
             is_dm=in_dm,
             channel_ids=channel_keys if not in_dm else None,
+            channel=chan_obj,
         ):
             return (
                 False,
@@ -4241,11 +4388,8 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name, user_id, chan_id, guild_id, command_text, reason,
         )
 
-        unsafe_target = (
-            _discord_public_only_policy_required()
-            and _discord_public_target_error(
-                getattr(interaction, "channel", None)
-            )
+        unsafe_target = _discord_policy_public_target_error(
+            getattr(interaction, "channel", None)
         )
         if not unsafe_target:
             try:
@@ -4547,15 +4691,14 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return
-        if _discord_public_only_policy_required():
-            channel = self._client.get_channel(int(chat_id))
-            if channel is None:
-                try:
-                    channel = await self._client.fetch_channel(int(chat_id))
-                except Exception:
-                    return
-            if _discord_public_target_error(channel):
+        channel = self._client.get_channel(int(chat_id))
+        if channel is None:
+            try:
+                channel = await self._client.fetch_channel(int(chat_id))
+            except Exception:
                 return
+        if _discord_policy_public_target_error(channel):
+            return
         # Don't start a duplicate loop
         if chat_id in self._typing_tasks:
             return
@@ -4564,13 +4707,12 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 while True:
                     try:
-                        if _discord_public_only_policy_required():
-                            current_channel = self._client.get_channel(int(chat_id))
-                            if (
-                                current_channel is None
-                                or _discord_public_target_error(current_channel)
-                            ):
-                                return
+                        current_channel = self._client.get_channel(int(chat_id))
+                        if (
+                            current_channel is None
+                            or _discord_policy_public_target_error(current_channel)
+                        ):
+                            return
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",
                             channel_id=chat_id,
@@ -7293,7 +7435,11 @@ class DiscordAdapter(BasePlatformAdapter):
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
+                if (
+                    "*" not in allowed_channels
+                    and not (channel_keys & allowed_channels)
+                    and not _discord_approved_private_guild_target(message.channel)
+                ):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
                     return
 
@@ -7889,10 +8035,7 @@ def _component_check_auth(
       - user is approved in the pairing store -> allow
       - otherwise -> reject
     """
-    if (
-        _discord_public_only_policy_required()
-        and _discord_public_target_error(getattr(interaction, "channel", None))
-    ):
+    if _discord_policy_public_target_error(getattr(interaction, "channel", None)):
         return False
 
     user = getattr(interaction, "user", None)
@@ -8005,9 +8148,7 @@ def _define_discord_view_classes() -> None:
 
     class _PublicOnlyDiscordView(discord.ui.View):
         async def interaction_check(self, interaction: discord.Interaction) -> bool:
-            if not _discord_public_only_policy_required():
-                return True
-            public_target_error = _discord_public_target_error(
+            public_target_error = _discord_policy_public_target_error(
                 getattr(interaction, "channel", None)
             )
             if not public_target_error:

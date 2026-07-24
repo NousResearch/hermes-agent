@@ -51,9 +51,9 @@ class RouteBackContextLookup:
 
 
 def _load_helper() -> Any:
-    from gateway.canonical_writer_boundary import require_writer_database
+    from gateway.canonical_writer_boundary import require_canonical_database
 
-    return require_writer_database()
+    return require_canonical_database()
 
 
 def _routeback_context_enabled() -> bool:
@@ -76,9 +76,36 @@ def _routeback_context_enabled() -> bool:
 
 
 def _helper_available() -> bool:
-    from gateway.canonical_writer_boundary import writer_boundary_configured
+    from gateway.canonical_writer_boundary import (
+        legacy_direct_helper_compat_configured,
+        writer_boundary_configured,
+    )
 
-    return writer_boundary_configured()
+    return bool(
+        writer_boundary_configured()
+        or legacy_direct_helper_compat_configured()
+    )
+
+
+def build_canonical_runtime_posture_prompt() -> str:
+    """Describe temporary compatibility without conflating it with outage."""
+
+    from gateway.canonical_writer_boundary import canonical_runtime_posture
+
+    posture = canonical_runtime_posture()
+    if posture.get("transport") != "legacy_direct_helper_compat":
+        return ""
+    return "\n".join(
+        [
+            "## Canonical Brain Runtime Posture",
+            "",
+            "- Canonical data plane: OPERATIONAL through the explicitly approved temporary compatibility transport.",
+            "- Privileged writer isolation: PENDING migration; report this as a separate security-hardening lane.",
+            "- A successful `canonical_brain_query` or `canonical_event_append` is functional Canonical read/write proof.",
+            "- Do not report Canonical linkage as unreadable or unwritable solely because the privileged service/socket is not active.",
+            "- Do not describe the compatibility transport as privileged isolation; the target remains the separate managed writer service.",
+        ]
+    )
 
 
 def _coerce_mapping(value: Any) -> dict[str, Any]:
@@ -361,7 +388,7 @@ def build_routeback_context_prompt(
             "- Notify the source/requester thread at most once, with only the actionable delta.",
             "- Record `route_back.sent` only after a real delivery receipt/message_id.",
             "- Muncho must not send route-backs by DM or group DM. Use an exact authorized Discord guild channel or eligible guild thread. Existing Discord ACLs remain authoritative; if the privileged edge cannot prove the exact guild target and live permissions, record/report `route_back.blocked`.",
-            "- When the guild target is exact, prefer `route_back_execute`: it sends directly, then records `route_back.sent` with the real receipt, or records `route_back.blocked` if delivery cannot be completed.",
+            "- When `route_back_execute` is available and the guild target is exact, prefer it: it sends directly, then records `route_back.sent` with the real receipt, or records `route_back.blocked` if delivery cannot be completed.",
             "- If a resolver asks you to forward/notify the requester, either actually notify the source/requester thread and record `route_back.sent`, or record/report `route_back.blocked` with the blocker. A reply like 'noted', 'marked', or 'for forwarding' is not a terminal outcome.",
             "- A `route_back.required` or `route_back.intent.created` tool result is not completion. Keep working in the same turn until there is a `route_back.sent` receipt or `route_back.blocked` blocker.",
             "- Never answer the resolver with only 'noted/marked for forwarding' after a concrete forward request; that leaves the requester uninformed.",
@@ -389,9 +416,13 @@ def build_routeback_context_prompt_for_session(context: SessionContext) -> str:
                 "the privileged Canonical writer is unavailable or misconfigured"
             )
         lookup = lookup_routeback_context_for_thread(current_thread_id)
-        return build_routeback_context_prompt(
+        context_prompt = build_routeback_context_prompt(
             lookup.cases,
             truncated=lookup.truncated,
+        )
+        posture_prompt = build_canonical_runtime_posture_prompt()
+        return "\n\n".join(
+            fragment for fragment in (posture_prompt, context_prompt) if fragment
         )
     except Exception as exc:
         logger.warning("Canonical Brain route-back context lookup failed: %s", exc)
@@ -439,6 +470,7 @@ __all__ = [
     "RouteBackContextLookup",
     "lookup_routeback_context_for_thread",
     "lookup_routeback_cases_for_thread",
+    "build_canonical_runtime_posture_prompt",
     "build_routeback_context_prompt",
     "build_routeback_context_incomplete_prompt",
     "build_routeback_context_prompt_for_session",

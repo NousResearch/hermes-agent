@@ -18,6 +18,7 @@ import contextvars
 import ctypes
 import errno
 import hashlib
+import importlib.util
 import os
 import stat
 import sys
@@ -35,6 +36,10 @@ DEFAULT_DISCORD_EDGE_SOCKET_PATH = Path("/run/muncho-discord-egress/edge.sock")
 DEFAULT_DISCORD_EDGE_UNIT = "muncho-discord-egress.service"
 DEFAULT_DISCORD_EDGE_USER = "muncho-discord-egress"
 DEFAULT_MANAGED_CONFIG_PATH = Path("/etc/hermes/config.yaml")
+DEFAULT_LEGACY_DIRECT_HELPER_PATH = Path(
+    "/opt/adventico-ai-platform/canonical-brain/bin/"
+    "cloud_sql_synthetic_write_gate.py"
+)
 _MAX_RUNTIME_VALUE_CHARS = 1024
 
 
@@ -44,6 +49,7 @@ class CanonicalWriterBoundaryConfig:
 
     enabled: bool = False
     model_tools_enabled: bool = False
+    legacy_direct_helper_compat_enabled: bool = False
     socket_path: Path = DEFAULT_SOCKET_PATH
     gateway_unit: str = DEFAULT_GATEWAY_UNIT
     writer_unit: str = DEFAULT_WRITER_UNIT
@@ -79,6 +85,7 @@ _FROZEN_BOUNDARY_DECLARED_ENABLED = False
 _CONFIG_IS_FROZEN = False
 _PROCESS_HARDENING_LOCK = threading.Lock()
 _PROCESS_HARDENED = False
+_LEGACY_HELPER_ADAPTER: Any | None = None
 _PR_GET_DUMPABLE = 3
 _PR_SET_DUMPABLE = 4
 
@@ -132,8 +139,22 @@ def load_writer_boundary_config(config: Mapping[str, Any] | None = None) -> Cano
     audit_bridge = audit_bridge if isinstance(audit_bridge, Mapping) else {}
     raw = canonical.get("writer_boundary")
     raw = raw if isinstance(raw, Mapping) else {}
+    legacy_compat = canonical.get("legacy_direct_helper_compat")
+    legacy_compat = (
+        legacy_compat if isinstance(legacy_compat, Mapping) else {}
+    )
     edge = canonical.get("discord_edge")
     edge = edge if isinstance(edge, Mapping) else {}
+    boundary_enabled = _coerce_bool(raw.get("enabled"), False)
+    legacy_compat_enabled = _coerce_bool(
+        legacy_compat.get("enabled"),
+        False,
+    )
+    if boundary_enabled and legacy_compat_enabled:
+        raise ValueError(
+            "canonical writer boundary and legacy direct helper compatibility "
+            "cannot both be enabled"
+        )
 
     socket_raw = str(raw.get("socket_path") or DEFAULT_SOCKET_PATH).strip()
     socket_path = Path(socket_raw)
@@ -180,11 +201,12 @@ def load_writer_boundary_config(config: Mapping[str, Any] | None = None) -> Cano
         raise ValueError("Discord edge request_timeout_seconds must be between 0.5 and 30")
 
     return CanonicalWriterBoundaryConfig(
-        enabled=_coerce_bool(raw.get("enabled"), False),
+        enabled=boundary_enabled,
         model_tools_enabled=bool(
             _coerce_bool(canonical.get("tools_enabled"), False)
             or _coerce_bool(audit_bridge.get("enabled"), False)
         ),
+        legacy_direct_helper_compat_enabled=legacy_compat_enabled,
         socket_path=socket_path,
         gateway_unit=gateway_unit,
         writer_unit=writer_unit,
@@ -266,7 +288,67 @@ def canonical_model_tools_configured() -> bool:
         config = frozen_writer_boundary_config()
     except Exception:
         return False
-    return bool(config.enabled and config.model_tools_enabled)
+    return bool(
+        config.model_tools_enabled
+        and (
+            config.enabled
+            or config.legacy_direct_helper_compat_enabled
+        )
+    )
+
+
+def legacy_direct_helper_compat_configured() -> bool:
+    """Return the restart-frozen temporary legacy database compatibility gate."""
+
+    try:
+        config = frozen_writer_boundary_config()
+    except Exception:
+        return False
+    return bool(
+        config.legacy_direct_helper_compat_enabled
+        and not config.enabled
+    )
+
+
+def canonical_data_plane_mode() -> str:
+    """Return the restart-frozen Canonical transport posture.
+
+    This deliberately separates functional Canonical data-plane availability
+    from the stronger privileged-process isolation target.  The temporary
+    compatibility lane is an explicitly configured, operational data plane;
+    it must not be reported as a Canonical outage merely because the separate
+    writer service has not yet been activated.
+    """
+
+    try:
+        config = frozen_writer_boundary_config()
+    except Exception:
+        return "unavailable"
+    if not config.model_tools_enabled:
+        return "disabled"
+    if config.enabled:
+        return "privileged_writer"
+    if config.legacy_direct_helper_compat_enabled:
+        return "legacy_direct_helper_compat"
+    return "unavailable"
+
+
+def canonical_runtime_posture() -> dict[str, Any]:
+    """Return a secret-free model/diagnostic view of the two health lanes."""
+
+    mode = canonical_data_plane_mode()
+    return {
+        "data_plane": (
+            "operational"
+            if mode in {"privileged_writer", "legacy_direct_helper_compat"}
+            else mode
+        ),
+        "transport": mode,
+        "privileged_isolation": (
+            "active" if mode == "privileged_writer" else "pending"
+        ),
+        "compatibility_fallback_active": mode == "legacy_direct_helper_compat",
+    }
 
 
 def discord_edge_configured() -> bool:
@@ -333,6 +415,7 @@ def _reset_frozen_writer_boundary_config_for_tests() -> None:
     global _CONFIG_IS_FROZEN, _FROZEN_CONFIG, _FROZEN_CONFIG_ERROR
     global _FROZEN_BOUNDARY_DECLARED_ENABLED
     global _PROCESS_HARDENED
+    global _LEGACY_HELPER_ADAPTER
     with _CONFIG_LOCK:
         _CONFIG_IS_FROZEN = False
         _FROZEN_CONFIG = None
@@ -340,6 +423,8 @@ def _reset_frozen_writer_boundary_config_for_tests() -> None:
         _FROZEN_BOUNDARY_DECLARED_ENABLED = False
     with _PROCESS_HARDENING_LOCK:
         _PROCESS_HARDENED = False
+    with _CLIENT_LOCK:
+        _LEGACY_HELPER_ADAPTER = None
 
 
 def _linux_prctl(option: int, argument: int) -> int:
@@ -426,6 +511,73 @@ def require_writer_database() -> Any:
     if context is None:
         raise PermissionError("canonical_database_access_requires_writer_service")
     return context.database
+
+
+class _LegacyDirectHelperAdapter:
+    """Compatibility adapter for the fixed legacy Cloud SQL helper.
+
+    This adapter is reachable only through the explicit restart-frozen
+    ``canonical_brain.legacy_direct_helper_compat.enabled`` policy.  The
+    privileged writer remains the only path whenever its boundary is enabled.
+    """
+
+    def __init__(self, helper: Any) -> None:
+        self._helper = helper
+
+    def open_connection(self) -> Any:
+        return self._helper.connect(self._helper.get_secret_value())
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._helper, name)
+
+
+def _load_legacy_direct_helper_adapter() -> Any:
+    global _LEGACY_HELPER_ADAPTER
+    with _CLIENT_LOCK:
+        if _LEGACY_HELPER_ADAPTER is not None:
+            return _LEGACY_HELPER_ADAPTER
+        path = DEFAULT_LEGACY_DIRECT_HELPER_PATH
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError("canonical legacy Cloud SQL helper missing")
+        spec = importlib.util.spec_from_file_location(
+            "canonical_brain_legacy_direct_helper",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("could not load canonical legacy Cloud SQL helper")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for required_name in (
+            "connect",
+            "get_secret_value",
+            "json_sql",
+            "query",
+            "sql_quote",
+        ):
+            if not callable(getattr(module, required_name, None)):
+                raise RuntimeError(
+                    "canonical legacy Cloud SQL helper is incompatible"
+                )
+        _LEGACY_HELPER_ADAPTER = _LegacyDirectHelperAdapter(module)
+        return _LEGACY_HELPER_ADAPTER
+
+
+def require_canonical_database() -> Any:
+    """Return the configured Canonical database adapter.
+
+    The authenticated writer service is authoritative.  A process-local
+    adapter is available only in the explicit mutually-exclusive legacy
+    compatibility mode used while the privileged service is being deployed.
+    """
+
+    if in_writer_service():
+        return require_writer_database()
+    config = frozen_writer_boundary_config()
+    if config.enabled:
+        return require_writer_database()
+    if config.legacy_direct_helper_compat_enabled:
+        return _load_legacy_direct_helper_adapter()
+    raise PermissionError("canonical_database_access_is_not_configured")
 
 
 @contextlib.contextmanager

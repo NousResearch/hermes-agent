@@ -154,17 +154,16 @@ def _event_uuid(
 
 
 def _load_helper() -> Any:
-    """Return the database adapter only inside the authenticated writer.
+    """Return the configured Canonical database adapter.
 
-    The gateway process deliberately has no helper-path fallback.  Unit tests
-    may replace this function with an in-memory fixture, but production code
-    can obtain a database adapter only after the Unix peer/MainPID boundary has
-    authenticated the request and bound a writer-service context.
+    The authenticated writer remains authoritative.  The only process-local
+    path is an explicit, restart-frozen compatibility mode for the existing
+    legacy deployment.
     """
 
-    from gateway.canonical_writer_boundary import require_writer_database
+    from gateway.canonical_writer_boundary import require_canonical_database
 
-    return require_writer_database()
+    return require_canonical_database()
 
 
 def _writer_proxy_result(
@@ -175,8 +174,9 @@ def _writer_proxy_result(
 ) -> Dict[str, Any] | None:
     """Return a typed writer response outside the service, else ``None``.
 
-    A disabled boundary never restores direct database access: ``_load_helper``
-    remains service-only.  The ``None`` path exists for the privileged handler
+    A disabled boundary returns ``None``.  Direct database access then remains
+    unavailable unless the explicit mutually-exclusive legacy compatibility
+    mode is active.  The ``None`` path also exists for the privileged handler
     itself and for isolated tests that replace ``_load_helper`` with a fixture.
     """
 
@@ -193,6 +193,17 @@ def _writer_proxy_result(
         payload,
         idempotency_key=idempotency_key,
     )
+
+
+def _with_canonical_runtime_posture(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the two-lane data-plane/isolation posture to model-facing I/O."""
+
+    from gateway.canonical_writer_boundary import canonical_runtime_posture
+
+    return {
+        **result,
+        "canonical_runtime": canonical_runtime_posture(),
+    }
 
 
 def _bound_socket_io(sock: Any) -> None:
@@ -1642,10 +1653,12 @@ def _canonical_event_append_impl(
         )
         if proxy is not None:
             return json.dumps(
-                _materialize_verified_alias_event(
-                    event_type=event_type,
-                    payload=payload,
-                    response=proxy,
+                _with_canonical_runtime_posture(
+                    _materialize_verified_alias_event(
+                        event_type=event_type,
+                        payload=payload,
+                        response=proxy,
+                    )
                 ),
                 ensure_ascii=False,
                 sort_keys=True,
@@ -1906,7 +1919,11 @@ LIMIT 1;
             payload=payload,
             response=response,
         )
-        return json.dumps(response, ensure_ascii=False, sort_keys=True)
+        return json.dumps(
+            _with_canonical_runtime_posture(response),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
     except Exception as exc:
         exception_hint = getattr(exc, "write_may_have_occurred", None)
         if type(exception_hint) is bool:
@@ -4331,12 +4348,14 @@ def canonical_brain_query_tool(
             raise ValueError("limit must be between 1 and 200")
         if proxy is not None:
             return json.dumps(
-                _render_writer_query_proxy(
-                    proxy,
-                    case_id=case_id,
-                    thread_id=thread_id,
-                    limit=limit,
-                    view=view,
+                _with_canonical_runtime_posture(
+                    _render_writer_query_proxy(
+                        proxy,
+                        case_id=case_id,
+                        thread_id=thread_id,
+                        limit=limit,
+                        view=view,
+                    )
                 ),
                 ensure_ascii=False,
                 sort_keys=True,
@@ -4521,29 +4540,33 @@ def canonical_brain_query_tool(
 
         combined_rows = recent_rows + support_rows
         cases = fold_case_events(combined_rows, timeline_limit=min(20, limit))
-        return json.dumps({
-            "success": True,
-            "status": "CANONICAL_BRAIN_QUERY_PASS",
-            "query": {
-                "case_id": case_id or None,
-                "thread_id": thread_id or None,
-                "limit": limit,
-                "view": view,
-            },
-            "event_count": len(recent_rows),
-            "window_event_count": len(recent_rows),
-            "support_event_count": len(support_rows),
-            "support_incomplete": bool(support_incomplete_reasons),
-            "support": {
-                "complete": not support_incomplete_reasons,
-                "reasons": list(dict.fromkeys(support_incomplete_reasons)),
-                "missing_verification_event_ids": missing_verification_event_ids,
-            },
-            "truncated": truncated,
-            "candidate_cases_truncated": candidate_cases_truncated,
-            "case_count": len(cases),
-            "cases": cases,
-        }, ensure_ascii=False, sort_keys=True)
+        return json.dumps(
+            _with_canonical_runtime_posture({
+                "success": True,
+                "status": "CANONICAL_BRAIN_QUERY_PASS",
+                "query": {
+                    "case_id": case_id or None,
+                    "thread_id": thread_id or None,
+                    "limit": limit,
+                    "view": view,
+                },
+                "event_count": len(recent_rows),
+                "window_event_count": len(recent_rows),
+                "support_event_count": len(support_rows),
+                "support_incomplete": bool(support_incomplete_reasons),
+                "support": {
+                    "complete": not support_incomplete_reasons,
+                    "reasons": list(dict.fromkeys(support_incomplete_reasons)),
+                    "missing_verification_event_ids": missing_verification_event_ids,
+                },
+                "truncated": truncated,
+                "candidate_cases_truncated": candidate_cases_truncated,
+                "case_count": len(cases),
+                "cases": cases,
+            }),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
     except Exception as exc:
         return tool_error(f"CANONICAL_BRAIN_QUERY_FAIL: {exc}")
 
@@ -4652,6 +4675,22 @@ def check_canonical_brain_requirements() -> bool:
     from gateway.canonical_writer_boundary import canonical_model_tools_configured
 
     return canonical_model_tools_configured()
+
+
+def check_route_back_execute_requirements() -> bool:
+    """Expose direct delivery only with both privileged runtime boundaries."""
+
+    from gateway.canonical_writer_boundary import (
+        canonical_model_tools_configured,
+        discord_edge_configured,
+        writer_boundary_configured,
+    )
+
+    return bool(
+        canonical_model_tools_configured()
+        and writer_boundary_configured()
+        and discord_edge_configured()
+    )
 
 
 CANONICAL_EVENT_APPEND_SCHEMA = {
@@ -4836,6 +4875,6 @@ registry.register(
         source_refs=args.get("source_refs") or {},
         idempotency_key=args.get("idempotency_key"),
     ),
-    check_fn=check_canonical_brain_requirements,
+    check_fn=check_route_back_execute_requirements,
     emoji="📨",
 )

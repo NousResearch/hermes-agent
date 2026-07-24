@@ -144,6 +144,48 @@ def test_model_tool_policy_is_frozen_with_writer_boundary():
     assert boundary.canonical_model_tools_configured() is False
 
 
+def test_legacy_direct_compat_enables_model_tools_without_writer_boundary():
+    config = {
+        "canonical_brain": {
+            "tools_enabled": True,
+            "legacy_direct_helper_compat": {"enabled": True},
+        }
+    }
+
+    assert boundary.writer_boundary_configured(config) is False
+    assert boundary.legacy_direct_helper_compat_configured() is True
+    assert boundary.canonical_model_tools_configured() is True
+    assert boundary.canonical_data_plane_mode() == "legacy_direct_helper_compat"
+    assert boundary.canonical_runtime_posture() == {
+        "data_plane": "operational",
+        "transport": "legacy_direct_helper_compat",
+        "privileged_isolation": "pending",
+        "compatibility_fallback_active": True,
+    }
+
+
+def test_privileged_writer_reports_both_data_plane_and_isolation_active():
+    assert boundary.writer_boundary_configured(_config()) is True
+
+    assert boundary.canonical_data_plane_mode() == "privileged_writer"
+    assert boundary.canonical_runtime_posture() == {
+        "data_plane": "operational",
+        "transport": "privileged_writer",
+        "privileged_isolation": "active",
+        "compatibility_fallback_active": False,
+    }
+
+
+def test_legacy_direct_compat_and_writer_boundary_are_mutually_exclusive():
+    config = _config()
+    config["canonical_brain"]["legacy_direct_helper_compat"] = {
+        "enabled": True,
+    }
+
+    with pytest.raises(ValueError, match="cannot both be enabled"):
+        boundary.load_writer_boundary_config(config)
+
+
 def test_invalid_enabled_boundary_remains_a_frozen_fail_closed_requirement():
     invalid = _config(socket_path="/tmp/model-controlled.sock")
 

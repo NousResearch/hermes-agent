@@ -170,3 +170,110 @@ async def test_initial_connect_requires_get_updates_progress(monkeypatch):
             error_callback=None,
             require_progress=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_initial_connect_succeeds_on_current_generation_progress(monkeypatch):
+    """Strict cold start returns True once THIS generation records progress."""
+    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 5.0)
+    a = _bare_adapter()
+    app = MagicMock()
+    app.updater = AsyncMock()
+
+    async def start_polling_with_progress(**_kwargs):
+        # PTB's instrumented getUpdates request records progress for the
+        # generation started by this call.
+        a._record_polling_progress(a._polling_generation)
+
+    app.updater.start_polling = AsyncMock(side_effect=start_polling_with_progress)
+    a._app = app
+
+    ok = await asyncio.wait_for(
+        a._start_polling_resilient(
+            drop_pending_updates=True,
+            error_callback=None,
+            require_progress=True,
+        ),
+        timeout=10,
+    )
+    assert ok is True
+    assert a._send_path_degraded is False
+    # Strict mode owns readiness itself; the background verifier must not be
+    # racing it on the cold-start application.
+    assert getattr(a, "_polling_progress_verifier_task", None) is None
+
+
+@pytest.mark.asyncio
+async def test_initial_connect_polling_error_fails_fast_not_background(monkeypatch):
+    """#67498 idle-threads shape: a polling error during strict cold start
+    must surface immediately as a connect failure — NOT be swallowed into a
+    background recovery task that restarts polling on the partial app while
+    the readiness gate waits out its full deadline (the G1/G2 race from the
+    #69240 review)."""
+    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 30.0)
+    a = _bare_adapter()
+    app = MagicMock()
+    app.updater = AsyncMock()
+
+    captured_callbacks = []
+
+    async def start_polling_capture(**kwargs):
+        captured_callbacks.append(kwargs.get("error_callback"))
+
+    app.updater.start_polling = AsyncMock(side_effect=start_polling_capture)
+    a._app = app
+
+    recovery_scheduled = []
+    a._schedule_polling_recovery = lambda err, reason: recovery_scheduled.append(err)
+
+    async def run_connect():
+        return await a._start_polling_resilient(
+            drop_pending_updates=True,
+            error_callback=lambda e: recovery_scheduled.append(e),
+            require_progress=True,
+        )
+
+    task = asyncio.ensure_future(run_connect())
+    # Let start_polling run and the strict gate begin waiting.
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if captured_callbacks:
+            break
+    assert captured_callbacks and captured_callbacks[0] is not None
+
+    # PTB reports a network error on the first getUpdates (G1 error).
+    captured_callbacks[0](OSError("getUpdates failed"))
+
+    # The cold attempt must fail promptly (well before the 30s readiness
+    # deadline) with a loud OSError, and must NOT have scheduled background
+    # recovery (which would start G2 on the same partial application).
+    with pytest.raises(OSError, match="errored before first getUpdates"):
+        await asyncio.wait_for(task, timeout=5)
+    assert recovery_scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_initial_connect_ignores_stale_generation_progress(monkeypatch):
+    """Progress recorded for a stale generation must not satisfy readiness."""
+    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 0.1)
+    a = _bare_adapter()
+    app = MagicMock()
+    app.updater = AsyncMock()
+
+    async def start_polling_stale_progress(**_kwargs):
+        # Progress arrives tagged with a PREVIOUS generation (e.g. a late
+        # response from an abandoned attempt) — must be rejected.
+        a._record_polling_progress(a._polling_generation - 1)
+
+    app.updater.start_polling = AsyncMock(side_effect=start_polling_stale_progress)
+    a._app = app
+
+    with pytest.raises(OSError, match="getUpdates made no progress"):
+        await asyncio.wait_for(
+            a._start_polling_resilient(
+                drop_pending_updates=True,
+                error_callback=None,
+                require_progress=True,
+            ),
+            timeout=10,
+        )

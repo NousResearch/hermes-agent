@@ -1,0 +1,53 @@
+{
+  "captured_at": "2026-07-24T19:05:45Z",
+  "provider": "Anthropic direct",
+  "model": "claude-haiku-4-5-20251001",
+  "credential_kind": "OAuth",
+  "cost_cap_usd": 0.05,
+  "preflight_worst_case_usd": 0.01012,
+  "calls": {
+    "cache_warm": {
+      "status": "ok",
+      "latency_ms": 1992,
+      "usage": {
+        "input_tokens": 11,
+        "cache_creation_input_tokens": 6896,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 5
+      },
+      "estimated_cost_usd": 0.008656,
+      "response_id_redacted": "msg_011CdM\u2026"
+    },
+    "cache_read": {
+      "status": "ok",
+      "latency_ms": 944,
+      "usage": {
+        "input_tokens": 11,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 6896,
+        "output_tokens": 6
+      },
+      "estimated_cost_usd": 0.0007306,
+      "response_id_redacted": "msg_011CdM\u2026"
+    },
+    "cache_safe_steering": {
+      "status": "ok",
+      "latency_ms": 1097,
+      "usage": {
+        "input_tokens": 89,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 6896,
+        "output_tokens": 8
+      },
+      "estimated_cost_usd": 0.0008186,
+      "response_id_redacted": "msg_011CdM\u2026"
+    }
+  },
+  "negative_control": {
+    "status": "rejected",
+    "http_status": 400,
+    "error_type": "BadRequestError",
+    "secret_free_summary": "orphan tool_result rejected by provider"
+  },
+  "total_estimated_cost_usd": 0.0102052
+}

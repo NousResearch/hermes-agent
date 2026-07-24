@@ -20,7 +20,14 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from tools.approval import is_approval_bypass_active_for_session
+from tools.computer_use.backend import (
+    ActionResult,
+    CaptureResult,
+    ComputerUseBackend,
+    UIElement,
+    image_dimensions_from_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +286,11 @@ def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -
     user explicitly opted into unattended operation. State is keyed on session_id so concurrent runs don't
     leak unlocks into one another. See #67052.
     """
-    scope_key = (action, "foreground" if args.get("delivery_mode") == "foreground" else "background")
+    is_foreground = args.get("delivery_mode") == "foreground"
+    scope_key = (action, "foreground" if is_foreground else "background")
+    # Hardline blocklists (keys/type patterns) were already checked above.
+    if is_approval_bypass_active_for_session(session_id):
+        return None
     with _approval_lock:
         if _session_auto_approve.get(session_id) or scope_key in _always_allow.get(session_id, set()):
             return None

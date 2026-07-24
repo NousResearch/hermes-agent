@@ -18,17 +18,20 @@ import os
 import stat
 import time
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
+    _api_request_profile,
     _derive_chat_session_id,
     _hermes_version,
     _redact_api_error_text,
@@ -658,6 +661,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/v1/account/usage", adapter._handle_account_usage)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -1018,6 +1022,219 @@ class TestModelsEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# /v1/account/usage endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestAccountUsageEndpoint:
+    @staticmethod
+    def _snapshot() -> AccountUsageSnapshot:
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime(2026, 7, 24, 1, 30, tzinfo=timezone.utc),
+            plan="Pro",
+            windows=(
+                AccountUsageWindow(
+                    label="Session",
+                    used_percent=25.0,
+                    reset_at=datetime(2026, 7, 24, 6, 30, tzinfo=timezone.utc),
+                ),
+                AccountUsageWindow(
+                    label="Weekly",
+                    used_percent=40.0,
+                    reset_at=datetime(2026, 7, 28, 1, 30, tzinfo=timezone.utc),
+                    detail="Account-wide Codex allowance",
+                ),
+            ),
+            details=("You have 1 reset banked",),
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_normalized_codex_oauth_usage_without_credentials(self, auth_adapter):
+        snapshot = self._snapshot()
+        with patch("agent.account_usage.fetch_account_usage", return_value=snapshot):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/v1/account/usage",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "ok": True,
+            "available": True,
+            "provider": "openai-codex",
+            "plan": "Pro",
+            "source": "usage_api",
+            "fetched_at": "2026-07-24T01:30:00+00:00",
+            "windows": [
+                {
+                    "label": "Session",
+                    "used_percent": 25.0,
+                    "remaining_percent": 75.0,
+                    "reset_at": "2026-07-24T06:30:00+00:00",
+                    "detail": None,
+                },
+                {
+                    "label": "Weekly",
+                    "used_percent": 40.0,
+                    "remaining_percent": 60.0,
+                    "reset_at": "2026-07-28T01:30:00+00:00",
+                    "detail": "Account-wide Codex allowance",
+                },
+            ],
+            "details": ["You have 1 reset banked"],
+            "unavailable_reason": None,
+        }
+        serialized = json.dumps(data)
+        assert "Bearer " not in serialized
+        assert "ChatGPT-Account-Id" not in serialized
+
+    @pytest.mark.asyncio
+    async def test_requires_the_hermes_api_key(self, auth_adapter):
+        fetch = MagicMock(return_value=self._snapshot())
+        with patch("agent.account_usage.fetch_account_usage", fetch):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/account/usage")
+
+        assert resp.status == 401
+        fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_a_safe_unavailable_envelope_when_usage_cannot_be_fetched(self, auth_adapter):
+        with patch("agent.account_usage.fetch_account_usage", return_value=None):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/v1/account/usage",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["ok"] is True
+        assert data["available"] is False
+        assert data["provider"] == "openai-codex"
+        assert data["windows"] == []
+        assert data["details"] == []
+        assert "OAuth usage is unavailable" in data["unavailable_reason"]
+
+    @pytest.mark.asyncio
+    async def test_preserves_details_only_usage_snapshots(self, auth_adapter):
+        snapshot = AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime(2026, 7, 24, 1, 30, tzinfo=timezone.utc),
+            plan="Pro",
+            windows=(),
+            details=("Credits balance: $1.00",),
+        )
+        with patch("agent.account_usage.fetch_account_usage", return_value=snapshot):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/v1/account/usage",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["available"] is True
+        assert data["windows"] == []
+        assert data["details"] == ["Credits balance: $1.00"]
+        assert data["unavailable_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_serializes_unavailable_windows_and_the_provider_reason(self, auth_adapter):
+        snapshot = AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime(2026, 7, 24, 1, 30, tzinfo=timezone.utc),
+            plan="Pro",
+            windows=(AccountUsageWindow(label="Session", detail="Not reported"),),
+            unavailable_reason="Provider did not return a usable quota percentage.",
+        )
+        with patch("agent.account_usage.fetch_account_usage", return_value=snapshot):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/v1/account/usage",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["available"] is False
+        assert data["windows"] == [{
+            "label": "Session",
+            "used_percent": None,
+            "remaining_percent": None,
+            "reset_at": None,
+            "detail": "Not reported",
+        }]
+        assert data["unavailable_reason"] == snapshot.unavailable_reason
+
+    @pytest.mark.asyncio
+    async def test_caches_the_upstream_usage_read_for_repeated_client_polls(self, auth_adapter):
+        fetch = MagicMock(return_value=self._snapshot())
+        with patch("agent.account_usage.fetch_account_usage", fetch):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                first = await cli.get(
+                    "/v1/account/usage",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                second = await cli.get(
+                    "/v1/account/usage",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert first.status == second.status == 200
+                first_data = await first.json()
+                second_data = await second.json()
+
+        assert first_data == second_data
+        fetch.assert_called_once_with("openai-codex")
+
+    @pytest.mark.asyncio
+    async def test_cache_is_isolated_between_multiplexed_profiles(self, auth_adapter):
+        first_snapshot = self._snapshot()
+        second_snapshot = AccountUsageSnapshot(
+            provider=first_snapshot.provider,
+            source=first_snapshot.source,
+            fetched_at=first_snapshot.fetched_at,
+            plan="Team",
+            windows=first_snapshot.windows,
+            details=first_snapshot.details,
+        )
+        request = MagicMock()
+        request.headers = {"Authorization": "Bearer sk-secret"}
+
+        with patch(
+            "agent.account_usage.fetch_account_usage",
+            side_effect=[first_snapshot, second_snapshot],
+        ) as fetch:
+            first_token = _api_request_profile.set("first")
+            try:
+                first_response = await auth_adapter._handle_account_usage(request)
+            finally:
+                _api_request_profile.reset(first_token)
+
+            second_token = _api_request_profile.set("second")
+            try:
+                second_response = await auth_adapter._handle_account_usage(request)
+            finally:
+                _api_request_profile.reset(second_token)
+
+        assert json.loads(first_response.text)["plan"] == "Pro"
+        assert json.loads(second_response.text)["plan"] == "Team"
+        assert fetch.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # /v1/capabilities endpoint
 # ---------------------------------------------------------------------------
 
@@ -1040,10 +1257,15 @@ class TestCapabilitiesEndpoint:
             assert data["runtime"]["split_runtime"] is False
             assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
+            assert data["features"]["account_usage"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["account_usage"] == {
+                "method": "GET",
+                "path": "/v1/account/usage",
+            }
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 

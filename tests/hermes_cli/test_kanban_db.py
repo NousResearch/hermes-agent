@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from gateway import status as gateway_status
 
 
 @pytest.fixture
@@ -1730,6 +1731,147 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable
         assert kb.get_task(conn, c).status == "running"
 
 
+def test_dispatch_defers_same_workspace_child_until_terminal_parent_pid_exits(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    """A completed parent still owns its shared dir while its worker exits.
+
+    ``kanban_complete`` happens before the worker process returns from the
+    tool loop. A dependent child using the same realpath must remain ready,
+    not become spawnable, until the parent PID is proven dead.
+    """
+    shared_workspace = tmp_path / "shared-workspace"
+    shared_workspace.mkdir()
+    parent_worker = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"]
+    )
+    spawns: list[str] = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    try:
+        with kb.connect() as conn:
+            parent = kb.create_task(
+                conn, title="parent", assignee="alice", workspace_kind="dir",
+                workspace_path=str(shared_workspace),
+            )
+            child = kb.create_task(
+                conn, title="child", assignee="bob", parents=[parent],
+                workspace_kind="dir", workspace_path=str(shared_workspace),
+            )
+            assert kb.claim_task(conn, parent) is not None
+            kb._set_worker_pid(conn, parent, parent_worker.pid)
+            assert kb.complete_task(conn, parent, result="handoff")
+            assert kb.get_task(conn, child).status == "ready"
+            assert not kb.has_spawnable_ready(conn)
+
+            held = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            assert child not in spawns
+            assert (child, parent, parent_worker.pid) in held.workspace_leased
+            assert kb.get_task(conn, child).status == "ready"
+
+        parent_worker.terminate()
+        parent_worker.wait(timeout=10)
+
+        with kb.connect() as conn:
+            assert kb.has_spawnable_ready(conn)
+            released = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+            assert child in [task_id for task_id, _assignee, _workspace in released.spawned]
+            assert kb.get_task(conn, child).status == "running"
+    finally:
+        if parent_worker.poll() is None:
+            parent_worker.terminate()
+            parent_worker.wait(timeout=10)
+
+
+def test_live_parent_workspace_lease_rejects_reused_pid_identity(
+    kanban_home, all_assignees_spawnable, monkeypatch, tmp_path,
+):
+    """A reused PID must not pin a child workspace once the original parent exited."""
+    shared_workspace = tmp_path / "shared"
+    shared_workspace.mkdir()
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(gateway_status, "_get_process_start_time", lambda _pid: 222)
+
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn, title="parent", assignee="alice", workspace_kind="dir",
+            workspace_path=str(shared_workspace),
+        )
+        child = kb.create_task(
+            conn, title="child", assignee="bob", parents=[parent],
+            workspace_kind="dir", workspace_path=str(shared_workspace),
+        )
+        assert kb.claim_task(conn, parent) is not None
+        kb._set_worker_pid(conn, parent, 12345)
+        run_id = kb.get_task(conn, parent).current_run_id
+        assert run_id is not None
+        conn.execute(
+            "UPDATE task_runs SET worker_start_time = ? WHERE id = ?",
+            (111, run_id),
+        )
+        assert kb.complete_task(conn, parent, result="handoff")
+        assert kb.get_task(conn, child).status == "ready"
+
+        assert kb._live_parent_workspace_lease(conn, child) is None
+        assert kb.has_spawnable_ready(conn)
+
+
+def test_live_parent_workspace_lease_defers_when_process_identity_is_unknown(
+    kanban_home, all_assignees_spawnable, monkeypatch, tmp_path,
+):
+    """Unknown process start-time must fail closed rather than spawn beside it."""
+    shared_workspace = tmp_path / "shared"
+    shared_workspace.mkdir()
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(gateway_status, "_get_process_start_time", lambda _pid: None)
+
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn, title="parent", assignee="alice", workspace_kind="dir",
+            workspace_path=str(shared_workspace),
+        )
+        child = kb.create_task(
+            conn, title="child", assignee="bob", parents=[parent],
+            workspace_kind="dir", workspace_path=str(shared_workspace),
+        )
+        assert kb.claim_task(conn, parent) is not None
+        kb._set_worker_pid(conn, parent, 12345)
+        assert kb.complete_task(conn, parent, result="handoff")
+
+        assert kb._live_parent_workspace_lease(conn, child) == (parent, 12345)
+        assert not kb.has_spawnable_ready(conn)
+
+
+def test_workspace_lease_uses_only_latest_terminal_parent_run(
+    kanban_home, all_assignees_spawnable, monkeypatch, tmp_path,
+):
+    """An older terminal PID cannot lease a workspace after a newer handoff."""
+    shared_workspace = tmp_path / "shared"
+    shared_workspace.mkdir()
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(gateway_status, "_get_process_start_time", lambda _pid: 111)
+
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn, title="parent", assignee="alice", workspace_kind="dir",
+            workspace_path=str(shared_workspace),
+        )
+        child = kb.create_task(
+            conn, title="child", assignee="bob", parents=[parent],
+            workspace_kind="dir", workspace_path=str(shared_workspace),
+        )
+        assert kb.claim_task(conn, parent) is not None
+        kb._set_worker_pid(conn, parent, 12345)
+        assert kb.complete_task(conn, parent, result="handoff")
+        kb._synthesize_ended_run(conn, parent, outcome="done", summary="newer handoff")
+
+        assert kb._live_parent_workspace_lease(conn, child) is None
+        assert kb.has_spawnable_ready(conn)
+
+
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")
@@ -1942,6 +2084,138 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason is None
+
+
+def test_respawn_guard_active_pr_requires_requeue_after_latest_pr_comment(
+    kanban_home,
+):
+    """A recognized requeue resumes the existing PR lane, but not a newer PR."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="repair-existing-pr", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now - 30),
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+        assert kb.record_operator_requeue(
+            conn,
+            t,
+            actor="dashboard",
+            source="dashboard.status_ready",
+            created_at=now - 20,
+        ) is True
+        assert kb.check_respawn_guard(conn, t) is None
+
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'New PR: https://github.com/totemx-AI/subsidysmart/pull/43', ?)",
+            (t, now - 10),
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    "event_kind",
+    ("status", "promoted", "promoted_manual", "unblocked", "reclaimed"),
+)
+def test_respawn_guard_active_pr_rejects_non_requeue_lifecycle_events(
+    kanban_home, event_kind,
+):
+    """Only an operator requeue can restart a lane that already has a PR."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reject-implicit-pr-respawn", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now - 30),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, ?, ?)",
+            (t, event_kind, now - 20),
+        )
+
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    "payload_factory",
+    (
+        lambda _pr_id: "{not-json",
+        lambda pr_id: (
+            '{"actor":"forged","source":"generic",'
+            f'"pr_comment_id":{pr_id}}}'
+        ),
+    ),
+    ids=("malformed", "forged-actor-source"),
+)
+def test_respawn_guard_active_pr_rejects_invalid_operator_requeue_payload(
+    kanban_home, payload_factory,
+):
+    """A requeue marker is valid only with trusted actor/source and latest PR id."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reject-forged-pr-requeue", assignee="alice")
+        now = int(time.time())
+        pr_id = conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now - 30),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'operator_requeue', ?, ?)",
+            (t, payload_factory(pr_id), now - 20),
+        )
+
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+def test_claim_task_rechecks_active_pr_guard_inside_claim_transaction(kanban_home):
+    """A PR appearing after dispatcher selection cannot race a guarded claim."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="guarded-claim", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+
+        assert kb.claim_task(conn, t) is None
+        assert kb.get_task(conn, t).status == "ready"
+
+        assert kb.record_operator_requeue(
+            conn,
+            t,
+            actor="dashboard",
+            source="dashboard.status_ready",
+        ) is True
+        assert kb.claim_task(conn, t) is not None
+
+
+def test_unblock_task_operator_requeue_resumes_active_pr_lane(kanban_home):
+    """The explicit dashboard requeue marker is emitted on unblock -> ready."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="blocked-pr-repair", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        assert kb.block_task(conn, t, reason="needs repair") is True
+
+        assert kb.unblock_task(conn, t, operator_requeue=True) is True
+        assert kb.get_task(conn, t).status == "ready"
+        assert kb.check_respawn_guard(conn, t) is None
 
 
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
@@ -3245,6 +3519,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     file, where downgrading is safe because nobody else has WAL state
     yet).
     """
+    import hermes_state
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
@@ -3255,6 +3530,8 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
+    hermes_state._wal_fallback_warned_paths.clear()
+    monkeypatch.setattr(hermes_state, "is_sqlite_wal_reset_vulnerable", lambda: False)
 
     real_connect = _sqlite3.connect
 

@@ -39,6 +39,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from cron.redaction import redact_credential_text
 from utils import atomic_replace
 
 try:
@@ -1546,9 +1547,15 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
-                job["last_error"] = error if not success else None
+                safe_error = redact_credential_text(error) if isinstance(error, str) else error
+                safe_delivery_error = (
+                    redact_credential_text(delivery_error)
+                    if isinstance(delivery_error, str)
+                    else delivery_error
+                )
+                job["last_error"] = safe_error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
-                job["last_delivery_error"] = delivery_error
+                job["last_delivery_error"] = safe_delivery_error
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None
@@ -2234,7 +2241,7 @@ def save_job_output(job_id: str, output: str):
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(output)
+            f.write(redact_credential_text(output))
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, output_file)

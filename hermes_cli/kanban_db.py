@@ -1060,6 +1060,7 @@ class Run:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     worker_pid: Optional[int]
+    worker_start_time: Optional[int]
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
@@ -1071,6 +1072,7 @@ class Run:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
+        keys = set(row.keys())
         try:
             meta = json.loads(row["metadata"]) if row["metadata"] else None
         except Exception:
@@ -1084,6 +1086,9 @@ class Run:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             worker_pid=row["worker_pid"],
+            worker_start_time=(
+                row["worker_start_time"] if "worker_start_time" in keys else None
+            ),
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
             started_at=int(row["started_at"]),
@@ -1263,6 +1268,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    worker_start_time   INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2392,6 +2398,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
     if "run_id" not in ev_cols:
         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
+
+    task_runs_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if task_runs_exists:
+        run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+        if "worker_start_time" not in run_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "worker_start_time", "worker_start_time INTEGER"
+            )
 
     # Same ordering rule as the additive ``tasks`` indexes above: create the
     # index after the additive column migration so legacy ``task_events``
@@ -3774,8 +3790,7 @@ def _end_run(
                metadata      = ?,
                ended_at      = ?,
                claim_lock    = NULL,
-               claim_expires = NULL,
-               worker_pid    = NULL
+               claim_expires = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -3986,6 +4001,89 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+_OPERATOR_REQUEUE_SOURCE = "dashboard.status_ready"
+
+
+def _latest_recent_pr_comment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    cutoff: int,
+) -> Optional[sqlite3.Row]:
+    """Return the latest recent PR-bearing comment in insertion order.
+
+    Timestamps are stored at second precision, so ``created_at`` alone cannot
+    distinguish a dashboard requeue from a PR comment written in the same
+    second. The comment id supplies the necessary deterministic tie-breaker.
+    """
+    rows = conn.execute(
+        "SELECT id, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id, cutoff),
+    ).fetchall()
+    for row in rows:
+        if row["body"] and _RESPAWN_GUARD_PR_URL_RE.search(row["body"]):
+            return row
+    return None
+
+
+def _append_operator_requeue(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    source: str,
+    created_at: Optional[int] = None,
+) -> bool:
+    """Record a validated operator requeue inside an existing transaction."""
+    if actor != "dashboard" or source != _OPERATOR_REQUEUE_SOURCE:
+        raise ValueError("unrecognized operator requeue source")
+    task = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if task is None or task["status"] != "ready":
+        return False
+    event_time = int(time.time()) if created_at is None else int(created_at)
+    payload = {"actor": actor, "source": source}
+    latest_pr_comment = _latest_recent_pr_comment(
+        conn,
+        task_id,
+        cutoff=int(time.time()) - _RESPAWN_GUARD_PR_WINDOW,
+    )
+    if latest_pr_comment is not None:
+        payload["pr_comment_id"] = int(latest_pr_comment["id"])
+    conn.execute(
+        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+        "VALUES (?, 'operator_requeue', ?, ?)",
+        (
+            task_id,
+            json.dumps(payload),
+            event_time,
+        ),
+    )
+    return True
+
+
+def record_operator_requeue(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    source: str,
+    created_at: Optional[int] = None,
+) -> bool:
+    """Record an explicit dashboard requeue for an already-ready task."""
+    with write_txn(conn):
+        return _append_operator_requeue(
+            conn,
+            task_id,
+            actor=actor,
+            source=source,
+            created_at=created_at,
+        )
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3996,12 +4094,18 @@ def claim_task(
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in ``ready`` status). The active-PR branch of
+    the respawn guard is always re-checked while this claim's write
+    transaction holds the SQLite writer lock, so no public claim path can
+    bypass an active-PR lane guard. Dispatcher-only cooldown and circuit-
+    breaker reasons remain advisory for direct operator/CLI claims.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if check_respawn_guard(conn, task_id) == "active_pr":
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -5664,8 +5768,18 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    operator_requeue: bool = False,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
+
+    ``operator_requeue`` is reserved for an explicit dashboard recovery
+    action.  When that action reaches ``ready``, append the dedicated,
+    validated requeue marker in this same transaction so an active-PR lane
+    can resume without allowing generic lifecycle events to bypass the guard.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -5727,6 +5841,13 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
+        if operator_requeue and new_status == "ready":
+            _append_operator_requeue(
+                conn,
+                task_id,
+                actor="dashboard",
+                source=_OPERATOR_REQUEUE_SOURCE,
+            )
         return True
 
 
@@ -6552,6 +6673,11 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Generic lifecycle events can be emitted for automatic dependency and crash
+# recovery. Only the operator recovery marker explicitly authorizes resuming a
+# task that already has a PR.
+_RESPAWN_GUARD_PR_REQUEUE_EVENT = "operator_requeue"
+
 
 @dataclass
 class DispatchResult:
@@ -6611,6 +6737,13 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    workspace_leased: list[tuple[str, str, int]] = field(default_factory=list)
+    """Ready children deferred behind a live parent sharing their workspace.
+
+    Each entry is ``(child_task_id, parent_task_id, parent_worker_pid)``.
+    A terminal parent can still be executing its ``kanban_complete`` tool
+    return path, so its persisted run PID remains a lease until proven dead.
+    """
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6777,6 +6910,15 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
+
+
+def _get_process_start_time(pid: Optional[int]) -> Optional[int]:
+    """Return a stable PID-reuse guard for ``pid`` when available."""
+    if not pid or pid <= 0:
+        return None
+    from gateway.status import _get_process_start_time as _gateway_process_start_time
+
+    return _gateway_process_start_time(int(pid))
 
 
 def _terminate_reclaimed_worker(
@@ -7740,6 +7882,7 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     tail`` can correlate log lines with OS-level traces without opening
     the drawer.
     """
+    worker_start_time = _get_process_start_time(pid)
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET worker_pid = ? WHERE id = ?",
@@ -7748,10 +7891,13 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
+                "UPDATE task_runs SET worker_pid = ?, worker_start_time = ? WHERE id = ?",
+                (int(pid), worker_start_time, run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        payload = {"pid": int(pid)}
+        if worker_start_time is not None:
+            payload["start_time"] = int(worker_start_time)
+        _append_event(conn, task_id, "spawned", payload, run_id=run_id)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -7816,8 +7962,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds), without a recognized explicit
+        requeue event after the latest such comment. A prior worker already
+        opened a PR; re-spawning otherwise risks a duplicate PR on the same
+        task.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -7900,33 +8048,108 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # An explicit requeue after the latest PR-bearing comment is an operator
+    # instruction to repair that same lane, not to open a duplicate PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+    latest_pr_comment = _latest_recent_pr_comment(
+        conn, task_id, cutoff=pr_cutoff,
+    )
+    if latest_pr_comment is not None:
+        latest_pr_id = int(latest_pr_comment["id"])
+        explicit_requeue = False
+        for event in conn.execute(
+            "SELECT payload, created_at FROM task_events "
+            "WHERE task_id = ? AND kind = ? ORDER BY id DESC",
+            (task_id, _RESPAWN_GUARD_PR_REQUEUE_EVENT),
+        ).fetchall():
+            try:
+                payload = json.loads(event["payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            if (
+                isinstance(payload, dict)
+                and payload.get("actor") == "dashboard"
+                and payload.get("source") == _OPERATOR_REQUEUE_SOURCE
+                and payload.get("pr_comment_id") == latest_pr_id
+            ):
+                explicit_requeue = True
+                break
+        if not explicit_requeue:
             return "active_pr"
 
     return None
 
 
+def _live_parent_workspace_lease(
+    conn: sqlite3.Connection, child_task_id: str,
+) -> Optional[tuple[str, int]]:
+    """Return a live same-workspace parent's ``(task_id, pid)``, if any.
+
+    A parent becomes terminal inside ``kanban_complete`` before its worker
+    returns through the agent loop. Its completed run therefore keeps a narrow
+    workspace lease until ``_pid_alive`` proves that the worker exited.
+    """
+    child_row = conn.execute(
+        "SELECT workspace_path FROM tasks WHERE id = ?", (child_task_id,),
+    ).fetchone()
+    child_workspace = child_row["workspace_path"] if child_row else None
+    if not child_workspace:
+        return None
+    try:
+        child_realpath = os.path.realpath(str(child_workspace))
+    except (OSError, TypeError, ValueError):
+        return None
+    rows = conn.execute(
+        """
+        SELECT parent.id AS parent_id, parent.workspace_path, run.worker_pid,
+               run.worker_start_time
+          FROM task_links AS link
+          JOIN tasks AS parent ON parent.id = link.parent_id
+          JOIN task_runs AS run ON run.id = (
+              SELECT latest.id
+                FROM task_runs AS latest
+               WHERE latest.task_id = parent.id
+                 AND latest.ended_at IS NOT NULL
+               ORDER BY latest.id DESC
+               LIMIT 1
+          )
+         WHERE link.child_id = ?
+           AND parent.workspace_path IS NOT NULL
+           AND run.worker_pid IS NOT NULL
+         ORDER BY run.id DESC
+        """,
+        (child_task_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            same_workspace = os.path.realpath(str(row["workspace_path"])) == child_realpath
+            pid = int(row["worker_pid"])
+            recorded_start_time = row["worker_start_time"]
+        except (OSError, TypeError, ValueError):
+            continue
+        if not same_workspace or not _pid_alive(pid):
+            continue
+        current_start_time = _get_process_start_time(pid)
+        # Unknown identity must defer the child: PID liveness alone cannot
+        # prove this is not the parent that still owns the shared directory.
+        # A known mismatch is the one safe release signal (PID was reused).
+        if recorded_start_time is None or current_start_time is None:
+            return str(row["parent_id"]), pid
+        if str(recorded_start_time) != str(current_start_time):
+            continue
+        if same_workspace:
+            return str(row["parent_id"]), pid
+    return None
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    """Return True iff a ready task has a real profile and no live parent lease.
 
-    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
-    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
-    work waiting) or a "correctly idle" condition (only control-plane
-    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
-    that pull tasks via ``claim_task`` directly).
-
-    Falls back to "any ready+assigned" if ``profile_exists`` is not
-    importable (e.g. partial install) — preserves the old behavior so
-    the warning still fires in degraded environments.
+    Health telemetry must not call a child spawnable while a completed parent
+    worker still holds the child's shared workspace during tool-loop teardown.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -7935,12 +8158,12 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
-        # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
-    for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
-    return False
+        return any(_live_parent_workspace_lease(conn, row["id"]) is None for row in rows)
+    return any(
+        _live_parent_workspace_lease(conn, row["id"]) is None
+        and profile_exists(row["assignee"])
+        for row in rows
+    )
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
@@ -8227,6 +8450,11 @@ def _dispatch_once_locked(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
+        workspace_lease = _live_parent_workspace_lease(conn, row["id"])
+        if workspace_lease is not None:
+            parent_id, parent_pid = workspace_lease
+            result.workspace_leased.append((row["id"], parent_id, parent_pid))
+            continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -8295,7 +8523,11 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(
+            conn,
+            row["id"],
+            ttl_seconds=ttl_seconds,
+        )
         if claimed is None:
             continue
         try:

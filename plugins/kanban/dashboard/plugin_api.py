@@ -867,10 +867,14 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
+                    ok = kanban_db.unblock_task(
+                        conn, task_id, operator_requeue=True,
+                    )
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
-                    ok = _set_status_direct(conn, task_id, "ready")
+                    ok = _set_status_direct(
+                        conn, task_id, "ready", operator_requeue=True,
+                    )
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
             elif s == "running":
@@ -1005,10 +1009,13 @@ def _parents_blocking_ready(
 
 def _set_status_direct(
     conn: sqlite3.Connection, task_id: str, new_status: str,
+    *, operator_requeue: bool = False,
 ) -> bool:
     """Direct status write for drag-drop moves that aren't covered by the
     structured complete/block/unblock/archive verbs (e.g. todo<->ready,
     running<->ready). Appends a ``status`` event row for the live feed.
+    ``operator_requeue`` records the dashboard's explicit request to restart
+    the same lane after a PR, which the respawn guard recognizes.
 
     When this transitions OFF ``running`` to anything other than the
     terminal verbs above (which own their own run closing), we close the
@@ -1068,6 +1075,13 @@ def _set_status_direct(
             "VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
+        if operator_requeue and new_status == "ready":
+            kanban_db._append_operator_requeue(
+                conn,
+                task_id,
+                actor="dashboard",
+                source="dashboard.status_ready",
+            )
         if reopening_satisfied_parent:
             # A parent leaving done/archived invalidates any direct child that
             # was sitting in ready solely because that parent used to satisfy
@@ -1227,9 +1241,13 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
                         if cur and cur.status in ("blocked", "scheduled"):
-                            ok = kanban_db.unblock_task(conn, tid)
+                            ok = kanban_db.unblock_task(
+                                conn, tid, operator_requeue=True,
+                            )
                         else:
-                            ok = _set_status_direct(conn, tid, "ready")
+                            ok = _set_status_direct(
+                                conn, tid, "ready", operator_requeue=True,
+                            )
                     elif s == "running":
                         entry.update(
                             ok=False,

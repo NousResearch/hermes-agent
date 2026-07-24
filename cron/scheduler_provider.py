@@ -23,6 +23,8 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
+from cron.redaction import redact_exception_detail
+
 
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
@@ -240,7 +242,8 @@ class InProcessCronScheduler(CronScheduler):
                 # stop_event (set by the main thread's signal handler), not by
                 # an exception in this daemon thread, so swallowing it and
                 # re-checking stop_event keeps shutdown clean.
-                logger.error("Cron tick error: %s", e, exc_info=True)
+                error_detail, traceback_safe = redact_exception_detail(e)
+                logger.error("Cron tick error: %s", error_detail, exc_info=traceback_safe)
             # Record liveness every iteration; bump the success marker only on a
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
@@ -267,6 +270,7 @@ class InProcessCronScheduler(CronScheduler):
         """
         import logging
         from cron.scheduler import tick as cron_tick
+        from cron.executions import use_execution_store
         from cron.jobs import record_ticker_heartbeat, use_cron_store
         from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
@@ -282,7 +286,7 @@ class InProcessCronScheduler(CronScheduler):
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
             try:
-                with use_cron_store(home):
+                with use_cron_store(home), use_execution_store(home):
                     recovered = self.recover_interrupted()
                     if recovered:
                         logger.warning(
@@ -304,7 +308,7 @@ class InProcessCronScheduler(CronScheduler):
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
-                            with use_cron_store(home):
+                            with use_cron_store(home), use_execution_store(home):
                                 cron_tick(
                                     verbose=False,
                                     adapters=adapters,
@@ -316,13 +320,14 @@ class InProcessCronScheduler(CronScheduler):
                             reset_hermes_home_override(home_token)
                 ok = True
             except BaseException as e:
-                logger.error("Cron tick error: %s", e, exc_info=True)
+                error_detail, traceback_safe = redact_exception_detail(e)
+                logger.error("Cron tick error: %s", error_detail, exc_info=traceback_safe)
             # Record per-profile heartbeat after each tick cycle.
             for entry in profile_homes:
                 home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:
-                    with use_cron_store(home):
+                    with use_cron_store(home), use_execution_store(home):
                         record_ticker_heartbeat(success=ok)
                 finally:
                     reset_hermes_home_override(home_token)

@@ -1023,6 +1023,384 @@ class TestDeliverResultErrorReturns:
         assert result is not None
         assert "no delivery target" in result
 
+    def test_standalone_delivery_failure_redacts_credential_from_log_and_result(self, caplog):
+        """A standalone send exception must never reach scheduler logs or returned status text raw."""
+        from gateway.config import Platform
+
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        job = {
+            "id": "redacted-delivery",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(side_effect=RuntimeError(credential))):
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                result = _deliver_result(job, "report")
+
+        assert credential not in caplog.text
+        assert credential not in result
+        assert "[redacted credential]" in caplog.text
+        assert "[redacted credential]" in result
+
+    def test_direct_standalone_failure_redacts_credential_from_log_and_result(self, caplog):
+        """The direct asyncio failure path has the same log/status redaction boundary."""
+        from gateway.config import Platform
+
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        job = {
+            "id": "direct-redacted-delivery",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        def fail_asyncio_run(coro):
+            coro.close()
+            raise ValueError(credential)
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.asyncio.run", side_effect=fail_asyncio_run):
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                result = _deliver_result(job, "report")
+
+        assert credential not in caplog.text
+        assert credential not in result
+        assert "[redacted credential]" in caplog.text
+        assert "[redacted credential]" in result
+
+    def test_standalone_error_result_redacts_credential_from_log_and_status(self, caplog):
+        """Provider-declared delivery errors must not persist or log credential-shaped text."""
+        from gateway.config import Platform
+
+        credential = "AIzaSy" + "HER96SYNTHETIC" * 2
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        job = {
+            "id": "result-redacted-delivery",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"error": credential})):
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                result = _deliver_result(job, "report")
+
+        assert credential not in caplog.text
+        assert credential not in result
+        assert "[redacted credential]" in caplog.text
+        assert "[redacted credential]" in result
+
+    def test_gateway_config_failure_redacts_credential_from_log_and_result(self, caplog):
+        """Gateway-config exceptions have the same credential-safe status boundary."""
+        credential = "sk-" + "HER96SYNTHETIC" * 2
+        job = {
+            "id": "config-redacted-delivery",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("gateway.config.load_gateway_config", side_effect=RuntimeError(credential)):
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                result = _deliver_result(job, "report")
+
+        assert credential not in caplog.text
+        assert credential not in result
+        assert "[redacted credential]" in caplog.text
+        assert "[redacted credential]" in result
+
+    def test_live_adapter_failure_redacts_credential_from_fallback_log(self, caplog):
+        """Live-adapter exceptions must not leak credentials before standalone fallback runs."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = {}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        adapter = MagicMock()
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        failed_future = Future()
+        failed_future.set_exception(RuntimeError(credential))
+        router = MagicMock()
+
+        async def routed_delivery(*_args, **_kwargs):
+            return None
+
+        router._deliver_to_platform.side_effect = routed_delivery
+
+        def fail_live_schedule(coro, _loop):
+            coro.close()
+            return failed_future
+
+        job = {
+            "id": "live-redacted-delivery",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("gateway.delivery.DeliveryRouter", return_value=router), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fail_live_schedule), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={})):
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                result = _deliver_result(
+                    job,
+                    "report",
+                    adapters={Platform.TELEGRAM: adapter},
+                    loop=loop,
+                )
+
+        assert result is None
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
+
+    def test_live_adapter_unconfirmed_result_redacts_credential_from_fallback_log(self, caplog):
+        """Live-adapter result errors must be redacted before falling back."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = {}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        adapter = MagicMock()
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        completed_future = Future()
+        completed_future.set_result({"success": False, "error": credential})
+        router = MagicMock()
+
+        async def routed_delivery(*_args, **_kwargs):
+            return None
+
+        router._deliver_to_platform.side_effect = routed_delivery
+
+        def complete_live_schedule(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "live-result-redacted-delivery",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("gateway.delivery.DeliveryRouter", return_value=router), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=complete_live_schedule), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={})):
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                result = _deliver_result(
+                    job,
+                    "report",
+                    adapters={Platform.TELEGRAM: adapter},
+                    loop=loop,
+                )
+
+        assert result is None
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
+
+    def test_live_media_result_redacts_credential_from_log(self, tmp_path, caplog):
+        """Media adapter result errors must not bypass the scheduler redaction boundary."""
+        from concurrent.futures import Future
+        from cron.scheduler import _send_media_via_adapter
+
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        media_path = tmp_path / "report.txt"
+        media_path.write_text("safe fixture")
+        adapter = MagicMock()
+
+        async def send_document(**_kwargs):
+            return None
+
+        adapter.send_document.side_effect = send_document
+        completed_future = Future()
+        completed_future.set_result(MagicMock(success=False, error=credential))
+
+        def complete_media_schedule(coro, _loop):
+            coro.close()
+            return completed_future
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=complete_media_schedule):
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                _send_media_via_adapter(
+                    adapter,
+                    "123",
+                    [(str(media_path), False)],
+                    None,
+                    MagicMock(),
+                    {"id": "media-redacted-delivery"},
+                )
+
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
+
+    def test_live_adapter_exception_redacts_credential_from_delivery_result(self, caplog):
+        """A failed fallback must not return a raw live-adapter exception for persistence."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        credential = "sk-" + "HER96SYNTHETIC" * 2
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = {}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        adapter = MagicMock()
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        failed_future = Future()
+        failed_future.set_exception(RuntimeError(credential))
+        router = MagicMock()
+
+        async def routed_delivery(*_args, **_kwargs):
+            return None
+
+        router._deliver_to_platform.side_effect = routed_delivery
+
+        def fail_live_schedule(coro, _loop):
+            coro.close()
+            return failed_future
+
+        def fail_standalone(coro):
+            coro.close()
+            raise RuntimeError("standalone delivery unavailable")
+
+        job = {
+            "id": "live-exception-redacted-result",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("gateway.delivery.DeliveryRouter", return_value=router), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fail_live_schedule), \
+             patch("cron.scheduler.asyncio.run", side_effect=fail_standalone):
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                result = _deliver_result(
+                    job,
+                    "report",
+                    adapters={Platform.TELEGRAM: adapter},
+                    loop=loop,
+                )
+
+        assert credential not in caplog.text
+        assert credential not in result
+        assert "[redacted credential]" in result
+
+
+def test_redacted_exception_detail_tracks_when_traceback_is_safe():
+    """Credential-bearing exceptions need a redacted message and no raw traceback."""
+    from cron.scheduler import _redacted_exception_detail
+
+    credential = "sk-" + "HER96SYNTHETIC" * 2
+    assert _redacted_exception_detail(RuntimeError(credential)) == (
+        "[redacted credential]",
+        False,
+    )
+    assert _redacted_exception_detail(RuntimeError("network timeout")) == (
+        "network timeout",
+        True,
+    )
+    try:
+        try:
+            raise RuntimeError(credential)
+        except RuntimeError as cause:
+            raise RuntimeError("safe wrapper") from cause
+    except RuntimeError as chained:
+        assert _redacted_exception_detail(chained) == ("safe wrapper", False)
+
+
+def test_channel_topic_probe_redacts_chained_credential_from_debug_traceback(caplog):
+    """A safe outer probe error must not re-expose a credential in its cause."""
+    from concurrent.futures import Future
+    from cron.scheduler import _is_channel_dm_topic
+
+    credential = "token: QWERTY1234567890"
+
+    class _Adapter:
+        async def get_chat_info(self, _chat_id):
+            return None
+
+    def failed_schedule(coro, _loop):
+        coro.close()
+        future = Future()
+        try:
+            try:
+                raise RuntimeError(credential)
+            except RuntimeError as cause:
+                raise RuntimeError("probe unavailable") from cause
+        except RuntimeError as chained:
+            future.set_exception(chained)
+        return future
+
+    with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=failed_schedule):
+        with caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+            assert _is_channel_dm_topic(_Adapter(), "123", MagicMock(), "probe-job") is False
+
+    assert credential not in caplog.text
+    assert "probe unavailable" in caplog.text
+
+
+def test_provider_job_change_notification_redacts_credential_exception(caplog):
+    """A provider callback failure must not expose its exception text in debug logs."""
+    import cron.scheduler as scheduler
+
+    credential = "token: QWERTY1234567890"
+
+    with patch(
+        "cron.scheduler_provider.resolve_cron_scheduler",
+        side_effect=RuntimeError(credential),
+    ):
+        with caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+            scheduler._notify_provider_jobs_changed()
+
+    assert credential not in caplog.text
+    assert "[redacted credential]" in caplog.text
+
+
+def test_future_failure_logger_redacts_chained_credential_traceback(caplog):
+    """Future failures must not use their chained traceback as a credential log sink."""
+    from cron.scheduler import _log_redacted_future_exception
+
+    credential = "gsk_" + "HER96SYNTHETIC" * 2
+    try:
+        try:
+            raise RuntimeError(credential)
+        except RuntimeError as cause:
+            raise RuntimeError("future failed") from cause
+    except RuntimeError as error:
+        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+            _log_redacted_future_exception("Cron job future failed", error)
+
+    assert credential not in caplog.text
+    assert "future failed" in caplog.text
+
 
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
@@ -1072,6 +1450,37 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+
+    def test_sessiondb_init_failure_redacts_credential_from_debug_log(self, tmp_path, caplog):
+        """Inner scheduler setup failures must not leak credentials before run_job continues."""
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        job = {"id": "sessiondb-redaction", "name": "test", "prompt": "hello"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", side_effect=RuntimeError(credential)), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            with caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+                success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
 
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
@@ -1239,6 +1648,37 @@ class TestRunJobSessionPersistence:
             "failure-compression-tip", "cron_complete"
         )
         mock_agent.close.assert_called_once()
+
+    def test_run_job_failure_redacts_credential_from_exception_log(self, tmp_path, caplog):
+        """Agent exceptions must be sanitized before run_job logs their traceback message."""
+        job = {"id": "credential-failure", "name": "failing", "prompt": "hello"}
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = RuntimeError(credential)
+            mock_agent_cls.return_value = mock_agent
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                success, _output, _final_response, _error = run_job(job)
+
+        assert success is False
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
 
     def test_run_job_finalizes_compression_tip_and_dedupes_its_title(
         self, tmp_path
@@ -1452,6 +1892,31 @@ class TestRunJobSessionPersistence:
                 stack.enter_context(cm)
             mock_agent_cls = entered[-1]  # the AIAgent patch
             yield fake_db, mock_agent_cls
+
+    def test_run_job_cleanup_failures_redact_credential_logs(self, tmp_path, caplog):
+        """Every best-effort run_job cleanup path keeps exception details credential-safe."""
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+        job = {"id": "cleanup-redaction", "name": "cleanup", "prompt": "hello"}
+        extra = [
+            patch(
+                "agent.auxiliary_client.cleanup_stale_async_clients",
+                side_effect=RuntimeError(credential),
+            )
+        ]
+
+        with self._run_job_patches(tmp_path, extra=extra) as (fake_db, mock_agent_cls):
+            fake_db.get_compression_tip.side_effect = RuntimeError(credential)
+            fake_db.set_session_title.side_effect = RuntimeError(credential)
+            fake_db.end_session.side_effect = RuntimeError(credential)
+            fake_db.close.side_effect = RuntimeError(credential)
+            mock_agent_cls.return_value.close.side_effect = RuntimeError(credential)
+            with caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+                success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
 
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
@@ -1800,6 +2265,19 @@ class TestRunJobSessionPersistence:
         assert call_args[0][0] == "empty-job"
         assert call_args[0][1] is False  # success should be False
         assert "empty" in call_args[0][2].lower()  # error should mention empty
+
+    def test_failure_delivery_redacts_credential_shaped_fallback_text(self):
+        """Unexpected errors must not expose provider credentials in chat delivery."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        message = _summarize_cron_failure_for_delivery(
+            {"id": "safe-delivery", "name": "safe delivery"},
+            f"unexpected upstream failure: {credential}",
+        )
+
+        assert credential not in message
+        assert "[redacted credential]" in message
 
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {
@@ -2855,6 +3333,50 @@ class TestSilentDelivery:
         deliver_mock.assert_not_called()
         assert any(SILENT_MARKER in r.message for r in caplog.records)
 
+    def test_delivery_redacts_credential_shaped_final_response(self):
+        """A successful agent response is redacted before it reaches adapters."""
+        response = "report: hf_" + "HER96SYNTHETIC" * 2
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        delivered = deliver_mock.call_args.args[1]
+        assert response.split("hf_", 1)[1] not in delivered
+        assert "[redacted credential]" in delivered
+
+    def test_delivery_exception_redacts_credential_from_error_log(self, caplog):
+        """Adapter exceptions must be redacted before scheduler logging."""
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "response", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", side_effect=RuntimeError(credential)), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                tick(verbose=False)
+
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
+
+    def test_processing_exception_redacts_credential_from_error_log(self, caplog):
+        """Unexpected run processing exceptions must be redacted before logging."""
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "response", None)), \
+             patch("cron.scheduler.save_job_output", side_effect=RuntimeError(credential)), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                tick(verbose=False)
+
+        assert credential not in caplog.text
+        assert "[redacted credential]" in caplog.text
+
     def test_silent_with_note_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
@@ -3189,6 +3711,32 @@ class TestRunJobWakeGate:
         assert script_output in prompt_arg
         assert success is True
         assert err is None
+
+    def test_runtime_requested_provider_reaches_agent_when_transport_is_canonical(self):
+        """Routing intent survives when a provider is carried over another transport."""
+        import cron.scheduler as scheduler
+
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        runtime = {
+            "provider": "openrouter",
+            "requested_provider": "anthropic",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "canonical-transport",
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime,
+        ), patch("run_agent.AIAgent", return_value=agent) as agent_cls:
+            success, _doc, _final, err = scheduler.run_job(self._make_job())
+
+        assert success is True
+        assert err is None
+        assert agent_cls.call_args.kwargs["provider"] == "openrouter"
+        assert agent_cls.call_args.kwargs["requested_provider"] == "anthropic"
 
     def test_script_runs_only_once_on_wake(self):
         """Wake-true path must not re-run the script inside _build_job_prompt

@@ -1773,6 +1773,101 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return tool_error(f"Unknown tool: {tool_name}")
 
+    def _enqueue_buffered_flush(
+        self,
+        turns: list[str],
+        *,
+        session_id: str,
+        parent_session_id: str,
+        document_id: str,
+        update_mode: str | None,
+        turn_index: int,
+        label: str,
+    ) -> None:
+        """Enqueue a flush of buffered turns through the writer queue.
+
+        Shared by on_session_end and on_session_switch. The caller
+        selects which turns to send and resolves (document_id,
+        update_mode) at the right lifecycle moment (before session
+        rotation for switch, current state for exit).
+        """
+        if not turns:
+            return
+        if self._shutting_down.is_set():
+            return
+
+        metadata = self._build_metadata(
+            message_count=len(turns) * 2,
+            turn_index=turn_index,
+        )
+        lineage_tags: list[str] = []
+        if session_id:
+            lineage_tags.append(f"session:{session_id}")
+        if parent_session_id:
+            lineage_tags.append(f"parent:{parent_session_id}")
+        content = "[" + ",".join(turns) + "]"
+
+        def _flush():
+            try:
+                item = self._build_retain_kwargs(
+                    content,
+                    context=self._retain_context,
+                    metadata=metadata,
+                    tags=lineage_tags or None,
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                if update_mode is not None:
+                    item["update_mode"] = update_mode
+                logger.debug(
+                    "Hindsight flush-%s: bank=%s, doc=%s, mode=%s, num_turns=%d",
+                    label, self._bank_id, document_id, update_mode, len(turns),
+                )
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(
+                        bank_id=self._bank_id,
+                        items=[item],
+                        document_id=document_id,
+                        retain_async=self._retain_async,
+                    )
+                )
+            except Exception as e:
+                logger.warning("Hindsight flush-%s failed: %s", label, e, exc_info=True)
+
+        self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_flush)
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        """Flush buffered-but-unretained turns before the session ends.
+
+        When retain_every_n_turns > 1, sync_turn() only enqueues a retain
+        every Nth turn. Turns 1..N-1 sit in _session_turns and would be
+        silently discarded on exit — on_session_switch() already flushes
+        them on /reset, /new, etc., but the exit path (Ctrl-D, /quit)
+        goes through on_session_end + shutdown, and shutdown() only drains
+        already-queued work. This flushes the unretained delta through
+        the same writer queue so shutdown()'s drain picks it up.
+        """
+        if not self._session_turns:
+            return
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        # Only send turns not yet retained. With append mode,
+        # _last_retained_turn_count tracks what the server already has.
+        if update_mode == "append":
+            turns = self._session_turns[self._last_retained_turn_count:]
+        else:
+            turns = list(self._session_turns)
+        self._enqueue_buffered_flush(
+            turns,
+            session_id=self._session_id,
+            parent_session_id=self._parent_session_id,
+            document_id=document_id,
+            update_mode=update_mode,
+            turn_index=self._turn_index,
+            label="on-exit",
+        )
+
     def on_session_switch(
         self,
         new_session_id: str,
@@ -1816,69 +1911,24 @@ class HindsightMemoryProvider(MemoryProvider):
         if not new_id:
             return
 
-        # 1. Flush any buffered turns under the OLD identifiers. Snapshot
-        # everything before mutating self._* so metadata + tags + doc_id
-        # all reference the old session consistently.
+        # 1. Flush any buffered turns under the OLD identifiers. Resolve
+        # doc_id + update_mode against the OLD session BEFORE we rotate
+        # _session_id, so the flush lands in the old session's document
+        # either way (legacy: per-process unique; ≥0.5.0: stable
+        # session-scoped + append).
         if self._session_turns:
-            old_turns = list(self._session_turns)
-            old_session_id = self._session_id
-            old_parent_session_id = self._parent_session_id
-            old_turn_index = self._turn_index
-            old_metadata = self._build_metadata(
-                message_count=len(old_turns) * 2,
-                turn_index=old_turn_index,
-            )
-            old_lineage_tags: list[str] = []
-            if old_session_id:
-                old_lineage_tags.append(f"session:{old_session_id}")
-            if old_parent_session_id:
-                old_lineage_tags.append(f"parent:{old_parent_session_id}")
-            old_content = "[" + ",".join(old_turns) + "]"
-            # Resolve doc_id + update_mode against the OLD session BEFORE
-            # we rotate _session_id, so the flush lands in the old
-            # session's document either way (legacy: per-process unique;
-            # ≥0.5.0: stable session-scoped + append).
             old_document_id, old_update_mode = self._resolve_retain_target(
                 self._document_id
             )
-
-            def _flush():
-                try:
-                    item = self._build_retain_kwargs(
-                        old_content,
-                        context=self._retain_context,
-                        metadata=old_metadata,
-                        tags=old_lineage_tags or None,
-                    )
-                    item.pop("bank_id", None)
-                    item.pop("retain_async", None)
-                    if old_update_mode is not None:
-                        item["update_mode"] = old_update_mode
-                    logger.debug(
-                        "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
-                        self._bank_id, old_document_id, old_update_mode, len(old_turns),
-                    )
-                    self._run_hindsight_operation(
-                        lambda client: client.aretain_batch(
-                            bank_id=self._bank_id,
-                            items=[item],
-                            document_id=old_document_id,
-                            retain_async=self._retain_async,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
-
-            # Route the flush through the same writer queue sync_turn
-            # uses. That serializes it behind any still-queued retains
-            # from the old session (FIFO by document_id), avoids racing
-            # two threads on aretain_batch against the same document, and
-            # keeps shutdown's drain semantics intact. Skip enqueue if
-            # shutdown has already fired — the writer is draining/gone.
-            if not self._shutting_down.is_set():
-                self._ensure_writer()
-                self._register_atexit()
-                self._retain_queue.put(_flush)
+            self._enqueue_buffered_flush(
+                list(self._session_turns),
+                session_id=self._session_id,
+                parent_session_id=self._parent_session_id,
+                document_id=old_document_id,
+                update_mode=old_update_mode,
+                turn_index=self._turn_index,
+                label="on-switch",
+            )
 
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.

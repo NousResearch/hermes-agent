@@ -55,6 +55,14 @@ fi
 # don't try to write to /root.
 export HOME=/opt/data
 
+# HERMES_HOME comes through with-contenv from the Dockerfile ENV directive
+# written to /run/s6/container_environment/HERMES_HOME by s6-overlay's init.
+# In third-party or modified images this entry may be missing, causing
+# Python's get_hermes_home() to fall back to $HOME/.hermes instead of
+# $HOME — skills created via /learn land in the wrong directory and are
+# invisible to the gateway skill loader.  (#65165)
+export HERMES_HOME="${HERMES_HOME:-$HOME}"
+
 # Save the Docker -w (or default) working directory before init
 # scripts cd to /opt/data, so the container starts in the
 # directory the user requested.

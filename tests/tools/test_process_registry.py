@@ -948,8 +948,7 @@ class TestSpawnRewriteCompoundBackground:
         assert len(captured_cmd) == 1
         shell_cmd = captured_cmd[0]
         # The command passed to Popen should be the REWRITTEN version
-        assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2] or \
-               "&& { node" in shell_cmd[2]
+        assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
 
     def test_simple_background_preserved(self, registry):
         """Simple cmd & (no &&) must NOT be rewritten — no subshell bug."""
@@ -1002,8 +1001,7 @@ class TestSpawnRewriteCompoundBackground:
         assert len(captured_cmd) == 1
         shell_cmd = captured_cmd[0][2]
         # First line's compound should be rewritten; rest is preserved
-        assert "&& { python3 -m http.server & }" in shell_cmd or \
-               "&& { python3" in shell_cmd
+        assert "&& { python3 -m http.server & }" in shell_cmd
         assert "sleep 1" in shell_cmd
         assert "curl http://localhost:8000/" in shell_cmd
 
@@ -1029,6 +1027,35 @@ class TestSpawnRewriteCompoundBackground:
 
         assert session.command == "A && B &"
         assert "{ B" in captured[0][2]  # rewritten in Popen args
+
+    def test_pty_path_uses_rewritten_command(self, registry):
+        """PTY spawn path must also use the rewritten command (issue #68915)."""
+        mock_pty_proc = MagicMock()
+        mock_pty_proc.pid = 5555
+
+        mock_pty_module = MagicMock()
+        mock_pty_module.PtyProcess.spawn = MagicMock(return_value=mock_pty_proc)
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("tools.process_registry._IS_WINDOWS", False), \
+             patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local(
+                "cd /app && node server.js &",
+                cwd="/tmp",
+                use_pty=True,
+            )
+
+        assert mock_pty_module.PtyProcess.spawn.called, \
+            "PTY spawn should have been attempted"
+        pty_args = mock_pty_module.PtyProcess.spawn.call_args[0][0]
+        assert "&& { node server.js & }" in pty_args[2], \
+            f"PTY path should use rewritten command, got: {pty_args[2]}"
+        assert session.command == "cd /app && node server.js &"
 
 
 # =========================================================================

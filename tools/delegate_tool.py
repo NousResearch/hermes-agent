@@ -1086,6 +1086,11 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Route-specific fallback chain from delegation.model_routes config.
+    # When set, replaces the parent's fallback chain so the child can
+    # auto-failover through the route's fallback providers (e.g. vLLM →
+    # mimo-v2.5-free → hy3:free) instead of the parent's unrelated chain.
+    route_fallbacks: Optional[List[Dict[str, str]]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1323,6 +1328,24 @@ def _build_child_agent(
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
 
+    # When a task_type route provides its own fallback chain, use it INSTEAD
+    # of the parent's.  The route fallbacks are provider+model pairs from
+    # delegation.model_routes config; try_activate_fallback() resolves their
+    # credentials at failover time via resolve_provider_client (same as any
+    # other fallback chain entry).  This wires up the previously-dead
+    # _trigger_fallback design — the existing fallback chain mechanism
+    # already handles HTTP-code/timeout/double-null triggers (via
+    # error_classifier + try_activate_fallback), so we reuse it rather than
+    # maintaining a parallel trigger function.
+    if route_fallbacks:
+        # Filter to valid entries (provider+model both present)
+        effective_fallback = [
+            fb for fb in route_fallbacks
+            if isinstance(fb, dict) and fb.get("provider") and fb.get("model")
+        ] or None
+    else:
+        effective_fallback = parent_fallback
+
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
     # constraints).  BUT: when `delegation.provider` is set the user is
@@ -1373,7 +1396,7 @@ def _build_child_agent(
 
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=effective_fallback,
         enabled_toolsets=child_toolsets,
         disabled_toolsets=child_disabled_toolsets,
         quiet_mode=True,
@@ -2431,6 +2454,10 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    # Model routing parameters (multi-model routing)
+    task_type: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2490,6 +2517,12 @@ def delegate_task(
     # Load config
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+
+    # Resolve model routing: explicit model/provider > task_type > delegation default
+    route_config = _resolve_model_route(task_type, model, provider, cfg)
+    round_robin_cfg = cfg.get("round_robin", {})
+    fallback_trigger_cfg = cfg.get("fallback_trigger", {})
+
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
     # and tests; a model-emitted value here would only shrink the budget and
@@ -2582,10 +2615,72 @@ def delegate_task(
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
+        # Determine if round-robin batch routing applies:
+        # - round_robin.enabled config is True
+        # - task_type was provided and route_config has fallbacks
+        # - there are multiple tasks with the same task_type
+        apply_round_robin = (
+            round_robin_cfg.get("enabled", False)
+            and task_type
+            and route_config.get("fallbacks")
+            and len(task_list) > 1
+        )
         for i, t in enumerate(task_list):
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Determine if task_type routing resolved a non-default route.
+            route_primary = route_config.get("primary_resolved", False)
+            route_fallbacks = route_config.get("fallbacks", [])
+
+            # Compute per-task credentials:
+            # - When task_type routing is active, resolve full credentials for
+            #   the route's primary provider via the runtime provider system
+            #   (same path as _resolve_delegation_credentials).  This is the
+            #   fix for the route_config-results-discarded bug: previously
+            #   task_creds was always ``creds`` (delegation default), so all
+            #   task_type delegations silently ran on LongCat.
+            # - Round-robin odd-indexed tasks use fallback[0] instead.
+            if route_primary and not (apply_round_robin and i % 2 == 1):
+                rm = route_config.get("model")
+                rp = route_config.get("provider")
+                if rm and rp:
+                    task_creds = _resolve_route_credentials(rp, rm, creds)
+                else:
+                    task_creds = creds
+            elif route_primary and apply_round_robin and i % 2 == 1 and route_fallbacks:
+                # Use first fallback for odd-indexed tasks (round-robin)
+                fb = route_fallbacks[0]
+                task_creds = _resolve_route_credentials(
+                    fb.get("provider", ""), fb.get("model", ""), creds
+                )
+                logger.info(
+                    "Round-robin batch[%d]: assigning fallback model %s/%s",
+                    i, task_creds.get("provider"), task_creds.get("model"),
+                )
+            else:
+                task_creds = creds
+
+            # Determine per-task special handling flags
+            task_provider = task_creds.get("provider", "")
+            task_model = task_creds.get("model", "")
+            # vLLM disable thinking: only when the route actually resolves to
+            # a vLLM provider. Without the provider check, a credential
+            # resolution failure that degrades to LongCat would still set the
+            # flag (model stays qwen3.6-27b), injecting chat_template_kwargs
+            # into a provider that rejects it.
+            vllm_disable_thinking = (
+                task_model == "qwen3.6-27b"
+                and "vllm" in task_provider.lower()
+            )
+            # LongCat reasoning_content fallback
+            longcat_fallback = (task_provider == "custom:LongCat")
+            # MiniMax markdown stripping
+            minimax_strip = (task_provider == "custom:MiniMax Token Plan")
+            # Free model rate-limit retry
+            free_model_retry = (task_provider in ("openrouter", "custom:OpenCode Zen"))
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2593,20 +2688,26 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_request_overrides=creds.get("request_overrides"),
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                route_fallbacks=route_fallbacks if route_primary else None,
                 role=effective_role,
             )
+            # Attach special handling flags for the child agent
+            child._delegate_vllm_disable_thinking = vllm_disable_thinking
+            child._delegate_longcat_fallback = longcat_fallback
+            child._delegate_minimax_markdown_strip = minimax_strip
+            child._delegate_free_model_retry = free_model_retry
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             # Tee the child's progress events into its live transcript log.
@@ -3158,6 +3259,129 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _resolve_model_route(task_type: str, model: str, provider: str, cfg: dict) -> dict:
+    """
+    Resolve model routing priority: explicit model/provider > task_type > delegation default.
+
+    Returns {"model": ..., "provider": ..., "fallbacks": [...]}.
+    """
+    # 1. Explicit model+provider takes highest priority
+    if model and provider:
+        return {"model": model, "provider": provider, "fallbacks": [],
+                "primary_resolved": True}
+
+    # 2. task_type route lookup
+    if task_type:
+        routes = cfg.get("model_routes", {})
+        route = routes.get(task_type)
+        if route:
+            primary = route.get("primary", {})
+            return {
+                "model": primary.get("model"),
+                "provider": primary.get("provider"),
+                "fallbacks": route.get("fallbacks", []),
+                "primary_resolved": True,
+            }
+
+    # 3. Default delegation config
+    return {
+        "model": cfg.get("model"),
+        "provider": cfg.get("provider"),
+        "fallbacks": [],
+        "primary_resolved": False,
+    }
+
+
+def strip_markdown_code_block(content: str) -> str:
+    """Strip markdown code block wrappers (```json ... ``` or ``` ... ```) from content."""
+    if not content:
+        return content
+    text = content.strip()
+    # Match ```json ... ``` or ``` ... ```
+    if text.startswith("```"):
+        # Find the end ```
+        end_idx = text.find("```", 3)
+        if end_idx != -1:
+            inner = text[3:end_idx].strip()
+            # Remove optional language prefix
+            lines = inner.split("\n", 1)
+            if len(lines) > 1 and lines[0].strip() and not lines[0].strip()[0].isalnum() is False:
+                inner = lines[1].strip() if len(lines) > 1 else inner
+            elif len(lines) > 1 and lines[0].strip().isalpha():
+                inner = lines[1]
+            return inner
+    return content
+
+
+def _trigger_fallback(http_code: int, content: str, reasoning_content: str,
+                      api_error: str = None, timeout_occurred: bool = False,
+                      fallback_trigger_cfg: dict = None) -> bool:
+    """Check if a response meets fallback trigger conditions."""
+    if fallback_trigger_cfg is None:
+        fallback_trigger_cfg = {}
+    if http_code in fallback_trigger_cfg.get("http_codes", []):
+        return True
+    if timeout_occurred:
+        return True
+    content_blank = (content is None or content.strip() == "")
+    reasoning_blank = (reasoning_content is None or reasoning_content.strip() == "")
+    if content_blank and reasoning_blank and fallback_trigger_cfg.get("content_null_and_reasoning_null"):
+        return True
+    return False
+
+
+def _resolve_route_credentials(route_provider: str, route_model: str, base_creds: dict) -> dict:
+    """Resolve full credentials for a model_route primary or fallback entry.
+
+    Takes a (provider, model) pair from the model_routes config and resolves
+    the full credential bundle (base_url, api_key, api_mode) via the runtime
+    provider system — the same path used by _resolve_delegation_credentials.
+
+    Falls back to base_creds (the delegation default) on resolution failure so
+    a misconfigured route entry degrades gracefully instead of aborting the
+    whole delegation.
+
+    Returns a dict with keys: model, provider, base_url, api_key, api_mode.
+    """
+    if not route_provider or not route_model:
+        return base_creds
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=route_provider, target_model=route_model
+        )
+        api_key = runtime.get("api_key", "")
+        if not api_key:
+            # Some providers (e.g. local vLLM without auth) legitimately have
+            # no key.  Use "no-key-required" sentinel so _build_child_agent's
+            # ``effective_api_key = override_api_key or parent_api_key`` logic
+            # doesn't silently inherit the parent's (wrong-provider) key.
+            api_key = "no-key-required"
+        return {
+            "model": route_model,
+            "provider": (
+                route_provider
+                if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM
+                else runtime.get("provider")
+            ),
+            "base_url": runtime.get("base_url"),
+            "api_key": api_key,
+            "api_mode": runtime.get("api_mode"),
+        }
+    except Exception as exc:
+        logger.warning(
+            "Model route resolution failed for %s/%s: %s — "
+            "falling back to delegation default credentials",
+            route_provider, route_model, exc,
+        )
+        # Degrade gracefully: use default creds but override model+provider
+        creds = dict(base_creds)
+        creds["model"] = route_model
+        creds["provider"] = route_provider
+        return creds
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -3588,6 +3812,29 @@ DELEGATE_TASK_SCHEMA = {
                     "backward compatibility."
                 ),
             },
+            # Multi-model routing parameters (added 2026-07-20)
+            "task_type": {
+                "type": "string",
+                "enum": ["search_fetch", "log_analysis", "code_exec", "code_write", "research"],
+                "description": (
+                    "Task type for model routing. When provided, uses delegation.model_routes "
+                    "to automatically select provider:model with fallback chain support."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override model name. Takes precedence over task_type routing. "
+                    "Only effective when provider is also specified."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Override provider name. Takes precedence over task_type routing. "
+                    "Only effective when model is also specified."
+                ),
+            },
         },
         "required": [],
     },
@@ -3649,6 +3896,9 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
+        task_type=args.get("task_type"),
+        model=args.get("model"),
+        provider=args.get("provider"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

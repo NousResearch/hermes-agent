@@ -1216,8 +1216,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         )
         # vLLM disable thinking: qwen3.6-27b on vLLM ignores reasoning_config
         # and needs chat_template_kwargs to suppress thinking output.
+        # Must go in extra_body — OpenAI client's create() rejects it as a
+        # top-level kwarg (only vLLM's server-side chat template reads it).
         if getattr(agent, '_delegate_vllm_disable_thinking', False):
-            kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+            kwargs.setdefault("extra_body", {})["chat_template_kwargs"] = {"enable_thinking": False}
         return kwargs
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -1268,8 +1270,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     )
     # vLLM disable thinking: qwen3.6-27b on vLLM ignores reasoning_config
     # and needs chat_template_kwargs to suppress thinking output.
+    # Must go in extra_body — OpenAI client's create() rejects it as a
+    # top-level kwarg (only vLLM's server-side chat template reads it).
     if getattr(agent, '_delegate_vllm_disable_thinking', False):
-        kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+        kwargs.setdefault("extra_body", {})["chat_template_kwargs"] = {"enable_thinking": False}
     return kwargs
 
 

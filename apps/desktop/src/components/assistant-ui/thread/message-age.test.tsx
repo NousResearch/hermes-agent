@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MessageAge } from './message-age'
@@ -28,7 +28,7 @@ vi.mock('@/i18n', () => ({
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 
 describe('MessageAge', () => {
-  it('renders a focusable Tip trigger with relative and exact time', () => {
+  it('renders a focusable Tip trigger with relative and exact time', async () => {
     const createdAt = new Date()
     createdAt.setMinutes(createdAt.getMinutes() - 5)
 
@@ -41,6 +41,9 @@ describe('MessageAge', () => {
     expect(age.getAttribute('tabindex')).toBe('0')
     expect(age.getAttribute('title')).toBeNull()
     expect(tipTrigger(age)).toBeTruthy()
+
+    fireEvent.pointerMove(age, { pointerType: 'mouse' })
+    expect((await screen.findByRole('tooltip')).textContent).toMatch(/^Today at /)
   })
 
   it('does not render an invalid timestamp', () => {

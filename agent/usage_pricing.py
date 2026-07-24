@@ -1074,6 +1074,42 @@ def _pricing_entry_from_metadata(
     )
 
 
+def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """Fallback: look up pricing in models.dev for named providers absent
+    from the hardcoded table (e.g. Xiaomi MiMo).
+
+    Returns None gracefully if models.dev has no data for the model.
+    Mirrors the pattern used in ``hermes_cli.model_cost_guard`` to keep
+    the two lookup paths consistent.
+    """
+    if not route.provider or not route.model:
+        return None
+    # Generic custom/local routes do not carry a trusted upstream provider
+    # identity. Do not turn a coincidental model-name match into a cost claim.
+    if route.provider in {"custom", "local", "unknown"}:
+        return None
+    try:
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV, get_model_info
+
+        if route.provider not in PROVIDER_TO_MODELS_DEV:
+            return None
+        model_info = get_model_info(route.provider, route.model)
+    except Exception:
+        return None
+    if model_info is None or not model_info.has_cost_data():
+        return None
+    return PricingEntry(
+        input_cost_per_million=_to_decimal(model_info.cost_input),
+        output_cost_per_million=_to_decimal(model_info.cost_output),
+        cache_read_cost_per_million=_to_decimal(model_info.cost_cache_read),
+        cache_write_cost_per_million=_to_decimal(model_info.cost_cache_write),
+        source="provider_models_api",
+        source_url="https://models.dev",
+        pricing_version="models.dev",
+        fetched_at=_UTC_NOW(),
+    )
+
+
 def get_pricing_entry(
     model_name: str,
     provider: Optional[str] = None,
@@ -1101,7 +1137,15 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    official = _lookup_official_docs_pricing(route)
+    if official:
+        return official
+    # Final fallback: models.dev covers named providers absent from the
+    # hardcoded table (e.g. Xiaomi MiMo). Generic custom endpoints retain the
+    # ``custom`` identity, so we do not guess an upstream provider or price.
+    # Consistent with the lookup order used in
+    # ``hermes_cli.model_cost_guard.expensive_model_warning``.
+    return _models_dev_pricing_entry(route)
 
 
 def normalize_usage(

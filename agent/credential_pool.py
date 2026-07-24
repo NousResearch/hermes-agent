@@ -1778,17 +1778,14 @@ class CredentialPool:
                 if entry is None:
                     # The failed key is identifiable but matches no entry
                     # (rotated away, or a wrapper whose runtime key differs).
-                    # Falling through to current()/_select_unlocked() would
-                    # mark an INNOCENT healthy key exhausted for the full
-                    # cooldown TTL.  Don't guess — just hand back a fresh
-                    # selection so the caller can retry.
+                    # Fall through to mark the current entry exhausted so
+                    # the pool can reach "no available entries" and surface
+                    # the error instead of retrying the same token forever.
                     logger.info(
                         "credential pool: failed key hint matched no %s entry; "
-                        "rotating without marking any credential exhausted",
+                        "marking current credential exhausted to break retry loop",
                         self.provider,
                     )
-                    self._current_id = None
-                    return self._select_unlocked()
             if entry is None:
                 entry = self._current_unlocked() or self._select_unlocked()
             if entry is None:

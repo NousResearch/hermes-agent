@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="{{REPORT_LANG}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{REPORT_TITLE}}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: oklch(22% 0.032 66);
+      --muted: oklch(47% 0.026 70);
+      --quiet: oklch(61% 0.024 74);
+      --paper: oklch(97.5% 0.018 83);
+      --surface: oklch(99% 0.008 84);
+      --surface-warm: oklch(94.5% 0.035 82);
+      --surface-green: oklch(93% 0.052 151);
+      --surface-blue: oklch(94% 0.034 226);
+      --surface-rose: oklch(94% 0.04 30);
+      --line: oklch(84% 0.027 78);
+      --accent: oklch(48% 0.112 151);
+      --accent-ink: oklch(30% 0.075 151);
+      --amber: oklch(76% 0.13 82);
+      --rose: oklch(64% 0.125 28);
+      --radius: 8px;
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 12px;
+      --space-lg: 16px;
+      --space-xl: 24px;
+      --space-2xl: 32px;
+      --space-3xl: 48px;
+      --content: min(1160px, calc(100vw - 36px));
+      --shadow: 0 18px 42px oklch(36% 0.035 70 / 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--paper);
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(145deg, oklch(98% 0.015 86), oklch(96% 0.022 67) 55%, oklch(98% 0.018 104));
+      font-family: "Aptos", "Segoe UI", "Noto Sans", sans-serif;
+      line-height: 1.56;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .report-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--space-sm);
+      width: var(--content);
+      margin: 0 auto;
+      padding: var(--space-lg) 0 0;
+    }
+
+    .export-button {
+      appearance: none;
+      border: 1px solid color-mix(in oklch, var(--accent), white 48%);
+      border-radius: 999px;
+      background: color-mix(in oklch, white, var(--surface-blue) 36%);
+      color: var(--accent-ink);
+      font: inherit;
+      font-weight: 700;
+      line-height: 1;
+      padding: 12px 16px;
+      cursor: pointer;
+      box-shadow: var(--shadow);
+    }
+
+    .export-button:hover {
+      background: color-mix(in oklch, white, var(--surface-blue) 52%);
+    }
+
+    .report-shell {
+      width: var(--content);
+      margin: 0 auto;
+      padding: var(--space-2xl) 0 var(--space-3xl);
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    p {
+      margin: 0;
+    }
+
+    h1,
+    h2 {
+      font-family: "Constantia", "Georgia", serif;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      max-width: 820px;
+      font-size: clamp(2.1rem, 5.2vw, 4.6rem);
+      line-height: 1.02;
+    }
+
+    h2 {
+      font-size: clamp(1.55rem, 3vw, 2.75rem);
+      line-height: 1.08;
+    }
+
+    h3 {
+      font-size: 1.04rem;
+      line-height: 1.25;
+      margin-bottom: var(--space-md);
+    }
+
+    h4 {
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.25;
+      margin-bottom: var(--space-sm);
+    }
+
+    p,
+    li,
+    dd,
+    dt,
+    small {
+      font-size: 0.96rem;
+    }
+
+    .eyebrow {
+      color: var(--accent-ink);
+      font-weight: 800;
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+
+    .lead {
+      max-width: 760px;
+      margin-top: var(--space-md);
+      color: var(--muted);
+      font-size: 1.08rem;
+    }
+
+    .cover {
+      display: grid;
+      gap: var(--space-xl);
+      padding: var(--space-xl) 0 var(--space-3xl);
+      break-after: page;
+    }
+
+    .cover-heading {
+      padding: var(--space-2xl);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: color-mix(in oklch, var(--surface), transparent 4%);
+      box-shadow: var(--shadow);
+    }
+
+    .cover-grid {
+      display: grid;
+      grid-template-columns: 1.35fr repeat(4, minmax(0, 1fr));
+      gap: var(--space-lg);
+    }
+
+    .metric-card,
+    .summary-panel,
+    .card,
+    .mini-card,
+    .community-grid > div {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: color-mix(in oklch, var(--surface), transparent 2%);
+      box-shadow: var(--shadow);
+    }
+
+    .metric-card {
+      min-height: 146px;
+      padding: var(--space-lg);
+      display: grid;
+      align-content: space-between;
+      gap: var(--space-md);
+    }
+
+    .store-card {
+      background: var(--surface-warm);
+    }
+
+    .score-metric {
+      background: var(--surface-green);
+    }
+
+    .lift-metric {
+      background: var(--surface-blue);
+    }
+
+    .metric-card span,
+    .snippet strong,
+    dt {
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .metric-card strong {
+      display: block;
+      font-family: "Constantia", "Georgia", serif;
+      font-size: clamp(1.45rem, 2.4vw, 2.35rem);
+      line-height: 1.02;
+    }
+
+    .metric-card small,
+    .snippet small,
+    .muted {
+      color: var(--muted);
+    }
+
+    .summary-panel {
+      padding: var(--space-xl);
+      background: color-mix(in oklch, var(--surface-green), white 45%);
+    }
+
+    .summary-panel h2 {
+      margin-bottom: var(--space-lg);
+      font-size: clamp(1.3rem, 2.2vw, 2rem);
+    }
+
+    .product-page {
+      min-height: 100vh;
+      padding: var(--space-3xl) 0;
+      break-after: page;
+    }
+
+    .product-page:last-child {
+      break-after: auto;
+    }
+
+    .product-hero {
+      display: grid;
+      gap: var(--space-md);
+      margin-bottom: var(--space-xl);
+      padding-bottom: var(--space-xl);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .product-hero p:last-child {
+      color: var(--muted);
+    }
+
+    .bento {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-auto-flow: dense;
+      gap: var(--space-lg);
+      align-items: stretch;
+    }
+
+    .card {
+      grid-column: span 4;
+      min-height: 220px;
+      padding: var(--space-xl);
+      overflow: visible;
+    }
+
+    .card.wide {
+      grid-column: span 8;
+    }
+
+    .score-card {
+      min-height: 300px;
+      background: linear-gradient(150deg, var(--surface-green), var(--surface) 70%);
+    }
+
+    .current-card,
+    .recommend {
+      min-height: 300px;
+    }
+
+    .recommend {
+      background: color-mix(in oklch, var(--surface-green), white 36%);
+    }
+
+    .community-card {
+      grid-column: span 8;
+    }
+
+    .action-card {
+      background: color-mix(in oklch, var(--surface-blue), white 38%);
+    }
+
+    .score {
+      color: var(--accent);
+      font-family: "Constantia", "Georgia", serif;
+      font-size: clamp(3.5rem, 7vw, 6.75rem);
+      line-height: 0.92;
+      margin-bottom: var(--space-md);
+    }
+
+    .snippet {
+      display: grid;
+      gap: var(--space-sm);
+      padding: var(--space-lg);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: oklch(98.5% 0.01 84);
+    }
+
+    .snippet + .snippet {
+      margin-top: var(--space-md);
+    }
+
+    .snippet p {
+      font-size: 1rem;
+    }
+
+    .clean-list {
+      list-style: none;
+      display: grid;
+      gap: var(--space-sm);
+      margin: 0;
+      padding: 0;
+    }
+
+    .clean-list li {
+      padding: var(--space-sm) var(--space-md);
+      border: 1px solid oklch(88% 0.025 78);
+      border-radius: 6px;
+      background: oklch(97.5% 0.014 78);
+    }
+
+    .kv-list {
+      display: grid;
+      gap: var(--space-md);
+    }
+
+    .kv-list div {
+      display: grid;
+      gap: var(--space-xs);
+      padding-bottom: var(--space-md);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .kv-list div:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
+    dd {
+      margin: 0;
+    }
+
+    dd span {
+      display: block;
+      margin-top: var(--space-xs);
+      color: var(--muted);
+    }
+
+    .mini-grid,
+    .community-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: var(--space-md);
+    }
+
+    .mini-card,
+    .community-grid > div {
+      min-height: 148px;
+      padding: var(--space-lg);
+      box-shadow: none;
+      background: oklch(98% 0.012 78);
+    }
+
+    .mini-card p + p {
+      margin-top: var(--space-sm);
+    }
+
+    .mini-card strong {
+      color: var(--ink);
+    }
+
+    @media (max-width: 1050px) {
+      .cover-grid,
+      .bento {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+      }
+
+      .store-card,
+      .card,
+      .card.wide,
+      .community-card {
+        grid-column: span 6;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .report-shell {
+        width: min(100vw - 24px, 680px);
+        padding: var(--space-lg) 0 var(--space-xl);
+      }
+
+      .report-toolbar {
+        width: min(100vw - 24px, 680px);
+        padding-top: var(--space-md);
+      }
+
+      .cover,
+      .product-page {
+        min-height: auto;
+        padding: var(--space-xl) 0;
+      }
+
+      .cover-heading,
+      .metric-card,
+      .summary-panel,
+      .card {
+        padding: var(--space-lg);
+      }
+
+      .cover-grid,
+      .bento {
+        grid-template-columns: 1fr;
+      }
+
+      .store-card,
+      .card,
+      .card.wide,
+      .community-card {
+        grid-column: auto;
+      }
+    }
+
+    @media print {
+      :root {
+        --paper: white;
+        --surface: white;
+        --shadow: none;
+      }
+
+      body {
+        background: white;
+      }
+
+      .report-toolbar {
+        display: none;
+      }
+
+      .report-shell {
+        width: auto;
+        padding: 0;
+      }
+
+      .cover,
+      .product-page {
+        min-height: auto;
+        padding: 24px 0;
+        break-after: page;
+      }
+
+      .product-page:last-child {
+        break-after: auto;
+      }
+
+      .card,
+      .metric-card,
+      .summary-panel,
+      .cover-heading {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-toolbar">
+    <button class="export-button" type="button" onclick="window.print()">{{EXPORT_PDF_LABEL}}</button>
+  </div>
+  <main class="report-shell" aria-label="Shopify product SEO report">
+    {{REPORT_CONTENT}}
+  </main>
+</body>
+</html>

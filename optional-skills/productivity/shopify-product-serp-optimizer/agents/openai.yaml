@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shopify Product SERP Optimizer"
+  short_description: "Audit product SERP opportunities in five-product batches and prepare one approval bundle"
+  default_prompt: "Use $shopify-product-serp-optimizer to audit this product or current batch, generate the HTML report, and prepare one preview-first Shopify update bundle."

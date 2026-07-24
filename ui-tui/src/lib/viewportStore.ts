@@ -1,6 +1,6 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
 import type { RefObject } from 'react'
-import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
 
 export interface ViewportSnapshot {
   atBottom: boolean
@@ -85,9 +85,23 @@ export function scrollbarSnapshotKey(v: ScrollbarSnapshot) {
 }
 
 export function useViewportSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>): ViewportSnapshot {
+  const cachedKey = useRef(viewportSnapshotKey(getViewportSnapshot(scrollRef.current)))
+
+  const subscribe = useCallback((cb: () => void) => {
+    if (!scrollRef.current) return () => {}
+    // Sync cache on subscribe so getSnapshot() is stable across React's tearing check.
+    // Without this, getSnapshot() reads live state that can change between two consecutive
+    // calls → React detects spurious tearing → flushSyncWorkAcrossRoots loop → #301.
+    cachedKey.current = viewportSnapshotKey(getViewportSnapshot(scrollRef.current))
+    return scrollRef.current.subscribe(() => {
+      cachedKey.current = viewportSnapshotKey(getViewportSnapshot(scrollRef.current))
+      cb()
+    })
+  }, [scrollRef])
+
   const key = useSyncExternalStore(
-    useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
-    () => viewportSnapshotKey(getViewportSnapshot(scrollRef.current)),
+    subscribe,
+    () => cachedKey.current,
     () => viewportSnapshotKey(EMPTY)
   )
 
@@ -106,9 +120,20 @@ export function useViewportSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>
 }
 
 export function useScrollbarSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>): ScrollbarSnapshot {
+  const cachedKey = useRef(scrollbarSnapshotKey(getScrollbarSnapshot(scrollRef.current)))
+
+  const subscribe = useCallback((cb: () => void) => {
+    if (!scrollRef.current) return () => {}
+    cachedKey.current = scrollbarSnapshotKey(getScrollbarSnapshot(scrollRef.current))
+    return scrollRef.current.subscribe(() => {
+      cachedKey.current = scrollbarSnapshotKey(getScrollbarSnapshot(scrollRef.current))
+      cb()
+    })
+  }, [scrollRef])
+
   const key = useSyncExternalStore(
-    useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
-    () => scrollbarSnapshotKey(getScrollbarSnapshot(scrollRef.current)),
+    subscribe,
+    () => cachedKey.current,
     () => scrollbarSnapshotKey(EMPTY_SCROLLBAR)
   )
 

@@ -1497,6 +1497,55 @@ class TestDeliverCrossPlatformThreadId:
             "12345", "hello", metadata=None
         )
 
+    @pytest.mark.asyncio
+    async def test_discord_create_thread_metadata_is_forwarded(self):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        runner = adapter.gateway_runner
+        assert runner is not None
+        runner.adapters[Platform("discord")] = mock_target
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "create_thread": True,
+                "thread_name": "Alert: API latency",
+            }
+        }
+
+        await adapter._deliver_cross_platform("discord", "hello", delivery)
+
+        mock_target.send.assert_awaited_once_with(
+            "12345",
+            "hello",
+            metadata={
+                "create_thread": True,
+                "thread_name": "Alert: API latency",
+            },
+        )
+    @pytest.mark.asyncio
+    async def test_discord_reuses_created_thread_on_subsequent_send(self):
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        runner = adapter.gateway_runner
+        assert runner is not None
+        runner.adapters[Platform("discord")] = mock_target
+        mock_target.send.side_effect = [
+            SendResult(success=True, raw_response={"thread_id": "5678"}),
+            SendResult(success=True),
+        ]
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "create_thread": True,
+                "thread_name": "Alert: API latency",
+            }
+        }
+
+        await adapter._deliver_cross_platform("discord", "interim", delivery)
+        await adapter._deliver_cross_platform("discord", "final", delivery)
+
+        assert mock_target.send.await_args_list[1].kwargs["metadata"] == {
+            "thread_id": "5678"
+        }
+
 
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a

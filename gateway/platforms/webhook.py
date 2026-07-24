@@ -1332,10 +1332,29 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        # Pass thread_id from deliver_extra so Telegram forum topics work
+        # Pass platform-specific thread routing/creation hints through the
+        # common adapter metadata channel. An explicit thread_id wins over
+        # create_thread so all later sends from one webhook run stay together.
         metadata = None
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
             metadata = {"thread_id": thread_id}
 
-        return await adapter.send(chat_id, content, metadata=metadata)
+        if platform_name == "discord" and extra.get("create_thread") and not thread_id:
+            metadata = metadata or {}
+            metadata["create_thread"] = True
+            if extra.get("thread_name"):
+                metadata["thread_name"] = extra["thread_name"]
+
+        result = await adapter.send(chat_id, content, metadata=metadata)
+        # Agent-mode webhooks may emit interim messages before their final
+        # answer. Once Discord creates the event thread, pin subsequent sends
+        # for this delivery to that same thread instead of creating siblings.
+        if (
+            platform_name == "discord"
+            and result.success
+            and isinstance(result.raw_response, dict)
+            and result.raw_response.get("thread_id")
+        ):
+            extra["thread_id"] = str(result.raw_response["thread_id"])
+        return result

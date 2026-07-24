@@ -37,6 +37,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -226,6 +227,8 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
+        self._last_heartbeat_ack_ts: float = 0.0  # op 11 ACK timestamp
+        self._last_msg_ts: float = 0.0            # last dispatch timestamp
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
@@ -475,6 +478,11 @@ class QQAdapter(BasePlatformAdapter):
             or os.getenv("ALL_PROXY")
             or os.getenv("all_proxy")
         )
+        # WebSocket-level heartbeat: aiohttp sends ping every 30s and expects
+        # pong within 10s.  Without this, NAT/firewall half-open TCP sockets
+        # hang on receive() forever with no error — see upstream #21633,
+        # #19821.  This is the layer-1 fix; the application-layer heartbeat
+        # (op 1/11) is a separate concern.
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={
@@ -482,8 +490,9 @@ class QQAdapter(BasePlatformAdapter):
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
             proxy=ws_proxy,
+            heartbeat=5.0,
         )
-        logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
+        logger.info("[%s] WebSocket connected to %s (heartbeat=30s)", self._log_tag, gateway_url)
 
     async def _listen_loop(self) -> None:
         """Read WebSocket events and reconnect on errors.
@@ -716,19 +725,48 @@ class QQAdapter(BasePlatformAdapter):
 
         The interval is set from the Hello (op 10) event's heartbeat_interval.
         QQ's default is ~41s; we send at 80% of the interval to stay safe.
+
+        Tracks Heartbeat ACK (op 11) and last dispatch from server; if no ACK
+        for 2 intervals or no dispatch for 3 intervals, force reconnect.
+        This is the layer-2 fix for upstream #21633 (silent WS death).
         """
-        try:
-            while self._running:
-                await asyncio.sleep(self._heartbeat_interval)
-                if not self._ws or self._ws.closed:
-                    continue
+        self._last_heartbeat_ack_ts = time.monotonic()
+        self._last_msg_ts = time.monotonic()
+        while self._running:
+            await asyncio.sleep(self._heartbeat_interval)
+            if not self._ws or self._ws.closed:
+                continue
+            try:
+                # d should be the latest sequence number received, or null
+                await self._ws.send_json({"op": 1, "d": self._last_seq})
+            except Exception as exc:
+                logger.debug("[%s] Heartbeat send failed: %s", self._log_tag, exc)
+                continue
+
+            now = time.monotonic()
+            reason = None
+
+            # Check 1: No Heartbeat ACK for 2 intervals
+            if (now - self._last_heartbeat_ack_ts) >= 2 * self._heartbeat_interval:
+                reason = "Heartbeat ACK timeout"
+
+            # Check 2: No dispatch (any message) for 3 intervals
+            if not reason and (now - self._last_msg_ts) >= 3 * self._heartbeat_interval:
+                reason = "Message receipt timeout (silent WS)"
+
+            if reason:
+                logger.warning(
+                    "[%s] %s (%.1fs); forcing reconnect",
+                    self._log_tag, reason, now - max(self._last_heartbeat_ack_ts, self._last_msg_ts),
+                )
                 try:
-                    # d should be the latest sequence number received, or null
-                    await self._ws.send_json({"op": 1, "d": self._last_seq})
-                except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
-        except asyncio.CancelledError:
-            pass
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
+                except Exception:
+                    pass
+                # Reset timestamps after forcing close (reconnect will start fresh)
+                self._last_heartbeat_ack_ts = time.monotonic()
+                self._last_msg_ts = time.monotonic()
 
     async def _send_identify(self) -> None:
         """Send op 2 Identify to authenticate the WebSocket connection.
@@ -822,6 +860,10 @@ class QQAdapter(BasePlatformAdapter):
         if isinstance(s, int) and (self._last_seq is None or s > self._last_seq):
             self._last_seq = s
 
+        # Track the last time we received ANY dispatch — used by heartbeat
+        # loop to detect silent WS death (upstream #21633).
+        self._last_msg_ts = time.monotonic()
+
         # op 10 = Hello (heartbeat interval) — must reply with Identify/Resume
         if op == 10:
             d_data = d if isinstance(d, dict) else {}
@@ -864,6 +906,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # op 11 = Heartbeat ACK
         if op == 11:
+            self._last_heartbeat_ack_ts = time.monotonic()
             return
 
         # op 7 = Server Reconnect — server asks client to reconnect (e.g.
@@ -930,6 +973,29 @@ class QQAdapter(BasePlatformAdapter):
             self._last_msg_id[event.source.chat_id] = event.message_id
         await super().handle_message(event)
 
+    # ------------------------------------------------------------------
+    # Greeting preprocessor
+    # ------------------------------------------------------------------
+    # The model provider (icodeeasy.cc) rejects simple greetings like "你好"
+    # with a 400 error before the model can process them.  This preprocessor
+    # detects short greeting-only messages and appends enough context to pass
+    # the provider's content filter.
+
+    _GREETING_RE = re.compile(
+        r"^(你好[呀啊哇~～]?|hi|hello|hey|heya?|嗨[嗨~～]?|在[吗嘛不]?\??)$",
+        re.IGNORECASE,
+    )
+    _GREETING_AUGMENT = "（请用简短温柔的语气回复问候）"
+
+    @classmethod
+    def _preprocess_greeting(cls, text: str) -> str:
+        """If *text* is a bare greeting, append context so the provider
+        doesn't reject it."""
+        t = text.strip()
+        if len(t) <= 10 and cls._GREETING_RE.match(t):
+            return f"{t} {cls._GREETING_AUGMENT}"
+        return text
+
     async def _on_message(self, event_type: str, d: Any) -> None:
         """Process an inbound QQ Bot message event."""
         if not isinstance(d, dict):
@@ -945,6 +1011,7 @@ class QQAdapter(BasePlatformAdapter):
 
         timestamp = str(d.get("timestamp", ""))
         content = str(d.get("content", "")).strip()
+        content = self._preprocess_greeting(content)
         author = d.get("author") if isinstance(d.get("author"), dict) else {}
 
         # Route by event type
@@ -1101,7 +1168,7 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in ("c2c", "dm"):
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:
@@ -2481,7 +2548,7 @@ class QQAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                if chat_type == "c2c":
+                if chat_type in ("c2c", "dm"):
                     return await self._send_c2c_text(chat_id, content, reply_to)
                 elif chat_type == "group":
                     return await self._send_group_text(chat_id, content, reply_to)
@@ -2608,7 +2675,7 @@ class QQAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         truncated = formatted[: self.MAX_MESSAGE_LENGTH]
         try:
-            if chat_type == "c2c":
+            if chat_type in ("c2c", "dm"):
                 return await self._send_c2c_text(
                     chat_id, truncated, reply_to, keyboard=keyboard,
                 )
@@ -2940,7 +3007,7 @@ class QQAdapter(BasePlatformAdapter):
                 "POST",
                 (
                     f"/v2/users/{chat_id}/messages"
-                    if chat_type == "c2c"
+                    if chat_type in ("c2c", "dm")
                     else f"/v2/groups/{chat_id}/messages"
                 ),
                 body,

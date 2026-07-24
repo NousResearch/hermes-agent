@@ -67,6 +67,21 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it.each([
+    ['epoch seconds', 1_720_000_000, 1_720_000_000_000],
+    ['epoch milliseconds', 1_720_000_000_000, 1_720_000_000_000]
+  ])('normalizes %s at the collection boundary', (_label, timestamp, expected) => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'https://example.com/artifact.pdf',
+        role: 'assistant',
+        timestamp
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(expected)
+  })
+
   it('resolves remote image artifact thumbnails through the desktop fs bridge', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path.startsWith('/api/fs/read-data-url?')) {

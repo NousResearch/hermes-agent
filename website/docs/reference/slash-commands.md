@@ -121,7 +121,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
-| `/profile` | Show active profile name and home directory |
+| `/profile [name]` | Show the active profile, or restart terminal chat under another profile. Dashboard Chat uses its profile dropdown instead. |
 
 ### Exit
 

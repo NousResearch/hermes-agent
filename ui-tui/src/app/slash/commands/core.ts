@@ -7,6 +7,7 @@ import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from 
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  ProfileSwitchResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -85,6 +86,8 @@ export const DASHBOARD_EXIT_DISABLED_MESSAGE =
 export const DASHBOARD_UPDATE_DISABLED_MESSAGE =
   'update is disabled in hosted dashboard chat — the hosted environment is managed separately'
 
+export const DASHBOARD_PROFILE_SWITCH_DISABLED_MESSAGE = 'profile switching in dashboard chat uses the profile dropdown'
+
 export const coreCommands: SlashCommand[] = [
   {
     help: 'list commands + hotkeys',
@@ -156,6 +159,51 @@ export const coreCommands: SlashCommand[] = [
       // Exit code 42 signals the Python wrapper to exec `hermes update`.
       // Use dieWithCode for proper cleanup (gateway kill + Ink unmount).
       setTimeout(() => ctx.session.dieWithCode(42), 100)
+    }
+  },
+
+  {
+    help: 'show or switch the active profile [name]',
+    name: 'profile',
+    run: (arg, ctx) => {
+      const target = arg.trim()
+
+      if (target && DASHBOARD_TUI_MODE) {
+        ctx.transcript.sys(DASHBOARD_PROFILE_SWITCH_DISABLED_MESSAGE)
+
+        return
+      }
+
+      if (target && ctx.ui.busy) {
+        ctx.transcript.sys('session busy — /interrupt the current turn before switching profiles')
+
+        return
+      }
+
+      ctx.gateway
+        .rpc<ProfileSwitchResponse>('profile.switch', {
+          ...(target ? { name: target } : {}),
+          session_id: ctx.sid
+        })
+        .then(
+          ctx.guarded<ProfileSwitchResponse>(result => {
+            if (!target) {
+              ctx.transcript.sys(`profile: ${result.profile}\nhome: ${result.home ?? '(unknown)'}`)
+
+              return
+            }
+
+            if (!result.relaunch) {
+              ctx.transcript.sys(`profile '${result.profile}' is already active`)
+
+              return
+            }
+
+            ctx.transcript.sys(`switching to profile '${result.profile}'...`)
+            setTimeout(() => ctx.session.dieWithCode(43), 100)
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

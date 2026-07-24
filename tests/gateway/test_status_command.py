@@ -673,6 +673,23 @@ async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_profile_command_does_not_switch_from_gateway():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+
+    result = await runner._handle_profile_command(_make_event("/profile coder"))
+
+    assert result == "Profile switching is only available in terminal chat."
+
+
+@pytest.mark.asyncio
 async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_path):
     """On a multiplexed gateway, /profile reports the profile SERVING the
     source (source.profile — URL prefix / per-credential adapter / room map),

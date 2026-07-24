@@ -12053,6 +12053,41 @@ def _(rid, params: dict) -> dict:
 # ── Methods: config ──────────────────────────────────────────────────
 
 
+@method("profile.switch")
+def _(rid, params: dict) -> dict:
+    """Show the runtime profile or select one for a clean chat relaunch."""
+    from hermes_constants import display_hermes_home
+    from hermes_cli.profiles import get_active_profile_name, set_active_profile
+
+    target = str(params.get("name") or "").strip()
+    current = get_active_profile_name()
+    if not target:
+        return _ok(rid, {"profile": current, "home": display_hermes_home(), "relaunch": False})
+
+    transport = current_transport()
+    if transport is not None and transport is not _stdio_transport:
+        return _err(rid, 4003, "profile switching is only available in standalone terminal chat")
+
+    session = _sessions.get(str(params.get("session_id") or ""))
+    if session and session.get("running"):
+        return _err(rid, 4009, "session busy — /interrupt the current turn before switching profiles")
+
+    try:
+        set_active_profile(target)
+    except (FileNotFoundError, ValueError) as exc:
+        return _err(rid, 4002, str(exc))
+
+    selected = target.lower()
+    return _ok(
+        rid,
+        {
+            "profile": selected,
+            "home": display_hermes_home(),
+            "relaunch": selected != current,
+        },
+    )
+
+
 @method("config.set")
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")

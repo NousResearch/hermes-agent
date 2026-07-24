@@ -506,10 +506,29 @@ class CLICommandsMixin:
         self.new_session()
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
 
-    def _handle_profile_command(self):
-        """Display active profile name and home directory."""
+    def _handle_profile_command(self, command: str = "/profile") -> bool:
+        """Display the active profile or relaunch chat under another profile."""
         from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.profiles import get_active_profile_name, set_active_profile
+
+        parts = command.strip().split(maxsplit=1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+
+        if target:
+            try:
+                set_active_profile(target)
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"  Error: {exc}")
+                return False
+
+            current = get_active_profile_name()
+            if target.lower() == current:
+                print(f"  Profile '{current}' is already active.")
+                return False
+
+            print(f"  Switching to profile '{target.lower()}'...")
+            self._pending_relaunch = ["--profile", target.lower(), "--cli", "chat"]
+            return True
 
         display = display_hermes_home()
         profile_name = get_active_profile_name()
@@ -518,6 +537,7 @@ class CLICommandsMixin:
         print(f"  Profile: {profile_name}")
         print(f"  Home:    {display}")
         print()
+        return False
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.

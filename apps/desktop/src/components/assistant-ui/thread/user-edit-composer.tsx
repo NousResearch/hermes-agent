@@ -514,7 +514,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     setSubmitting(true)
-    aui.composer().send()
+    try {
+      aui.composer().send()
+    } finally {
+      // Reset submitting state so the edit composer can be reused if
+      // the send fails or the user cancels. (#70771)
+      setSubmitting(false)
+    }
   }
 
   const handleEditBlur = useCallback(

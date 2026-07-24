@@ -9734,27 +9734,48 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5008, f"branch failed: {e}")
     try:
-        tokens = _set_session_context(new_key)
+        # Bind the branched AGENT to the parent's profile, mirroring
+        # session.create/resume: home override so config/skills/memory resolve
+        # to the profile during the build, and the profile's own state.db
+        # handle so the live agent's message flushes — and any later
+        # compression rotation — persist there. Writing only the row to the
+        # parent's db while the agent stayed on the launch handle would
+        # recreate the cross-profile split one turn later.
+        parent_home = session.get("profile_home")
+        branch_db = None
+        if parent_home:
+            from hermes_state import SessionDB
+
+            branch_db = SessionDB(db_path=Path(parent_home) / "state.db")
+        home_token = (
+            set_hermes_home_override(parent_home) if parent_home else None
+        )
         try:
-            agent = _make_agent(
+            tokens = _set_session_context(new_key)
+            try:
+                agent = _make_agent(
+                    new_sid,
+                    new_key,
+                    session_id=new_key,
+                    session_db=branch_db,
+                    platform_override=source,
+                )
+            finally:
+                _clear_session_context(tokens)
+            _init_session(
                 new_sid,
                 new_key,
-                session_id=new_key,
-                platform_override=source,
+                agent,
+                list(history),
+                cols=session.get("cols", 80),
+                cwd=_session_cwd(session),
+                session_db=branch_db,
+                source=source,
+                profile_home=parent_home,
             )
         finally:
-            _clear_session_context(tokens)
-        parent_home = session.get("profile_home")
-        _init_session(
-            new_sid,
-            new_key,
-            agent,
-            list(history),
-            cols=session.get("cols", 80),
-            cwd=_session_cwd(session),
-            source=source,
-            profile_home=parent_home,
-        )
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease
     except Exception as e:

@@ -9151,11 +9151,12 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
-    monkeypatch.setattr(
-        server,
-        "_make_agent",
-        lambda *a, **k: FakeAgent(),
-    )
+
+    def _fake_make_agent(*a, **k):
+        seen["agent_session_db"] = k.get("session_db")
+        return FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})
     monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
@@ -9182,6 +9183,10 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         assert seen.get("launch_create") is None
         child_sid = resp["result"]["session_id"]
         assert server._sessions[child_sid]["profile_home"] == str(profile_home)
+        # The branched AGENT must be bound to the parent profile's state.db —
+        # not just the row. Otherwise its own flushes (and a later compression
+        # rotation) land on the launch db, splitting the lineage again.
+        assert isinstance(seen.get("agent_session_db"), ProfileDB)
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)

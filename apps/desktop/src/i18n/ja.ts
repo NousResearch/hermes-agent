@@ -1539,8 +1539,7 @@ export const ja = defineLocale({
     blueprints: {
       tab: 'ブレーンプリント',
       subtitle: 'すぐに使える自動化',
-      setUp: '設定',
-      cancel: 'キャンセル',
+      dialogDesc: '詳細を入力してスケジュールします。',
       scheduleIt: 'スケジュールする',
       scheduling: 'スケジュール中...',
       scheduled: 'ブレーンプリントをスケジュールしました',

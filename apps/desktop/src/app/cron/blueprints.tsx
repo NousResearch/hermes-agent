@@ -1,25 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
-import { getAutomationBlueprints, instantiateAutomationBlueprint } from '@/hermes'
-import type { AutomationBlueprint, AutomationBlueprintField, CronJob } from '@/hermes'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { getAutomationBlueprints } from '@/hermes'
+import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { asText } from '@/lib/text'
-import { updateCronJobs } from '@/store/cron'
-import { notify } from '@/store/notifications'
+import { selectableCardClass } from '@/lib/selectable-card'
+import { cn } from '@/lib/utils'
 
-import { PanelEmpty, PanelPill } from '../overlays/panel'
-import { ListRow } from '../settings/primitives'
+import { PanelDetail, PanelEmpty, PanelPill } from '../overlays/panel'
 
 // The blueprint catalog is shared with the dashboard, so its deliver slot
 // defaults to "origin" (the chat/home-channel a dashboard or gateway job was
@@ -65,22 +56,33 @@ export function initialBlueprintValues(blueprint: AutomationBlueprint): Record<s
 
 // A slot-level validation error from the backend arrives as "422: <message>"
 // (or "<code>: <message>"); strip the leading numeric code for inline display.
-function cleanFieldError(message: string): string {
+export function cleanBlueprintFieldError(message: string): string {
   return message.replace(/^\d+:\s*/, '')
 }
 
-function FieldInput({
+// Help text to show under a slot control. The backend deliver help is
+// origin/dashboard-centric and even contradicts desktop semantics ("local =
+// save only" vs. This desktop), and the relabeled dropdown is self-explanatory —
+// skip it for the deliver slot.
+export function blueprintSlotHelp(field: AutomationBlueprintField): string | undefined {
+  return field.help && field.type !== 'text' && !isDeliverField(field) ? field.help : undefined
+}
+
+// Renders one blueprint slot's control (enum/weekdays → Select, time → time
+// input, else text). The deliver slot drops the dashboard-only "origin" option
+// and uses the desktop's delivery labels.
+export function BlueprintSlotControl({
+  c,
   field,
   id,
-  value,
   onChange,
-  c
+  value
 }: {
+  c: Translations['cron']
   field: AutomationBlueprintField
   id: string
-  value: string
   onChange: (next: string) => void
-  c: Translations['cron']
+  value: string
 }) {
   if (field.type === 'enum' || field.type === 'weekdays') {
     const deliver = isDeliverField(field)
@@ -117,144 +119,41 @@ function FieldInput({
   )
 }
 
-function BlueprintCard({
-  blueprint,
-  c,
-  profile,
-  onCreated
-}: {
-  blueprint: AutomationBlueprint
-  c: Translations['cron']
-  profile: string
-  onCreated: (job: CronJob) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [values, setValues] = useState<Record<string, string>>(() => initialBlueprintValues(blueprint))
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-  // Only the blueprints slice of the cron strings is used here — narrow the
-  // reference (and the submit dep below) instead of leaning on the whole
-  // t.cron object.
-  const b = c.blueprints
-
-  const submit = useCallback(async () => {
-    setSubmitting(true)
-    setError(null)
-
-    try {
-      const job = await instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile)
-      onCreated(job)
-      notify({ kind: 'success', title: b.scheduled, message: asText(job.schedule_display) || blueprint.title })
-      setOpen(false)
-      setValues(initialBlueprintValues(blueprint))
-    } catch (err) {
-      // 422 carries the slot-level message; surface it inline on the form.
-      setError(cleanFieldError(err instanceof Error ? err.message : String(err)))
-    } finally {
-      setSubmitting(false)
-    }
-  }, [blueprint, values, profile, onCreated, b])
-
+// A clickable blueprint card — mirrors the app's other selectable cards
+// (theme/pet/gateway/profile pickers) via selectableCardClass. Clicking opens
+// the shared cron editor dialog pre-filled with this blueprint's slots; there's
+// no inline expand form or divider.
+function BlueprintCard({ blueprint, onSetUp }: { blueprint: AutomationBlueprint; onSetUp: () => void }) {
   return (
-    // Keep this in the Panel family (matches the cron editor's in-surface
-    // groupings) rather than a standalone card look — bg-(--ui-bg-quinary) is the
-    // shared in-panel grouping token. NOT PanelBlock: that's a height-capped,
-    // scrollable <pre> for monospace code and clipped each blueprint's copy.
-    <div className="rounded-md bg-(--ui-bg-quinary) p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">{blueprint.title}</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{blueprint.description}</p>
-          {blueprint.tags.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {blueprint.tags.map(tag => (
-                <PanelPill key={tag}>{tag}</PanelPill>
-              ))}
-            </div>
-          )}
-        </div>
-        <Button className="shrink-0" onClick={() => setOpen(prev => !prev)} size="sm" variant={open ? 'ghost' : 'outline'}>
-          {open ? b.cancel : b.setUp}
-        </Button>
-      </div>
-
-      {open && (
-        <form
-          className="mt-3 border-t border-border/60 pt-1"
-          onSubmit={event => {
-            event.preventDefault()
-            void submit()
-          }}
-        >
-          {blueprint.fields.map(field => {
-            const fieldId = `blueprint-${blueprint.key}-${field.name}`
-            // The backend deliver help is origin/dashboard-centric and even
-            // contradicts desktop semantics ("local = save only" vs. This
-            // desktop), and the relabeled dropdown is self-explanatory — skip it
-            // for the deliver slot.
-            const help = field.help && field.type !== 'text' && !isDeliverField(field) ? field.help : undefined
-
-            return (
-              // Shared settings/messaging field primitive so the slot form matches
-              // the rest of the app's forms (label + description on the left, the
-              // control on the right; stacks in a narrow pane).
-              <ListRow
-                action={
-                  <FieldInput
-                    c={c}
-                    field={field}
-                    id={fieldId}
-                    onChange={next => setValues(prev => ({ ...prev, [field.name]: next }))}
-                    value={values[field.name] ?? ''}
-                  />
-                }
-                description={help}
-                key={field.name}
-                title={<label htmlFor={fieldId}>{field.label}</label>}
-              />
-            )
-          })}
-
-          {error && (
-            <p className="mt-2 text-xs text-destructive" role="alert">
-              {error}
-            </p>
-          )}
-
-          <div className="mt-3">
-            <Button disabled={submitting} size="sm" type="submit">
-              {submitting ? b.scheduling : b.scheduleIt}
-            </Button>
+    <button className={cn(selectableCardClass({ prominent: true }), 'w-full p-2 text-left')} onClick={onSetUp} type="button">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-foreground">{blueprint.title}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{blueprint.description}</p>
+        {blueprint.tags.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {blueprint.tags.map(tag => (
+              <PanelPill key={tag}>{tag}</PanelPill>
+            ))}
           </div>
-        </form>
-      )}
-    </div>
+        )}
+      </div>
+    </button>
   )
 }
 
-// Automation Blueprints gallery \u2014 the desktop counterpart to the dashboard's
-// blueprint tab. Each card expands into an inline form (one field per typed
-// slot); submitting POSTs to /api/cron/blueprints/instantiate, which fills the
-// blueprint and creates the job via the same create_job path as a hand-written
-// cron. The created job is spliced straight into the shared $cronJobs atom so
-// the Jobs tab and sidebar reflect it immediately.
-export function BlueprintsPanel({ profile }: { profile: string }) {
+// Automation Blueprints gallery — the desktop counterpart to the dashboard's
+// blueprint tab. Each card opens the shared cron editor dialog pre-filled with
+// the blueprint's typed slots; submitting POSTs to
+// /api/cron/blueprints/instantiate, which fills the blueprint and creates the
+// job via the same create_job path as a hand-written cron.
+export function BlueprintsPanel({ onSetUp }: { onSetUp: (blueprint: AutomationBlueprint) => void }) {
   const { t } = useI18n()
   const c = t.cron
 
   const blueprints = useQuery({
-    queryKey: ['cron-blueprints', profile],
+    queryKey: ['cron-blueprints'],
     queryFn: async () => (await getAutomationBlueprints()).blueprints
   })
-
-  const handleCreated = useCallback((job: CronJob) => {
-    // Merge, don't clobber: keep the existing rows and add/replace this one.
-    updateCronJobs(rows => {
-      const rest = rows.filter(row => row.id !== job.id)
-
-      return [...rest, job]
-    })
-  }, [])
 
   const cards = useMemo(() => blueprints.data ?? [], [blueprints.data])
 
@@ -271,10 +170,10 @@ export function BlueprintsPanel({ profile }: { profile: string }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+    <PanelDetail>
       {cards.map(blueprint => (
-        <BlueprintCard blueprint={blueprint} c={c} key={blueprint.key} onCreated={handleCreated} profile={profile} />
+        <BlueprintCard blueprint={blueprint} key={blueprint.key} onSetUp={() => onSetUp(blueprint)} />
       ))}
-    </div>
+    </PanelDetail>
   )
 }

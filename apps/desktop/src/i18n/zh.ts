@@ -1791,8 +1791,7 @@ export const zh: Translations = {
     blueprints: {
       tab: '蓝图',
       subtitle: '现成的自动化',
-      setUp: '设置',
-      cancel: '取消',
+      dialogDesc: '填写详细信息并进行排程。',
       scheduleIt: '安排任务',
       scheduling: '安排中...',
       scheduled: '蓝图已安排',

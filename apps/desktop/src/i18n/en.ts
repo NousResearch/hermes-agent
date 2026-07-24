@@ -1600,8 +1600,7 @@ export const en: Translations = {
     blueprints: {
       tab: 'Blueprints',
       subtitle: 'Ready-made automations',
-      setUp: 'Set up',
-      cancel: 'Cancel',
+      dialogDesc: 'Fill in the details and schedule it.',
       scheduleIt: 'Schedule it',
       scheduling: 'Scheduling...',
       scheduled: 'Blueprint scheduled',

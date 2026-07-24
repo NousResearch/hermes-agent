@@ -27,11 +27,13 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  type AutomationBlueprint,
   createCronJob,
   type CronJob,
   deleteCronJob,
   getCronJobRuns,
   getCronJobs,
+  instantiateAutomationBlueprint,
   pauseCronJob,
   resumeCronJob,
   type SessionInfo,
@@ -66,7 +68,13 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { BlueprintsPanel } from './blueprints'
+import {
+  BlueprintSlotControl,
+  blueprintSlotHelp,
+  BlueprintsPanel,
+  cleanBlueprintFieldError,
+  initialBlueprintValues
+} from './blueprints'
 import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
@@ -445,6 +453,21 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     setEditor({ mode: 'closed' })
   }
 
+  // Blueprint instantiation is a distinct backend path (fills typed slots, then
+  // creates the job) so it can't share the raw-cron onSave contract. Merge the
+  // created job into $cronJobs like every other create path.
+  async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>, profile: string) {
+    const job = await instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile)
+
+    updateCronJobs(rows => {
+      const rest = rows.filter(row => row.id !== job.id)
+
+      return [...rest, job]
+    })
+    notify({ kind: 'success', title: c.blueprints.scheduled, message: asText(job.schedule_display) || blueprint.title })
+    setEditor({ mode: 'closed' })
+  }
+
   const tabToggle = (
     <SegmentedControl
       onChange={setTab}
@@ -461,13 +484,21 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       <PanelHeader actions={tabToggle} subtitle={tab === 'jobs' ? c.count(totalCount) : c.blueprints.subtitle} title={c.title} />
 
       {tab === 'blueprints' ? (
-        <PanelBody>
-          {/* A blueprint instantiates a real per-profile job, and "all" is not a
-              writable target — collapse it to 'default', matching the create
-              path in handleEditorSave. A user scoped to all profiles gets the
-              job in 'default'. */}
-          <BlueprintsPanel profile={profileScope === ALL_PROFILES ? 'default' : profileScope} />
-        </PanelBody>
+        // A blueprint instantiates a real per-profile job, and "all" is not a
+        // writable target — collapse it to 'default', matching the create path
+        // in handleEditorSave. A user scoped to all profiles gets the job in
+        // 'default'. The gallery is a single scroll column, so it renders
+        // directly (BlueprintsPanel uses PanelDetail) rather than in PanelBody's
+        // master/detail row.
+        <BlueprintsPanel
+          onSetUp={blueprint =>
+            setEditor({
+              blueprint,
+              mode: 'blueprint',
+              profile: profileScope === ALL_PROFILES ? 'default' : profileScope
+            })
+          }
+        />
       ) : loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
       ) : totalCount === 0 ? (
@@ -531,7 +562,12 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         </PanelBody>
       )}
 
-      <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
+      <CronEditorDialog
+        editor={editor}
+        onBlueprintCreate={handleBlueprintCreate}
+        onClose={() => setEditor({ mode: 'closed' })}
+        onSave={handleEditorSave}
+      />
 
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
         <DialogContent className="max-w-md">
@@ -755,10 +791,12 @@ function CronJobRuns({
 
 function CronEditorDialog({
   editor,
+  onBlueprintCreate,
   onClose,
   onSave
 }: {
   editor: EditorState
+  onBlueprintCreate: (blueprint: AutomationBlueprint, values: Record<string, string>, profile: string) => Promise<void>
   onClose: () => void
   onSave: (values: EditorValues) => Promise<void>
 }) {
@@ -766,6 +804,8 @@ function CronEditorDialog({
   const c = t.cron
   const open = editor.mode !== 'closed'
   const isEdit = editor.mode === 'edit'
+  const isBlueprint = editor.mode === 'blueprint'
+  const blueprint = isBlueprint ? editor.blueprint : null
   const initial = isEdit ? editor.job : null
   const scriptOnlyJob = initial ? jobIsScriptOnly(initial) : false
 
@@ -777,16 +817,19 @@ function CronEditorDialog({
   // Per-job model override, encoded as `${providerSlug}:${model}` (split on the
   // first ':' when saving). MODEL_DEFAULT_VALUE = follow the global default.
   const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
+  // Blueprint mode fills typed slots (time/enum/weekdays/text) instead of the
+  // raw cron fields; the backend renders the prompt + schedule from them.
+  const [slotValues, setSlotValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
   // Same catalog the chat model picker uses: configured providers and their
-  // actually-available models only. Script-only jobs never run an agent, so
-  // skip the fetch entirely for them.
+  // actually-available models only. Script-only + blueprint dialogs never pick a
+  // model here, so skip the fetch entirely for them.
   const modelOptions = useQuery({
     queryKey: ['model-options', 'global'],
     queryFn: () => requestModelOptions({}),
-    enabled: open && !scriptOnlyJob
+    enabled: open && !scriptOnlyJob && !isBlueprint
   })
 
   useEffect(() => {
@@ -800,9 +843,10 @@ function CronEditorDialog({
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
     setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
+    setSlotValues(blueprint ? initialBlueprintValues(blueprint) : {})
     setError(null)
     setSaving(false)
-  }, [initial, open])
+  }, [blueprint, initial, open])
 
   const selectedScheduleOption =
     SCHEDULE_OPTIONS.find(candidate => candidate.value === schedulePreset) ?? SCHEDULE_OPTIONS[0]
@@ -881,15 +925,74 @@ function CronEditorDialog({
     }
   }
 
+  async function handleBlueprintSubmit(event: React.FormEvent) {
+    event.preventDefault()
+
+    if (!isBlueprint) {
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+
+    try {
+      await onBlueprintCreate(editor.blueprint, slotValues, editor.profile)
+    } catch (err) {
+      // 422 carries the slot-level validation message; surface it inline.
+      setError(cleanBlueprintFieldError(err instanceof Error ? err.message : String(err)))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{isEdit ? c.editTitle : c.createTitle}</DialogTitle>
-          <DialogDescription>{isEdit ? c.editDesc : c.createDesc}</DialogDescription>
+          <DialogTitle>{isBlueprint ? blueprint?.title : isEdit ? c.editTitle : c.createTitle}</DialogTitle>
+          <DialogDescription>
+            {isBlueprint ? blueprint?.description || c.blueprints.dialogDesc : isEdit ? c.editDesc : c.createDesc}
+          </DialogDescription>
         </DialogHeader>
 
-        <form className="grid gap-4" onSubmit={handleSubmit}>
+        {isBlueprint && blueprint ? (
+          <form className="grid gap-4" onSubmit={handleBlueprintSubmit}>
+            {blueprint.fields.map(field => {
+              const fieldId = `blueprint-${blueprint.key}-${field.name}`
+              const help = blueprintSlotHelp(field)
+
+              return (
+                <Field htmlFor={fieldId} key={field.name} label={field.label}>
+                  <BlueprintSlotControl
+                    c={c}
+                    field={field}
+                    id={fieldId}
+                    onChange={next => setSlotValues(prev => ({ ...prev, [field.name]: next }))}
+                    value={slotValues[field.name] ?? ''}
+                  />
+                  {help && <FieldHint>{help}</FieldHint>}
+                </Field>
+              )
+            })}
+
+            {error && (
+              <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button disabled={saving} onClick={onClose} type="button" variant="outline">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={saving} type="submit">
+                {saving ? c.blueprints.scheduling : c.blueprints.scheduleIt}
+              </Button>
+            </DialogFooter>
+          </form>
+        ) : (
+          <form className="grid gap-4" onSubmit={handleSubmit}>
           {scriptOnlyJob && initial && (
             <FieldHint>
               {c.scriptOnlyEditHint} <span className="font-mono">{initial.id}</span>
@@ -1016,6 +1119,7 @@ function CronEditorDialog({
             </Button>
           </DialogFooter>
         </form>
+        )}
       </DialogContent>
     </Dialog>
   )
@@ -1049,7 +1153,11 @@ function FieldHint({ children }: { children: React.ReactNode }) {
   return <p className="text-[0.66rem] leading-4 text-muted-foreground">{children}</p>
 }
 
-type EditorState = { mode: 'closed' } | { mode: 'create' } | { job: CronJob; mode: 'edit' }
+type EditorState =
+  | { blueprint: AutomationBlueprint; mode: 'blueprint'; profile: string }
+  | { job: CronJob; mode: 'edit' }
+  | { mode: 'closed' }
+  | { mode: 'create' }
 
 interface EditorValues {
   deliver: string

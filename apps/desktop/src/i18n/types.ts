@@ -1325,8 +1325,7 @@ export interface Translations {
     blueprints: {
       tab: string
       subtitle: string
-      setUp: string
-      cancel: string
+      dialogDesc: string
       scheduleIt: string
       scheduling: string
       scheduled: string

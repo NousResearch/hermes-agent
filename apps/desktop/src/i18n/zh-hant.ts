@@ -1488,8 +1488,7 @@ export const zhHant = defineLocale({
     blueprints: {
       tab: '藍圖',
       subtitle: '現成的自動化',
-      setUp: '設定',
-      cancel: '取消',
+      dialogDesc: '填寫詳細資訊並進行排程。',
       scheduleIt: '安排工作',
       scheduling: '安排中...',
       scheduled: '藍圖已安排',

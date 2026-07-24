@@ -818,6 +818,31 @@ class TestLowercaseDottedConfigKeys:
         assert redact_sensitive_text(text) == text
 
 
+class TestConfigKeyRedosResistance:
+    """The dotted-key patterns must not backtrack exponentially (ReDoS).
+
+    Before the possessive-quantifier rewrite, a non-matching run of ~40
+    dotted segments took ~30ms and doubled every ~4 segments; 100 segments
+    would effectively hang the redactor (it runs on every log line).
+    """
+
+    def test_long_dotted_run_completes_fast(self):
+        import time
+
+        # 100 dotted segments with no '=' — worst case for the old pattern.
+        text = ".".join(["segment"] * 100) + " end"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text) == text
+        assert time.perf_counter() - t0 < 1.0
+
+    def test_long_dotted_secret_still_redacted(self):
+        # Possessive quantifiers must not change matching behavior.
+        text = ".".join(["seg"] * 50) + ".password=Sup3rS3cret!"
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert ".password=" in result
+
+
 class TestXaiToken:
     KEY = "xai-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
 

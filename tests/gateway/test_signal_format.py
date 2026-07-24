@@ -476,3 +476,18 @@ class TestSignalStreamingPatch:
             content="Hello",
         )
         assert result.message_id is None
+
+
+def test_lone_surrogate_in_formatted_text_does_not_crash():
+    """A lone surrogate (e.g. a truncated emoji half some local-model backends
+    emit) must not crash the UTF-16 bodyRange math. Before the fix, any
+    formatted span alongside a lone surrogate raised UnicodeEncodeError and
+    aborted the whole Signal send, so the reply never reached the user."""
+    text = "**bold \ud800 text** and `code \udc00 here`"
+    plain, styles = markdown_to_signal(text)
+    # No lone surrogate survives into the delivered text.
+    assert "\ud800" not in plain and "\udc00" not in plain
+    # Formatting is still applied (the bold and monospace spans).
+    style_kinds = {s.split(":")[-1] for s in styles}
+    assert "BOLD" in style_kinds
+    assert "MONOSPACE" in style_kinds

@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import re
 
+# Lone surrogate code points are invalid in UTF-8/UTF-16 and cannot be encoded.
+_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
 
 def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     """Convert markdown to plain text + Signal textStyles list.
@@ -40,6 +43,13 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
                 continue
             parts[idx] = re.sub(r"(?m)^([ \t]{0,3})[-*+]\s+", r"\1• ", part)
         return "".join(parts)
+
+    # Replace lone surrogates (e.g. a truncated emoji half some local-model
+    # backends emit) with U+FFFD before any UTF-16 offset math runs. Without
+    # this, ``_utf16_len`` raises UnicodeEncodeError on the first formatted
+    # span and the whole Signal send aborts, so the reply never reaches the
+    # user. Mirrors the _sanitize_surrogates pass applied to stored history.
+    text = _LONE_SURROGATE_RE.sub("�", text)
 
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()

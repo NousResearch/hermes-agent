@@ -2,6 +2,7 @@ import type { VariantProps } from 'class-variance-authority'
 import type { ReactNode } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import type { buttonVariants } from './button'
@@ -47,6 +48,7 @@ export function SplitButton({
   variant = 'secondary',
   size = 'sm'
 }: SplitButtonProps) {
+  const { t } = useI18n()
   const active = actions.find(action => action.id === value) ?? actions[0]
 
   if (!active) {
@@ -68,7 +70,7 @@ export function SplitButton({
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
-            aria-label="More actions"
+            aria-label={t.ui.moreActions}
             className="rounded-l-none border-l border-current/25 px-2"
             disabled={disabled}
             size={size}

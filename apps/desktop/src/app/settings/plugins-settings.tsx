@@ -7,7 +7,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { getStatus } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Package } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
@@ -28,10 +28,10 @@ async function revealPluginsDir() {
     const result = await window.hermesDesktop?.openDir?.(`${hermes_home}/desktop-plugins`)
 
     if (result && !result.ok) {
-      notifyError(result.error ?? 'unknown error', 'Could not open the plugins folder')
+      notifyError(result.error ?? 'unknown error', translateNow('settings.plugins.openFolderFailed'))
     }
   } catch (err) {
-    notifyError(err, 'Could not resolve the plugins folder')
+    notifyError(err, translateNow('settings.plugins.resolveFolderFailed'))
   }
 }
 

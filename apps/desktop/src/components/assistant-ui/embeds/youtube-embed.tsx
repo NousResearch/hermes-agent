@@ -2,6 +2,8 @@
 
 import { useMemo } from 'react'
 
+import { useI18n } from '@/i18n'
+
 import type { FrameEmbed } from './providers/types'
 import { useIsDark } from './use-is-dark'
 
@@ -27,6 +29,7 @@ function youtubeSrc(embedUrl: string): string {
 
 // Keep this as a plain iframe and let YouTube render its native player/error UI.
 export default function YouTubeEmbedRenderer({ descriptor }: { descriptor: FrameEmbed }) {
+  const copy = useI18n().t.assistant.embeds
   const isDark = useIsDark()
   const src = useMemo(() => youtubeSrc(descriptor.embedUrl), [descriptor.embedUrl])
 
@@ -41,7 +44,7 @@ export default function YouTubeEmbedRenderer({ descriptor }: { descriptor: Frame
       scrolling="no"
       src={src}
       style={{ colorScheme: isDark ? 'dark' : 'light' }}
-      title="YouTube embed"
+      title={copy.youtubeTitle}
     />
   )
 }

@@ -3,6 +3,7 @@ import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
+import { useI18n } from '@/i18n'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
 import type { StarmapGraph } from '@/types/hermes'
 
@@ -106,6 +107,7 @@ export function StarMap({
   onImport?: (graph: StarmapGraph) => void
   onResetMap?: () => void
 }) {
+  const copy = useI18n().t.starmap
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -959,12 +961,12 @@ export function StarMap({
       {/* Legend — bottom-left, one entry per line like a conventional key. */}
       <div className="pointer-events-none absolute bottom-2 left-2 flex flex-col gap-1 text-[0.62rem] text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block size-2 rounded-full bg-[var(--theme-primary)]/80" /> skill
+          <span className="inline-block size-2 rounded-full bg-[var(--theme-primary)]/80" /> {copy.skill}
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block size-2 rotate-45" style={{ backgroundColor: memoryColor }} /> memory
+          <span className="inline-block size-2 rotate-45" style={{ backgroundColor: memoryColor }} /> {copy.memory}
         </span>
-        <span className="text-[0.58rem] text-muted-foreground/65">core = oldest · outer = newer</span>
+        <span className="text-[0.58rem] text-muted-foreground/65">{copy.legendAge}</span>
         <RevealLabel axis={timeAxis} revealStore={revealStore} />
       </div>
     </div>

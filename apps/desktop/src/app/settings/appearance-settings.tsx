@@ -20,6 +20,7 @@ import { $translucency, setTranslucency } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
+import { localizeTheme } from '@/themes/localize'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
@@ -158,7 +159,7 @@ function MarketplaceThemeResults({
 
   const header = (
     <p className="mb-2 mt-4 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
-      From the VS Code Marketplace
+      {t.settings.appearance.marketplaceSource}
     </p>
   )
 
@@ -263,6 +264,7 @@ export function AppearanceSettings() {
   const needle = normalize(query)
 
   const filteredThemes = availableThemes
+    .map(theme => localizeTheme(theme, a.builtInThemes))
     .filter(
       theme =>
         !needle ||
@@ -321,7 +323,7 @@ export function AppearanceSettings() {
                   <input
                     className="w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="Search your themes or the VS Code Marketplace…"
+                    placeholder={a.searchThemesPlaceholder}
                     spellCheck={false}
                     value={query}
                   />
@@ -333,7 +335,7 @@ export function AppearanceSettings() {
                   {filteredThemes.length === 0 ? (
                     needle ? (
                       <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        No installed themes match "{query.trim()}".
+                        {a.noInstalledThemesMatch(query.trim())}
                       </p>
                     ) : null
                   ) : (

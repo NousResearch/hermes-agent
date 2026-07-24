@@ -69,6 +69,7 @@ export const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-
 const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
 
 const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
+  const copy = useI18n().t.assistant.thread
   const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
   const newline = body.indexOf('\n')
   const headline = (newline === -1 ? body : body.slice(0, newline)).trim()
@@ -83,7 +84,7 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
       {detail && (
         <details className="pl-[1.3125rem]">
           <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
-            output
+            {copy.output}
           </summary>
           <pre
             className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"

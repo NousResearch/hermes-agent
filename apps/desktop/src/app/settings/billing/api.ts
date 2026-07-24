@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { translateNow } from '@/i18n'
 
 import type {
   BillingChargeResponse,
@@ -90,7 +91,7 @@ const getMessage = (value: unknown): string => {
     return value
   }
 
-  return String(value || 'Billing request failed.')
+  return String(value || translateNow('settings.billing.errors.defaultMessage'))
 }
 
 const normalizeRefusal = (raw: Record<string, unknown>): BillingRefusal => {

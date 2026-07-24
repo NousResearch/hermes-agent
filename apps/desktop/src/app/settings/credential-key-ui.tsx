@@ -256,7 +256,7 @@ export function CredentialKeyCard({
 export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps }: ProviderKeyRowsProps) {
   const { t } = useI18n()
   const docsUrl = group.docsUrl?.trim()
-  const description = group.description?.trim()
+  const description = (t.settings.providerDescriptions[group.name] ?? group.description)?.trim()
   const expandable = Boolean(description || docsUrl || group.advanced.length > 0)
 
   return (

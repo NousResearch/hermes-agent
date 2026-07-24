@@ -11,6 +11,7 @@ import { lazy, type ReactNode, Suspense } from 'react'
 
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { translateNow, useI18n } from '@/i18n'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
 import { ARTIFACTS_ROUTE, contributedRoutes, MESSAGING_ROUTE, ROUTES_AREA, SKILLS_ROUTE } from '../routes'
@@ -22,10 +23,16 @@ const MessagingView = lazy(async () => ({ default: (await import('../messaging')
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 
 // Built-in page views + their pane titles, keyed by route.
-const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: string }> = {
-  [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts' },
-  [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging' },
-  [SKILLS_ROUTE]: { render: () => <SkillsView />, title: 'Capabilities' }
+const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: () => string }> = {
+  [ARTIFACTS_ROUTE]: {
+    render: () => <ArtifactsView />,
+    title: () => translateNow('commandCenter.nav.artifacts.title')
+  },
+  [MESSAGING_ROUTE]: {
+    render: () => <MessagingView />,
+    title: () => translateNow('commandCenter.nav.messaging.title')
+  },
+  [SKILLS_ROUTE]: { render: () => <SkillsView />, title: () => translateNow('commandCenter.nav.skills.title') }
 }
 
 /** Humanize a route path into a tab title: `/my-atlas` → `My Atlas`. */
@@ -41,13 +48,14 @@ const humanizePath = (path: string): string =>
  *  else a humanized path — never the internal `${source}:${id}` key. */
 function routeTitle(path: string): string {
   if (BUILTIN_PAGES[path]) {
-    return BUILTIN_PAGES[path].title
+    return BUILTIN_PAGES[path].title()
   }
 
   return contributedRoutes().find(r => r.path === path)?.title ?? humanizePath(path)
 }
 
 function RouteTilePane({ path }: { path: string }) {
+  const { t } = useI18n()
   const builtin = BUILTIN_PAGES[path]
 
   // Subscribe so a plugin page tile appears the moment its route registers.
@@ -68,7 +76,7 @@ function RouteTilePane({ path }: { path: string }) {
 
   return (
     <div className="grid h-full place-items-center font-mono text-[11px] text-(--ui-text-quaternary)">
-      no page at {path}
+      {t.desktop.routeMissing(path)}
     </div>
   )
 }

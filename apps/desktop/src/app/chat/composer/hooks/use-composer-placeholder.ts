@@ -19,7 +19,7 @@ interface UseComposerPlaceholderOptions {
  * down, it swaps to a reconnecting / starting message instead.
  */
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
@@ -27,25 +27,31 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
   )
 
-  const prevSessionIdRef = useRef(sessionId)
+  const previousRef = useRef({ locale, sessionId })
 
   useEffect(() => {
-    const prev = prevSessionIdRef.current
-    prevSessionIdRef.current = sessionId
+    const previous = previousRef.current
+    const localeChanged = previous.locale !== locale
+    const sessionChanged = previous.sessionId !== sessionId
+    const initialSessionPersisted = sessionChanged && previous.sessionId == null && Boolean(sessionId)
 
-    if (prev === sessionId) {
+    previousRef.current = { locale, sessionId }
+
+    if (!localeChanged && !sessionChanged) {
       return
     }
 
     // null → id: the new session we're already in just got persisted. Keep the
-    // starter we showed instead of swapping to a follow-up under the user.
-    if (prev == null && sessionId) {
-      return
+    // starter we showed instead of swapping to a follow-up under the user. A
+    // simultaneous locale change may translate it, but must not reset history.
+    if (sessionChanged && !initialSessionPersisted) {
+      resetBrowseState(previous.sessionId)
     }
 
-    resetBrowseState(prev)
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+    if (localeChanged || !initialSessionPersisted) {
+      setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+    }
+  }, [followUpPlaceholders, locale, newSessionPlaceholders, sessionId])
 
   // When the transport is disabled it's because the gateway isn't open.
   // Distinguish a cold start ("Starting Hermes...") from a dropped connection

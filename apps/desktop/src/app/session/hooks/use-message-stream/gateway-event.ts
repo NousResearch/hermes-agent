@@ -987,7 +987,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           notify({
             id: `gateway-error:${errorMessage}`,
             kind: 'error',
-            title: 'Hermes error',
+            title: translateNow('notifications.native.turnErrorTitle'),
             message: errorMessage
           })
         }

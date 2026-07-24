@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink } from '@/lib/icons'
 
@@ -7,12 +8,15 @@ import { resolveRefusal } from './errors'
 import { useStepUpFlow } from './use-step-up'
 
 export function StepUpInlineAction({ flow }: { flow: ReturnType<typeof useStepUpFlow> }) {
+  const { t } = useI18n()
+  const copy = t.settings.billing
+
   if (flow.verification) {
     return (
       <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
         <span className="font-mono text-[0.72rem] font-semibold text-foreground">{flow.verification.code}</span>
         <Button onClick={flow.openVerification} size="sm" type="button" variant="outline">
-          Open verification page
+          {copy.openVerification}
           <ExternalLink className="size-3.5" />
         </Button>
       </span>
@@ -26,24 +30,25 @@ export function StepUpInlineAction({ flow }: { flow: ReturnType<typeof useStepUp
           {flow.message.title}: {flow.message.text}
         </span>
         <Button onClick={flow.dismiss} size="sm" type="button" variant="outline">
-          Dismiss
+          {copy.dismiss}
         </Button>
       </span>
     )
   }
 
   if (flow.phase === 'waiting') {
-    return <span>Waiting for verification link…</span>
+    return <span>{copy.waitingVerification}</span>
   }
 
   return (
     <Button onClick={() => void flow.start()} size="sm" type="button" variant="outline">
-      Verify to continue
+    {copy.verifyContinue}
     </Button>
   )
 }
 
 export function BillingRefusalInline({ refusal }: { refusal: BillingRefusal | null }) {
+  const { t } = useI18n()
   const stepUp = useStepUpFlow()
 
   if (!refusal) {
@@ -61,7 +66,7 @@ export function BillingRefusalInline({ refusal }: { refusal: BillingRefusal | nu
       {resolved.action.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
         <Button onClick={() => openExternalLink(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
+          {t.settings.billing.openPortal}
           <ExternalLink className="size-3.5" />
         </Button>
       )}

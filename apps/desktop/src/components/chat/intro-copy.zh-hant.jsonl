@@ -1,0 +1,15 @@
+{"personality":"helpful","headline":"準備好了","body":"可以請我開啟儲存庫、執行測試、修正錯誤或起草 PR。我會陪你逐步完成。"}
+{"personality":"concise","headline":"就緒。","body":"描述任務，我來處理。"}
+{"personality":"technical","headline":"Shell 已掛載，等待輸入","body":"提供儲存庫路徑、失敗測試或堆疊資訊。可用工具包含檔案系統、Git、終端、搜尋、補丁和 HTTP。"}
+{"personality":"creative","headline":"空白儲存庫，游標在等","body":"想做什麼？給我一個想法、半壞的函式或粗略原型，我會把它整理成可執行的程式碼。"}
+{"personality":"teacher","headline":"可以開講了","body":"詢問任何檔案、概念或錯誤。我會解釋原因，不只提供修法，並附上具體範例。"}
+{"personality":"kawaii","headline":"準備好幫忙啦","body":"貼上一個錯誤或檔案路徑，我會細心修好。測試、差異和 PR 都會認真處理。"}
+{"personality":"catgirl","headline":"想處理哪個程式問題？","body":"給我檔案、錯誤或儲存庫路徑。我會追蹤失敗測試，並留下清楚的差異。"}
+{"personality":"pirate","headline":"準備啟航到儲存庫裡","body":"說出目標：錯誤、功能或失敗測試。我會追到底，並帶回可用的差異。"}
+{"personality":"shakespeare","headline":"請說出你的任務","body":"說出錯誤、檔案或失敗測試，我會用清楚的差異修好它。"}
+{"personality":"surfer","headline":"今天修哪一波？","body":"丟檔案、錯誤或複雜堆疊過來。我會穩穩處理，留下乾淨差異和通過的測試。"}
+{"personality":"noir","headline":"又一個儲存庫，又一個夜晚","body":"告訴我哪裡壞了。我會讀檔案、找線索，並把差異放到桌面上。"}
+{"personality":"uwu","headline":"準備好幫你修啦","body":"貼上一個有問題的檔案或目標，我會讀取、套用補丁並測試。"}
+{"personality":"philosopher","headline":"寫程式，也是追問。請問。","body":"眼前的問題是什麼？描述它，我們一起看清它的形態、原因和解法。"}
+{"personality":"hype","headline":"準備開工，準備交付","body":"把錯誤、儲存庫或功能想法貼來。我會讀檔案、跑測試、給出乾淨差異。"}
+{"personality":"none","headline":"Hermes Agent 已準備好。","body":"問問題、貼錯誤，或指向一個儲存庫。我可以讀程式碼、執行工具，並協助你交付。"}

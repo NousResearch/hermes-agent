@@ -1,8 +1,12 @@
 import { type CSSProperties, useState } from 'react'
 
+import { type Locale, useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
+import introCopyJaJsonl from './intro-copy.ja.jsonl?raw'
 import introCopyJsonl from './intro-copy.jsonl?raw'
+import introCopyZhHantJsonl from './intro-copy.zh-hant.jsonl?raw'
+import introCopyZhJsonl from './intro-copy.zh.jsonl?raw'
 
 type IntroCopy = {
   headline: string
@@ -103,15 +107,36 @@ function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
   return byPersonality
 }
 
-const INTRO_COPY_BY_PERSONALITY = parseIntroCopy(introCopyJsonl)
+type IntroAssetLocale = Locale
 
-function neutralCopy(): IntroCopy[] {
-  return INTRO_COPY_BY_PERSONALITY.none || INTRO_COPY_BY_PERSONALITY.default || FALLBACK_COPY
+const INTRO_COPY_BY_LOCALE: Record<IntroAssetLocale, Record<string, IntroCopy[]>> = {
+  en: parseIntroCopy(introCopyJsonl),
+  ja: parseIntroCopy(introCopyJaJsonl),
+  zh: parseIntroCopy(introCopyZhJsonl),
+  'zh-hant': parseIntroCopy(introCopyZhHantJsonl)
 }
 
-function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
+// Intro copy is a generated personality corpus rather than ordinary UI labels.
+const INTRO_ASSET_LOCALE: Record<Locale, IntroAssetLocale> = {
+  en: 'en',
+  ja: 'ja',
+  zh: 'zh',
+  'zh-hant': 'zh-hant'
+}
+
+function copyByPersonality(locale: Locale): Record<string, IntroCopy[]> {
+  return INTRO_COPY_BY_LOCALE[INTRO_ASSET_LOCALE[locale]]
+}
+
+function neutralCopy(locale: Locale): IntroCopy[] {
+  const copy = copyByPersonality(locale)
+
+  return copy.none || copy.default || FALLBACK_COPY
+}
+
+function fallbackCopyForPersonality(locale: Locale, personalityKey: string): IntroCopy[] {
   if (NEUTRAL_PERSONALITIES.has(personalityKey)) {
-    return neutralCopy()
+    return neutralCopy(locale)
   }
 
   const label = titleize(personalityKey)
@@ -146,19 +171,21 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
 
 const WORDMARK = 'HERMES AGENT'
 
-function resolveCopy(personality?: string, seed?: number): IntroCopy {
+function resolveCopy(locale: Locale, personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
+  const copy = copyByPersonality(locale)
 
   const copies = NEUTRAL_PERSONALITIES.has(personalityKey)
-    ? INTRO_COPY_BY_PERSONALITY[personalityKey] || neutralCopy()
-    : INTRO_COPY_BY_PERSONALITY[personalityKey] || fallbackCopyForPersonality(personalityKey)
+    ? copy[personalityKey] || neutralCopy(locale)
+    : copy[personalityKey] || fallbackCopyForPersonality(locale, personalityKey)
 
   return pickCopy(copies, seed)
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { locale } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const copy = resolveCopy(locale, personality, mountSeed + (seed ?? 0))
 
   return (
     <div

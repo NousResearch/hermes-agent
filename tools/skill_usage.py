@@ -867,10 +867,14 @@ def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
 # Reporting — for the curator CLI / slash command
 # ---------------------------------------------------------------------------
 
-def agent_created_report() -> List[Dict[str, Any]]:
-    """Return a list of {name, state, pinned, last_activity_at, ...}
+def curated_report() -> List[Dict[str, Any]]:
+    """Return a list of {name, provenance, state, pinned, last_activity_at, ...}
     records for every curator-managed skill. Missing usage records are
     backfilled with defaults so callers can always index fields.
+
+    ``provenance`` is 'agent', 'bundled', or 'hub' (see :func:`provenance`).
+    Bundled skills are only included when ``curator.prune_builtins`` is enabled.
+    Hub-installed skills are never included.
 
     Each row carries ``_persisted``: True when a real record exists in
     ``.usage.json``, False when the row is a fresh backfill (e.g. a built-in
@@ -889,8 +893,20 @@ def agent_created_report() -> List[Dict[str, Any]]:
         row = {"name": name, **rec, "_persisted": persisted}
         row["last_activity_at"] = latest_activity_at(row)
         row["activity_count"] = activity_count(row)
+        row["provenance"] = provenance(name)
         rows.append(row)
     return rows
+
+
+def agent_created_report() -> List[Dict[str, Any]]:
+    """DEPRECATED — use :func:`curated_report` instead.
+
+    Used to return everything :func:`curated_report` returns (including bundled
+    skills when ``curator.prune_builtins`` is enabled), which made the
+    "agent-created" name misleading. Kept as a compatibility alias for
+    external callers; new code should call ``curated_report()``.
+    """
+    return curated_report()
 
 
 def provenance(skill_name: str) -> str:
@@ -909,7 +925,7 @@ def provenance(skill_name: str) -> str:
 def usage_report() -> List[Dict[str, Any]]:
     """Return usage telemetry for EVERY skill on disk, with provenance.
 
-    Unlike ``agent_created_report()`` (which is scoped to curator-managed
+    Unlike ``curated_report()`` (which is scoped to curator-managed
     candidates), this surfaces all skills — bundled built-ins and
     hub-installed included — so callers can answer "how often is this skill
     used" independent of whether it's ever curated. Rows carry a

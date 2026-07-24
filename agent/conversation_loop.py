@@ -383,6 +383,99 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def compute_current_context_fingerprint(agent) -> Optional[str]:
+    """SHA-256 fingerprint of the CURRENT managed context inputs (SOUL.md,
+    AGENTS.md, CLAUDE.md, .hermes.md, .cursorrules) that feed the system
+    prompt — see ``agent.prompt_builder.compute_context_fingerprint``.
+
+    Public (not ``_``-prefixed): called from
+    :func:`_restore_or_build_system_prompt` and :func:`build_prompt_with_fingerprint`
+    in this module, and imported cross-module from
+    ``agent.conversation_compression`` and ``tui_gateway.server`` to keep
+    their own ``update_system_prompt`` persists in sync with this guard
+    (issue #68563 follow-up review finding #3 — no more reaching into a
+    private helper from other modules).
+
+    Threads the SAME gates ``agent.system_prompt.build_system_prompt_parts``
+    uses to decide whether SOUL.md / the project-context chain can reach
+    the rendered prompt at all (``agent.load_soul_identity``,
+    ``agent.skip_context_files``) through to
+    ``compute_context_fingerprint``'s ``include_soul`` /
+    ``include_project_context`` — a file that can never appear in this
+    agent's prompt must not be able to invalidate its cache (finding #2).
+
+    Returns ``None`` on any failure (I/O error, unreadable HERMES_HOME,
+    etc.). Per the issue's contract, a fingerprint bug must never break
+    sessions: ``None`` means "inconclusive" and callers fall back to the
+    pre-existing runtime-identity-only check.
+    """
+    try:
+        from agent.prompt_builder import compute_context_fingerprint
+        from agent.runtime_cwd import resolve_context_cwd
+
+        context_length = None
+        compressor = getattr(agent, "context_compressor", None)
+        cc_len = getattr(compressor, "context_length", None) if compressor is not None else None
+        if isinstance(cc_len, int) and cc_len > 0:
+            context_length = cc_len
+
+        skip_context_files = bool(getattr(agent, "skip_context_files", False))
+        load_soul_identity = bool(getattr(agent, "load_soul_identity", False))
+
+        return compute_context_fingerprint(
+            cwd=resolve_context_cwd(),
+            context_length=context_length,
+            allow_install_tree_fallback=getattr(agent, "platform", None) in ("cli", "tui"),
+            include_soul=load_soul_identity or not skip_context_files,
+            include_project_context=not skip_context_files,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to compute system-prompt input fingerprint for session "
+            "%s: %s. Falling back to the runtime-identity check only "
+            "(issue #68563 guard fails open).",
+            getattr(agent, "session_id", None), exc,
+        )
+        return None
+
+
+def build_prompt_with_fingerprint(agent, system_message) -> tuple[str, Optional[str]]:
+    """Build a fresh system prompt and its input fingerprint as a single
+    persist-ready unit (issue #68563 follow-up review finding #1 — TOCTOU).
+
+    The prompt build and the fingerprint computation are two SEPARATE
+    filesystem reads. If an edit (e.g. to SOUL.md) lands between them, the
+    persisted pair would pair an OLD prompt with a NEW fingerprint — a
+    later restore would see that fingerprint "match" a freshly-recomputed
+    one and serve the now-stale prompt forever, silently reopening
+    #68563 through the very fix meant to close it.
+
+    Guards with a pre/post digest check bracketing the build:
+    ``compute_current_context_fingerprint`` runs once immediately before
+    ``agent._build_system_prompt`` and once immediately after. They agree
+    unless something changed mid-build, in which case the returned
+    fingerprint is ``None`` — a NULL fingerprint reads as legacy/stale to
+    the restore guard, triggering one safe rebuild next turn instead of
+    silently persisting a mismatched pair.
+
+    Used at all three ``update_system_prompt`` call sites that perform a
+    fresh build: :func:`_restore_or_build_system_prompt` here,
+    ``agent.conversation_compression`` (the fresh-build branch — the
+    cached-prompt branch there does its own single post-check fingerprint
+    since no build happens between reads), and
+    ``tui_gateway.server._persist_live_session_system_prompt``.
+    """
+    pre_fingerprint = compute_current_context_fingerprint(agent)
+    prompt = agent._build_system_prompt(system_message)
+    post_fingerprint = compute_current_context_fingerprint(agent)
+    fingerprint = (
+        pre_fingerprint
+        if pre_fingerprint is not None and pre_fingerprint == post_fingerprint
+        else None
+    )
+    return prompt, fingerprint
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -409,14 +502,27 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     log that silently broke prefix-cache reuse on the gateway path
     (which constructs a fresh ``AIAgent`` per turn and depends on this
     DB roundtrip).
+
+    Issue #68563: a stored prompt matching the Model/Provider check alone
+    is not enough — durable gateway sessions can outlive edits to managed
+    context inputs (SOUL.md, AGENTS.md, ...), and those never got
+    re-injected because nothing ever compared them. The restore is now
+    additionally gated on ``system_prompt_fingerprint`` (a SHA-256 over
+    those inputs, see ``agent.prompt_builder.compute_context_fingerprint``)
+    matching the current one. A NULL stored fingerprint (legacy session
+    predating this column, or a prior fingerprint-compute failure) counts
+    as a mismatch, triggering a one-time rebuild that persists the
+    fingerprint going forward — self-healing.
     """
     stored_prompt = None
+    stored_fingerprint = None
     stored_state = "missing"
     if conversation_history and agent._session_db:
         try:
             session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:
                 raw_prompt = session_row.get("system_prompt")
+                stored_fingerprint = session_row.get("system_prompt_fingerprint")
                 if raw_prompt is None:
                     stored_state = "null"
                 elif raw_prompt == "":
@@ -432,20 +538,41 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id, exc,
             )
 
-    if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
-        # Continuing session — reuse the exact system prompt from the
-        # previous turn so the Anthropic cache prefix matches.
-        agent._cached_system_prompt = stored_prompt
-        return
+    # Informs the reuse-vs-rebuild DECISION below only. Fail-open: a compute
+    # failure returns None, which _never_ blocks a restore on its own — see
+    # the fingerprint_ok check next. NOT what gets persisted on a rebuild —
+    # that comes from build_prompt_with_fingerprint's own pre/post pair,
+    # bracketing the actual build call (issue #68563 TOCTOU follow-up).
+    current_fingerprint = compute_current_context_fingerprint(agent)
+
     if stored_prompt:
-        stored_state = "stale_runtime"
-        logger.info(
-            "Stored system prompt for session %s has stale runtime identity; "
-            "rebuilding for model=%s provider=%s.",
-            agent.session_id,
-            getattr(agent, "model", "") or "",
-            getattr(agent, "provider", "") or "",
-        )
+        if _stored_prompt_matches_runtime(agent, stored_prompt):
+            fingerprint_ok = current_fingerprint is None or stored_fingerprint == current_fingerprint
+            if fingerprint_ok:
+                # Continuing session — reuse the exact system prompt from
+                # the previous turn so the Anthropic cache prefix matches.
+                agent._cached_system_prompt = stored_prompt
+                return
+            stored_state = "stale_inputs"
+            logger.info(
+                "Stored system prompt for session %s has a stale managed-"
+                "context-input fingerprint (SOUL.md/AGENTS.md/CLAUDE.md/"
+                ".hermes.md/.cursorrules changed since last persisted, or "
+                "this is a legacy session predating fingerprinting); "
+                "rebuilding for model=%s provider=%s.",
+                agent.session_id,
+                getattr(agent, "model", "") or "",
+                getattr(agent, "provider", "") or "",
+            )
+        else:
+            stored_state = "stale_runtime"
+            logger.info(
+                "Stored system prompt for session %s has stale runtime identity; "
+                "rebuilding for model=%s provider=%s.",
+                agent.session_id,
+                getattr(agent, "model", "") or "",
+                getattr(agent, "provider", "") or "",
+            )
 
     if conversation_history and stored_state in ("null", "empty"):
         # Continuing session whose stored prompt is unusable.  The
@@ -462,7 +589,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    agent._cached_system_prompt, built_fingerprint = build_prompt_with_fingerprint(
+        agent, system_message
+    )
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
@@ -497,7 +626,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # subsequent turn).
     if agent._session_db:
         try:
-            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            agent._session_db.update_system_prompt(
+                agent.session_id, agent._cached_system_prompt, built_fingerprint
+            )
         except Exception as exc:
             logger.warning(
                 "Session DB update_system_prompt failed for session %s: "

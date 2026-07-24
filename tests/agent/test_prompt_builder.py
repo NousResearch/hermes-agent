@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    compute_context_fingerprint,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
     _get_context_file_max_chars,
@@ -1725,3 +1726,190 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+# =========================================================================
+# compute_context_fingerprint (issue #68563)
+# =========================================================================
+
+
+class TestComputeContextFingerprint:
+    """SHA-256 fingerprint over every managed context input the prompt
+    builder can inject (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md,
+    .cursorrules), keyed by source identifier — used by the gateway
+    durable-session restore guard to detect when a stored ``system_prompt``
+    is stale relative to the CURRENT files on disk, even though the
+    Model/Provider lines still match (issue #68563).
+    """
+
+    def test_returns_a_sha256_hexdigest(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        fp = compute_context_fingerprint(cwd=str(tmp_path))
+        assert isinstance(fp, str)
+        assert len(fp) == 64
+        int(fp, 16)  # raises ValueError if not hex
+
+    def test_deterministic_for_identical_inputs(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
+        fp1 = compute_context_fingerprint(cwd=str(tmp_path))
+        fp2 = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp1 == fp2
+
+    def test_changes_when_soul_md_content_changes(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "SOUL.md").write_text("Be concise.", encoding="utf-8")
+        fp1 = compute_context_fingerprint(cwd=str(tmp_path))
+        (hermes_home / "SOUL.md").write_text("Be verbose.", encoding="utf-8")
+        fp2 = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp1 != fp2
+
+    def test_changes_when_agents_md_content_changes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Version 1.")
+        fp1 = compute_context_fingerprint(cwd=str(tmp_path))
+        (tmp_path / "AGENTS.md").write_text("Version 2.")
+        fp2 = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp1 != fp2
+
+    def test_changes_when_agents_md_is_added(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        (tmp_path / "AGENTS.md").write_text("New project rules.")
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp_before != fp_after
+
+    def test_changes_when_agents_md_is_removed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        agents_md = tmp_path / "AGENTS.md"
+        agents_md.write_text("Project rules.")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        agents_md.unlink()
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp_before != fp_after
+
+    def test_shadowed_file_addition_changes_fingerprint(self, tmp_path, monkeypatch):
+        """AGENTS.md always wins over .cursorrules in the assembled prompt,
+        but the fingerprint must still change when .cursorrules APPEARS —
+        the existence flag for a lower-priority candidate flips from "0" to
+        "1" even though its content never reaches the actual prompt. It
+        could become the winner later (e.g. if AGENTS.md is later removed),
+        so add/remove must stay visible to the digest.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Agent guidelines.")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        (tmp_path / ".cursorrules").write_text("Cursor rules - shadowed by AGENTS.md.")
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        # Sanity: the actual rendered prompt is unaffected by the shadowed file.
+        rendered_before = "Agent guidelines" in build_context_files_prompt(
+            cwd=str(tmp_path), skip_soul=True
+        )
+        assert rendered_before
+        assert fp_before != fp_after
+
+    def test_shadowed_file_content_edit_does_not_change_fingerprint(
+        self, tmp_path, monkeypatch
+    ):
+        """Editing the CONTENT of a file that is currently shadowed by a
+        higher-priority candidate must NOT invalidate the cache — that
+        content can never reach this session's rendered prompt while
+        AGENTS.md exists (issue #68563 follow-up review finding #2: the
+        original implementation over-conservatively hashed shadowed
+        content too, causing spurious rebuilds on every edit to a file the
+        agent never actually reads).
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Agent guidelines.")
+        (tmp_path / ".cursorrules").write_text("Cursor rules v1 - shadowed by AGENTS.md.")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        (tmp_path / ".cursorrules").write_text("Cursor rules v2 - still shadowed.")
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp_before == fp_after
+
+    def test_shadowed_file_removal_changes_fingerprint(self, tmp_path, monkeypatch):
+        """Symmetric to the addition case: removing a shadowed candidate
+        also flips its existence flag and must change the digest."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "AGENTS.md").write_text("Agent guidelines.")
+        cursorrules = tmp_path / ".cursorrules"
+        cursorrules.write_text("Cursor rules - shadowed by AGENTS.md.")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        cursorrules.unlink()
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp_before != fp_after
+
+    def test_selected_candidate_content_edit_changes_fingerprint(
+        self, tmp_path, monkeypatch
+    ):
+        """The WINNING candidate's content must still be hashed in full —
+        only shadowed candidates are reduced to an existence flag."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        agents_md = tmp_path / "AGENTS.md"
+        agents_md.write_text("Version 1.")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path))
+        agents_md.write_text("Version 2.")
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path))
+        assert fp_before != fp_after
+
+    def test_include_project_context_false_ignores_all_project_files(
+        self, tmp_path, monkeypatch
+    ):
+        """When the agent's own ``skip_context_files`` gate would prevent
+        the project-context chain from ever being loaded, the fingerprint
+        must not react to those files at all — editing a file that can
+        never reach this agent's prompt must not invalidate the cache
+        (issue #68563 follow-up review finding #2)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        fp_before = compute_context_fingerprint(
+            cwd=str(tmp_path), include_project_context=False
+        )
+        (tmp_path / "AGENTS.md").write_text("New project rules.")
+        fp_after = compute_context_fingerprint(
+            cwd=str(tmp_path), include_project_context=False
+        )
+        assert fp_before == fp_after
+
+    def test_include_soul_false_ignores_soul_md(self, tmp_path, monkeypatch):
+        """Mirrors the project-context gate for SOUL.md: when the agent
+        would never load it (skip_context_files without
+        load_soul_identity, which falls back to a hardcoded identity
+        constant), editing SOUL.md must not invalidate the cache."""
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "SOUL.md").write_text("Be concise.", encoding="utf-8")
+        fp_before = compute_context_fingerprint(cwd=str(tmp_path), include_soul=False)
+        (hermes_home / "SOUL.md").write_text("Be verbose.", encoding="utf-8")
+        fp_after = compute_context_fingerprint(cwd=str(tmp_path), include_soul=False)
+        assert fp_before == fp_after
+
+    def test_unrelated_directory_does_not_affect_fingerprint(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        fp_a = compute_context_fingerprint(cwd=str(dir_a))
+        fp_b = compute_context_fingerprint(cwd=str(dir_b))
+        assert fp_a == fp_b
+
+    def test_install_tree_fallback_skip_mirrors_build_context_files_prompt(
+        self, monkeypatch, tmp_path
+    ):
+        """When cwd falls back into the install tree (no explicit cwd, not
+        CLI/TUI), discovery is skipped exactly like
+        ``build_context_files_prompt`` — the fingerprint must not react to
+        files inside that tree, matching what actually gets rendered.
+        """
+        import agent.runtime_cwd as rt
+
+        monkeypatch.setattr(rt, "_PACKAGE_ROOT", tmp_path.resolve())
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.chdir(tmp_path)
+        fp_before = compute_context_fingerprint(cwd=None, allow_install_tree_fallback=False)
+        (tmp_path / "AGENTS.md").write_text("Never give up on the right solution.")
+        fp_after = compute_context_fingerprint(cwd=None, allow_install_tree_fallback=False)
+        assert fp_before == fp_after

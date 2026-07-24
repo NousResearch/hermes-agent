@@ -587,3 +587,94 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+
+class TestDisabledFunctions:
+    """Per-function filtering: ``disabled_functions`` strips individual tools
+    from schema and blocks them at dispatch time."""
+
+    def test_disabled_functions_strips_from_schema(self):
+        """Tools listed in disabled_functions are absent from the schema result."""
+        from model_tools import get_tool_definitions
+
+        baseline = get_tool_definitions(quiet_mode=True)
+        baseline_names = {t["function"]["name"] for t in baseline}
+        # Pick two tools that are almost certainly present in any install.
+        target = {"write_file", "read_file"} & baseline_names
+        if not target or len(target) < 2:
+            # Fallback: use any two tools present.
+            target = set(sorted(baseline_names)[:2])
+        target_list = sorted(target)
+
+        filtered = get_tool_definitions(
+            disabled_functions=target_list, quiet_mode=True,
+        )
+        filtered_names = {t["function"]["name"] for t in filtered}
+
+        for fn in target_list:
+            assert fn not in filtered_names, f"'{fn}' should be filtered out"
+
+    def test_disabled_function_not_present_not_crash(self):
+        """Passing a tool name that doesn't exist is harmless (no-op)."""
+        from model_tools import get_tool_definitions
+
+        baseline = get_tool_definitions(quiet_mode=True)
+        baseline_names = {t["function"]["name"] for t in baseline}
+        result = get_tool_definitions(
+            disabled_functions=["this_tool_does_not_exist_xyz123"],
+            quiet_mode=True,
+        )
+        result_names = {t["function"]["name"] for t in result}
+        assert result_names == baseline_names, (
+            "disabled_functions with unknown name must not alter the tool list"
+        )
+
+    def test_handle_function_call_blocks_disabled(self):
+        """Dispatch rejects tools listed in disabled_functions."""
+        result_str = handle_function_call(
+            "write_file",
+            {"path": "/tmp/test", "content": "hello"},
+            disabled_functions=["write_file"],
+        )
+        result = json.loads(result_str)
+        assert "error" in result
+        assert "write_file" in result["error"]
+        assert "disabled" in result["error"].lower()
+
+    def test_handle_function_call_not_disabled_passes(self):
+        """Tools NOT in disabled_functions dispatch normally (via registry)."""
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}'):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                disabled_functions=["write_file"],
+            )
+        assert result == '{"ok":true}'
+
+    def test_cache_key_varies_with_disabled_functions(self):
+        """Different disabled_functions lists produce different cache entries."""
+        from model_tools import get_tool_definitions, _clear_tool_defs_cache
+
+        _clear_tool_defs_cache()
+        tools_all = get_tool_definitions(quiet_mode=True)
+        all_names = {t["function"]["name"] for t in tools_all}
+        target = sorted(set(t for t in all_names if t in {"write_file", "read_file"}))
+        if len(target) < 2:
+            target = sorted(all_names)[:2]
+
+        tools_no_1 = get_tool_definitions(
+            disabled_functions=[target[0]], quiet_mode=True,
+        )
+        tools_no_both = get_tool_definitions(
+            disabled_functions=target, quiet_mode=True,
+        )
+
+        names_no_1 = {t["function"]["name"] for t in tools_no_1}
+        names_no_both = {t["function"]["name"] for t in tools_no_both}
+
+        assert target[0] not in names_no_1
+        assert target[0] not in names_no_both
+        assert target[1] not in names_no_both
+        assert target[1] in names_no_1, (
+            f"'{target[1]}' should still be present when only '{target[0]}' is disabled"
+        )

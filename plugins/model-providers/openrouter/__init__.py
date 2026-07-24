@@ -8,8 +8,6 @@ from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
 
-_CACHE: list[str] | None = None
-
 # Anthropic model families that still accept an explicit "disable thinking"
 # request (the manual ``thinking: {type: "disabled"}`` form OpenRouter emits
 # for ``reasoning: {enabled: false}``). Everything Claude 4.6 and newer —
@@ -54,21 +52,18 @@ class OpenRouterProfile(ProviderProfile):
         base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
-        """Fetch from public OpenRouter catalog — no auth required.
+        """Fetch from OpenRouter's policy-filtered catalog.
 
-        Note: Tool-call capability filtering is applied by hermes_cli/models.py
-        via fetch_openrouter_models() → _openrouter_model_supports_tools(), not
-        here. The picker early-returns via the dedicated openrouter path before
-        reaching this method, so filtering here would be unreachable.
+        The authenticated ``/models/user`` endpoint reflects the account's
+        provider preferences, privacy settings, and guardrails. Tool-call
+        capability filtering remains in hermes_cli/models.py for the picker.
         """
-        global _CACHE  # noqa: PLW0603
-        if _CACHE is not None:
-            return _CACHE
         try:
-            result = super().fetch_models(api_key=None, base_url=base_url, timeout=timeout)
-            if result is not None:
-                _CACHE = result
-            return result
+            # Do not add a profile-local cache here. The canonical picker cache
+            # in hermes_cli.models is policy-aware, TTL-bounded, and partitioned
+            # by API-key fingerprint; a second unkeyed cache can leak account A's
+            # catalog after credentials rotate to account B.
+            return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
         except Exception as exc:
             logger.debug("fetch_models(openrouter): %s", exc)
             return None
@@ -175,7 +170,7 @@ openrouter = OpenRouterProfile(
     description="OpenRouter — unified API for 200+ models",
     signup_url="https://openrouter.ai/keys",
     base_url="https://openrouter.ai/api/v1",
-    models_url="https://openrouter.ai/api/v1/models",
+    models_url="https://openrouter.ai/api/v1/models/user",
     fallback_models=(
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",

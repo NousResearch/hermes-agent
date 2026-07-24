@@ -15,6 +15,7 @@ from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
+from agent.openrouter_zdr import enforce_openrouter_zdr
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
@@ -509,6 +510,11 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        enforce_openrouter_zdr(
+            api_kwargs,
+            is_openrouter=bool(is_openrouter),
+            base_url=params.get("base_url"),
+        )
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
@@ -627,6 +633,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 else:
                     api_kwargs[k] = v
 
+        try:
+            from agent.gemini_native_adapter import is_native_gemini_base_url
+
+            _native_gemini = is_native_gemini_base_url(params.get("base_url"))
+        except Exception:
+            _native_gemini = False
         if extra_body:
             # Native Gemini (generativelanguage.googleapis.com, non-/openai)
             # speaks Google's REST schema, not OpenAI's. OpenAI-style extra_body
@@ -638,11 +650,6 @@ class ChatCompletionsTransport(ProviderTransport):
             # Gemini base_url — typical when only Google credentials are set and
             # a fallback/aux call lands on Gemini. The native client only reads
             # thinking_config from extra_body, so drop everything else here.
-            try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
-                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
-            except Exception:
-                _native_gemini = False
             if _native_gemini:
                 extra_body = {
                     k: v for k, v in extra_body.items()
@@ -651,6 +658,14 @@ class ChatCompletionsTransport(ProviderTransport):
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
 
+        enforce_openrouter_zdr(
+            api_kwargs,
+            is_openrouter=(
+                bool(params.get("is_openrouter"))
+                or getattr(profile, "name", "") == "openrouter"
+            ),
+            base_url=params.get("base_url"),
+        )
         return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

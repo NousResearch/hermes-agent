@@ -58,3 +58,32 @@ def test_run_task_public_moonshot_kimi_k2_5_omits_temperature():
 
     assert result["completed"] is True
     assert "temperature" not in client.chat.completions.create.call_args.kwargs
+
+
+def test_run_task_openrouter_enforces_zdr(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.openrouter_zdr_enabled", lambda: True)
+    with patch("openai.OpenAI") as mock_openai:
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="done", tool_calls=[]))]
+        )
+        mock_openai.return_value = client
+
+        from mini_swe_runner import MiniSWERunner
+
+        runner = MiniSWERunner(
+            model="anthropic/claude-sonnet-4.6",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="test-key",
+            env_type="local",
+            max_iterations=1,
+        )
+        runner._create_env = MagicMock()
+        runner._cleanup_env = MagicMock()
+
+        result = runner.run_task("2+2")
+
+    assert result["completed"] is True
+    kwargs = client.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"]["provider"] == {"zdr": True}

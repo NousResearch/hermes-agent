@@ -1589,6 +1589,20 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertIs(kwargs["provider_require_parameters"], False)
             self.assertEqual(kwargs["provider_data_collection"], "")
 
+            # ZDR is not a per-agent routing preference. Even though the
+            # provider override clears inherited routing filters, the global
+            # request-boundary policy must still override a caller's false.
+            from agent.openrouter_zdr import enforce_openrouter_zdr
+
+            wire_kwargs = {"extra_body": {"provider": {"zdr": False}}}
+            with patch("hermes_cli.config.openrouter_zdr_enabled", return_value=True):
+                enforce_openrouter_zdr(
+                    wire_kwargs,
+                    is_openrouter=kwargs["provider"] == "openrouter",
+                    base_url=kwargs["base_url"],
+                )
+            self.assertIs(wire_kwargs["extra_body"]["provider"]["zdr"], True)
+
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_same_provider_inherits_all_routing_preferences(self, mock_creds, mock_cfg):

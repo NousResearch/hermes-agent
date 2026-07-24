@@ -4905,11 +4905,17 @@ def run_conversation(
                         "billing_block": _billing_block,
                     }
 
-                # For rate limits, respect the Retry-After header if present
+                # For rate limits, respect parsed RetryInfo / Retry-After hints.
                 _retry_after = None
                 if is_rate_limited:
+                    _ra_raw = getattr(api_error, "retry_after", None)
+                    if _ra_raw is not None:
+                        try:
+                            _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
+                        except (TypeError, ValueError):
+                            _retry_after = None
                     _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
+                    if _retry_after is None and _resp_headers and hasattr(_resp_headers, "get"):
                         _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                         if _ra_raw:
                             try:

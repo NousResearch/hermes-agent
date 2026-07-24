@@ -6441,6 +6441,36 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "rate limited" in result["error"]
 
+    def test_rate_limit_uses_error_retry_after_hint(self, agent):
+        """Parsed provider retry hints must control rate-limit backoff."""
+        self._setup_agent(agent)
+        agent._api_max_retries = 2
+        api_error = RuntimeError("rate limited")
+        api_error.status_code = 429
+        api_error.retry_after = 49.0
+        api_error.response = SimpleNamespace(headers={})
+        agent.client.chat.completions.create.side_effect = api_error
+
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status") as buffer_status,
+            patch.object(agent, "_emit_status"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 2.5),
+        ):
+            result = agent.run_conversation("hello")
+
+        status_messages = "\n".join(
+            str(call.args[0]) for call in buffer_status.call_args_list if call.args
+        )
+        assert result.get("failed") is True
+        assert "Waiting 49.0s" in status_messages
+        assert "Waiting 2.5s" not in status_messages
+
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
 

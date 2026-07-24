@@ -64,10 +64,16 @@ def test_unlinked_task_unchanged(kanban_conn):
     assert task.branch_name is None
 
 
-def test_unknown_project_id_falls_back_gracefully(kanban_conn):
-    # A project id that doesn't resolve must not crash task creation; the task
-    # is created as-is (scratch) and project_id stays unset.
-    tid = kb.create_task(kanban_conn, title="x", project_id="does-not-exist")
+def test_unknown_project_id_fails_closed(kanban_conn):
+    # An explicit project id/slug that doesn't resolve must fail closed so a
+    # typo or per-profile registry mismatch cannot silently become a scratch
+    # task (#70386). Omitting project_id keeps ordinary scratch behaviour.
+    with pytest.raises(ValueError, match=r"project 'does-not-exist' not found"):
+        kb.create_task(kanban_conn, title="x", project_id="does-not-exist")
+
+
+def test_blank_project_id_treated_as_omitted(kanban_conn):
+    tid = kb.create_task(kanban_conn, title="x", project_id="  ")
     task = kb.get_task(kanban_conn, tid)
-    assert task.workspace_kind == "scratch"
     assert task.project_id is None
+    assert task.workspace_kind == "scratch"

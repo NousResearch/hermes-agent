@@ -45,6 +45,33 @@ import {
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
 
+// ── Proxy support ────────────────────────────────────────────────────────
+// Set WHATSAPP_PROXY=http://user:pass@host:port (or HTTPS_PROXY / HTTP_PROXY)
+// to route both the Baileys WebSocket and HTTP fetches through a proxy.
+const PROXY_URL =
+  process.env.WHATSAPP_PROXY ||
+  process.env.HTTPS_PROXY ||
+  process.env.https_proxy ||
+  process.env.HTTP_PROXY ||
+  process.env.http_proxy ||
+  '';
+
+let _proxyAgent = null;
+if (PROXY_URL) {
+  try {
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    const { ProxyAgent, setGlobalDispatcher } = await import('undici');
+    _proxyAgent = new HttpsProxyAgent(PROXY_URL);
+    setGlobalDispatcher(new ProxyAgent(PROXY_URL));
+    const _masked = PROXY_URL.replace(/(\/\/)([^:]+):([^@]+)@/, '$1$2:***@');
+    console.log('[bridge] Proxy enabled:', _masked);
+  } catch (e) {
+    console.error('[bridge] Failed to enable proxy (' + PROXY_URL + '):', e.message);
+    console.error('[bridge] Run: npm install https-proxy-agent undici');
+  }
+}
+
+
 // Parse CLI args
 const args = process.argv.slice(2);
 function getArg(name, defaultVal) {
@@ -388,7 +415,15 @@ function emitPairEvent(event) {
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-  const { version } = await fetchLatestBaileysVersion();
+
+  // Last-known-good fallback if fetchLatestBaileysVersion fails (e.g. via proxy)
+  let version = [2, 3000, 1023223821];
+  try {
+    const v = await fetchLatestBaileysVersion();
+    if (v && Array.isArray(v.version)) version = v.version;
+  } catch (e) {
+    console.warn('[bridge] fetchLatestBaileysVersion failed (' + e.message + '); using fallback', version.join('.'));
+  }
 
   sock = makeWASocket({
     version,
@@ -398,6 +433,7 @@ async function startSocket() {
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    ...(_proxyAgent ? { agent: _proxyAgent, fetchAgent: _proxyAgent } : {}),
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {

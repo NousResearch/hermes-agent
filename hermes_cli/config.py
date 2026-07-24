@@ -1277,6 +1277,20 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "google_meet": {
+        "debug_status": False,
+        # Linux headed-launch policy: auto | force | disabled.
+        "xvfb": "auto",
+        "proxy": {
+            "server": "",
+            # None keeps meet_bot's pinned Google media bypass default;
+            # an empty string explicitly disables the bypass list.
+            "bypass": None,
+        },
+        "realtime_ready_timeout": 15,
+        "stall_after": 90,
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once
     # per conversation turn (on first write_file/patch call).  Use /rollback

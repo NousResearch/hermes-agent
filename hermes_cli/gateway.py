@@ -1252,7 +1252,7 @@ def _recover_pending_systemd_restart(
 
 
 def _parse_launchd_pid_from_list_output(output: str) -> int | None:
-    """Extract the PID from ``launchctl list <label>`` output.
+    """Extract the PID from ``launchctl list`` or ``launchctl print`` output.
 
     When launchd is actively supervising a process, the output includes a
     ``"PID" = <number>;`` line.  When the service definition is only *registered*
@@ -1262,9 +1262,8 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
     """
     for line in output.splitlines():
         stripped = line.strip()
-        if stripped.startswith('"PID"') or stripped.startswith("PID"):
-            parts = stripped.split("=", 1)
-            if len(parts) == 2:
+        parts = stripped.split("=", 1)
+        if len(parts) == 2 and parts[0].strip().strip('"').lower() == "pid":
                 val = parts[1].strip().rstrip(";").strip('"')
                 try:
                     pid = int(val)
@@ -1272,6 +1271,33 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
                 except ValueError:
                     return None
     return None
+
+
+def _query_launchd_service_status(label: str | None = None) -> tuple[bool, str]:
+    """Return registration state and output from the authoritative launchd query.
+
+    Older macOS releases support ``launchctl list <label>`` while newer hosts
+    can reject that lookup even when the per-user launchd domain owns the job.
+    Fall back to ``launchctl print`` before reporting a loaded service missing.
+    """
+    label = label or get_launchd_label()
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["launchctl", "print", f"{_launchd_domain()}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+    except subprocess.TimeoutExpired:
+        return False, ""
+    return result.returncode == 0, result.stdout
 
 
 def _probe_launchd_service_running() -> bool:
@@ -1284,18 +1310,10 @@ def _probe_launchd_service_running() -> bool:
     """
     if not get_launchd_plist_path().exists():
         return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
+    service_listed, output = _query_launchd_service_status()
+    if not service_listed:
         return False
-    if result.returncode != 0:
-        return False
-    return _parse_launchd_pid_from_list_output(result.stdout) is not None
+    return _parse_launchd_pid_from_list_output(output) is not None
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -4475,18 +4493,7 @@ def launchd_restart():
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        service_listed = result.returncode == 0
-        list_output = result.stdout
-    except subprocess.TimeoutExpired:
-        service_listed = False
-        list_output = ""
+    service_listed, list_output = _query_launchd_service_status(label)
 
     # Determine whether launchd is actively supervising a process.
     # ``launchctl list`` returns exit 0 whenever the service definition is

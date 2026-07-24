@@ -5,9 +5,11 @@ import pytest
 from agent.codex_responses_adapter import (
     _chat_messages_to_responses_input,
     _format_responses_error,
+    _model_supports_explicit_cache_breakpoint,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
     _preflight_codex_input_items,
+    apply_explicit_cache_breakpoint,
 )
 
 
@@ -537,3 +539,126 @@ def test_normalize_codex_response_xai_reasoning_without_marker_stays_incomplete(
 
     assert finish_reason == "incomplete"
     assert assistant_message.content == ""
+
+
+# ---------------------------------------------------------------------------
+# Explicit prompt-cache breakpoint (GPT-5.6+)
+# ---------------------------------------------------------------------------
+
+class TestModelSupportsExplicitCacheBreakpoint:
+    @pytest.mark.parametrize("model", [
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol-pro",
+        "openai/gpt-5.6-sol",
+        "GPT-5.6-Terra",
+    ])
+    def test_matches_gpt_5_6_family(self, model):
+        assert _model_supports_explicit_cache_breakpoint(model) is True
+
+    @pytest.mark.parametrize("model", [
+        "gpt-5.5",
+        "gpt-4o",
+        "",
+        None,
+    ])
+    def test_rejects_non_5_6_models(self, model):
+        assert _model_supports_explicit_cache_breakpoint(model) is False
+
+
+class TestApplyExplicitCacheBreakpoint:
+    def test_marks_second_to_last_eligible_user_item(self):
+        items = [
+            {"role": "user", "content": [{"type": "input_text", "text": "first"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "reply"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "second"}]},
+        ]
+        result = apply_explicit_cache_breakpoint(items)
+
+        assert result[0]["content"][-1]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert "prompt_cache_breakpoint" not in result[2]["content"][-1]
+        # Untouched items are not copied/mutated.
+        assert result[1] is items[1]
+
+    def test_does_not_mutate_input_argument(self):
+        items = [
+            {"role": "user", "content": [{"type": "input_text", "text": "first"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "second"}]},
+        ]
+        apply_explicit_cache_breakpoint(items)
+        assert "prompt_cache_breakpoint" not in items[0]["content"][-1]
+
+    def test_no_eligible_item_returns_unchanged(self):
+        items = [
+            {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "reply"}]},
+        ]
+        result = apply_explicit_cache_breakpoint(items)
+        assert result == items
+
+    def test_single_item_returns_unchanged(self):
+        items = [{"role": "user", "content": [{"type": "input_text", "text": "only"}]}]
+        assert apply_explicit_cache_breakpoint(items) == items
+
+    def test_promotes_plain_string_content_to_marked_input_text(self):
+        """Most user turns are plain strings (only multimodal input produces
+        a structured content list) — a bare string must still be markable,
+        by wrapping it into a single-part input_text list on the fly."""
+        items = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        result = apply_explicit_cache_breakpoint(items)
+        assert result[0]["content"] == [
+            {
+                "type": "input_text",
+                "text": "first",
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }
+        ]
+        assert result[2]["content"] == "second"
+
+    def test_skips_non_user_role_and_finds_earlier_eligible_item(self):
+        items = [
+            {"role": "user", "content": [{"type": "input_text", "text": "first"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "reply"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "newest"}]},
+        ]
+        result = apply_explicit_cache_breakpoint(items)
+        assert result[0]["content"][-1]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert "prompt_cache_breakpoint" not in result[1]["content"][-1]
+
+
+class TestPreflightPassesThroughCacheBreakpoint:
+    def test_valid_breakpoint_survives_preflight(self):
+        items = _preflight_codex_input_items([
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "hi",
+                        "prompt_cache_breakpoint": {"mode": "explicit"},
+                    }
+                ],
+            }
+        ])
+        assert items[0]["content"][0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+
+    def test_malformed_breakpoint_is_dropped(self):
+        items = _preflight_codex_input_items([
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "hi",
+                        "prompt_cache_breakpoint": {"mode": "implicit"},
+                    }
+                ],
+            }
+        ])
+        assert "prompt_cache_breakpoint" not in items[0]["content"][0]

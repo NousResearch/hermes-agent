@@ -597,6 +597,78 @@ def _chat_messages_to_responses_input(
 
 
 # ---------------------------------------------------------------------------
+# Explicit prompt-cache breakpoint (GPT-5.6+)
+# ---------------------------------------------------------------------------
+# GPT-5.6+ honors an explicit `prompt_cache_breakpoint` marker on individual
+# input_text/input_image/input_file content parts, in addition to the
+# automatic breakpoint OpenAI already places on the latest message under the
+# default `prompt_cache_options.mode == "implicit"`. This is purely additive
+# — we never set prompt_cache_options ourselves, so the automatic breakpoint
+# keeps working even if our marker lands nowhere useful.
+# Ref: https://developers.openai.com/api/docs/guides/prompt-caching
+
+
+def _model_supports_explicit_cache_breakpoint(model: Optional[str]) -> bool:
+    """True for GPT-5.6 (sol/terra/luna, incl. -pro and dated variants)."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare == "gpt-5.6" or bare.startswith("gpt-5.6-") or bare.startswith("gpt-5.6.")
+
+
+def apply_explicit_cache_breakpoint(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Mark one stable user input block with an explicit cache breakpoint.
+
+    Walks backward from the second-to-last item (the last item is the
+    newest turn and changes every request, so checkpointing it would never
+    see a cache hit) looking for a ``role: "user"`` item to tag. Most user
+    turns carry plain-string content (``_chat_messages_to_responses_input``
+    only produces a structured list for multimodal input) — a bare string is
+    wrapped into a single-part ``input_text`` list on the fly, the same
+    string-to-parts promotion ``agent/prompt_caching.py`` already does for
+    Anthropic. Returns the input list unchanged if no eligible item exists.
+    """
+    for idx in range(len(items) - 2, -1, -1):
+        item = items[idx]
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = item.get("content")
+        new_items = list(items)
+        if isinstance(content, str) and content:
+            new_items[idx] = {
+                **item,
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": content,
+                        "prompt_cache_breakpoint": {"mode": "explicit"},
+                    }
+                ],
+            }
+            return new_items
+        if not isinstance(content, list) or not content:
+            continue
+        last_part = content[-1]
+        if not isinstance(last_part, dict) or last_part.get("type") not in (
+            "input_text", "input_image", "input_file",
+        ):
+            continue
+        new_content = list(content)
+        new_content[-1] = {**last_part, "prompt_cache_breakpoint": {"mode": "explicit"}}
+        new_items[idx] = {**item, "content": new_content}
+        return new_items
+    return items
+
+
+def _passthrough_cache_breakpoint(part: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Validate an incoming ``prompt_cache_breakpoint`` marker before it
+    survives preflight — only the documented ``{"mode": "explicit"}`` shape
+    is allowed through."""
+    marker = part.get("prompt_cache_breakpoint")
+    if isinstance(marker, dict) and marker.get("mode") == "explicit":
+        return {"mode": "explicit"}
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Input preflight / validation
 # ---------------------------------------------------------------------------
 
@@ -786,7 +858,11 @@ def _preflight_codex_input_items(
                         text = part.get("text", "")
                         if not isinstance(text, str):
                             text = str(text or "")
-                        validated.append({"type": text_type, "text": text})
+                        text_part: Dict[str, Any] = {"type": text_type, "text": text}
+                        breakpoint_marker = _passthrough_cache_breakpoint(part)
+                        if breakpoint_marker:
+                            text_part["prompt_cache_breakpoint"] = breakpoint_marker
+                        validated.append(text_part)
                     elif ptype in {"input_image", "image_url"}:
                         image_ref = part.get("image_url", "")
                         detail = part.get("detail")
@@ -800,6 +876,9 @@ def _preflight_codex_input_items(
                         image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
                         if isinstance(detail, str) and detail.strip():
                             image_part["detail"] = detail.strip()
+                        breakpoint_marker = _passthrough_cache_breakpoint(part)
+                        if breakpoint_marker:
+                            image_part["prompt_cache_breakpoint"] = breakpoint_marker
                         validated.append(image_part)
                     else:
                         raise ValueError(

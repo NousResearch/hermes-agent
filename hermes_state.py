@@ -91,6 +91,66 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     return False
 
 
+# ── SQLITE_DBCONFIG_DEFENSIVE workaround (Python 3.12 / SQLite 3.54+) ──
+# Python 3.12's sqlite3 module links against SQLite builds with
+# SQLITE_DBCONFIG_DEFENSIVE enabled by default. This blocks FTS5 shadow-table
+# writes (messages_fts_data etc.) and sqlite_master mutations, breaking
+# `hermes sessions optimize-storage`. PRAGMA defensive=OFF is a no-op (the
+# PRAGMA is not supported), so we call sqlite3_db_config() directly via ctypes.
+import ctypes as _ctypes
+import ctypes.util as _ctypes_util
+
+_DBCONFIG_DEFENSIVE = 1010
+
+
+def _get_sqlite3_lib():
+    """Load the system sqlite3 shared library for sqlite3_db_config calls."""
+    try:
+        lib = _ctypes.CDLL(_ctypes_util.find_library("sqlite3"))
+        lib.sqlite3_db_config.argtypes = [
+            _ctypes.c_void_p, _ctypes.c_int, _ctypes.c_int, _ctypes.c_void_p,
+        ]
+        lib.sqlite3_db_config.restype = _ctypes.c_int
+        return lib
+    except Exception:
+        return None
+
+
+def _get_db_handle(conn: sqlite3.Connection) -> int:
+    """Extract the raw sqlite3* pointer from a Python sqlite3.Connection.
+
+    In CPython's _sqlite3, the sqlite3* handle is the first field after
+    PyObject_HEAD (ob_refcnt + ob_type = 16 bytes on 64-bit).
+    """
+    return _ctypes.c_void_p.from_address(id(conn) + 16).value
+
+
+def _disable_defensive(conn: sqlite3.Connection) -> bool:
+    """Disable SQLITE_DBCONFIG_DEFENSIVE on *conn* via sqlite3_db_config."""
+    lib = _get_sqlite3_lib()
+    if lib is None:
+        return False
+    handle = _get_db_handle(conn)
+    if not handle:
+        return False
+    # sqlite3_db_config(db, SQLITE_DBCONFIG_DEFENSIVE, 0, 0) -> 0 = disabled
+    result = lib.sqlite3_db_config(handle, _DBCONFIG_DEFENSIVE, 0, None)
+    return result == 0
+
+
+def _enable_defensive(conn: sqlite3.Connection) -> bool:
+    """Re-enable SQLITE_DBCONFIG_DEFENSIVE on *conn*."""
+    lib = _get_sqlite3_lib()
+    if lib is None:
+        return False
+    handle = _get_db_handle(conn)
+    if not handle:
+        return False
+    # sqlite3_db_config(db, SQLITE_DBCONFIG_DEFENSIVE, 1, 0) -> 0 = enabled
+    result = lib.sqlite3_db_config(handle, _DBCONFIG_DEFENSIVE, 1, None)
+    return result == 0
+
+
 def _scrub_surrogates(value: Any) -> Any:
     """Replace lone surrogates when *value* is text; pass anything else through.
 
@@ -1953,6 +2013,86 @@ class SessionDB:
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
     @staticmethod
+    def _has_orphaned_fts_shadows(conn) -> bool:
+        """True when FTS5 shadow tables exist but their parent vtable is gone.
+
+        This happens when an ``optimize-storage`` run was interrupted after
+        the demotion step (which deletes the vtable row from sqlite_master)
+        but before the chunked teardown of the shadow tables completed.
+        The DB then can't open: ``CREATE VIRTUAL TABLE IF NOT EXISTS``
+        fails with "table 'messages_fts_data' already exists" because the
+        shadow tables are orphaned plain tables with no parent vtable.
+
+        Detection: any ``messages_fts_data`` / ``messages_fts_trigram_data``
+        table exists while the corresponding ``messages_fts`` /
+        ``messages_fts_trigram`` vtable row is absent from sqlite_master.
+
+        Accepts either a Connection or a Cursor (both have .execute()).
+        """
+        for prefix in ("messages_fts", "messages_fts_trigram"):
+            shadow = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (f"{prefix}_data",),
+            ).fetchone()
+            if not shadow:
+                continue
+            vtable = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (prefix,),
+            ).fetchone()
+            if not vtable:
+                return True
+        return False
+
+    @staticmethod
+    def _drop_orphaned_fts_shadows(conn) -> int:
+        """Drop orphaned FTS5 shadow tables (vtable was demoted/removed).
+
+        Returns the number of tables dropped. Safe to call when no orphans
+        exist (returns 0). Must run with SQLITE_DBCONFIG_DEFENSIVE disabled
+        if the shadows were created by a v22 vtable — but orphaned shadows
+        from a demotion are plain tables, so a normal DROP TABLE works.
+
+        Accepts either a Connection or a Cursor (both have .execute()).
+        """
+        dropped = 0
+        for prefix in ("messages_fts", "messages_fts_trigram"):
+            shadow = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (f"{prefix}_data",),
+            ).fetchone()
+            if not shadow:
+                continue
+            vtable = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = ? LIMIT 1",
+                (prefix,),
+            ).fetchone()
+            if vtable:
+                continue  # vtable exists — not orphaned, leave it
+            # Drop all shadow tables + triggers for this orphaned prefix.
+            for suffix in ("_data", "_idx", "_docsize", "_content",
+                           "_config", "_delete", "_insert", "_update"):
+                name = f"{prefix}{suffix}"
+                try:
+                    conn.execute(f"DROP TABLE IF EXISTS {name}")
+                    dropped += 1
+                except sqlite3.OperationalError:
+                    pass
+            # Also drop any orphaned triggers.
+            for trigger in _FTS_TRIGGERS:
+                if trigger.startswith(prefix):
+                    try:
+                        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                        dropped += 1
+                    except sqlite3.OperationalError:
+                        pass
+        return dropped
+
+    @staticmethod
     def _rebuild_fts_indexes(
         cursor: sqlite3.Cursor,
         *,
@@ -2604,7 +2744,9 @@ class SessionDB:
         external-content schema, or a previous optimize run was interrupted
         (legacy vtables already demoted, but backfill markers and/or trash
         tables remain) and re-running would resume it, or the CJK-bigram
-        index needs a backfill/rebuild on this tokenizer-capable host.
+        index needs a backfill/rebuild on this tokenizer-capable host, or
+        orphaned FTS shadow tables remain from a demotion that was never
+        followed by a rebuild.
         False for fresh and fully-optimized installs (and when FTS5 is
         unavailable)."""
         if not self._fts_enabled or self.read_only:
@@ -2621,6 +2763,12 @@ class SessionDB:
                 "SELECT 1 FROM state_meta "
                 "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
             ).fetchone():
+                return True
+            # Orphaned shadow tables from a demotion whose rebuild never ran
+            # (or was interrupted before the new v23 vtable was created).
+            # The DB opens fine (init_schema cleans them up), but the index
+            # is empty — offer to rebuild it.
+            if self._has_orphaned_fts_shadows(self._conn):
                 return True
             # CJK-bigram index work — only offerable when THIS process can
             # tokenize: a pending backfill (markers set at creation on a
@@ -2655,22 +2803,34 @@ class SessionDB:
                 "AND sql LIKE 'CREATE VIRTUAL TABLE%' LIMIT 1"
             ).fetchone())
             if had:
-                conn.execute("PRAGMA writable_schema=ON")
-                conn.execute(
-                    "DELETE FROM sqlite_master WHERE type = 'table' "
-                    "AND name IN ('messages_fts', 'messages_fts_trigram') "
-                    "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
-                )
-                conn.execute("PRAGMA writable_schema=RESET")
-                shadows = [
-                    r[0] for r in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'table' "
-                        "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                        "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\')"
-                    ).fetchall()
-                ]
-                for sh in shadows:
-                    conn.execute(f"ALTER TABLE {sh} RENAME TO fts_v22_trash_{sh}")
+                # SQLITE_DBCONFIG_DEFENSIVE (Python 3.12 / SQLite 3.54) blocks
+                # DELETE FROM sqlite_master even with writable_schema=ON.
+                # Disable it on this connection via sqlite3_db_config (ctypes).
+                _disable_defensive(conn)
+                try:
+                    conn.execute("PRAGMA writable_schema=ON")
+                    conn.execute(
+                        "DELETE FROM sqlite_master WHERE type = 'table' "
+                        "AND name IN ('messages_fts', 'messages_fts_trigram') "
+                        "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
+                    )
+                    conn.execute("PRAGMA writable_schema=RESET")
+                except sqlite3.OperationalError:
+                    pass
+                finally:
+                    _enable_defensive(conn)
+            # Always rename any leftover shadow tables to trash — the vtable
+            # may have been demoted in a prior (interrupted) run, leaving
+            # shadow tables that would collide with the new v23 FTS5 creation.
+            shadows = [
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND (name LIKE 'messages_fts_%' ESCAPE '\\\\' "
+                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\\\')"
+                ).fetchall()
+            ]
+            for sh in shadows:
+                conn.execute(f"ALTER TABLE {sh} RENAME TO fts_v22_trash_{sh}")
             # Create the new v23 empty schema + set the backfill markers.
             self._ensure_fts_schema(conn, "messages_fts", FTS_SQL)
             self._ensure_fts_schema(conn, "messages_fts_trigram", FTS_TRIGRAM_SQL)
@@ -2708,6 +2868,29 @@ class SessionDB:
             return {"ok": False, "reason": "fts5_unavailable"}
         if self.read_only:
             return {"ok": False, "reason": "read_only"}
+
+        # SQLITE_DBCONFIG_DEFENSIVE (on by default in Python 3.12 / SQLite 3.54)
+        # blocks FTS5 shadow-table writes (messages_fts_data etc.) during the
+        # backfill INSERTs below, raising "table messages_fts_data may not be
+        # altered". PRAGMA defensive=OFF is a no-op (PRAGMA not supported), so
+        # we call sqlite3_db_config(SQLITE_DBCONFIG_DEFENSIVE, 0) directly via
+        # ctypes to disable it on this connection for the duration of the
+        # optimize run — this is a foreground, user-invoked maintenance op,
+        # not the live write path. (sqlite-utils 3.35+ uses the same approach.)
+        _disable_defensive(self._conn)  # type: ignore[arg-type]
+        try:
+            return self._optimize_fts_storage_inner(
+                progress_cb=progress_cb, vacuum=vacuum
+            )
+        finally:
+            _enable_defensive(self._conn)  # type: ignore[arg-type]
+
+    def _optimize_fts_storage_inner(
+        self,
+        *,
+        progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
+        vacuum: bool = True,
+    ) -> Dict[str, Any]:
 
         # Only demote if we're actually still on the legacy shape. If a prior
         # run already demoted (markers/trash present), skip straight to
@@ -3320,6 +3503,19 @@ class SessionDB:
                             cursor, include_trigram=trigram_enabled
                         )
             else:
+                # Clean up orphaned FTS shadow tables from an interrupted
+                # optimize-storage run: the demotion step deleted the vtable
+                # rows from sqlite_master, but the shadow tables weren't
+                # torn down. Without this, CREATE VIRTUAL TABLE IF NOT EXISTS
+                # below crashes with "table 'messages_fts_data' already exists".
+                if self._has_orphaned_fts_shadows(cursor):
+                    n = self._drop_orphaned_fts_shadows(cursor)
+                    logger.warning(
+                        "Dropped %d orphaned FTS shadow table(s) from an "
+                        "interrupted optimize-storage run; the index will be "
+                        "rebuilt on the next `hermes sessions optimize-storage`.",
+                        n,
+                    )
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
                 )

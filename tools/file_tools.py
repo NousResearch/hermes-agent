@@ -361,15 +361,92 @@ def _resolve_base_dir(
     return base.resolve()
 
 
+def _strip_doubled_base_prefix(base: Path | PurePosixPath, resolved: Path) -> Path | None:
+    """Detect and strip a doubled base-directory prefix in *resolved*.
+
+    When a model emits a relative path that textually mirrors the working
+    directory (e.g. ``home/user/dev/notes/x.md`` — an absolute path missing
+    its leading ``/``), joining it onto the base produces a doubled prefix::
+
+        /home/user/dev / home/user/dev/notes/x.md
+        ─── base ───   ───── doubled input ──────
+
+    ``Path.resolve()`` / ``os.path.normpath`` cannot collapse this because
+    each component is legitimate.  This helper detects the pattern and
+    returns the corrected path (with the duplicate stripped) so the write
+    lands where the model intended, or ``None`` when no duplication is
+    detected.
+    """
+    try:
+        base_str = str(base).rstrip("/\\")
+        resolved_str = str(resolved)
+        if not base_str or not resolved_str.lower().startswith(base_str.lower()):
+            return None
+        remainder = resolved_str[len(base_str):]
+        if not remainder or remainder[0] not in ("/", "\\"):
+            return None
+        # remainder starts with the separator then the input path components.
+        input_part = remainder[1:]
+        if not input_part:
+            return None
+        # Get the non-root parts of the base (skip '/' or '\\' root component).
+        base_parts = list(Path(base_str).parts)
+        if base_parts and base_parts[0] in ("/", "\\"):
+            base_parts = base_parts[1:]
+        input_parts = list(Path(input_part).parts)
+        if not base_parts or not input_parts:
+            return None
+        # Two detection strategies, take the best match:
+        #
+        # 1. Common prefix: input starts with the same sequence as the base's
+        #    non-root parts (works on POSIX where base_parts=[home,user,dev]
+        #    and input_parts=[home,user,dev,...]).
+        #
+        # 2. Suffix-of-base: input starts with a suffix of the base's
+        #    non-root parts (works on Windows where base_parts include the
+        #    drive prefix, e.g. [Users,Hp,...,home,user,dev] and
+        #    input_parts=[home,user,dev,...]).
+        overlap = 0
+        # Strategy 1: common prefix
+        common = 0
+        for i in range(min(len(base_parts), len(input_parts))):
+            if base_parts[i].lower() == input_parts[i].lower():
+                common += 1
+            else:
+                break
+        overlap = max(overlap, common)
+        # Strategy 2: suffix of base matching prefix of input
+        for suffix_len in range(min(len(base_parts), len(input_parts)), 1, -1):
+            if all(
+                base_parts[-suffix_len + i].lower() == input_parts[i].lower()
+                for i in range(suffix_len)
+            ):
+                overlap = max(overlap, suffix_len)
+                break
+        if overlap < 2:
+            return None
+        remaining = input_parts[overlap:]
+        if not remaining:
+            return Path(base_str)
+        return Path(base_str) / Path(*remaining)
+    except Exception:
+        return None
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
 
+    When a relative input path textually mirrors the working directory
+    (e.g. ``home/user/dev/file.md`` — an absolute path missing its leading
+    ``/``), the doubled prefix is automatically stripped so the write lands
+    where the model intended.
+
     On native Windows, Git Bash / MSYS drive paths (``/c/Users/...``) are
     translated to ``C:\\Users\\...`` before resolution so file tools don't
-    treat them as relative ``\\c\\Users\\...`` under the process cwd.
+    treat them as relative ``\\c\\Users``... under the process cwd.
     """
     container_paths = _uses_container_paths(task_id)
     if container_paths:
@@ -388,14 +465,24 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
         if ntpath.isabs(expanded):
             return Path(ntpath.normpath(expanded))
-        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
-        return Path(ntpath.normpath(joined))
+        base = _resolve_base_dir(task_id, container_paths=False)
+        joined = ntpath.join(str(base), expanded)
+        resolved = Path(ntpath.normpath(joined))
+        stripped = _strip_doubled_base_prefix(base, resolved)
+        return stripped if stripped is not None else resolved
 
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    resolved = _resolve_base_dir(task_id, container_paths=False) / p
-    return resolved.resolve()
+    base = _resolve_base_dir(task_id, container_paths=False)
+    resolved = (base / p).resolve()
+    stripped = _strip_doubled_base_prefix(base.resolve(), resolved)
+    return stripped if stripped is not None else resolved
+
+
+_BARE_ABSOLUTE_ROOT_SEGS = frozenset({
+    "home", "Users", "tmp", "var", "opt", "usr", "etc", "mnt", "srv", "root",
+})
 
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
@@ -408,6 +495,12 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     target. ``None`` when the path is absolute, the base is unknown, or the
     resolved path is correctly under the workspace root.
 
+    Also warns when the relative input looks like an absolute path missing its
+    leading ``/`` (e.g. ``home/user/dev/file.md``), which local models
+    commonly produce.  The doubled-base prefix is auto-stripped by
+    :func:`_resolve_path_for_task`, but the warning surfaces the anomaly so
+    the caller knows the input was corrected.
+
     The workspace root is the live terminal cwd when known, else a registered
     task/session cwd override, else a sentinel-free absolute ``$TERMINAL_CWD``
     — so a worktree or Desktop session whose terminal registry is still empty
@@ -416,6 +509,15 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     try:
         if Path(_expand_tilde(filepath)).is_absolute():
             return None
+        # Heuristic: detect bare-absolute paths (missing leading /).
+        first_seg = Path(filepath).parts[0] if Path(filepath).parts else ""
+        if first_seg in _BARE_ABSOLUTE_ROOT_SEGS:
+            return (
+                f"Relative path {filepath!r} looks like an absolute path missing "
+                f"its leading / (resolved to {str(resolved)!r}). The doubled "
+                f"directory prefix was auto-stripped. In future, pass the "
+                f"absolute path with a leading / to avoid this correction."
+            )
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.

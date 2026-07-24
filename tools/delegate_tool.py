@@ -3070,6 +3070,14 @@ def delegate_task(
                 except Exception:
                     pass
 
+        def _batch_steer(text: str) -> bool:
+            delivered = False
+            for _c in _child_agents:
+                _sid = getattr(_c, "_subagent_id", None)
+                if isinstance(_sid, str) and send_to_subagent(_sid, text):
+                    delivered = True
+            return delivered
+
         _goals = [t["goal"] for t in task_list]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
@@ -3085,6 +3093,7 @@ def delegate_task(
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
+            steer_fn=_batch_steer,
             max_async_children=_get_max_async_children(),
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.

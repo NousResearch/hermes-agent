@@ -31,7 +31,7 @@ def _clear_async_records():
         async_delegation._records.clear()
 
 
-def _register_async(delegation_id: str, status: str = "running"):
+def _register_async(delegation_id: str, status: str = "running", steer_fn=None):
     with async_delegation._records_lock:
         async_delegation._records[delegation_id] = {
             "delegation_id": delegation_id,
@@ -44,6 +44,7 @@ def _register_async(delegation_id: str, status: str = "running"):
             "completed_at": None if status == "running" else 2.0,
             # interrupt_fn must be stripped by list_async_delegations — assert it.
             "interrupt_fn": lambda: None,
+            "steer_fn": steer_fn,
         }
 
 
@@ -61,9 +62,10 @@ def test_async_list_shape_and_running_count():
 
         assert result["running"] == 1  # only the running record counts
         assert len(result["delegations"]) == 2
-        # interrupt_fn (non-serialisable) must never leak into the payload.
+        # Control closures (non-serialisable) must never leak into the payload.
         for d in result["delegations"]:
             assert "interrupt_fn" not in d
+            assert "steer_fn" not in d
         goals = {d["delegation_id"]: d["goal"] for d in result["delegations"]}
         assert goals["d-run"] == "patch token-bucket refill race"
     finally:
@@ -148,6 +150,32 @@ def test_subagent_send_rpc_requires_id_and_text():
         "r1", {"subagent_id": "b7c2", "text": "   "}
     )
     assert "error" in blank_text
+
+
+def test_delegation_send_rpc_steers_running_background_unit():
+    steers = []
+    _clear_async_records()
+    try:
+        _register_async("deleg_b7c2", steer_fn=lambda text: not steers.append(text))
+        resp = server._methods["delegation.send"](
+            "r1", {"delegation_id": "deleg_b7c2", "text": "switch approach"}
+        )
+        assert resp["result"]["delivered"] is True
+        assert steers == ["switch approach"]
+    finally:
+        _clear_async_records()
+
+
+def test_delegation_send_rpc_rejects_finished_background_unit():
+    _clear_async_records()
+    try:
+        _register_async("deleg_b7c2", status="completed", steer_fn=lambda _text: True)
+        resp = server._methods["delegation.send"](
+            "r1", {"delegation_id": "deleg_b7c2", "text": "too late"}
+        )
+        assert resp["result"]["delivered"] is False
+    finally:
+        _clear_async_records()
 
 
 # ── Flow / integration: steering a REAL AIAgent through the registry ──────

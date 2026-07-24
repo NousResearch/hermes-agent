@@ -3,13 +3,19 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionSteerResponse, ShellExecResponse, SubagentSendResponse } from '../gatewayTypes.js'
+import type {
+  DelegationSendResponse,
+  SessionSteerResponse,
+  ShellExecResponse,
+  SubagentSendResponse
+} from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
-import { parseSteerCommand, resolveSteerTargetId } from '../lib/subagentSteer.js'
+import { parseSteerCommand, resolveAsyncSteerTargetId, resolveSteerTargetId } from '../lib/subagentSteer.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
+import { getAsyncDelegations } from './delegationStore.js'
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
@@ -246,6 +252,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (steerCmd) {
         const sid = resolveSteerTargetId(steerCmd.token, getTurnState().subagents)
+        const delegationId = resolveAsyncSteerTargetId(steerCmd.token, getAsyncDelegations())
 
         if (sid) {
           composerActions.pushHistory(toHistory)
@@ -253,6 +260,22 @@ export function useSubmission(opts: UseSubmissionOptions) {
           gw.request<SubagentSendResponse>('subagent.send', { subagent_id: sid, text: steerCmd.body })
             .then(raw => {
               const r = asRpcResult<SubagentSendResponse>(raw)
+              sys(r?.delivered ? `delivered → @${steerCmd.token}` : `@${steerCmd.token} already finished`)
+            })
+            .catch(() => sys(`steer failed — @${steerCmd.token} unreachable`))
+
+          return
+        }
+
+        if (delegationId) {
+          composerActions.pushHistory(toHistory)
+          composerActions.clearIn()
+          gw.request<DelegationSendResponse>('delegation.send', {
+            delegation_id: delegationId,
+            text: steerCmd.body
+          })
+            .then(raw => {
+              const r = asRpcResult<DelegationSendResponse>(raw)
               sys(r?.delivered ? `delivered → @${steerCmd.token}` : `@${steerCmd.token} already finished`)
             })
             .catch(() => sys(`steer failed — @${steerCmd.token} unreachable`))

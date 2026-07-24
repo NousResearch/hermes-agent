@@ -85,6 +85,8 @@ export const applyDelegationStatus = (r: DelegationStatusResponse | null | undef
 
 export const $asyncDelegations = atom<AsyncDelegationRecord[]>([])
 
+export const getAsyncDelegations = () => $asyncDelegations.get()
+
 /** Replace the async-delegation snapshot from a raw RPC response. */
 export const applyAsyncList = (r: DelegationAsyncListResponse | null | undefined) => {
   $asyncDelegations.set(Array.isArray(r?.delegations) ? r!.delegations : [])

@@ -9760,6 +9760,19 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"delivered": delivered, "subagent_id": subagent_id})
 
 
+@method("delegation.send")
+def _(rid, params: dict) -> dict:
+    """Steer every running child owned by an async delegation."""
+    from tools.async_delegation import steer_async_delegation
+
+    delegation_id = str(params.get("delegation_id") or "").strip()
+    text = str(params.get("text") or "")
+    if not delegation_id or not text.strip():
+        return _err(rid, 4000, "delegation_id and text required")
+    delivered = steer_async_delegation(delegation_id, text)
+    return _ok(rid, {"delivered": delivered, "delegation_id": delegation_id})
+
+
 # ── Spawn-tree snapshots: TUI-written, disk-persisted ────────────────
 # The TUI is the source of truth for subagent state (it assembles payloads
 # from the event stream).  On turn-complete it posts the final tree here;

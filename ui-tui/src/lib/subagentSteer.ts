@@ -1,3 +1,4 @@
+import type { AsyncDelegationRecord } from '../gatewayTypes.js'
 import type { SubagentProgress } from '../types.js'
 
 // Parse + resolve the composer's `@<id> steer text` shorthand. Kept pure and
@@ -42,4 +43,20 @@ export const resolveSteerTargetId = (token: string, subagents: SubagentProgress[
   const prefixed = running.filter(s => s.id.startsWith(token))
 
   return prefixed.length === 1 ? prefixed[0]!.id : null
+}
+
+export const resolveAsyncSteerTargetId = (
+  token: string,
+  delegations: readonly AsyncDelegationRecord[]
+): null | string => {
+  const running = delegations.filter(d => d.status === 'running')
+  const exact = running.find(d => d.delegation_id === token)
+
+  if (exact) {
+    return exact.delegation_id
+  }
+
+  const prefixed = running.filter(d => d.delegation_id.startsWith(token))
+
+  return prefixed.length === 1 ? prefixed[0]!.delegation_id : null
 }

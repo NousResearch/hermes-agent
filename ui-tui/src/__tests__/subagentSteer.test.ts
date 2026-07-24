@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseSteerCommand, resolveSteerTargetId } from '../lib/subagentSteer.js'
+import { parseSteerCommand, resolveAsyncSteerTargetId, resolveSteerTargetId } from '../lib/subagentSteer.js'
 import type { SubagentProgress } from '../types.js'
 
 const sub = (over: Partial<SubagentProgress> = {}): SubagentProgress => ({
@@ -71,5 +71,21 @@ describe('resolveSteerTargetId', () => {
 
   it('returns null when nothing matches (falls back to a normal turn)', () => {
     expect(resolveSteerTargetId('nope', [sub({ id: 'b7c2' })])).toBeNull()
+  })
+})
+
+describe('resolveAsyncSteerTargetId', () => {
+  const delegation = (delegation_id: string, status = 'running') => ({ delegation_id, status })
+
+  it('resolves exact and unique-prefix background delegation ids', () => {
+    const rows = [delegation('deleg_b7c2'), delegation('deleg_a11a')]
+
+    expect(resolveAsyncSteerTargetId('deleg_b7c2', rows)).toBe('deleg_b7c2')
+    expect(resolveAsyncSteerTargetId('deleg_b7', rows)).toBe('deleg_b7c2')
+  })
+
+  it('refuses ambiguous or finished background delegation ids', () => {
+    expect(resolveAsyncSteerTargetId('deleg_b', [delegation('deleg_b7c2'), delegation('deleg_b999')])).toBeNull()
+    expect(resolveAsyncSteerTargetId('deleg_b7c2', [delegation('deleg_b7c2', 'completed')])).toBeNull()
   })
 })

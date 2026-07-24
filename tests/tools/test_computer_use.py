@@ -400,6 +400,43 @@ class TestSafetyGuards:
         parsed = json.loads(out)
         assert "error" not in parsed
 
+    @pytest.mark.parametrize(
+        "modifiers",
+        (
+            "shift,ctrl",
+            ["shift", "q"],
+            ["shift", 1],
+        ),
+    )
+    def test_invalid_pointer_modifiers_rejected_before_backend(self, modifiers, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({
+            "action": "drag",
+            "from_coordinate": [10, 20],
+            "to_coordinate": [30, 40],
+            "modifiers": modifiers,
+        })
+
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert not any(call[0] == "drag" for call in noop_backend.calls)
+
+    def test_pointer_modifiers_are_normalized_before_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({
+            "action": "drag",
+            "from_coordinate": [10, 20],
+            "to_coordinate": [30, 40],
+            "modifiers": [" SHIFT ", "ALT"],
+        })
+
+        parsed = json.loads(out)
+        assert "error" not in parsed
+        drag_kw = next(call[1] for call in noop_backend.calls if call[0] == "drag")
+        assert drag_kw["modifiers"] == ["shift", "alt"]
+
     def test_type_with_empty_string_is_allowed(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({"action": "type", "text": ""})
@@ -2520,7 +2557,7 @@ class TestCuaCliFallbackResolution:
         ]
 
 
-class TestClickButtonPassthrough:
+class TestPointerButtonPassthrough:
     """Surface 5 (NousResearch/hermes-agent#47072) — `middle_click` must
     actually reach cua-driver as a middle button, not silently degrade to
     left. Pre-fix, the backend's `click()` chose the tool by name
@@ -2529,7 +2566,8 @@ class TestClickButtonPassthrough:
     cua-driver. Post-fix, the backend always passes a normalised
     `button: "left"|"right"|"middle"` to cua-driver's `click` tool
     (trycua/cua#1961 click.button enum), and rejects unknown buttons
-    instead of silently mapping them.
+    instead of silently mapping them. Drag tests inspect the final MCP payload
+    to enforce the same lossless button and modifier mapping.
     """
 
     def _backend_with_active_target(self):
@@ -2608,6 +2646,44 @@ class TestClickButtonPassthrough:
         assert args["button"] == "right"
         assert args["x"] == 10 and args["y"] == 20
         assert args["window_id"] == 222
+
+    def test_coordinate_drag_preserves_button_and_modifiers(self):
+        backend = self._backend_with_active_target()
+        res = backend.drag(
+            from_xy=(10, 20),
+            to_xy=(30, 40),
+            button="right",
+            modifiers=["shift", "ctrl"],
+        )
+        assert res.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "drag"
+        assert args["button"] == "right"
+        assert args["modifier"] == ["shift", "ctrl"]
+
+    def test_element_drag_preserves_middle_button(self):
+        backend = self._backend_with_active_target()
+        res = backend.drag(from_element=5, to_element=7, button="middle")
+        assert res.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "drag"
+        assert args["button"] == "middle"
+        assert "modifier" not in args
+
+    def test_default_drag_keeps_legacy_payload_shape(self):
+        backend = self._backend_with_active_target()
+        res = backend.drag(from_xy=(10, 20), to_xy=(30, 40))
+        assert res.ok
+        _, args = backend._session.call_tool.call_args.args
+        assert "button" not in args
+        assert "modifier" not in args
+
+    def test_unknown_drag_button_rejected_no_tool_call(self):
+        backend = self._backend_with_active_target()
+        res = backend.drag(from_xy=(10, 20), to_xy=(30, 40), button="bogus")
+        assert not res.ok
+        assert "expected" in res.message.lower()
+        backend._session.call_tool.assert_not_called()
 
     def test_coordinate_drag_and_scroll_keep_the_captured_window(self):
         backend = self._backend_with_active_target()

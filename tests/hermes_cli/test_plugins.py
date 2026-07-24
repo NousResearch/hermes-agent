@@ -2366,3 +2366,90 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestMainSetsCliRefForQueryMode:
+    """Regression for #67597 — behavioral, not source-shape.
+
+    Single-query mode (`hermes chat -q "…"`) invokes ``cli.chat()`` directly
+    and never enters ``HermesCLI.run()``, which is where the interactive path
+    assigns ``get_plugin_manager()._cli_ref = self``. If the assignment lives
+    ONLY inside ``run()``, ``PluginContext.dispatch_tool()`` cannot resolve
+    ``parent_agent`` in query mode and agent-context tools like
+    ``delegate_task`` lose the active agent.
+
+    This drives the real ``main(query=…)`` control flow with a fake
+    ``HermesCLI`` (so no credentials / agent init are needed) and asserts the
+    observable effect: by the time query mode dispatches to ``cli.chat()``,
+    ``get_plugin_manager()._cli_ref`` points at that CLI instance, and a real
+    ``PluginContext.dispatch_tool()`` therefore injects the instance's agent as
+    ``parent_agent``.
+    """
+
+    def test_query_mode_wires_cli_ref_so_dispatch_injects_parent_agent(self, monkeypatch):
+        import cli as cli_mod
+        from hermes_cli.plugins import PluginManager
+
+        # A controlled plugin-manager singleton so main()'s
+        # ``get_plugin_manager()._cli_ref = cli`` lands somewhere we can read
+        # and there is no cross-test global state to reset.
+        manager = PluginManager()
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        sentinel_agent = object()
+        captured: dict = {}
+
+        class _StopMain(Exception):
+            """Halt main() at the query dispatch — we only need the wiring."""
+
+        class _FakeCLI:
+            def __init__(self, **_kwargs):
+                self.agent = sentinel_agent
+                self.session_id = "test_session"
+                self.conversation_history = []
+                self.console = types.SimpleNamespace(print=lambda *a, **k: None)
+
+            def _claim_active_session(self, *_a, **_k):
+                return True
+
+            def _show_security_advisories(self):
+                pass
+
+            def chat(self, _query, images=None):
+                # main() must have wired _cli_ref to this instance *before*
+                # reaching the query-mode chat dispatch.
+                captured["cli_ref_at_chat"] = manager._cli_ref
+                raise _StopMain
+
+        # Keep main()'s prefix cheap and side-effect free.
+        monkeypatch.setattr(cli_mod, "HermesCLI", _FakeCLI)
+        monkeypatch.setattr(cli_mod, "_collect_query_images", lambda q, img=None: (q, []))
+        monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda cli: None)
+        monkeypatch.setattr("signal.signal", lambda *a, **k: None)
+
+        with pytest.raises(_StopMain):
+            cli_mod.main(query="ping", toolsets="coding", quiet=False)
+
+        # (1) Query mode wired _cli_ref to the built CLI instance.
+        assert isinstance(captured.get("cli_ref_at_chat"), _FakeCLI)
+
+        # (2) dispatch_tool now injects that instance's agent as parent_agent.
+        ctx = PluginContext(PluginManifest(name="probe", source="user"), manager)
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = "{}"
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "x"})
+        assert mock_registry.dispatch.call_args[1].get("parent_agent") is sentinel_agent
+
+    def test_gateway_mode_leaves_cli_ref_unset_so_no_parent_agent(self):
+        """Guard the other side: with no CLI run (gateway mode), _cli_ref stays
+        None and dispatch_tool omits parent_agent entirely."""
+        manager = PluginManager()
+        manager._cli_ref = None
+
+        ctx = PluginContext(PluginManifest(name="probe", source="user"), manager)
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = "{}"
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "x"})
+        assert "parent_agent" not in mock_registry.dispatch.call_args[1]

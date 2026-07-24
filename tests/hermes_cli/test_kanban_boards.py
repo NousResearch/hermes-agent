@@ -429,6 +429,69 @@ class TestWorkerSpawnEnv:
         expected_ws = fresh_home / "kanban" / "boards" / "spawntest" / "workspaces"
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(expected_ws)
 
+    def test_default_spawn_strips_dispatcher_terminal_profile_env(
+        self, fresh_home, monkeypatch
+    ):
+        """A worker on a non-default profile must not inherit the dispatcher's
+        profile-derived TERMINAL_* config (docker image/volumes/network,
+        container limits, backend, ...). Those leak the dispatcher's isolation
+        settings across the profile boundary; the child must rebuild them from
+        its own profile (#66541). The task-specific TERMINAL_CWD pin still wins.
+        """
+        # Values the dispatcher/gateway exported from ITS profile's terminal:.
+        monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "dispatcher/image:latest")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "/host/secret:/mnt")
+        monkeypatch.setenv("TERMINAL_DOCKER_NETWORK", "dispatcher-net")
+        monkeypatch.setenv("TERMINAL_CONTAINER_MEMORY", "8g")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        captured = {}
+
+        class FakeProc:
+            pid = 999
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        ws = fresh_home / "ws"
+        ws.mkdir(parents=True, exist_ok=True)
+
+        task = kb.Task(
+            id="t_iso",
+            title="isolation",
+            body=None,
+            assignee="teknium",
+            status="ready",
+            priority=0,
+            created_by="user",
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+
+        kb._default_spawn(task, str(ws), board=None)
+
+        env = captured["env"]
+        for leaked in (
+            "TERMINAL_DOCKER_IMAGE",
+            "TERMINAL_DOCKER_VOLUMES",
+            "TERMINAL_DOCKER_NETWORK",
+            "TERMINAL_CONTAINER_MEMORY",
+            "TERMINAL_ENV",
+        ):
+            assert leaked not in env, f"{leaked} leaked into the worker env"
+        # Task-specific pins are still applied after the strip.
+        assert env["HERMES_KANBAN_TASK"] == "t_iso"
+        assert env["TERMINAL_CWD"] == str(ws)
+
     def test_default_board_spawn_keeps_legacy_paths(self, fresh_home, monkeypatch):
         captured = {}
 

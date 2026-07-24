@@ -301,6 +301,48 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+
+def resolve_kanban_guidance(
+    config: Optional[dict] = None,
+) -> str:
+    """Return the active profile's configured kanban worker guidance.
+
+    Each profile owns an isolated ``config.yaml``, so
+    ``kanban.guidance_override`` applies only to the worker whose
+    ``HERMES_HOME`` loaded that config.  It may append to or replace the
+    built-in guidance. Malformed config is ignored so existing prompt behavior
+    remains unchanged unless the active profile has a valid inline override.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception as exc:
+            logger.debug("Could not read kanban guidance override config: %s", exc)
+            return KANBAN_GUIDANCE
+
+    if not isinstance(config, dict):
+        return KANBAN_GUIDANCE
+
+    kanban_config = config.get("kanban", {})
+    if not isinstance(kanban_config, dict):
+        return KANBAN_GUIDANCE
+
+    override = kanban_config.get("guidance_override", {})
+    if not isinstance(override, dict):
+        return KANBAN_GUIDANCE
+
+    text = override.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return KANBAN_GUIDANCE
+    text = text.strip()
+
+    mode = override.get("mode", "append")
+    if isinstance(mode, str) and mode.strip().lower() == "replace":
+        return text
+    return f"{KANBAN_GUIDANCE}\n\n{text}"
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

@@ -357,8 +357,14 @@ class _SlashWorker:
             creationflags=windows_hide_flags(),
             start_new_session=True,
         )
-        threading.Thread(target=self._drain_stdout, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        self._drain_thread_stdout = threading.Thread(
+            target=self._drain_stdout, daemon=True, name="slash-drain-stdout"
+        )
+        self._drain_thread_stderr = threading.Thread(
+            target=self._drain_stderr, daemon=True, name="slash-drain-stderr"
+        )
+        self._drain_thread_stdout.start()
+        self._drain_thread_stderr.start()
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
@@ -428,6 +434,18 @@ class _SlashWorker:
                     stream.close()
                 except Exception:
                     pass
+            # Join drain threads so they don't outlive the worker. After
+            # proc.terminate() and stream.close(), the readline() in
+            # _drain_stdout/_drain_stderr hits EOF and the threads exit
+            # promptly. The timeout is a safety net for edge cases where
+            # the subprocess is mid-write (#53303).
+            for t in (getattr(self, '_drain_thread_stdout', None),
+                      getattr(self, '_drain_thread_stderr', None)):
+                if t is not None:
+                    try:
+                        t.join(timeout=2)
+                    except Exception:
+                        pass
 
 
 def _load_busy_input_mode() -> str:
@@ -804,6 +822,9 @@ def _teardown_popped_session(
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
+    logger.info(
+        "session closed sid=%s end_reason=%s", session.get("_sid", ""), end_reason
+    )
     _teardown_session(session, end_reason=end_reason)
     return True
 
@@ -896,6 +917,21 @@ def _close_sessions_for_transport(
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
             session["transport"] = _detached_ws_transport
+            # Close the slash_worker immediately on detach — it's ~13 MB per
+            # process and the Desktop app uses one WS for all sessions, so
+            # switching sessions leaves the old workers alive until the 6 h TTL
+            # reaper or the 20 s orphan reaper fires (which may not fire at all
+            # if the session is flagged running by a background curator review).
+            # The worker is recreated lazily on the next slash command: the
+            # slash.exec handler and _restart_slash_worker both handle
+            # worker=None.
+            worker = session.get("slash_worker")
+            if worker:
+                try:
+                    worker.close()
+                except Exception:
+                    pass
+                session["slash_worker"] = None
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)

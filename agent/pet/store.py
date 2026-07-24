@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent.pet.network import PetdexNetworkError, stream_petdex
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -355,16 +356,9 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
 
     if sheet_bytes is None and source_url and _is_petdex_host(source_url):
         try:
-            import httpx
-
-            resp = httpx.get(
-                source_url,
-                timeout=timeout,
-                follow_redirects=True,
-                headers={"User-Agent": "hermes-agent-petdex"},
-            )
-            resp.raise_for_status()
-            sheet_bytes = resp.content
+            with stream_petdex(source_url, timeout=timeout) as resp:
+                resp.raise_for_status()
+                sheet_bytes = resp.read()
         except Exception as exc:  # noqa: BLE001 - cosmetic, degrade to placeholder
             logger.debug("thumb fetch failed for %s: %s", slug, exc)
 
@@ -469,16 +463,8 @@ def rename_pet(slug: str, display_name: str) -> str | None:
 
 
 def _download(url: str, dest: Path, *, timeout: float) -> None:
-    import httpx
-
     try:
-        with httpx.stream(
-            "GET",
-            url,
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "hermes-agent-petdex"},
-        ) as resp:
+        with stream_petdex(url, timeout=timeout) as resp:
             resp.raise_for_status()
             tmp = dest.with_suffix(dest.suffix + ".part")
             with tmp.open("wb") as fh:
@@ -490,14 +476,11 @@ def _download(url: str, dest: Path, *, timeout: float) -> None:
 
 
 def _download_json(url: str, *, timeout: float) -> dict:
-    import httpx
-
-    resp = httpx.get(
-        url,
-        timeout=timeout,
-        follow_redirects=True,
-        headers={"User-Agent": "hermes-agent-petdex"},
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data if isinstance(data, dict) else {}
+    try:
+        with stream_petdex(url, timeout=timeout) as resp:
+            resp.raise_for_status()
+            resp.read()
+            data = resp.json()
+            return data if isinstance(data, dict) else {}
+    except PetdexNetworkError as exc:
+        raise PetStoreError(str(exc)) from exc

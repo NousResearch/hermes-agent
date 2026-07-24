@@ -937,7 +937,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     onNavigate: selectSidebarItem,
     onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
-    onNewSessionSplit: dir => void openNewSessionTile(dir),
+    onNewSessionSplit: (dir, opts) => void openNewSessionTile(dir, opts),
     onPasteClipboardImage: opts => composer.pasteClipboardImage(opts),
     onPickFiles: () => void composer.pickContextPaths('file'),
     onPickFolders: () => void composer.pickContextPaths('folder'),

@@ -127,7 +127,7 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $focusedStoredSessionId, $workingSessionIds, type SplitDir, type TileDock } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -143,6 +143,7 @@ import {
   SKILLS_ROUTE
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
+import { startNewSessionDrag } from '../new-session-drag'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
@@ -301,8 +302,12 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
-  /** Create a brand-new session and open it as a tile on `dir`. */
-  onNewSessionSplit: (dir: SplitDir) => void
+  /** Create a brand-new session and open it as a tile. `dir` is the dock edge
+   *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
+   *  specific zone / tab-strip slot — used by the "New session" row's drag,
+   *  which lands a fresh session exactly where it's dropped. The context-menu
+   *  "Open in split" path passes just a `dir`. */
+  onNewSessionSplit: (dir: TileDock, opts?: { anchor?: string; before?: null | string }) => void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => Promise<void>
 }
@@ -1510,6 +1515,28 @@ export function ChatSidebar({
                       }
 
                       onNavigate(item)
+                    }}
+                    onPointerDown={event => {
+                      // The "New session" row is a drag source too: drag it onto
+                      // a chat zone's tab strip / edge / center to create the
+                      // session exactly there (stack / split). The pointer drag
+                      // session owns the gesture — a sub-threshold release falls
+                      // through to the onClick above (ordinary new session), and
+                      // an engaged drag suppresses that click so it never
+                      // double-creates. The create callback sets $newChatProfile
+                      // itself (the suppressed click can't), so a dragged new
+                      // session lands in the same profile a click would.
+                      if (!isNewSession) {
+                        return
+                      }
+
+                      startNewSessionDrag(
+                        placement => {
+                          $newChatProfile.set(null)
+                          onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                        },
+                        event
+                      )
                     }}
                     tooltip={
                       item.keybindActionId

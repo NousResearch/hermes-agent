@@ -570,7 +570,7 @@ export function useSessionActions({
    *  list (Cursor-style draft tab); it surfaces on the next refresh once the
    *  first message persists a turn. "Open in split" keeps the listed behavior. */
   const openNewSessionTile = useCallback(
-    async (dir: TileDock = 'right', options?: { cwd?: null | string; listed?: boolean }) => {
+    async (dir: TileDock = 'right', options?: { anchor?: string; before?: null | string; cwd?: null | string; listed?: boolean }) => {
       const listed = options?.listed ?? true
 
       try {
@@ -607,7 +607,7 @@ export function useSessionActions({
         const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false })
         updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
 
-        openSessionTile(stored, dir)
+        openSessionTile(stored, dir, options?.anchor, options?.before)
         patchSessionTile(stored, { runtimeId: created.session_id })
 
         if (dir === 'center' && runtimeInfo?.cwd) {

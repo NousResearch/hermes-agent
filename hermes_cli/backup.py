@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1366,6 +1366,270 @@ def create_pre_update_backup(
 
     _prune_pre_update_backups(backup_dir, keep=keep)
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Scheduled auto-backup (#12238)
+# ---------------------------------------------------------------------------
+#
+# Anacron-style periodic full backups, gated by the ``backup`` config block:
+#
+#   backup:
+#     enabled: true        # default false — opt-in
+#     schedule: daily      # hourly | daily | weekly | <hours as integer>
+#     keep_last: 7         # auto-backup archives to retain
+#     dir: ~/backups       # optional override (default: <HERMES_HOME>/backups)
+#
+# ``maybe_create_auto_backup()`` is cheap when nothing is due (one config read
+# + one small JSON stat) and is polled from the gateway cron ticker, mirroring
+# how agent/curator.py::maybe_run_curator gets its weekly cadence. The real
+# cadence lives here, in the ``last_run_at`` gate — the poll rate doesn't
+# matter. Archives are written with the same exclusion rules and SQLite
+# safe-copy as ``hermes backup`` and restore with ``hermes import``.
+
+_AUTO_BACKUP_PREFIX = "auto-"
+_AUTO_STATE_FILE = ".auto_backup_state.json"
+_AUTO_DEFAULT_KEEP = 7
+_AUTO_DEFAULT_SCHEDULE = "daily"
+_SCHEDULE_HOURS = {"hourly": 1.0, "daily": 24.0, "weekly": 168.0}
+
+
+def _get_backup_config() -> dict:
+    """Read the ``backup`` config block. Returns {} when unset/unreadable."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        block = config.get("backup", {})
+        return block if isinstance(block, dict) else {}
+    except Exception as exc:
+        logger.debug("Could not load backup config: %s", exc)
+        return {}
+
+
+def _auto_backup_enabled(cfg: dict) -> bool:
+    value = cfg.get("enabled", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _auto_backup_interval_hours(cfg: dict) -> float:
+    """Resolve ``backup.schedule`` to hours. Unknown values fall back to daily."""
+    schedule = cfg.get("schedule", _AUTO_DEFAULT_SCHEDULE)
+    if isinstance(schedule, (int, float)) and not isinstance(schedule, bool):
+        return max(float(schedule), 1.0)
+    if isinstance(schedule, str):
+        normalized = schedule.strip().lower()
+        if normalized in _SCHEDULE_HOURS:
+            return _SCHEDULE_HOURS[normalized]
+        try:
+            return max(float(normalized), 1.0)
+        except ValueError:
+            pass
+    logger.warning("backup.schedule %r not recognized; using daily", schedule)
+    return _SCHEDULE_HOURS[_AUTO_DEFAULT_SCHEDULE]
+
+
+def _auto_backup_keep(cfg: dict) -> int:
+    try:
+        # Floor 1 for the same reason as _prune_pre_update_backups: pruning
+        # the archive we just paid to write would be worse than no backup.
+        return max(int(cfg.get("keep_last", _AUTO_DEFAULT_KEEP)), 1)
+    except (ValueError, TypeError):
+        return _AUTO_DEFAULT_KEEP
+
+
+def _auto_backup_dir(cfg: dict, hermes_home: Optional[Path] = None) -> Path:
+    home = hermes_home or get_default_hermes_root()
+    raw = cfg.get("dir")
+    if raw:
+        try:
+            return Path(str(raw)).expanduser()
+        except (TypeError, ValueError):
+            logger.warning("backup.dir %r invalid; using default", raw)
+    return home / _PRE_UPDATE_BACKUPS_DIR
+
+
+def _load_auto_backup_state(state_path: Path) -> dict:
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_auto_backup_state(state_path: Path, state: dict) -> None:
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = state_path.parent / f".{state_path.name}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, state_path)
+    except OSError as exc:
+        logger.warning("Could not persist auto-backup state: %s", exc)
+
+
+def _prune_auto_backups(backup_dir: Path, keep: int) -> int:
+    """Remove oldest auto-backups beyond the keep limit.
+
+    Only touches ``auto-*.zip`` so manual/pre-update/pre-migration archives
+    in the same directory are never affected. Returns count deleted.
+    """
+    keep = max(keep, 1)
+    if not backup_dir.exists():
+        return 0
+
+    backups = sorted(
+        (p for p in backup_dir.iterdir()
+         if p.is_file() and p.name.startswith(_AUTO_BACKUP_PREFIX)
+         and p.suffix.lower() == ".zip"),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+    deleted = 0
+    for p in backups[keep:]:
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError as exc:
+            logger.warning("Failed to prune auto-backup %s: %s", p.name, exc)
+
+    return deleted
+
+
+def maybe_create_auto_backup(
+    hermes_home: Optional[Path] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Path]:
+    """Create a scheduled full backup if one is due. Never raises.
+
+    Gated by ``backup.enabled`` (default false) and ``backup.schedule``.
+    Cheap when disabled or not yet due, so callers can poll freely — the
+    gateway cron ticker polls hourly. Returns the archive path when a backup
+    was created, ``None`` otherwise (disabled, not due, or failed).
+    """
+    cfg = _get_backup_config()
+    if not _auto_backup_enabled(cfg):
+        return None
+
+    hermes_root = hermes_home or get_default_hermes_root()
+    if not hermes_root.is_dir():
+        return None
+
+    backup_dir = _auto_backup_dir(cfg, hermes_root)
+    state_path = backup_dir / _AUTO_STATE_FILE
+    state = _load_auto_backup_state(state_path)
+
+    now = now or datetime.now(timezone.utc)
+    interval_hours = _auto_backup_interval_hours(cfg)
+
+    last_raw = state.get("last_run_at")
+    if last_raw:
+        try:
+            last = datetime.fromisoformat(last_raw)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            due_at = last + timedelta(hours=interval_hours)
+            if now < due_at:
+                return None
+        except ValueError:
+            logger.debug("Unparseable auto-backup last_run_at: %r", last_raw)
+
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Could not create auto-backup dir %s: %s", backup_dir, exc)
+        return None
+
+    stamp = now.astimezone().strftime("%Y-%m-%d-%H%M%S")
+    out_path = backup_dir / f"{_AUTO_BACKUP_PREFIX}{stamp}.zip"
+
+    result = _write_full_zip_backup(out_path, hermes_root)
+
+    # Stamp last_run_at even on failure so a persistently failing backup
+    # (e.g. read-only destination) retries once per interval instead of on
+    # every poll, hammering the disk with full-tree walks.
+    state.update({
+        "last_run_at": now.isoformat(),
+        "last_status": "ok" if result else "failed",
+        "last_path": str(result) if result else None,
+    })
+    _save_auto_backup_state(state_path, state)
+
+    if result is None:
+        logger.warning("Auto-backup failed (see prior warnings); next attempt "
+                       "in %.0fh", interval_hours)
+        return None
+
+    pruned = _prune_auto_backups(backup_dir, keep=_auto_backup_keep(cfg))
+    if pruned:
+        logger.info("Auto-backup pruning: removed %d old archive(s)", pruned)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Backup listing (hermes backup --list)
+# ---------------------------------------------------------------------------
+
+def list_backup_archives(hermes_home: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """List backup archives in the backups directory, newest first.
+
+    Covers auto, pre-update, pre-migration, and any manually placed ``.zip``
+    files. Includes the configured ``backup.dir`` when it differs from the
+    default location.
+    """
+    home = hermes_home or get_default_hermes_root()
+    cfg = _get_backup_config()
+    dirs = {home / _PRE_UPDATE_BACKUPS_DIR, _auto_backup_dir(cfg, home)}
+
+    archives = []
+    for backup_dir in dirs:
+        if not backup_dir.is_dir():
+            continue
+        for p in backup_dir.iterdir():
+            if not (p.is_file() and p.suffix.lower() == ".zip"):
+                continue
+            if p.name.startswith(_AUTO_BACKUP_PREFIX):
+                kind = "auto"
+            elif p.name.startswith(_PRE_UPDATE_PREFIX):
+                kind = "pre-update"
+            elif p.name.startswith(_PRE_MIGRATION_PREFIX):
+                kind = "pre-migration"
+            else:
+                kind = "manual"
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            archives.append({
+                "path": p,
+                "kind": kind,
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+            })
+
+    archives.sort(key=lambda a: a["mtime"], reverse=True)
+    return archives
+
+
+def run_backup_list(args) -> None:
+    """CLI entry point for ``hermes backup --list``."""
+    archives = list_backup_archives()
+    if not archives:
+        print("No backup archives found.")
+        print("  Create one with: hermes backup")
+        print("  Or enable scheduled backups in config.yaml:")
+        print("    backup:\n      enabled: true\n      schedule: daily")
+        return
+
+    print(f"{len(archives)} backup archive(s):\n")
+    for a in archives:
+        when = datetime.fromtimestamp(a["mtime"]).strftime("%Y-%m-%d %H:%M")
+        print(f"  {when}  {_format_size(a['size']):>10}  "
+              f"[{a['kind']}]  {a['path']}")
+    print("\nRestore with: hermes import <path>")
 
 
 # ---------------------------------------------------------------------------

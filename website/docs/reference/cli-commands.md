@@ -817,6 +817,7 @@ Create a zip archive of your Hermes configuration, skills, sessions, and data. T
 | `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
 | `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+| `--list` | List existing backup archives (scheduled auto-backups, pre-update, pre-migration, and manual zips) with date, size, and path. |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
 
@@ -833,7 +834,31 @@ hermes backup                           # Full backup to ~/hermes-backup-*.zip
 hermes backup -o /tmp/hermes.zip        # Full backup to specific path
 hermes backup --quick                   # Quick state-only snapshot
 hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
+hermes backup --list                    # List existing backup archives
 ```
+
+### Scheduled auto-backups
+
+Hermes can take periodic full backups automatically — no cron job or OS
+scheduler required. Enable it in `~/.hermes/config.yaml`:
+
+```yaml
+backup:
+  enabled: true       # default: false (opt-in)
+  schedule: daily     # hourly | daily | weekly | <hours as integer>
+  keep_last: 7        # auto-backup archives to retain (oldest pruned first)
+  dir: ~/backups      # optional — default: ~/.hermes/backups/
+```
+
+While the gateway is running, it checks hourly whether a backup is due and
+writes `auto-<timestamp>.zip` to the backup directory, pruning the oldest
+archives beyond `keep_last`. Archives use the same exclusion rules and
+WAL-safe SQLite copies as `hermes backup`, and restore with `hermes import`.
+
+Point `dir` at a mounted external drive or a cloud-synced folder (Dropbox,
+Syncthing, etc.) to get off-machine copies. Note the schedule is driven by
+the gateway process — CLI-only installs without a running gateway should use
+`hermes backup` directly or a system scheduler.
 
 ## `hermes checkpoints`
 

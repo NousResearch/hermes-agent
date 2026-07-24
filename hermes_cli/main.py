@@ -4578,7 +4578,11 @@ def cmd_skin(args):
 
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
-    if getattr(args, "quick", False):
+    if getattr(args, "list_archives", False):
+        from hermes_cli.backup import run_backup_list
+
+        run_backup_list(args)
+    elif getattr(args, "quick", False):
         from hermes_cli.backup import run_quick_backup
 
         run_quick_backup(args)

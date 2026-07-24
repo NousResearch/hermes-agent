@@ -19,10 +19,10 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
-  $newChatProfile,
   ensureGatewayAgent,
   ensureGatewayProfile,
-  normalizeProfileKey
+  normalizeProfileKey,
+  resolveNewSessionProfile
 } from '@/store/profile'
 import {
   beginSessionMutation,
@@ -200,7 +200,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     provider: $currentProvider.get().trim()
   }
 
-  const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+  const profile = resolveNewSessionProfile()
   await ensureGatewayProfile(profile)
 
   return {

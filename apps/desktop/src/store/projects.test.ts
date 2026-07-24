@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $showAllProfiles, ALL_PROFILES } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
@@ -11,6 +11,8 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $projectTreeLoading,
+  $projectTreeProfile,
   $removedSessionIds,
   $sessionMutationsInFlight,
   $worktreeRefreshToken,
@@ -24,6 +26,7 @@ import {
   pickProjectFolder,
   projectIdForCwd,
   projectNameForCwd,
+  projectTreeSupportsProfile,
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
@@ -508,6 +511,35 @@ describe('repository discovery policy', () => {
 })
 
 describe('project tree profile isolation', () => {
+  it('uses a tree only for its owning profile or an all-profiles aggregate', () => {
+    expect(projectTreeSupportsProfile('work', 'work')).toBe(true)
+    expect(projectTreeSupportsProfile(ALL_PROFILES, 'work')).toBe(true)
+    expect(projectTreeSupportsProfile('default', 'work')).toBe(false)
+    expect(projectTreeSupportsProfile(null, 'work')).toBe(false)
+  })
+
+  it('records all-profiles scope for an aggregate tree', async () => {
+    const api = vi.fn().mockResolvedValue({
+      active_id: null,
+      projects: [{ id: 'shared', label: 'Shared', path: '/work/shared', repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
+    })
+
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $showAllProfiles.set(true)
+
+    try {
+      await refreshProjectTree()
+
+      expect(api).toHaveBeenCalledOnce()
+      expect($projectTreeProfile.get()).toBe(ALL_PROFILES)
+      expect(projectTreeSupportsProfile($projectTreeProfile.get(), 'work')).toBe(true)
+    } finally {
+      $showAllProfiles.set(false)
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('does not publish a late response from the previous profile', async () => {
     let resolveA: ((value: unknown) => void) | undefined
 
@@ -543,6 +575,36 @@ describe('project tree profile isolation', () => {
     await pendingA
 
     expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    expect($projectTreeProfile.get()).toBe('profile-b')
+  })
+
+  it('does not publish a response after the profile changes on the same gateway', async () => {
+    let resolveTree: ((value: unknown) => void) | undefined
+
+    const response = new Promise(resolve => {
+      resolveTree = resolve
+    })
+
+    const gateway = { connectionState: 'open', request: vi.fn(() => response) }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('profile-a')
+    $projectTree.set([])
+    $projectTreeProfile.set(null)
+
+    const pending = refreshProjectTree()
+    $activeGatewayProfile.set('profile-b')
+    resolveTree?.({
+      active_id: null,
+      projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
+    })
+    await pending
+
+    expect($projectTree.get()).toEqual([])
+    expect($projectTreeLoading.get()).toBe(false)
+    expect($projectTreeProfile.get()).toBeNull()
   })
 })
 

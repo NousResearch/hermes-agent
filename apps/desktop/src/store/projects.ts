@@ -39,7 +39,12 @@ export const $activeProjectId = atom<null | string>(null)
 // fetched lazily on drill-in via `fetchProjectSessions`. This is the single
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
+export const $projectTreeProfile = atom<null | string>(null)
 export const $projectTreeLoading = atom(false)
+
+export function projectTreeSupportsProfile(treeProfile: null | string, profile: string): boolean {
+  return treeProfile === profile || treeProfile === ALL_PROFILES
+}
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -403,9 +408,10 @@ const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
 
 let projectTreeRefreshGeneration = 0
 
-function applyProjectTreePayload(res: ProjectTreePayload): void {
+function applyProjectTreePayload(res: ProjectTreePayload, profile: string): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
   $projectTree.set(res.projects ?? [])
+  $projectTreeProfile.set(profile)
   $activeProjectId.set(res.active_id ?? null)
   const tombstones = $removedSessionIds.get()
 
@@ -422,10 +428,10 @@ function applyProjectTreePayload(res: ProjectTreePayload): void {
   }
 }
 
-async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
+async function refreshProjectTreeOn(gateway: HermesGateway, profile: string): Promise<void> {
   const generation = ++projectTreeRefreshGeneration
 
-  if (activeGateway() === gateway) {
+  if (activeGateway() === gateway && ($activeGatewayProfile.get() || 'default') === profile) {
     $projectTreeLoading.set(true)
   }
 
@@ -434,14 +440,18 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
       preview_limit: PROJECT_TREE_PREVIEW_LIMIT
     })
 
-    if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
+    if (
+      generation !== projectTreeRefreshGeneration ||
+      activeGateway() !== gateway ||
+      ($activeGatewayProfile.get() || 'default') !== profile
+    ) {
       return
     }
 
-    applyProjectTreePayload(res)
+    applyProjectTreePayload(res, profile)
     markProjectsRpcSuccess()
   } catch (err) {
-    if (activeGateway() === gateway) {
+    if (activeGateway() === gateway && ($activeGatewayProfile.get() || 'default') === profile) {
       markProjectsRpcFailure(err)
     }
   } finally {
@@ -462,8 +472,8 @@ export async function refreshProjectTree(): Promise<void> {
   }
 
   try {
-    const { gateway } = await activeProjectsContext()
-    await refreshProjectTreeOn(gateway)
+    const { gateway, profile } = await activeProjectsContext()
+    await refreshProjectTreeOn(gateway, profile)
   } catch {
     // Backend may not be ready; keep the last known tree.
   }
@@ -489,7 +499,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
       return
     }
 
-    applyProjectTreePayload(res)
+    applyProjectTreePayload(res, ALL_PROFILES)
     markProjectsRpcSuccess()
   } catch (err) {
     markProjectsRpcFailure(err)

@@ -13,6 +13,20 @@ interface NewSessionHeaderProps {
   showProfileTag: boolean
 }
 
+interface FreshSessionDraftState {
+  activeSessionId: null | string
+  isRoutedSessionView: boolean
+  selectedSessionId: null | string
+}
+
+export function isFreshSessionDraft({
+  activeSessionId,
+  isRoutedSessionView,
+  selectedSessionId
+}: FreshSessionDraftState): boolean {
+  return !selectedSessionId && !activeSessionId && !isRoutedSessionView
+}
+
 function workspaceLeaf(cwd: string): string {
   const normalized = cwd.trim().replace(/[\\/]+$/, '')
 
@@ -22,7 +36,7 @@ function workspaceLeaf(cwd: string): string {
 export function NewSessionHeader({ cwd, profile, projectName, showProfileTag }: NewSessionHeaderProps) {
   const { t } = useI18n()
   const path = cwd.trim()
-  const workspace = projectName?.trim() || workspaceLeaf(path) || t.sidebar.noProject
+  const workspace = projectName?.trim() || workspaceLeaf(path) || t.rightSidebar.noProjectTitle
 
   return (
     <header className={titlebarHeaderBaseClass}>
@@ -33,7 +47,7 @@ export function NewSessionHeader({ cwd, profile, projectName, showProfileTag }: 
           <span aria-hidden className="text-(--ui-text-quaternary)">
             ·
           </span>
-          <Tip label={path || t.sidebar.noProject} side="bottom">
+          <Tip label={path || t.rightSidebar.noProjectTitle} side="bottom">
             <span
               className="pointer-events-auto min-w-0 truncate rounded-[3px] bg-(--ui-control-background) px-1.5 py-1 text-[0.6875rem] text-(--ui-text-tertiary) [-webkit-app-region:no-drag] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               tabIndex={0}

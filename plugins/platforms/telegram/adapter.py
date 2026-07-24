@@ -3623,8 +3623,30 @@ class TelegramAdapter(BasePlatformAdapter):
             # fallback-IP chain can't block startup indefinitely.
             _max_connect = 8
             _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 30.0)
+            # Total watchdog: ensure the entire connect loop has an upper bound
+            # even if the retry loop itself silently stalls (#67498). This is
+            # the per-attempt timeout PLUS generous margins between attempts so
+            # we never hang past the sum even when all attempts are exhausted.
+            _total_deadline = (
+                asyncio.get_running_loop().time()
+                + _init_timeout * _max_connect
+                + 120.0  # extra margin for between-attempt sleeps + overhead
+            )
             for _attempt in range(_max_connect):
+                rebuild_app = False
                 try:
+                    # Check total watchdog deadline — if we blew past it the
+                    # retry ladder must yield even if no individual attempt
+                    # has raised.
+                    if asyncio.get_running_loop().time() >= _total_deadline:
+                        raise OSError(
+                            f"Telegram initialization timed out after {_max_connect} attempts "
+                            f"({_init_timeout:.0f}s each) — total connect watchdog "
+                            f"deadline ({_init_timeout * _max_connect + 120.0:.0f}s) exceeded. "
+                            f"Check network connectivity to api.telegram.org "
+                            f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT / "
+                            f"HERMES_TELEGRAM_INIT_TIMEOUT to a lower value."
+                        )
                     logger.warning(
                         "[%s] Connecting to Telegram (attempt %d/%d)…",
                         self.name, _attempt + 1, _max_connect,
@@ -3642,6 +3664,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     break
                 except asyncio.TimeoutError:
+                    rebuild_app = True
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(
@@ -3656,6 +3679,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT to a lower value."
                         )
                 except OSError as init_err:
+                    rebuild_app = True
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(
@@ -3666,6 +3690,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     else:
                         raise
                 except Exception as init_err:
+                    rebuild_app = True
                     if not self._looks_like_network_error(init_err):
                         raise
                     if _attempt < _max_connect - 1:
@@ -3677,6 +3702,57 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
+                except BaseException:
+                    # Catch CancelledError and other BaseException subclasses
+                    # that the existing except handlers miss. Log the event so
+                    # the operator can diagnose, then reraise so cancellation
+                    # semantics are preserved (#67498).
+                    # NOTE: placed LAST so Exception handlers above have
+                    # priority — BaseException catches everything including
+                    # Exception.
+                    logger.warning(
+                        "[%s] Connect attempt %d/%d interrupted by %s — propagating",
+                        self.name,
+                        _attempt + 1,
+                        _max_connect,
+                        "CancelledError"
+                        if isinstance(sys.exc_info()[1], asyncio.CancelledError)
+                        else type(sys.exc_info()[1]).__name__,
+                    )
+                    raise
+                finally:
+                    # After a failed attempt the app may be in a partially-
+                    # initialized state (closed transports, half-built handlers).
+                    # Rebuild from the same token/config so the next attempt
+                    # starts with a fresh Application — the old one is discarded
+                    # and will be GC'd (#67498).
+                    if rebuild_app and _attempt < _max_connect - 1:
+                        old_app = self._app
+                        self._app = builder.build()
+                        self._bot = self._app.bot
+                        # Re-register handlers on the new app
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.TEXT & ~filters.COMMAND,
+                            self._handle_text_message
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.COMMAND,
+                            self._handle_command
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                            self._handle_location_message
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                            self._handle_media_message
+                        ))
+                        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+                        # Best-effort discard the old app's resources
+                        try:
+                            await _shutdown_abandoned_app(old_app)
+                        except Exception:
+                            pass
             await self._app.start()
 
             # Decide between webhook and polling mode

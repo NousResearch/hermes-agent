@@ -757,6 +757,82 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
             )
 
 
+def test_gateway_shutdown_batch_preserves_retry_budget_and_systemic_detection(
+    kanban_home, monkeypatch,
+):
+    """Shutdown victims are interrupted; a genuine crash remains a crash."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        owner = _kb._claimer_id()
+        interrupted_ids = []
+        for i in range(3):
+            tid = kb.create_task(conn, title=f"shutdown-{i}", assignee="a")
+            kb.claim_task(conn, tid, claimer=owner)
+            conn.execute(
+                "UPDATE tasks SET worker_pid=?, consecutive_failures=1 WHERE id=?",
+                (91000 + i, tid),
+            )
+            interrupted_ids.append(tid)
+
+        genuine = kb.create_task(conn, title="genuine", assignee="a")
+        kb.claim_task(conn, genuine, claimer=f"{owner}-other")
+        conn.execute(
+            "UPDATE tasks SET worker_pid=? WHERE id=?", (92000, genuine)
+        )
+        conn.commit()
+
+        assert kb.mark_gateway_shutdown_workers(conn, claimer=owner) == interrupted_ids
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert crashed == [genuine]
+        assert getattr(kb.detect_crashed_workers, "_last_interrupted", []) == interrupted_ids
+
+        for tid in interrupted_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready"
+            assert task.consecutive_failures == 1
+            run = conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            assert run["outcome"] == "interrupted"
+            assert [e.kind for e in kb.list_events(conn, tid)][-2:] == [
+                "gateway_shutdown_pending",
+                "gateway_shutdown",
+            ]
+
+        genuine_task = kb.get_task(conn, genuine)
+        assert genuine_task.status == "ready"
+        assert genuine_task.consecutive_failures == 1
+
+
+def test_gateway_shutdown_marker_is_scoped_to_exact_dispatcher(
+    kanban_home,
+):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        owner = _kb._claimer_id()
+        ours = kb.create_task(conn, title="ours", assignee="a")
+        sibling = kb.create_task(conn, title="sibling", assignee="a")
+        kb.claim_task(conn, ours, claimer=owner)
+        kb.claim_task(conn, sibling, claimer=f"{owner}-external")
+        conn.execute("UPDATE tasks SET worker_pid=93001 WHERE id=?", (ours,))
+        conn.execute("UPDATE tasks SET worker_pid=93002 WHERE id=?", (sibling,))
+        conn.commit()
+
+        assert kb.mark_gateway_shutdown_workers(conn, claimer=owner) == [ours]
+        assert kb.mark_gateway_shutdown_workers(conn, claimer=owner) == []
+        assert not any(
+            event.kind == "gateway_shutdown_pending"
+            for event in kb.list_events(conn, sibling)
+        )
+
+
 def test_detect_crashed_workers_isolated_failure_normal_retry(
     kanban_home, monkeypatch,
 ):

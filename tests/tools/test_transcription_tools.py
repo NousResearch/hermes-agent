@@ -811,6 +811,16 @@ class TestValidateAudioFileEdgeCases:
             f.write_bytes(b"data")
             assert _validate_audio_file(str(f)) is None, f"Format {fmt} should be accepted"
 
+    def test_telegram_oga_and_opus_accepted(self, tmp_path):
+        # Telegram delivers voice notes as .oga (OGG/Opus); .opus is the
+        # bare-codec sibling. Both must pass validation or every inbound
+        # voice note fails before reaching any STT backend.
+        from tools.transcription_tools import _validate_audio_file
+        for fmt in (".oga", ".opus"):
+            f = tmp_path / f"voice{fmt}"
+            f.write_bytes(b"data")
+            assert _validate_audio_file(str(f)) is None
+
     def test_case_insensitive_extension(self, tmp_path):
         from tools.transcription_tools import _validate_audio_file
         f = tmp_path / "test.MP3"

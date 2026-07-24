@@ -45,7 +45,7 @@ def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | No
 def query_session_listing(
     session_db: Any,
     *,
-    source: str | None,
+    source: str | list[str] | None,
     current_session_id: str | None = None,
     include_all_sources: bool = False,
     include_unnamed: bool = False,

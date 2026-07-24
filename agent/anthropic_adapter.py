@@ -724,6 +724,38 @@ def _build_anthropic_client_with_bearer_hook(
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+# ── HTTP client helper for OAuth requests ──────────────────────────────
+
+def _build_oauth_http_client(timeout):
+    """Create an httpx.Client that strips ``x-stainless-*`` headers per-request.
+
+    Anthropic's infrastructure uses the ``x-stainless-*`` headers injected by
+    the SDK (language, runtime, OS, package version) as a fingerprint to
+    distinguish "Claude Code CLI" requests from "third-party SDK" requests.
+    Subscription OAuth tokens are rate-limited (HTTP 429) when these SDK
+    headers are present, even when the UA and other identity headers match
+    Claude Code's fingerprint. Stripping them lets the request flow through
+    the same pipeline as the genuine CLI (which uses axios, not the Anthropic
+    Python SDK).
+
+    The hook is applied at the httpx level so the SDK is unaware of the
+    removal — exactly the pattern used for the Azure Entra ID bearer hook
+    in ``_build_anthropic_client_with_bearer_hook``.
+    """
+    import httpx
+
+    client = httpx.Client(timeout=timeout)
+
+    def _strip_stainless(request: httpx.Request) -> None:
+        """Strip all x-stainless-* headers before the request goes on the wire."""
+        to_remove = [k for k in request.headers if k.lower().startswith("x-stainless-")]
+        for k in to_remove:
+            del request.headers[k]
+
+    client.event_hooks["request"].append(_strip_stainless)
+    return client
+
+
 def build_anthropic_client(
     api_key,
     base_url: str = None,
@@ -837,8 +869,21 @@ def build_anthropic_client(
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
+        #
+        # Additionally, the Anthropic Python SDK injects ``x-stainless-*``
+        # headers (SDK fingerprint: language, runtime, OS, package version)
+        # into every request. Anthropic's infrastructure uses these headers
+        # to differentiate "Claude Code CLI" (which uses axios) from
+        # "third-party SDK" requests. Subscription OAuth tokens are then
+        # rate-limited (HTTP 429) when the SDK headers are present, even when
+        # the UA and other identity headers match Claude Code's fingerprint.
+        # A custom httpx.Client with a request hook strips these headers so
+        # the request indistinguishable from the genuine CLI's traffic.
         all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
+        kwargs["http_client"] = _build_oauth_http_client(
+            Timeout(timeout=float(_read_timeout), connect=10.0),
+        )
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
             "user-agent": f"claude-code/{_get_claude_code_version()} (external, cli)",

@@ -76,7 +76,12 @@ def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess
 def _json_out(binary: str, *args: str, timeout: float) -> Any:
     """Run ``binary args`` and parse stdout as JSON, or ``None`` on any failure."""
     raw = (_run(binary, *args, timeout=timeout).stdout or "").strip()
-    return json.loads(raw) if raw else None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 def _doctor(binary: str) -> Optional[Dict[str, Any]]:

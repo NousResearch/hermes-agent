@@ -22,7 +22,42 @@ const load = (): QueueState => {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
 
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as QueueState) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    const state = parsed as QueueState
+
+    // Sanitize any previously persisted heavy entries (before the strip in
+    // save was added). These are the exact payloads that caused reconnect
+    // loops on drain (#69638). Rewrite the cleaned copy back to storage so
+    // the fix applies retroactively without manual intervention.
+    let changed = false
+    const cleaned: QueueState = {}
+    for (const [sid, entries] of Object.entries(state)) {
+      cleaned[sid] = entries.map(entry => {
+        const cleanAttachments = entry.attachments.map(a => {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { previewUrl, uploadState, ...rest } = a
+          return rest
+        })
+        if (JSON.stringify(cleanAttachments) !== JSON.stringify(entry.attachments)) {
+          changed = true
+        }
+        return { ...entry, attachments: cleanAttachments }
+      })
+    }
+
+    if (changed) {
+      // Write cleaned version back, re-using the same serialization path.
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned))
+      } catch {
+        // best-effort
+      }
+    }
+
+    return cleaned
   } catch {
     return {}
   }
@@ -37,7 +72,24 @@ const save = (state: QueueState) => {
     if (Object.keys(state).length === 0) {
       window.localStorage.removeItem(STORAGE_KEY)
     } else {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      // Strip heavy transient fields (previewUrl data URLs, uploadState)
+      // from each queued entry before persisting. Without this, large image
+      // previews serialize into localStorage and — on restore + drain —
+      // produce WebSocket frames that breach the uvicorn ws_max_size limit,
+      // triggering reconnect loops (#69638). The original files on disk are
+      // unchanged, so previews re-materialize when the app re-reads them.
+      const serializable: QueueState = {}
+      for (const [sid, entries] of Object.entries(state)) {
+        serializable[sid] = entries.map(entry => ({
+          ...entry,
+          attachments: entry.attachments.map(a => {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { previewUrl, uploadState, ...rest } = a
+            return rest
+          })
+        }))
+      }
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable))
     }
   } catch {
     // best-effort: storage may be unavailable, queue still works in-memory

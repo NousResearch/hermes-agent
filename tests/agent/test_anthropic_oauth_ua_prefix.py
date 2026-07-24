@@ -110,3 +110,78 @@ class TestOAuthUserAgentPrefix:
             "refresh_anthropic_oauth_pure should send the shared "
             "_OAUTH_TOKEN_USER_AGENT (non-claude-code) on the token endpoint"
         )
+
+
+class TestOAuthStainlessHeaders:
+    """Regression tests for GH-70039: OAuth subscription tokens get 429 when
+    Anthropic SDK's x-stainless-* headers leak the client fingerprint.
+    """
+
+    def test_oauth_client_strips_stainless_headers(self):
+        """build_anthropic_client with an OAuth token must provide a custom
+        http_client that strips x-stainless-* headers from outgoing requests.
+
+        Anthropic uses these SDK headers to differentiate \"Claude Code CLI\"
+        (axios) from \"third-party SDK\" (Python) requests. Subscription OAuth
+        tokens are rate-limited (429) when the headers are present.
+        """
+        from agent.anthropic_adapter import _build_oauth_http_client, _is_oauth_token
+        import httpx
+
+        assert _is_oauth_token("sk-ant-oat-foobar"), "sk-ant-oat* should be OAuth"
+        assert _is_oauth_token("eyJhbGciOi"), "eyJ* JWT should be OAuth"
+        assert _is_oauth_token("cc-abc123"), "cc-* should be OAuth"
+        assert not _is_oauth_token("sk-ant-api03-..."), "sk-ant-api* should NOT be OAuth"
+
+        timeout = httpx.Timeout(timeout=900.0, connect=10.0)
+        client = _build_oauth_http_client(timeout)
+        assert client is not None
+
+        # Verify the hook is registered
+        assert len(client.event_hooks.get("request", [])) >= 1
+        hook = client.event_hooks["request"][0]
+        assert callable(hook)
+
+        # Test the hook directly — simulate what the SDK would attach
+        mock_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        mock_request.headers["x-stainless-lang"] = "python"
+        mock_request.headers["x-stainless-runtime"] = "CPython"
+        mock_request.headers["x-stainless-runtime-version"] = "3.11.15"
+        mock_request.headers["x-stainless-package-version"] = "0.50.0"
+        mock_request.headers["x-stainless-arch"] = "arm64"
+        mock_request.headers["x-stainless-os"] = "macOS"
+        # Keep these — should NOT be stripped
+        mock_request.headers["user-agent"] = "claude-code/2.1.217 (external, cli)"
+        mock_request.headers["x-app"] = "cli"
+        mock_request.headers["anthropic-beta"] = "claude-code-20250219"
+
+        hook(mock_request)
+
+        # Verify all x-stainless-* headers are gone
+        for key in mock_request.headers:
+            assert not key.lower().startswith("x-stainless-"), (
+                f"x-stainless header should be stripped: {key}"
+            )
+
+        # Verify our identity headers are untouched
+        assert mock_request.headers["user-agent"] == "claude-code/2.1.217 (external, cli)"
+        assert mock_request.headers["x-app"] == "cli"
+        assert mock_request.headers["anthropic-beta"] == "claude-code-20250219"
+
+        client.close()
+
+    def test_build_anthropic_client_uses_custom_http_client_for_oauth(self):
+        """OAuth branch of build_anthropic_client must set http_client kwarg."""
+        from agent.anthropic_adapter import build_anthropic_client
+
+        mock_sdk = MagicMock()
+        with patch("agent.anthropic_adapter._get_anthropic_sdk", return_value=mock_sdk):
+            build_anthropic_client(
+                "sk-ant-oat-some-token",
+                "https://api.anthropic.com",
+            )
+
+        call_kwargs = mock_sdk.Anthropic.call_args[1]
+        assert "http_client" in call_kwargs, (
+            "OAuth client must provide a custom http_client to strip x-stainless-* headers"
+        )

@@ -7,6 +7,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -593,29 +594,57 @@ class FactRetriever:
           - strips FTS5 special characters from each token
           - OR-joins the survivors
 
-        If nothing remains (pathological query), falls back to the raw
-        query so the caller sees zero results instead of a SQL error.
+        If nothing remains after filtering, safely quotes each cleaned raw token
+        and preserves FTS5's implicit-AND fallback semantics.
         """
         if not query:
             return ""
+        # Remove controls and terminal question scaffolding conservatively.
+        # Do not split every occurrence of Chinese particle characters: they
+        # are also part of ordinary words such as ``目的地`` and ``的确``.
+        query = query.replace("\x00", " ").strip()
+        query = re.sub(r"[？?！!。．.]+$", "", query)
+        query = re.sub(r"(?:是什么|是什麼|怎么样|怎麼樣|如何)$", "", query)
+        query = re.sub(r"[吗嗎呢吧啊呀]$", "", query)
+        # Split a likely possessive 的 only when both sides have meaningful
+        # length. Avoid the common lexical word ``的确``.
+        query = re.sub(
+            r"([A-Za-z0-9_]+|[\u3400-\u9fff\uf900-\ufaff]{2,})"
+            r"(?<!目)的(?=(?!确)[\u3400-\u9fff\uf900-\ufaff]{2,})",
+            r"\1 ",
+            query,
+        )
+        query = re.sub(
+            r"(?<=[A-Za-z0-9_])(?=[\u3400-\u9fff\uf900-\ufaff])"
+            r"|(?<=[\u3400-\u9fff\uf900-\ufaff])(?=[A-Za-z0-9_])",
+            " ",
+            query,
+        )
         # Strip FTS5 operator characters from EACH token to avoid
         # accidentally creating a malformed query.
-        _FTS_SPECIAL = '"()*^:-+'
+        _FTS_SPECIAL = '\"()*^:-+'
         tokens: list[str] = []
+        fallback_tokens: list[str] = []
         for raw in query.lower().split():
-            cleaned = raw.strip(".,;:!?\"'()[]{}#@<>") .translate(
+            cleaned = raw.strip(".,;:!?\"'()[]{}#@<>？！，。；：") .translate(
                 str.maketrans("", "", _FTS_SPECIAL)
             )
+            if not cleaned:
+                continue
+            fallback_tokens.append(f'"{cleaned}"')
             if len(cleaned) < 2:
                 continue
             if cleaned in cls._FTS_STOPWORDS:
                 continue
             # FTS5 phrase-literal each token to ensure no special chars
-            # sneak through as operators.
-            tokens.append(f'"{cleaned}"')
+            # sneak through as operators. unicode61 keeps a contiguous CJK
+            # clause as one token, so use a prefix query for CJK phrases: a
+            # term such as ``支付链路`` can then match ``支付链路在运营手册``
+            # without changing the index or English-token semantics.
+            suffix = "*" if re.search(r"[\u3400-\u9fff\uf900-\ufaff]", cleaned) else ""
+            tokens.append(f'"{cleaned}"{suffix}')
         if not tokens:
-            # Fallback: raw query (likely returns 0, but never crashes)
-            return query
+            return " ".join(fallback_tokens) if fallback_tokens else '""'
         return " OR ".join(tokens)
 
     @staticmethod

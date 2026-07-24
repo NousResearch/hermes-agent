@@ -3876,23 +3876,34 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       finish, transient infra error clears).
 
     The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    ``"created"`` / ``"blocked"`` / ``"unblocked"`` event for the task.
+    If the most recent one is ``"blocked"``, or the task was created
+    directly in ``status='blocked'`` and no ``"unblocked"`` event has
+    fired since, the task is sticky and ``recompute_ready`` must *not*
+    auto-promote it.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Returns ``False`` when there is no sticky signal at all (e.g. the
+    task was set to ``status='blocked'`` by the circuit breaker or by
+    direct DB manipulation) — preserves the pre-#28712 auto-recover
+    semantics for that path.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('created', 'blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if not row:
+        return False
+    if row["kind"] == "blocked":
+        return True
+    if row["kind"] != "created":
+        return False
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else {}
+    except Exception:
+        return False
+    return payload.get("status") == "blocked"
 
 
 def recompute_ready(

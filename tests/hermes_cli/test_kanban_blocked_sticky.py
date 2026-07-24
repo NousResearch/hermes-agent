@@ -99,6 +99,50 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         assert kb.get_task(conn, child).status == "blocked"
 
 
+def test_initial_blocked_task_is_not_auto_promoted(kanban_home: Path) -> None:
+    """Tasks born blocked are human-gated and must not silently promote.
+
+    Regression for #39609: ``create --initial-status blocked`` records only
+    a ``created`` event with ``status=blocked``.  The sticky guard must treat
+    that as deliberately blocked, not as a transient circuit-breaker block.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ASSENT: gated production change",
+            assignee="worker",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0
+            assert kb.get_task(conn, tid).status == "blocked"
+
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert kinds == ["created"]
+
+
+def test_initial_blocked_task_unblock_releases_sticky_state(kanban_home: Path) -> None:
+    """Explicit operator unblock is still the legitimate exit path."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approved gated change",
+            assignee="worker",
+            initial_status="blocked",
+        )
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "ready"
+
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert kinds == ["created", "unblocked"]
+
+
 # ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------

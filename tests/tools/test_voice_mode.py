@@ -68,6 +68,54 @@ def mock_sd(monkeypatch):
     return mock
 
 
+class _FakeTime:
+    """Stand-in for the ``time`` module with a monotonic clock the test drives.
+
+    Silence detection compares ``time.monotonic()`` deltas against thresholds
+    of a few dozen milliseconds.  Driving those deltas with real ``sleep()``
+    calls only works when the platform clock is finer-grained than the margin
+    the test leaves: ``time.monotonic()`` is ``GetTickCount64()`` (15.625 ms
+    resolution) on Windows until CPython 3.13 moved it to
+    ``QueryPerformanceCounter()``, so a 60 ms sleep can legitimately measure
+    as 46 ms and land under a 50 ms threshold.  Advancing an explicit clock
+    keeps the arithmetic exact on every platform.
+
+    Everything other than ``monotonic`` delegates to the real module, so
+    ``time.sleep``/``time.strftime`` in the code under test keep working.
+    """
+
+    def __init__(self, real_time, start: float = 1000.0) -> None:
+        self._real = real_time
+        self._now = start
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    """Give voice_mode a hand-driven clock.
+
+    Patches the name ``time`` inside ``tools.voice_mode`` rather than
+    ``time.monotonic`` itself -- ``voice_mode.time`` *is* the stdlib module,
+    so setting the attribute on it would swap the clock out from under every
+    other importer for the duration of the test.
+    """
+    import time as real_time
+
+    import tools.voice_mode as voice_mode
+
+    clock = _FakeTime(real_time)
+    monkeypatch.setattr(voice_mode, "time", clock)
+    return clock
+
+
 # ============================================================================
 # detect_audio_environment — WSL / SSH / Docker detection
 # ============================================================================
@@ -1065,7 +1113,7 @@ class TestPlayBeep:
 # ============================================================================
 
 class TestSilenceDetection:
-    def test_silence_callback_fires_after_speech_then_silence(self, mock_sd):
+    def test_silence_callback_fires_after_speech_then_silence(self, mock_sd, fake_clock):
         np = pytest.importorskip("numpy")
         import threading
 
@@ -1094,7 +1142,7 @@ class TestSilenceDetection:
         # Simulate sustained speech (multiple loud chunks to exceed min_speech_duration)
         loud_frame = np.full((1600, 1), 5000, dtype="int16")
         callback(loud_frame, 1600, None, None)
-        time.sleep(0.06)
+        fake_clock.advance(0.06)
         callback(loud_frame, 1600, None, None)
         assert recorder._has_spoken is True
 
@@ -1102,12 +1150,13 @@ class TestSilenceDetection:
         silent_frame = np.zeros((1600, 1), dtype="int16")
         callback(silent_frame, 1600, None, None)
 
-        # Wait a bit past the silence duration, then send another silent frame
-        time.sleep(0.06)
+        # Move past the silence duration, then send another silent frame
+        fake_clock.advance(0.06)
         callback(silent_frame, 1600, None, None)
 
-        # The callback should have been fired
-        assert fired.wait(timeout=1.0) is True
+        # The callback should have been fired (it runs on a real thread, so
+        # this wait is the one place real time is still involved)
+        assert fired.wait(timeout=5.0) is True
 
         recorder.cancel()
 
@@ -1140,7 +1189,7 @@ class TestSilenceDetection:
 
         recorder.cancel()
 
-    def test_micro_pause_tolerance_during_speech(self, mock_sd):
+    def test_micro_pause_tolerance_during_speech(self, mock_sd, fake_clock):
         """Brief dips below threshold during speech should NOT reset speech tracking."""
         np = pytest.importorskip("numpy")
         import threading
@@ -1167,14 +1216,14 @@ class TestSilenceDetection:
 
         # Speech chunk 1
         callback(loud_frame, 1600, None, None)
-        time.sleep(0.05)
+        fake_clock.advance(0.05)
         # Brief micro-pause (dip < max_dip_tolerance)
         callback(quiet_frame, 1600, None, None)
-        time.sleep(0.05)
+        fake_clock.advance(0.05)
         # Speech resumes -- speech_start should NOT have been reset
         callback(loud_frame, 1600, None, None)
         assert recorder._speech_start > 0, "Speech start should be preserved across brief dips"
-        time.sleep(0.06)
+        fake_clock.advance(0.06)
         # Another speech chunk to exceed min_speech_duration
         callback(loud_frame, 1600, None, None)
         assert recorder._has_spoken is True, "Speech should be confirmed after tolerating micro-pause"
@@ -1402,7 +1451,7 @@ class TestAudioLevelIndicator:
 class TestConfigurableSilenceParams:
     """Verify that silence detection params can be configured."""
 
-    def test_custom_threshold_and_duration(self, mock_sd):
+    def test_custom_threshold_and_duration(self, mock_sd, fake_clock):
         np = pytest.importorskip("numpy")
 
         mock_stream = MagicMock()
@@ -1426,7 +1475,7 @@ class TestConfigurableSilenceParams:
         moderate = np.full((1600, 1), 1000, dtype="int16")
         for _ in range(5):
             callback(moderate, 1600, None, None)
-            time.sleep(0.02)
+            fake_clock.advance(0.02)
 
         assert recorder._has_spoken is False
         assert fired.wait(timeout=0.2) is False
@@ -1434,7 +1483,7 @@ class TestConfigurableSilenceParams:
         # Now send really loud audio (above 5000 threshold)
         very_loud = np.full((1600, 1), 8000, dtype="int16")
         callback(very_loud, 1600, None, None)
-        time.sleep(0.06)
+        fake_clock.advance(0.06)
         callback(very_loud, 1600, None, None)
         assert recorder._has_spoken is True
 

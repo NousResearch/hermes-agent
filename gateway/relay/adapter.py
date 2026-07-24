@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, cast
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
@@ -106,6 +106,42 @@ class RelayAdapter(BasePlatformAdapter):
     @property
     def message_len_fn(self) -> Callable[[str], int]:
         return _LEN_FNS.get(self.descriptor.len_unit, len)
+
+    # ── per-chat capability resolution (Phase 1.5 multi-platform) ─────────
+    def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
+        """The capability descriptor governing a specific chat.
+
+        A multi-platform gateway fronts N platforms on ONE adapter, but the
+        scalar `descriptor`/`MAX_MESSAGE_LENGTH` surface can only carry one
+        platform's profile (the primary identity's). Platform caps genuinely
+        differ — Discord 2000 / Telegram 4096 / Slack 39000 — so applying the
+        primary's cap to every chat either fragments needlessly (small primary)
+        or over-sends into a platform 400 (large primary; the live bug: 2,543
+        and 2,641-char sends rejected by Discord). Resolve the chat's platform
+        from what we saw inbound (`_platform_by_chat`, the same map per-frame
+        egress uses) and look up that platform's negotiated descriptor on the
+        transport. Falls back to the scalar descriptor when the chat's platform
+        is unknown (never saw inbound) or the transport predates the map.
+        """
+        platform = self._platform_by_chat.get(str(chat_id))
+        if platform and self._transport is not None:
+            resolve = getattr(self._transport, "descriptor_for_platform", None)
+            if callable(resolve):
+                try:
+                    per_platform = cast(
+                        Optional[CapabilityDescriptor], resolve(platform)
+                    )
+                except Exception:  # noqa: BLE001 - capability lookup must never break a send
+                    per_platform = None
+                if per_platform is not None:
+                    return per_platform
+        return self.descriptor
+
+    def max_message_length_for_chat(self, chat_id: str) -> int:
+        return self._descriptor_for_chat(chat_id).max_message_length
+
+    def message_len_fn_for_chat(self, chat_id: str) -> Callable[[str], int]:
+        return _LEN_FNS.get(self._descriptor_for_chat(chat_id).len_unit, len)
 
     def supports_draft_streaming(
         self,

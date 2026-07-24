@@ -193,7 +193,15 @@ def _verification_snapshot(
     session_id: str | None,
     changed_paths: list[str],
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Return ``(status, facts)`` for the first edited workspace needing proof."""
+    """Return ``(status, facts)`` for the first edited workspace needing proof.
+
+    A workspace that reports ``"passed"`` (verification ran and no subsequent
+    edits) or ``"unverified"`` with an empty ``changed_paths`` list (no edits
+    were ever recorded, so there is nothing to verify) is treated as
+    proof-complete — the snapshot is skipped.  Only workspaces with actual
+    outstanding changes (``"unverified"`` with non-empty changed_paths,
+    ``"stale"``, or ``"failed"``) are returned.
+    """
     try:
         from agent.coding_context import project_facts_for
         from agent.verification_evidence import verification_status
@@ -209,8 +217,21 @@ def _verification_snapshot(
         snapshot = (status, facts)
         if first_snapshot is None:
             first_snapshot = snapshot
-        if str(status.get("status") or "unverified") != "passed":
-            return snapshot
+
+        state = str(status.get("status") or "unverified")
+
+        # Passed → fully verified, nothing to do.
+        if state == "passed":
+            continue
+
+        # Unverified with no changed paths → nothing concrete to verify.
+        if state == "unverified":
+            workspace_paths = status.get("changed_paths") or []
+            if not workspace_paths:
+                continue
+
+        return snapshot
+
     return first_snapshot
 
 

@@ -755,6 +755,169 @@ class MCPOAuthManager:
             return False
 
 
+    async def handle_tool_challenge(
+        self,
+        server_name: str,
+        server_url: str,
+        oauth_config: Optional[dict],
+        challenges: list[str],
+    ) -> bool:
+        """Run the OAuth flow from a tool-level structured challenge (#69811).
+
+        Servers may accept an anonymous ``initialize`` but protect individual
+        tools, delivering the WWW-Authenticate challenge in
+        ``CallToolResult._meta["mcp/www_authenticate"]`` instead of an HTTP
+        401 header. The SDK's httpx-layer auth flow never sees a 401 in that
+        case, so this method drives the provider's ``async_auth_flow``
+        generator directly, feeding it a synthetic 401 response that carries
+        the challenge. Everything downstream — protected-resource metadata
+        discovery (honoring the challenge's ``resource_metadata`` URL and
+        RFC 8707 resource, path included), scope selection from the
+        challenge's ``scope``, client registration, Authorization Code +
+        S256 PKCE, token exchange — is the SDK's own 401-branch code,
+        identical to a transport-level 401.
+
+        Single-flight per server: concurrent protected tool calls await the
+        same flow instead of racing N browser windows.
+
+        Returns:
+            True  if valid tokens are now available — caller should flip the
+                  server to OAuth transport auth, reconnect, and retry once.
+            False if no recovery is possible (SDK unavailable, non-interactive
+                  environment without cached tokens, user abandoned the flow).
+        """
+        try:
+            provider = self.get_or_build_provider(
+                server_name, server_url, oauth_config,
+            )
+        except Exception as exc:
+            # OAuthNonInteractiveError lands here: headless without cached
+            # tokens. Never log challenge contents or flow material.
+            logger.warning(
+                "MCP OAuth '%s': tool-challenge provider setup failed: %s",
+                server_name, exc,
+            )
+            return False
+        if provider is None:
+            return False
+
+        entry = self._entries.get(self._key(server_name))
+        if entry is None:  # pragma: no cover — get_or_build_provider creates it
+            return False
+
+        key = "tool-challenge"
+        loop = asyncio.get_running_loop()
+
+        async with entry.lock:
+            pending = entry.pending_401.get(key)
+            if pending is None:
+                pending = loop.create_future()
+                entry.pending_401[key] = pending
+                task = asyncio.create_task(
+                    self._run_tool_challenge_flow(
+                        server_name, provider, challenges, entry, key, pending,
+                    )
+                )
+                self._inflight_tasks.add(task)
+                task.add_done_callback(self._inflight_tasks.discard)
+
+        try:
+            return await pending
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "MCP OAuth '%s': awaiting tool-challenge flow failed: %s",
+                server_name, exc,
+            )
+            return False
+
+    async def _run_tool_challenge_flow(
+        self,
+        server_name: str,
+        provider: Any,
+        challenges: list[str],
+        entry: _ProviderEntry,
+        key: str,
+        pending: "asyncio.Future[bool]",
+    ) -> None:
+        """Drive ``provider.async_auth_flow`` against a synthetic 401.
+
+        Generator protocol: the provider yields requests; we feed responses
+        back via ``asend``. When it yields the ORIGINAL (anchor) request we
+        answer from script — a synthetic 401 carrying the challenge the
+        first time tokens are invalid, a synthetic 200 once tokens are valid
+        so the generator unwinds cleanly. Every other yielded request
+        (metadata discovery, client registration, token refresh/exchange) is
+        a real OAuth endpoint call and is sent over the network.
+
+        Feeding the anchor request a synthetic 200 when tokens are already
+        valid also makes the no-op paths cheap and browser-free: cached
+        tokens from a previous process just reconnect, and expired-but-
+        refreshable tokens take only the SDK's refresh branch.
+        """
+        import httpx
+
+        ok = False
+        try:
+            anchor = httpx.Request("POST", provider.context.server_url)
+            # RFC 9110 permits joining multiple challenge values with ", ";
+            # the SDK's extractors regex-scan the combined header for
+            # resource_metadata= and scope=.
+            www_authenticate = ", ".join(
+                c.strip() for c in challenges if c and c.strip()
+            )
+            challenged = False
+
+            flow = provider.async_auth_flow(anchor)
+            try:
+                outgoing = await flow.__anext__()
+                async with httpx.AsyncClient(
+                    timeout=30.0, follow_redirects=True,
+                ) as client:
+                    while True:
+                        if outgoing is anchor:
+                            if provider.context.is_token_valid():
+                                # Fresh/refreshed/cached tokens — unwind.
+                                response = httpx.Response(200, request=anchor)
+                                ok = True
+                            elif not challenged and www_authenticate:
+                                challenged = True
+                                response = httpx.Response(
+                                    401,
+                                    headers={
+                                        "WWW-Authenticate": www_authenticate,
+                                    },
+                                    request=anchor,
+                                )
+                            else:
+                                # Second invalid-token anchor pass: the flow
+                                # already ran and produced nothing usable.
+                                # Unwind without re-challenging (bounded).
+                                response = httpx.Response(200, request=anchor)
+                        else:
+                            response = await client.send(outgoing)
+                        outgoing = await flow.asend(response)
+            except StopAsyncIteration:
+                pass
+            finally:
+                await flow.aclose()
+
+            if not ok:
+                ok = bool(provider.context.is_token_valid())
+        except Exception as exc:
+            # OAuthFlowError / OAuthTokenError / callback timeout / network.
+            # Log the failure shape only — never authorization URLs, codes,
+            # tokens, state, or PKCE material.
+            logger.warning(
+                "MCP OAuth '%s': tool-challenge flow failed: %s: %s",
+                server_name, type(exc).__name__, exc,
+            )
+            ok = False
+        finally:
+            if not pending.done():
+                pending.set_result(ok)
+            entry.pending_401.pop(key, None)
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------

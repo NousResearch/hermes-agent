@@ -1334,6 +1334,50 @@ class TestTelegramMenuCommands:
 
         assert names[:2] == ["status", "help"]
 
+    def test_configured_priority_skill_survives_menu_cap(self, tmp_path, monkeypatch):
+        """Configured Telegram priorities promote skill commands before trimming."""
+        from unittest.mock import patch
+
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: prepend\n"
+            "        priority:\n"
+            "          - startsession\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        fake_skills_dir = tmp_path / "skills"
+        fake_skills_dir.mkdir(exist_ok=True)
+        fake_cmds = {
+            f"/aaa-{i:02d}": {
+                "name": f"aaa-{i:02d}",
+                "description": f"Filler skill {i:02d}",
+                "skill_md_path": str(fake_skills_dir / f"aaa-{i:02d}" / "SKILL.md"),
+                "skill_dir": str(fake_skills_dir / f"aaa-{i:02d}"),
+            }
+            for i in range(50)
+        }
+        fake_cmds["/startsession"] = {
+            "name": "startsession",
+            "description": "Run Samus Start Session protocol",
+            "skill_md_path": str(fake_skills_dir / "startsession" / "SKILL.md"),
+            "skill_dir": str(fake_skills_dir / "startsession"),
+        }
+
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=30)
+
+        names = [name for name, _desc in menu]
+        assert names[0] == "startsession"
+        assert hidden > 0
+
     def test_telegram_menu_max_commands_uses_config_with_safe_bounds(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

@@ -643,3 +643,49 @@ class TestProfileScopedChatPty:
         with pytest.raises(web_server.HTTPException) as exc:
             web_server._resolve_chat_argv(profile="ghost")
         assert exc.value.status_code == 404
+
+
+class TestConfigEndpointNonBlocking:
+    """`GET /api/config` must not wait on the skills-global lock (#67936).
+
+    `get_config()` is an ``async def`` running on the event-loop thread and
+    only needs the task-local, config-only profile scope. If it used the
+    skills-aware ``_profile_scope()`` it would acquire the process-global
+    ``_SKILLS_PROFILE_LOCK`` synchronously — so a worker thread holding that
+    lock (slow model/skills discovery) would wedge the event loop and stall
+    Desktop startup. This pins the invariant: while another thread holds the
+    skills lock, ``get_config()`` still returns promptly.
+    """
+
+    def test_get_config_does_not_wait_on_skills_lock(self, isolated_profiles):
+        import asyncio
+        import threading
+        import time
+
+        import hermes_cli.web_server as web_server
+
+        acquired = threading.Event()
+        release = threading.Event()
+
+        def hold_skills_lock():
+            with web_server._SKILLS_PROFILE_LOCK:
+                acquired.set()
+                release.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_skills_lock)
+        holder.start()
+        try:
+            assert acquired.wait(timeout=2), "holder never took the skills lock"
+
+            started = time.monotonic()
+            config = asyncio.run(web_server.get_config())
+            elapsed = time.monotonic() - started
+
+            assert isinstance(config, dict)
+            # Config-only scope never touches the skills lock, so this returns
+            # immediately. The old _profile_scope() path blocked for the full
+            # hold duration. Generous bound keeps CI non-flaky.
+            assert elapsed < 1.0, f"get_config blocked for {elapsed:.3f}s"
+        finally:
+            release.set()
+            holder.join(timeout=5)

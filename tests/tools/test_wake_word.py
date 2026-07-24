@@ -244,6 +244,19 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
     sherpa.text2token = _fake_text2token
     monkeypatch.setitem(sys.modules, "sherpa_onnx", sherpa)
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+
+    # numpy is an optional voice-extra dep, lazy-installed at runtime — CI's
+    # hermetic slices don't have it. process() only calls asarray(...)/32768,
+    # so a minimal stub keeps these tests runnable without the real package.
+    if "numpy" not in sys.modules:
+        class _FakeArr(list):
+            def __truediv__(self, other):
+                return self
+
+        np_stub = types.ModuleType("numpy")
+        np_stub.float32 = "float32"
+        np_stub.asarray = lambda x, dtype=None: _FakeArr(x)
+        monkeypatch.setitem(sys.modules, "numpy", np_stub)
     return calls, model_dir
 
 

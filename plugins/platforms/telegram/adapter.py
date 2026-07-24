@@ -4000,6 +4000,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
         self._release_platform_lock()
 
+        # Abandoned inline-keyboard prompts (user never clicked, message
+        # expired, or delayed delivery was dropped) otherwise accumulate for
+        # the adapter lifetime with no TTL/max_size. Clear on disconnect so
+        # the dicts are bounded to one connection lifecycle. #leak-fix
+        self._approval_state.clear()
+        self._slash_confirm_state.clear()
+        self._clarify_state.clear()
+
         self._app = None
         self._bot = None
         logger.info("[%s] Disconnected from Telegram", self.name)

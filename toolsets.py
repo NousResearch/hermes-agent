@@ -351,7 +351,7 @@ TOOLSETS = {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process", "read_terminal", "close_terminal",
+            "terminal", "process", "read_terminal", "close_terminal", "open_preview", "focus_pane",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",

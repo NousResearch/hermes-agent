@@ -10245,7 +10245,7 @@ def _(rid, params: dict) -> dict:
                 )
                 return _err(
                     rid,
-                    4025,
+                    4028,
                     "truncation would erase the entire session transcript; "
                     "resubmit with confirm_empty_truncate=true if this is intended",
                 )

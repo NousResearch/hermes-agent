@@ -3280,7 +3280,7 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
                 },
             }
         )
-        assert resp["error"]["code"] == 4025
+        assert resp["error"]["code"] == 4028
         assert "confirm_empty_truncate" in resp["error"]["message"]
         # Explicit falsey values must not satisfy the opt-in either.
         for falsey in (False, 0, "", "false", "no"):
@@ -3296,7 +3296,7 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
                     },
                 }
             )
-            assert resp["error"]["code"] == 4025, falsey
+            assert resp["error"]["code"] == 4028, falsey
         assert server._sessions["empty-trunc-sid"]["history"] == history
         assert server._sessions["empty-trunc-sid"]["running"] is False
         assert server._sessions["empty-trunc-sid"]["history_version"] == 0

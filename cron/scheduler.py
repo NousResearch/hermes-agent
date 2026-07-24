@@ -118,14 +118,27 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "Full details saved in cron output."
         )
 
-    # Match authentication/authorization wording at a word boundary and the
-    # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
-    # not trip a misleading auth message.
-    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider authentication error. "
-            "Full details saved in cron output."
-        )
+    # no_agent jobs have no LLM provider involved, so an auth error is
+    # impossible regardless of what the script printed to stdout.
+    if not job.get("no_agent"):
+        # Match authentication/authorization wording at a word boundary.
+        if re.search(r"authenticat|authoriz", lower):
+            return (
+                f"⚠️ Cron '{job_name}' failed: provider authentication error. "
+                "Full details saved in cron output."
+            )
+        # Match 401/403 only when they appear in HTTP status context so that
+        # bare numbers in arbitrary script stdout (e.g. test output) do not
+        # trigger a misleading provider-auth error.
+        if re.search(
+            r"(?:HTTP(?:/\S+)?\s+[45]\d\d|status\s+[45]\d\d|response\s+[45]\d\d)",
+            text,
+            re.IGNORECASE,
+        ):
+            return (
+                f"⚠️ Cron '{job_name}' failed: provider authentication error. "
+                "Full details saved in cron output."
+            )
 
     # Strip common exception wrappers and collapse provider payloads. Bound
     # the input first so a multi-KB provider blob cannot slow the

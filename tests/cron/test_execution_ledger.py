@@ -319,3 +319,63 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_every_ledger_call_closes_sqlite_connection(monkeypatch, tmp_path):
+    """Regression: every ledger operation must close its SQLite connection.
+
+    ``sqlite3.Connection`` as a context manager only commits/rolls back --
+    it does **not** close the connection. Without explicit ``conn.close()``
+    the ledger leaks one connection per call, eventually exhausting the
+    process file-descriptor limit (``EMFILE`` / ``ENFILE``).
+
+    We wrap ``_connect`` to track the number of open connections via
+    ``/proc/self/fd`` and verify the count is stable after repeated
+    ledger operations.
+    """
+    import os as _os
+    import cron.executions as executions
+
+    def _count_sqlite_fds():
+        """Count open file descriptors pointing to executions.db."""
+        count = 0
+        try:
+            for entry in _os.scandir(f"/proc/{_os.getpid()}/fd"):
+                try:
+                    link = _os.readlink(entry.path)
+                    if "executions.db" in link:
+                        count += 1
+                except (OSError, PermissionError):
+                    pass
+        except FileNotFoundError:
+            return -1  # /proc not available
+        return count
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    # Baseline FD count (before any ledger operations)
+    baseline = _count_sqlite_fds()
+
+    # Run multiple full lifecycles
+    for i in range(10):
+        row = executions.create_execution(f"fd-leak-{i}", source="builtin")
+        executions.mark_execution_running(row["id"])
+        executions.finish_execution(row["id"], success=(i % 2 == 0))
+
+    # Read-only paths
+    for i in range(5):
+        executions.list_executions(job_id=f"fd-leak-{i}")
+    executions.recover_interrupted_executions()
+    for i in range(10):
+        executions.latest_execution(f"fd-leak-{i}")
+
+    after = _count_sqlite_fds()
+
+    # Should have no more than baseline + 1 (one current/most recent connection
+    # is the normal steady state during garbage-collection lag, but zero
+    # steady-state leak means baseline itself on CPython with refcounting)
+    assert after <= baseline + 1, (
+        f"After 10 full lifecycles + reads: baseline={baseline} SQLite FDs, "
+        f"after={after} — expected at most {baseline + 1}, "
+        f"meaning connections are leaking"
+    )

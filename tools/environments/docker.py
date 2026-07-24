@@ -1471,6 +1471,16 @@ class DockerEnvironment(BaseEnvironment):
 
         These are used once during init_session() so that export -p captures
         them into the snapshot.  Subsequent execute() calls don't need -e flags.
+
+        PATH is explicitly included from the host os.environ so that the
+        container's login shell snapshot captures whatever PATH the host
+        process has — typically the union of the Dockerfile ``ENV``, any
+        ``docker_env: {PATH: …}`` override, and the Hermes install dir
+        (see issue #70905).  Without this, a login shell whose profile
+        scripts (``/etc/profile``, ``~/.bashrc``) truncate or reset PATH
+        would produce a snapshot with a narrower PATH than the container's
+        default environment, and every subsequent ``execute()`` call would
+        lose the custom entries.
         """
         exec_env: dict[str, str] = dict(self._env)
 
@@ -1497,6 +1507,18 @@ class DockerEnvironment(BaseEnvironment):
                 value = hermes_env.get(key)
             if value:
                 exec_env[key] = value
+
+        # ── PATH propagation guard (#70905) ───────────────────────────────
+        # Ensure the container's PATH is explicitly forwarded to init_session
+        # so the snapshot captures it even when the login shell's profile
+        # scripts (bashrc, profile) would otherwise truncate or reset it.
+        # Prefer the docker_env override when present; otherwise fall back to
+        # the host os.environ, which inside a Docker container carries the
+        # Dockerfile ENV PATH.
+        if "PATH" not in exec_env:
+            host_path = os.environ.get("PATH", "")
+            if host_path:
+                exec_env["PATH"] = host_path
 
         args = []
         for key in sorted(exec_env):

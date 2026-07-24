@@ -1149,7 +1149,19 @@ def _path_env_key(run_env: dict) -> str | None:
 
 
 def _make_run_env(env: dict) -> dict:
-    """Build a run environment with a sane PATH and provider-var stripping."""
+    """Build a run environment with a sane PATH and provider-var stripping.
+
+    PATH propagation contract:
+    --------------------------
+    The subprocess must inherit the *full* PATH from the parent process's
+    ``os.environ``, extended with the ``_SANE_PATH`` fallback dirs and the
+    Hermes install dir (see issue #70905).  If the filtering loop below
+    drops PATH (which should never happen for the "PATH" key itself, but
+    guards against future blocklist additions), we restore it from the
+    original process environment so custom entries — including paths set
+    via Dockerfile ``ENV``, ``.env`` files, or ``config.yaml``
+    ``terminal.env`` — are never silently lost.
+    """
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
@@ -1167,10 +1179,27 @@ def _make_run_env(env: dict) -> dict:
             continue
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
+
+    # ── PATH propagation guard ───────────────────────────────────────────
+    # The loop above keeps PATH (not in the blocklist), but future additions
+    # could change that.  Restore PATH from the original process env if the
+    # filtered run_env is missing it, so custom entries (Dockerfile ENV,
+    # .env overrides, terminal.env) are never silently lost (#70905).
     path_key = _path_env_key(run_env)
+    original_path_key = _path_env_key(os.environ)  # usually "PATH"
+    if path_key is None and original_path_key is not None:
+        run_env[original_path_key] = os.environ[original_path_key]
+        path_key = original_path_key
+
     if path_key is not None:
-        new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
-        # On Windows, ensure Git Bash's coreutils dirs (…\usr\bin etc.) are on
+        # Build the effective PATH starting from what we have in run_env,
+        # falling back to os.environ if empty (should not happen after the
+        # guard above, but keeps the logic self-healing).
+        current = run_env.get(path_key, "")
+        if not current and original_path_key is not None:
+            current = os.environ.get(original_path_key, "")
+        new_path = _append_missing_sane_path_entries(current)
+        # On Windows, ensure Git Bash's coreutils dirs (…\\usr\\bin etc.) are on
         # PATH.  A non-login ``bash -c`` fallback (used when ``bash -l`` is
         # broken) never sources /etc/profile, so without this cat/mktemp/mv and
         # friends are missing and every write_file/terminal call fails (empty

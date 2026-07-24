@@ -490,21 +490,43 @@ def show_status(args):
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+        from hermes_cli.gateway import (
+            _format_gateway_pids,
+            get_default_multiplex_gateway,
+            get_gateway_runtime_snapshot,
+        )
+        from hermes_cli.profiles import get_active_profile_name
 
         snapshot = get_gateway_runtime_snapshot()
-        is_running = snapshot.running
+        multiplex = get_default_multiplex_gateway()
+        active_profile = get_active_profile_name()
+        profile_multiplexer = (
+            multiplex
+            if not snapshot.running
+            and multiplex is not None
+            and active_profile in multiplex.served_profiles
+            else None
+        )
+        is_running = snapshot.running or bool(profile_multiplexer)
         print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
-        print(f"  Manager:      {snapshot.manager}")
-        if snapshot.gateway_pids:
+        manager = "default-profile multiplexer" if profile_multiplexer else snapshot.manager
+        print(f"  Manager:      {manager}")
+        if profile_multiplexer:
+            print(f"  PID(s):       {profile_multiplexer.pid}")
+        elif snapshot.gateway_pids:
             print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
-        if snapshot.has_process_service_mismatch:
-            print("  Service:      installed but not managing the current running gateway")
-        elif _is_termux() and not snapshot.gateway_pids:
-            print("  Start with:   hermes gateway")
-            print("  Note:         Android may stop background jobs when Termux is suspended")
-        elif snapshot.service_installed and not snapshot.service_running:
-            print("  Service:      installed but stopped")
+        if multiplex and (
+            profile_multiplexer or multiplex.pid in snapshot.gateway_pids
+        ):
+            print(f"  Profiles:     {', '.join(multiplex.served_profiles)}")
+        if not profile_multiplexer:
+            if snapshot.has_process_service_mismatch:
+                print("  Service:      installed but not managing the current running gateway")
+            elif _is_termux() and not snapshot.gateway_pids:
+                print("  Start with:   hermes gateway")
+                print("  Note:         Android may stop background jobs when Termux is suspended")
+            elif snapshot.service_installed and not snapshot.service_running:
+                print("  Service:      installed but stopped")
     except Exception:
         if _is_termux():
             print(f"  Status:       {color('unknown', Colors.DIM)}")

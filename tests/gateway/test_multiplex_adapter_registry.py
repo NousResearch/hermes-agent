@@ -393,6 +393,23 @@ class TestSecondaryProfileConfigHandling:
     """Secondary config errors degrade only when the profile is safe to skip."""
 
     @pytest.mark.asyncio
+    async def test_nonmultiplex_start_clears_stale_served_profiles(self, monkeypatch):
+        from gateway.config import GatewayConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=False)
+        writes = []
+        monkeypatch.setattr(
+            "gateway.status.write_runtime_status",
+            lambda **kwargs: writes.append(kwargs),
+        )
+
+        connected = await runner._start_secondary_profile_adapters()
+
+        assert connected == 0
+        assert writes == [{"served_profiles": []}]
+
+    @pytest.mark.asyncio
     async def test_secondary_webhook_uses_degradable_error(self, monkeypatch):
         from gateway.run import SecondaryPortBindingConfigError
         from gateway.config import GatewayConfig, Platform, PlatformConfig

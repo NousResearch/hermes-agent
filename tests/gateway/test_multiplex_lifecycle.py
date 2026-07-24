@@ -29,6 +29,31 @@ class TestServedProfilesStatus:
         finally:
             importlib.reload(status)
 
+    def test_starting_status_clears_prior_multiplex_coverage(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import gateway.status as status
+
+        importlib.reload(status)
+        try:
+            status.write_runtime_status(
+                gateway_state="running", served_profiles=["default", "coder"]
+            )
+
+            # Mirrors GatewayRunner.start(): the new process clears coverage
+            # before any primary or secondary adapters begin connecting.
+            status.write_runtime_status(
+                gateway_state="starting", exit_reason=None, served_profiles=[]
+            )
+
+            rec = status.read_runtime_status()
+            assert rec.get("gateway_state") == "starting"
+            assert rec.get("served_profiles") == []
+        finally:
+            importlib.reload(status)
+
 
 class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""

@@ -66,6 +66,9 @@ declare global {
       }
       profile: {
         get: () => Promise<DesktopActiveProfile>
+        // Persists the profile used by live multi-profile routing without
+        // tearing down the current backend or reloading the window.
+        remember: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.

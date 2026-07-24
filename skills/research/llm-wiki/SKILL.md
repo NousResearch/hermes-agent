@@ -1,7 +1,7 @@
 ---
 name: llm-wiki
 description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -68,6 +68,52 @@ wiki/
 **Layer 2 — The Wiki:** Agent-owned markdown files. Created, updated, and
 cross-referenced by the agent.
 **Layer 3 — The Schema:** `SCHEMA.md` defines structure, conventions, and tag taxonomy.
+
+## Open Knowledge Format (OKF) — Optional Interoperability Standard
+
+The wiki layout above is natively compatible with Google's
+[Open Knowledge Format (OKF) v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md),
+an open, human- and agent-friendly standard for representing knowledge as a
+directory of markdown files with YAML frontmatter
+([announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing)).
+
+OKF is intentionally minimal — its only hard requirements (§9) are:
+
+1. Every non-reserved `.md` file has a parseable YAML frontmatter block.
+2. Every frontmatter block contains a non-empty `type` field.
+3. Reserved filenames (`index.md`, `log.md`) follow their defined structure.
+
+This wiki already satisfies rules 1 and 2 by design. Adopting OKF gives the
+bundle a recognized interoperability contract — other agents and tools that
+speak OKF can consume the wiki without bespoke parsing.
+
+**What changes when a wiki opts in to OKF:**
+
+- **`type` becomes required and Title-Case** (§4.1): use descriptive values
+  like `Concept`, `Entity`, `Comparison`, `Query`, `Playbook`, `Reference`
+  instead of the lowercase forms in the default template. Unknown types are
+  tolerated by consumers, so domain-specific values are fine.
+- **Recommended fields** gain defined meaning: `title`, `description` (one-line
+  summary for index generators), `resource` (canonical URI of the underlying
+  asset, if any), `tags`, `timestamp` (ISO 8601 last-meaningful-change).
+  The existing `created`/`updated`/`sources`/`confidence` fields are preserved
+  as extension keys — OKF consumers carry unknown keys through without error.
+- **Cross-links use bundle-relative markdown links** (`[text](/path.md)`, §5.1)
+  instead of `[[wikilinks]]`. Both forms work, but bundle-relative links are
+  portable to any markdown renderer. The wikilink convention remains valid for
+  Obsidian-first vaults that do not need cross-tool portability.
+- **`index.md`** carries no frontmatter except an optional `okf_version` at
+  the bundle root (§11). Each directory MAY have its own `index.md` listing
+  child concepts for progressive disclosure (§6).
+- **`log.md`** date headings use ISO 8601 `YYYY-MM-DD` (§7) — already the
+  default in this skill.
+- **Broken links are tolerated** (§5.3) — a link whose target does not exist
+  is not malformed; it may represent not-yet-written knowledge.
+
+**Opting in:** Add `okf_version: "0.1"` to the root `index.md` frontmatter
+and ensure every concept document has a non-empty `type` in its frontmatter.
+That is the entire adoption surface. The lint section below can then check
+OKF §9 conformance in addition to the existing wiki-specific checks.
 
 ## Resuming an Existing Wiki (CRITICAL — do this every session)
 
@@ -137,6 +183,10 @@ Adapt to the user's domain. The schema constrains agent behavior and ensures con
   type: entity | concept | comparison | query | summary
   tags: [from taxonomy below]
   sources: [raw/articles/source-name.md]
+  # OKF-recommended (optional — add these when the wiki opts in to OKF):
+  description: One-line summary for index generators and search snippets.
+  timestamp: 2026-05-28T14:30:00Z   # ISO 8601 last-meaningful-change
+  resource: https://...              # canonical URI of the underlying asset
   # Optional quality signals:
   confidence: high | medium | low        # how well-supported the claims are
   contested: true                        # set when the page has unresolved contradictions
@@ -360,10 +410,18 @@ wiki = "<WIKI_PATH>"
 
 ⑪ **Log rotation:** If log.md exceeds 500 entries, rotate it.
 
-⑫ **Report findings** with specific file paths and suggested actions, grouped by
+⑫ **OKF conformance (when opted in):** If the root `index.md` declares
+   `okf_version`, verify §9: every non-reserved `.md` has parseable frontmatter
+   with a non-empty `type`; `index.md` files carry no frontmatter (except
+   `okf_version` at the root); `log.md` date headings are ISO 8601. Report
+   hard failures (non-conformant) separately from soft issues (missing
+   recommended fields, broken links) — OKF §9 says consumers MUST NOT reject
+   on soft issues.
+
+⑬ **Report findings** with specific file paths and suggested actions, grouped by
    severity (broken links > orphans > source drift > contested pages > stale content > style issues).
 
-⑬ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+⑭ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
 
 ## Working with the Wiki
 
@@ -498,6 +556,11 @@ vault in Obsidian on your laptop/phone — changes appear within seconds.
   mark in frontmatter, flag for user review.
 
 ## Related Tools
+
+[Open Knowledge Format (OKF)](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+is Google's open spec for representing knowledge as markdown + YAML frontmatter.
+The wiki layout in this skill is natively compatible — see the OKF section above
+for opt-in details.
 
 [llm-wiki-compiler](https://github.com/atomicmemory/llm-wiki-compiler) is a Node.js CLI that
 compiles sources into a concept wiki with the same Karpathy inspiration. It's Obsidian-compatible,

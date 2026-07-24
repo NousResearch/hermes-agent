@@ -463,6 +463,8 @@ class HermesACPAgent(acp.Agent):
         "compress": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
         "queue": "Queue a prompt to run after the current turn finishes",
+        "goal": "Set, inspect, pause, resume, or clear a standing goal",
+        "subgoal": "Add, list, remove, or clear active goal criteria",
         "version": "Show Hermes version",
     }
 
@@ -501,6 +503,16 @@ class HermesACPAgent(acp.Agent):
             "name": "queue",
             "description": "Queue a prompt to run after the current turn finishes",
             "input_hint": "prompt to run next",
+        },
+        {
+            "name": "goal",
+            "description": "Set, inspect, pause, resume, or clear a standing goal",
+            "input_hint": "goal text or status/pause/resume/clear",
+        },
+        {
+            "name": "subgoal",
+            "description": "Add, list, remove, or clear active goal criteria",
+            "input_hint": "text or remove <n> / clear",
         },
         {
             "name": "version",
@@ -1766,6 +1778,8 @@ class HermesACPAgent(acp.Agent):
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 
+        await self._maybe_continue_goal_after_turn(state, final_response)
+
         # Mark this turn idle before draining queued work so recursive prompt()
         # calls can acquire the session. Queued turns are intentionally run as
         # normal follow-up user prompts, preserving role alternation and history.
@@ -1869,6 +1883,8 @@ class HermesACPAgent(acp.Agent):
             "compress": self._cmd_compress,
             "steer": self._cmd_steer,
             "queue": self._cmd_queue,
+            "goal": self._cmd_goal,
+            "subgoal": self._cmd_subgoal,
             "version": self._cmd_version,
         }.get(cmd)
 
@@ -2128,6 +2144,152 @@ class HermesACPAgent(acp.Agent):
             state.queued_prompts.append(queued_text)
             depth = len(state.queued_prompts)
         return f"Queued for the next turn. ({depth} queued)"
+
+    def _goal_max_turns_from_config(self) -> int:
+        try:
+            from hermes_cli.config import load_config
+
+            goals_cfg = (load_config() or {}).get("goals") or {}
+            return int(goals_cfg.get("max_turns", 20) or 20)
+        except Exception:
+            return 20
+
+    def _goal_manager_for_state(self, state: SessionState):
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            logger.debug("ACP goal manager unavailable: %s", exc)
+            return None
+        return GoalManager(
+            session_id=state.session_id,
+            default_max_turns=self._goal_max_turns_from_config(),
+        )
+
+    @staticmethod
+    def _is_goal_continuation_prompt(prompt: str) -> bool:
+        return str(prompt or "").lstrip().startswith("[Continuing toward your standing goal]")
+
+    def _clear_goal_queued_continuations(self, state: SessionState) -> None:
+        with state.runtime_lock:
+            state.queued_prompts = [
+                prompt
+                for prompt in state.queued_prompts
+                if not self._is_goal_continuation_prompt(prompt)
+            ]
+
+    async def _maybe_continue_goal_after_turn(
+        self,
+        state: SessionState,
+        final_response: str,
+    ) -> None:
+        mgr = self._goal_manager_for_state(state)
+        if mgr is None or not mgr.is_active():
+            return
+        if not str(final_response or "").strip():
+            return
+
+        decision = mgr.evaluate_after_turn(final_response or "", user_initiated=True)
+        message = decision.get("message") or ""
+        if message and self._conn:
+            await self._conn.session_update(
+                state.session_id,
+                acp.update_agent_message_text(message),
+            )
+
+        if not decision.get("should_continue"):
+            return
+        continuation = decision.get("continuation_prompt") or ""
+        if not continuation:
+            return
+        with state.runtime_lock:
+            state.queued_prompts.append(continuation)
+
+    def _cmd_goal(self, args: str, state: SessionState) -> str:
+        goal_args = args.strip()
+        lower = goal_args.lower()
+        mgr = self._goal_manager_for_state(state)
+        if mgr is None:
+            return "Goals unavailable (no active session)."
+
+        if not goal_args or lower == "status":
+            return mgr.status_line()
+
+        if lower == "pause":
+            goal_state = mgr.pause(reason="user-paused")
+            self._clear_goal_queued_continuations(state)
+            if goal_state is None:
+                return "No goal set."
+            return f"Goal paused: {goal_state.goal}"
+
+        if lower == "resume":
+            goal_state = mgr.resume()
+            if goal_state is None:
+                return "No goal to resume."
+            return f"Goal resumed: {goal_state.goal}"
+
+        if lower in {"clear", "stop", "done"}:
+            had_goal = mgr.has_goal()
+            mgr.clear()
+            self._clear_goal_queued_continuations(state)
+            return "Goal cleared." if had_goal else "No active goal."
+
+        try:
+            goal_state = mgr.set(goal_args)
+        except ValueError as exc:
+            return f"Invalid goal: {exc}"
+
+        with state.runtime_lock:
+            state.queued_prompts.append(goal_state.goal)
+        return (
+            f"Goal set ({goal_state.max_turns}-turn budget): {goal_state.goal}\n"
+            "After each turn, a judge model will check if the goal is done. "
+            "Hermes keeps working until it is, you pause/clear it, or the budget is exhausted."
+        )
+
+    def _cmd_subgoal(self, args: str, state: SessionState) -> str:
+        subgoal_args = args.strip()
+        mgr = self._goal_manager_for_state(state)
+        if mgr is None:
+            return "Goals unavailable (no active session)."
+        if not mgr.has_goal():
+            return "No active goal. Set one with /goal <text>."
+
+        if not subgoal_args:
+            return f"{mgr.status_line()}\n{mgr.render_subgoals()}"
+
+        tokens = subgoal_args.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        if verb == "remove":
+            if not rest:
+                return "Usage: /subgoal remove <n>"
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                return "/subgoal remove: <n> must be an integer (1-based index)."
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except (IndexError, RuntimeError) as exc:
+                return f"/subgoal remove: {exc}"
+            return f"Removed subgoal {idx}: {removed}"
+
+        if verb == "clear":
+            try:
+                previous_count = mgr.clear_subgoals()
+            except RuntimeError as exc:
+                return f"/subgoal clear: {exc}"
+            if previous_count:
+                suffix = "s" if previous_count != 1 else ""
+                return f"Cleared {previous_count} subgoal{suffix}."
+            return "No subgoals to clear."
+
+        try:
+            text = mgr.add_subgoal(subgoal_args)
+        except (ValueError, RuntimeError) as exc:
+            return f"/subgoal: {exc}"
+        idx = len(mgr.state.subgoals) if mgr.state else 0
+        return f"Added subgoal {idx}: {text}"
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
         return f"Hermes Agent v{HERMES_VERSION}"

@@ -4,8 +4,10 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from acp.schema import TextContentBlock
 
+import hermes_cli.goals as goals
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
+from hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE, GoalManager
 
 
 class FakeAgent:
@@ -61,6 +63,30 @@ class NoopDb:
 
     def update_session(self, *_args, **_kwargs):
         return None
+
+    def replace_messages(self, *_args, **_kwargs):
+        return None
+
+    def get_session_title(self, *_args, **_kwargs):
+        return "Test ACP session"
+
+
+class InMemoryGoalDb:
+    def __init__(self):
+        self.meta = {}
+
+    def get_meta(self, key):
+        return self.meta.get(key)
+
+    def set_meta(self, key, value):
+        self.meta[key] = value
+
+
+@pytest.fixture()
+def goal_db(monkeypatch):
+    db = InMemoryGoalDb()
+    monkeypatch.setattr(goals, "_get_session_db", lambda: db)
+    return db
 
 
 def make_agent_and_state():
@@ -258,3 +284,215 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
     assert state.queued_prompts == []
     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(agent_messages) >= 2
+
+
+@pytest.mark.asyncio
+async def test_acp_goal_status_without_active_goal_reports_empty_state(goal_db):
+    acp_agent, state, fake, conn = make_agent_and_state()
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/goal status")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == []
+    text_updates = [
+        u for _sid, u in conn.updates
+        if getattr(u, "session_update", None) == "agent_message_chunk"
+    ]
+    assert any(
+        "No active goal" in getattr(getattr(u, "content", None), "text", "")
+        for u in text_updates
+    )
+
+
+@pytest.mark.asyncio
+async def test_acp_goal_set_stores_goal_and_queues_kickoff(goal_db):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/goal ship the ACP goal command")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == []
+    mgr = GoalManager(session_id=state.session_id)
+    assert mgr.is_active()
+    assert mgr.state.goal == "ship the ACP goal command"
+    assert state.queued_prompts == ["ship the ACP goal command"]
+
+
+@pytest.mark.asyncio
+async def test_acp_goal_pause_resume_clear_updates_state_and_preserves_user_queue(goal_db):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    GoalManager(session_id=state.session_id).set("finish ACP parity")
+    synthetic = CONTINUATION_PROMPT_TEMPLATE.format(goal="finish ACP parity")
+    state.queued_prompts.extend(["manual follow-up", synthetic])
+
+    pause_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/goal pause")],
+    )
+
+    assert pause_response.stop_reason == "end_turn"
+    assert GoalManager(session_id=state.session_id).state.status == "paused"
+    assert state.queued_prompts == ["manual follow-up"]
+
+    resume_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/goal resume")],
+    )
+
+    assert resume_response.stop_reason == "end_turn"
+    assert GoalManager(session_id=state.session_id).is_active()
+    assert state.queued_prompts == ["manual follow-up"]
+
+    clear_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/goal clear")],
+    )
+
+    assert clear_response.stop_reason == "end_turn"
+    assert not GoalManager(session_id=state.session_id).has_goal()
+    assert state.queued_prompts == ["manual follow-up"]
+    assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_subgoal_without_goal_reports_empty_state(goal_db):
+    acp_agent, state, fake, conn = make_agent_and_state()
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/subgoal")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == []
+    text_updates = [
+        u for _sid, u in conn.updates
+        if getattr(u, "session_update", None) == "agent_message_chunk"
+    ]
+    assert any(
+        "No active goal. Set one with /goal <text>." in getattr(getattr(u, "content", None), "text", "")
+        for u in text_updates
+    )
+
+
+@pytest.mark.asyncio
+async def test_acp_subgoal_add_list_remove_clear_flow(goal_db):
+    acp_agent, state, fake, conn = make_agent_and_state()
+    GoalManager(session_id=state.session_id).set("finish ACP parity")
+
+    add_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/subgoal keep the patch small")],
+    )
+
+    assert add_response.stop_reason == "end_turn"
+    assert GoalManager(session_id=state.session_id).state.subgoals == ["keep the patch small"]
+
+    list_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/subgoal")],
+    )
+
+    assert list_response.stop_reason == "end_turn"
+    text_updates = [
+        u for _sid, u in conn.updates
+        if getattr(u, "session_update", None) == "agent_message_chunk"
+    ]
+    assert any(
+        "- 1. keep the patch small" in getattr(getattr(u, "content", None), "text", "")
+        for u in text_updates
+    )
+
+    remove_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/subgoal remove 1")],
+    )
+
+    assert remove_response.stop_reason == "end_turn"
+    assert GoalManager(session_id=state.session_id).state.subgoals == []
+
+    GoalManager(session_id=state.session_id).add_subgoal("verify focused tests")
+    clear_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/subgoal clear")],
+    )
+
+    assert clear_response.stop_reason == "end_turn"
+    assert GoalManager(session_id=state.session_id).state.subgoals == []
+    assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_subgoal_invalid_inputs(goal_db):
+    acp_agent, state, fake, conn = make_agent_and_state()
+    GoalManager(session_id=state.session_id).set("finish ACP parity")
+
+    for command in (
+        "/subgoal remove",
+        "/subgoal remove nope",
+        "/subgoal clear",
+    ):
+        response = await acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text=command)],
+        )
+        assert response.stop_reason == "end_turn"
+
+    assert fake.runs == []
+    text = "\n".join(
+        getattr(getattr(u, "content", None), "text", "")
+        for _sid, u in conn.updates
+        if getattr(u, "session_update", None) == "agent_message_chunk"
+    )
+    assert "Usage: /subgoal remove <n>" in text
+    assert "/subgoal remove: <n> must be an integer" in text
+    assert "No subgoals to clear." in text
+
+
+@pytest.mark.asyncio
+async def test_acp_goal_continuation_is_queued_and_drained_after_turn(goal_db, monkeypatch):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    GoalManager(session_id=state.session_id).set("finish ACP parity")
+    verdicts = iter([
+        ("continue", "more work remains", False),
+        ("done", "goal completed", False),
+    ])
+    monkeypatch.setattr(goals, "judge_goal", lambda *_args, **_kwargs: next(verdicts))
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="make the change")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs[0] == "make the change"
+    assert fake.runs[1].startswith("[Continuing toward your standing goal]")
+    assert state.queued_prompts == []
+    assert GoalManager(session_id=state.session_id).state.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_acp_goal_done_does_not_queue_continuation(goal_db, monkeypatch):
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    GoalManager(session_id=state.session_id).set("finish ACP parity")
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *_args, **_kwargs: ("done", "already complete", False),
+    )
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="make the change")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == ["make the change"]
+    assert state.queued_prompts == []
+    assert GoalManager(session_id=state.session_id).state.status == "done"

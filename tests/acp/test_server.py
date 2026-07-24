@@ -290,6 +290,8 @@ class TestSessionOps:
             "compress",
             "steer",
             "queue",
+            "goal",
+            "subgoal",
             "version",
         ]
         model_cmd = next(
@@ -297,6 +299,16 @@ class TestSessionOps:
         )
         assert model_cmd.input is not None
         assert model_cmd.input.root.hint == "model name to switch to"
+        goal_cmd = next(
+            cmd for cmd in update.available_commands if cmd.name == "goal"
+        )
+        assert goal_cmd.input is not None
+        assert goal_cmd.input.root.hint == "goal text or status/pause/resume/clear"
+        subgoal_cmd = next(
+            cmd for cmd in update.available_commands if cmd.name == "subgoal"
+        )
+        assert subgoal_cmd.input is not None
+        assert subgoal_cmd.input.root.hint == "text or remove <n> / clear"
 
     def test_build_usage_update_for_zed_context_indicator(self, agent, mock_manager):
         state = mock_manager.create_session(cwd="/tmp")

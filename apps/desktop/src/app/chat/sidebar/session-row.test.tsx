@@ -25,6 +25,7 @@ vi.mock('@/i18n', () => ({
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
           needsInput: 'Needs input',
+          sessionActions: 'Session actions',
           sessionRunning: 'Running',
           waitingForAnswer: 'Waiting for answer'
         }
@@ -127,7 +128,7 @@ const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"
 const noop = vi.fn()
 
 describe('SidebarSessionRow', () => {
-  it('wires the actions kebab tooltip text through to SessionActionsMenu', () => {
+  it('uses a generic tooltip for the session actions kebab', () => {
     render(
       <SidebarSessionRow
         isPinned={false}
@@ -141,9 +142,8 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    expect(screen.getByTestId('session-actions-menu').getAttribute('data-tooltip')).toBe(
-      'Actions for Hermes doctor health check results'
-    )
+    expect(screen.getByTestId('session-actions-menu').getAttribute('data-tooltip')).toBe('Session actions')
+    expect(screen.getByRole('button', { name: 'Session actions' })).toBeTruthy()
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {

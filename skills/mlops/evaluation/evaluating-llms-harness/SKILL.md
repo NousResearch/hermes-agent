@@ -1,7 +1,7 @@
 ---
 name: evaluating-llms-harness
 description: "lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.)."
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [lm-eval, transformers, vllm]
@@ -38,7 +38,7 @@ lm_eval --model hf \
 
 **View available tasks**:
 ```bash
-lm_eval --tasks list
+lm-eval ls tasks
 ```
 
 ## Common workflows
@@ -451,18 +451,18 @@ Verify model and tokenizer match:
 
 **Issue: HumanEval not executing code**
 
-Install execution dependencies:
-```bash
-pip install human-eval
-```
+Code-executing tasks (HumanEval, MBPP, etc.) are gated behind an explicit
+confirmation flag — you must pass `--confirm_run_unsafe_code` to run them:
 
-Enable code execution:
 ```bash
 lm_eval --model hf \
   --model_args pretrained=model-name \
   --tasks humaneval \
-  --allow_code_execution  # Required for HumanEval
+  --confirm_run_unsafe_code  # Required to run tasks that execute generated code
 ```
+
+Without this flag lm-eval refuses to run the task rather than silently skipping
+code execution.
 
 ## Advanced topics
 

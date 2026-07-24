@@ -1,7 +1,7 @@
 ---
 name: serving-llms-vllm
 description: "vLLM: high-throughput LLM serving, OpenAI API, quantization."
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [vllm, torch, transformers]
@@ -31,7 +31,7 @@ pip install vllm
 ```python
 from vllm import LLM, SamplingParams
 
-llm = LLM(model="meta-llama/Llama-3-8B-Instruct")
+llm = LLM(model="meta-llama/Meta-Llama-3-8B-Instruct")
 sampling = SamplingParams(temperature=0.7, max_tokens=256)
 
 outputs = llm.generate(["Explain quantum computing"], sampling)
@@ -40,14 +40,14 @@ print(outputs[0].outputs[0].text)
 
 **OpenAI-compatible server**:
 ```bash
-vllm serve meta-llama/Llama-3-8B-Instruct
+vllm serve meta-llama/Meta-Llama-3-8B-Instruct
 
 # Query with OpenAI SDK
 python -c "
 from openai import OpenAI
 client = OpenAI(base_url='http://localhost:8000/v1', api_key='EMPTY')
 print(client.chat.completions.create(
-    model='meta-llama/Llama-3-8B-Instruct',
+    model='meta-llama/Meta-Llama-3-8B-Instruct',
     messages=[{'role': 'user', 'content': 'Hello!'}]
 ).choices[0].message.content)
 "
@@ -74,24 +74,23 @@ Choose configuration based on your model size:
 
 ```bash
 # For 7B-13B models on single GPU
-vllm serve meta-llama/Llama-3-8B-Instruct \
+vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
   --gpu-memory-utilization 0.9 \
   --max-model-len 8192 \
   --port 8000
 
 # For 30B-70B models with tensor parallelism
-vllm serve meta-llama/Llama-2-70b-hf \
+vllm serve meta-llama/Meta-Llama-3-70B-Instruct \
   --tensor-parallel-size 4 \
   --gpu-memory-utilization 0.9 \
   --quantization awq \
   --port 8000
 
-# For production with caching and metrics
-vllm serve meta-llama/Llama-3-8B-Instruct \
+# For production with caching (Prometheus metrics are exposed
+# automatically at /metrics on the API port)
+vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
   --gpu-memory-utilization 0.9 \
   --enable-prefix-caching \
-  --enable-metrics \
-  --metrics-port 9090 \
   --port 8000 \
   --host 0.0.0.0
 ```
@@ -112,10 +111,10 @@ Verify TTFT (time to first token) < 500ms and throughput > 100 req/sec.
 
 **Step 3: Enable monitoring**
 
-vLLM exposes Prometheus metrics on port 9090:
+vLLM exposes Prometheus metrics at `/metrics` on the API port (default 8000):
 
 ```bash
-curl http://localhost:9090/metrics | grep vllm
+curl http://localhost:8000/metrics | grep vllm
 ```
 
 Key metrics to monitor:
@@ -131,7 +130,7 @@ Use Docker for consistent deployment:
 # Run vLLM in Docker
 docker run --gpus all -p 8000:8000 \
   vllm/vllm-openai:latest \
-  --model meta-llama/Llama-3-8B-Instruct \
+  --model meta-llama/Meta-Llama-3-8B-Instruct \
   --gpu-memory-utilization 0.9 \
   --enable-prefix-caching
 ```
@@ -175,7 +174,7 @@ print(f"Loaded {len(prompts)} prompts")
 from vllm import LLM, SamplingParams
 
 llm = LLM(
-    model="meta-llama/Llama-3-8B-Instruct",
+    model="meta-llama/Meta-Llama-3-8B-Instruct",
     tensor_parallel_size=2,  # Use 2 GPUs
     gpu_memory_utilization=0.9,
     max_model_len=4096
@@ -338,9 +337,11 @@ Verify tensor parallelism uses power of 2 GPUs:
 vllm serve MODEL --tensor-parallel-size 4  # Not 3
 ```
 
-Enable speculative decoding for faster generation:
+Enable speculative decoding for faster generation (pass config as JSON;
+`--speculative-model` was removed in favor of `--speculative-config`):
 ```bash
-vllm serve MODEL --speculative-model DRAFT_MODEL
+vllm serve MODEL \
+  --speculative-config '{"model": "DRAFT_MODEL", "num_speculative_tokens": 5, "method": "draft_model"}'
 ```
 
 ## Advanced topics

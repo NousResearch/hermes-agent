@@ -243,24 +243,50 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
-    def test_gpt55_sets_prompt_cache_retention(self, transport):
+    @pytest.mark.parametrize("model", [
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.4",
+        "gpt-5.2",
+        "gpt-5.1-codex-max",
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-chat-latest",
+        "gpt-5",
+        "gpt-5-codex",
+        "gpt-4.1",
+        "openai.gpt-5.5-pro",
+        "openai/gpt-5.1-codex-2026-01-01",
+    ])
+    def test_extended_cache_models_set_24h_prompt_cache_retention(self, transport, model):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="openai.gpt-5.5", messages=messages, tools=[],
+            model=model, messages=messages, tools=[],
             session_id="test-session",
         )
         assert kw["prompt_cache_retention"] == "24h"
 
-    def test_gpt55_prompt_cache_retention_skipped_for_known_incompatible_backends(self, transport):
+    @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-4o", "o3"])
+    def test_prompt_cache_retention_omitted_for_other_model_families(self, transport, model):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="test-session",
+        )
+        assert "prompt_cache_retention" not in kw
+
+    def test_prompt_cache_retention_skipped_for_known_incompatible_backends(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         assert "prompt_cache_retention" not in transport.build_kwargs(
-            model="gpt-5.5", messages=messages, tools=[], is_xai_responses=True
+            model="gpt-5.4", messages=messages, tools=[], is_xai_responses=True
         )
         assert "prompt_cache_retention" not in transport.build_kwargs(
-            model="gpt-5.5", messages=messages, tools=[], is_github_responses=True
+            model="gpt-5.4", messages=messages, tools=[], is_github_responses=True
         )
         assert "prompt_cache_retention" not in transport.build_kwargs(
-            model="gpt-5.5", messages=messages, tools=[], is_codex_backend=True
+            model="gpt-5.4", messages=messages, tools=[], is_codex_backend=True
         )
 
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):

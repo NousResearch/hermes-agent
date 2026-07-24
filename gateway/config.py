@@ -930,6 +930,13 @@ class GatewayConfig:
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
 
+    # In-process event-loop liveness watchdog (#69089). A daemon OS thread
+    # probes the gateway loop with call_soon_threadsafe; after consecutive
+    # missed probes it dumps all-thread stacks and hard-exits with the
+    # service-restart code so the supervisor can revive the process. On by
+    # default; set gateway.loop_watchdog: false in config.yaml to disable.
+    loop_watchdog: bool = True
+
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -1064,6 +1071,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
+            "loop_watchdog": self.loop_watchdog,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -1135,6 +1143,11 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             systemd_watchdog_raw, systemd_watchdog_key
         )
+        if "loop_watchdog" in data:
+            loop_watchdog_raw = data.get("loop_watchdog")
+        else:
+            loop_watchdog_raw = nested_gateway.get("loop_watchdog")
+        loop_watchdog = _coerce_bool(loop_watchdog_raw, True)
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -1195,6 +1208,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
+            loop_watchdog=loop_watchdog,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),

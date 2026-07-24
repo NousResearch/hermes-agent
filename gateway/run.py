@@ -7736,7 +7736,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return True
 
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Arm the selector floor and out-of-loop watchdog before adapters."""
+        """Arm the selector floor and out-of-loop watchdog before adapters.
+
+        Disabled entirely with ``gateway.loop_watchdog: false`` in config.yaml
+        (no env override — config-only knob, #69089).
+        """
+        config = getattr(self, "config", None)
+        if config is not None and not getattr(config, "loop_watchdog", True):
+            return
         if getattr(self, "_loop_floor_timer_handle", None) is None:
             try:
                 self._loop_floor_timer_handle = _arm_loop_floor_timer(loop)

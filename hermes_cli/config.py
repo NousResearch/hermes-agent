@@ -3051,6 +3051,13 @@ DEFAULT_CONFIG = {
         # works as a manual override and wins if set explicitly.
         "platform_connect_timeout": 30,
 
+        # In-process event-loop liveness watchdog (#69089). A daemon OS thread
+        # probes the gateway asyncio loop; after consecutive missed probes it
+        # dumps all-thread stacks and hard-exits with the service-restart exit
+        # code so the supervisor (systemd/launchd) revives the process instead
+        # of leaving a wedged-but-alive zombie. Set to false to disable.
+        "loop_watchdog": True,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with

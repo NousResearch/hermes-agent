@@ -470,7 +470,45 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
             "which has no Windows wheel and requires make + libolm to build "
             "from sdist. Run Hermes under WSL to use Matrix on Windows."
         )
+    if sys.platform == "darwin" and feature == "platform.matrix" and _macos_cmake4_or_newer():
+        return (
+            "unsupported on this macOS: Matrix E2EE depends on python-olm, "
+            "which cannot build with CMake ≥ 4 (python-olm declares "
+            "cmake_minimum_required < 3.5, removed in CMake 4). Install "
+            "CMake 3.x (e.g. brew install cmake@3) and rerun hermes update."
+        )
     return None
+
+
+_cached_cmake4: bool | None = None
+
+
+def _macos_cmake4_or_newer() -> bool:
+    """Return True if cmake ≥ 4.0 is available on this macOS host.
+
+    Cached at module level — runs the subprocess check at most once.
+    """
+    global _cached_cmake4
+    if _cached_cmake4 is not None:
+        return _cached_cmake4
+    cmake = shutil.which("cmake")
+    if cmake is None:
+        _cached_cmake4 = False
+        return False
+    try:
+        out = subprocess.run(
+            [cmake, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        _cached_cmake4 = False
+        return False
+    import re
+    m = re.search(r"cmake version (\d+)\.", out.stdout)
+    _cached_cmake4 = m is not None and int(m.group(1)) >= 4
+    return _cached_cmake4
 
 
 def _spec_is_safe(spec: str) -> bool:

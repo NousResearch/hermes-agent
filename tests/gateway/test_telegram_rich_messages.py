@@ -19,7 +19,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 
 
 # Content exercising rich-only constructs: a heading, a real Markdown table,
@@ -474,6 +474,101 @@ async def test_transient_timeout_is_not_retryable():
     # A plain timeout may have reached Telegram -> non-retryable (no auto-resend).
     assert result.success is False
     assert result.retryable is False
+
+
+# ---------------------------------------------------------------------------
+# Pre-delivery failure → legacy MarkdownV2 fallback (the core fix).
+#
+# Flood control (RetryAfter / 429) and connect-timeout mean Telegram rejected
+# the request *before* processing it — no duplicate risk, so falling back to
+# the legacy MarkdownV2 send is safe and prevents the "raw markdown fountain"
+# bug (#27942, #46009, #46515).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flood_control_rich_send_falls_back_to_legacy():
+    """RetryAfter on sendRichMessage → legacy MarkdownV2 send, not a dead-end."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=RetryAfter(retry_after=12))
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    # The rich path returned None → send() fell through to the legacy send.
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()  # rich attempt only
+    adapter._bot.send_message.assert_called_once()  # legacy fallback happened
+
+
+@pytest.mark.asyncio
+async def test_flood_control_rich_edit_falls_back_to_legacy():
+    """RetryAfter on rich editMessageText → legacy MarkdownV2 edit, not a dead-end."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=RetryAfter(retry_after=8))
+
+    result = await adapter._try_edit_rich("12345", "100", RICH_CONTENT)
+
+    # None → caller (send_or_update_status / stream_consumer) falls back to
+    # the legacy edit_message_text path.
+    assert result is None
+    adapter._bot.do_api_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_rich_send_falls_back_to_legacy():
+    """A *real* ConnectTimeout-shaped exception → legacy fallback.
+
+    We do NOT monkeypatch _looks_like_connect_timeout — the test exercises the
+    real classifier so a future refactor that breaks detection will fail here.
+    """
+    # Build a real ConnectTimeout-shaped exception: a TimedOut wrapping an
+    # httpx.ConnectTimeout (which carries "connect timeout" in its message).
+    adapter = _make_adapter()
+    try:
+        import httpx
+
+        inner = httpx.ConnectTimeout("Connection timed out")
+    except ImportError:
+        # httpx not available — fall back to a plain Exception whose class
+        # name and message contain "connect timeout" (the classifier checks
+        # both class name and message text).
+        class ConnectTimeout(Exception):
+            pass
+
+        inner = ConnectTimeout("connect timeout")
+    exc = TimedOut("connect timed out")
+    exc.__cause__ = inner
+    adapter._bot.do_api_request = AsyncMock(side_effect=exc)
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    # Pre-delivery failure → legacy fallback.
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.send_message.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_network_error_with_flood_word_does_not_legacy_resend():
+    """A plain NetworkError whose text mentions 'flood' but is NOT a
+    structured RetryAfter / 429 must stay on the no-resend path.
+
+    This is the regression guard requested by the teknium1 review: the
+    _looks_like_flood classifier must only accept structured evidence, not
+    string-match 'flood' in arbitrary error text.
+    """
+    adapter = _make_adapter()
+    # A NetworkError that happens to contain 'flood' in its message — but
+    # is NOT a RetryAfter and has no status_code=429.
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=NetworkError("flood of data from upstream, connection reset")
+    )
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    # Must NOT fall back to legacy — the request may have been delivered.
+    assert result.success is False
+    adapter._bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio

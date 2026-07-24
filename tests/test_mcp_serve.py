@@ -969,12 +969,13 @@ class TestServerCreation:
 
 
 class TestRunMcpServer:
-    def test_run_without_mcp_exits(self, monkeypatch):
+    def test_run_without_mcp_exits(self, monkeypatch, capsys):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", False)
         with pytest.raises(SystemExit) as exc_info:
             mcp_serve.run_mcp_server()
         assert exc_info.value.code == 1
+        assert "hermes-agent[mcp]" in capsys.readouterr().err
 
 
 class TestCliIntegration:

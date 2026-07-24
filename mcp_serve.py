@@ -961,7 +961,8 @@ def run_mcp_server(verbose: bool = False) -> None:
     if not _MCP_SERVER_AVAILABLE:
         print(
             "Error: MCP server requires the 'mcp' package.\n"
-            f"Install with: {sys.executable} -m pip install 'mcp'",
+            "Install Hermes with MCP support: "
+            f"{sys.executable} -m pip install 'hermes-agent[mcp]'",
             file=sys.stderr,
         )
         sys.exit(1)

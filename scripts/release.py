@@ -34,6 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
+# The MCP Registry manifest must stay version-locked with pyproject.toml.
+# tests/test_project_metadata.py enforces this lockstep so a release bump
+# updates the package and registry metadata atomically.
+MCP_REGISTRY_MANIFEST = REPO_ROOT / "server.json"
+
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
@@ -2205,6 +2210,30 @@ def update_version_files(semver: str, calver_date: str):
             count=1,
         )
         desktop_pkg.write_text(pkg_text, encoding="utf-8")
+
+    # Keep the MCP Registry manifest version-locked with pyproject.toml.
+    _update_mcp_registry_versions(semver)
+
+
+def _update_mcp_registry_versions(semver: str) -> None:
+    """Bump the MCP Registry server manifest in lockstep with pyproject.
+
+    Skips silently if the manifest is missing — older release branches predate
+    the MCP Registry assets.
+    """
+    if MCP_REGISTRY_MANIFEST.exists():
+        manifest = json.loads(MCP_REGISTRY_MANIFEST.read_text(encoding="utf-8"))
+        manifest["version"] = semver
+        for package in manifest.get("packages", []):
+            if package.get("registryType") == "pypi":
+                package["version"] = semver
+                runtime_args = package.get("runtimeArguments", [])
+                for arg in runtime_args:
+                    if arg.get("value", "").startswith("hermes-agent[mcp]"):
+                        arg["value"] = f"hermes-agent[mcp]=={semver}"
+        MCP_REGISTRY_MANIFEST.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
 
 
 def resolve_author(name: str, email: str) -> str:

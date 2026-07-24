@@ -266,17 +266,93 @@ def _domains_aligned(a: str, b: str) -> bool:
     return a.endswith("." + b) or b.endswith("." + a)
 
 
-# Match a single "method=result" token in an Authentication-Results header,
-# e.g. ``dmarc=pass`` or ``spf=fail``.
-_AUTH_METHOD_RE = re.compile(
-    r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE
+# Match the method/result token that starts an Authentication-Results clause.
+# Match all method names, not just the ones Hermes evaluates, so an unknown
+# method such as ARC still creates a property-isolation boundary.
+_AUTH_CLAUSE_METHOD_RE = re.compile(
+    r"^\s*([a-z][a-z0-9_-]*)\s*=\s*([a-z]+)\b", re.IGNORECASE
 )
 # Match a property value like ``header.from=example.com`` or
 # ``smtp.mailfrom=user@example.com``.
+#
+# RFC 8601 defines ptypes/properties such as ``smtp.mailfrom``, ``header.d``,
+# and ``header.i``. In the wild, providers also stamp aliases or legacy names:
+# NetEase/163 uses ``smtp.mail``; some MTAs use ``mailfrom``, ``client-ip``, or
+# ``envelope-from``. We parse a broad but explicit set of sender-domain fields,
+# then still require SPF/DKIM domain alignment before trusting the visible From.
 _AUTH_PROP_RE = re.compile(
-    r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)",
+    r"\b("
+    r"header\.(?:from|d|i|sender)"
+    r"|smtp\.(?:mailfrom|mail|from|auth|helo|ehlo)"
+    r"|body\.hash"
+    r"|policy\.(?:from|domain)"
+    r"|mailfrom|envelope-from|return-path"
+    r")\s*=\s*([^\s;]+)",
     re.IGNORECASE,
 )
+
+
+def _clean_auth_property_value(value: str) -> str:
+    """Normalize an Authentication-Results property value.
+
+    Real providers may quote values, wrap them in angle brackets, append
+    comments, or use DKIM identities like ``@example.com``.  Return a compact
+    token suitable for extracting a domain while keeping fail-closed behavior
+    for malformed values.
+    """
+    value = (value or "").strip().strip('"').strip("'").strip()
+    value = value.strip("<>").rstrip(".,")
+    if value.startswith("@"):
+        value = value[1:]
+    return value.lower()
+
+
+def _domain_from_auth_value(value: str) -> str:
+    """Extract a comparable domain from an auth-result property value."""
+    value = _clean_auth_property_value(value)
+    if not value:
+        return ""
+    if "://" in value:
+        return ""
+    if "@" in value:
+        return _domain_of(value)
+    return value.strip().lower().rstrip(".")
+
+
+def _first_aligned_domain(values: List[str], from_domain: str) -> str:
+    """Return the first property domain aligned with From, or ''."""
+    for value in values:
+        domain = _domain_from_auth_value(value)
+        if _domains_aligned(domain, from_domain):
+            return domain
+    return ""
+
+
+def _parse_auth_method_results(
+    trusted: str,
+) -> List[Tuple[str, str, Dict[str, List[str]]]]:
+    """Parse auth results while keeping properties scoped to their method."""
+    parsed: List[Tuple[str, str, Dict[str, List[str]]]] = []
+    current: Tuple[str, str, Dict[str, List[str]]] | None = None
+
+    # The first field is the authserv-id. A new method token, including one
+    # Hermes does not evaluate such as ARC, always starts a fresh property scope.
+    for clause in trusted.split(";")[1:]:
+        method_match = _AUTH_CLAUSE_METHOD_RE.match(clause)
+        if method_match:
+            current = (
+                method_match.group(1).lower(),
+                method_match.group(2).lower(),
+                {},
+            )
+            parsed.append(current)
+        if current is None:
+            continue
+        props = current[2]
+        for prop, value in _AUTH_PROP_RE.findall(clause):
+            props.setdefault(prop.lower(), []).append(value)
+
+    return parsed
 
 
 def _verify_sender_authentication(
@@ -299,7 +375,7 @@ def _verify_sender_authentication(
     Returns ``(authenticated, reason)``. ``authenticated`` is True when:
       * a DMARC pass is recorded for the From domain, OR
       * an SPF pass aligned with the From domain, OR
-      * a DKIM pass aligned (``header.d``) with the From domain.
+      * a DKIM pass aligned (``header.d``/``header.i``) with the From domain.
 
     When no ``Authentication-Results`` header is present at all, we return
     ``(False, "no Authentication-Results header")`` — fail-closed. Operators
@@ -331,29 +407,42 @@ def _verify_sender_authentication(
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
 
-    methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
-    props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
+    results = _parse_auth_method_results(trusted)
 
     # 1) DMARC pass is the strongest signal — DMARC already enforces From
     #    alignment, so a pass means the From domain is authenticated.
-    if methods.get("dmarc") == "pass":
+    if any(method == "dmarc" and result == "pass" for method, result, _ in results):
         return True, "dmarc=pass"
 
-    # 2) SPF pass aligned with the From domain (the envelope/MAIL FROM domain
-    #    must match the From domain).
-    if methods.get("spf") == "pass":
-        spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get(
-            "smtp.from", ""
-        ) or props.get("envelope-from", "")
-        spf_domain = _domain_of(spf_domain) if "@" in spf_domain else spf_domain
-        if _domains_aligned(spf_domain, from_domain):
+    # 2) SPF pass aligned with the From domain. Prefer MAIL FROM / envelope
+    #    identity, but accept common provider aliases when aligned.
+    for method, result, props in results:
+        if method != "spf" or result != "pass":
+            continue
+        spf_domain = _first_aligned_domain(
+            props.get("smtp.mailfrom", [])
+            + props.get("smtp.mail", [])
+            + props.get("mailfrom", [])
+            + props.get("envelope-from", [])
+            + props.get("return-path", [])
+            + props.get("smtp.from", []),
+            from_domain,
+        )
+        if spf_domain:
             return True, "spf=pass aligned"
 
-    # 3) DKIM pass aligned with the From domain (the signing domain header.d
-    #    must align with the From domain).
-    if methods.get("dkim") == "pass":
-        dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
-        if _domains_aligned(dkim_domain, from_domain):
+    # 3) DKIM pass aligned with the From domain (the signing domain header.d,
+    #    or identity header.i when header.d is not exposed, must align).
+    for method, result, props in results:
+        if method != "dkim" or result != "pass":
+            continue
+        dkim_domain = _first_aligned_domain(
+            props.get("header.d", [])
+            + props.get("header.i", [])
+            + props.get("policy.domain", []),
+            from_domain,
+        )
+        if dkim_domain:
             return True, "dkim=pass aligned"
 
     return False, f"authentication failed ({trusted[:120]})"

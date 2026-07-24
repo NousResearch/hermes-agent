@@ -687,7 +687,14 @@ class TestMCPInitialConnectionRetry:
                 call_count += 1
                 raise ConnectionError("DNS resolution failed")
 
-            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+            async def _fast_sleep(_seconds, *args, **kwargs):
+                # Skip backoff delays so the test finishes fast.  With the
+                # real 6-retry backoff the cumulative wait is 63s, which
+                # exceeds the conftest 30s per-test timeout.
+                return
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 patch("tools.mcp_tool.asyncio.sleep", _fast_sleep):
                 task = asyncio.ensure_future(server.run({"command": "fake"}))
                 await server._ready.wait()
 

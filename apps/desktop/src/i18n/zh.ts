@@ -2308,8 +2308,7 @@ export const zh: Translations = {
     installTo: '将安装到',
     retryAfterRun: '我已运行 -- 重试',
     setupChoiceTitle: '设置 Hermes Desktop',
-    setupChoiceDesc:
-      '将此应用连接到你已运行的 Hermes 网关，或在这台电脑上本地安装 Hermes。',
+    setupChoiceDesc: '将此应用连接到你已运行的 Hermes 网关，或在这台电脑上本地安装 Hermes。',
     connectExistingTitle: '连接到现有 Hermes',
     connectExistingShort: '连接现有环境',
     connectExistingDesc: '使用会话令牌或浏览器登录连接远程后端。不会启动本地安装。',

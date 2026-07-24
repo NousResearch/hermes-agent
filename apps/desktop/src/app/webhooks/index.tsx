@@ -16,13 +16,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createWebhook,
@@ -259,9 +253,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         current
           ? {
               ...current,
-              subscriptions: current.subscriptions.map(s =>
-                s.name === subName ? { ...s, enabled: nextEnabled } : s
-              )
+              subscriptions: current.subscriptions.map(s => (s.name === subName ? { ...s, enabled: nextEnabled } : s))
             }
           : current
       )
@@ -409,9 +401,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                   title={sub.name}
                 />
               ))}
-              {visible.length === 0 && (
-                <p className="px-2 py-4 text-center text-xs text-muted-foreground">{w.empty}</p>
-              )}
+              {visible.length === 0 && <p className="px-2 py-4 text-center text-xs text-muted-foreground">{w.empty}</p>}
               <PanelAddButton
                 label={w.newSubscription}
                 onClick={() => {
@@ -421,11 +411,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
               />
             </PanelList>
 
-            {selectedSub ? (
-              <WebhookDetail sub={selectedSub} />
-            ) : (
-              <PanelEmpty description={w.empty} icon="search" />
-            )}
+            {selectedSub ? <WebhookDetail sub={selectedSub} /> : <PanelEmpty description={w.empty} icon="search" />}
           </PanelBody>
         </>
       )}
@@ -441,11 +427,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
           {created ? (
             <div className="grid gap-2">
               <ListRow action={<CopyValueRow copyLabel={w.copy} value={created.url} />} title={w.webhookUrl} wide />
-              <ListRow
-                action={<CopyValueRow copyLabel={w.copy} value={created.secret} />}
-                title={w.secretOnce}
-                wide
-              />
+              <ListRow action={<CopyValueRow copyLabel={w.copy} value={created.secret} />} title={w.secretOnce} wide />
               <DialogFooter>
                 <Button onClick={closeCreate} size="sm">
                   {w.done}

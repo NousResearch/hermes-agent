@@ -1448,8 +1448,7 @@ export const en: Translations = {
     toggleFailed: (name: string) => `Failed to update "${name}"`,
     newSubscription: 'New subscription',
     restarting: 'Gateway restarting...',
-    restartNeeded:
-      'Webhooks are enabled, but the gateway still needs a restart before the receiver can come online.',
+    restartNeeded: 'Webhooks are enabled, but the gateway still needs a restart before the receiver can come online.',
     restartGateway: 'Restart gateway',
     restartingGateway: 'Restarting...',
     restartFailed: (detail: string) => `Gateway restart failed${detail}`,

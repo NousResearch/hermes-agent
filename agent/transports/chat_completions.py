@@ -163,6 +163,9 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - Transcript metadata: ``timestamp``, ``message_id``, and
+          ``platform_message_id`` are persisted for ordering/deduplication but
+          are not Chat Completions message fields.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -188,6 +191,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "message_id" in msg
+                or "platform_message_id" in msg
             ):
                 needs_sanitize = True
                 break
@@ -231,6 +236,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "message_id" in msg
+                or "platform_message_id" in msg
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
@@ -239,6 +246,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                out_msg.pop("message_id", None)
+                out_msg.pop("platform_message_id", None)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).

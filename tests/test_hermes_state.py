@@ -1503,6 +1503,54 @@ class TestMessageStorage:
         assert next(m for m in conv if m["role"] == "user").get("message_id") == "ext-1"
         assert "message_id" not in next(m for m in conv if m["role"] == "assistant")
 
+    def test_replace_messages_preserves_internal_source_message_id(self, db):
+        db.create_session(session_id="s_source_replace", source="desktop")
+        db.replace_messages(
+            "s_source_replace",
+            [
+                {
+                    "role": "user",
+                    "content": "queued source",
+                    "_source_message_id": "desktop-rewrite-1",
+                }
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s_source_replace")
+        assert conv[0]["message_id"] == "desktop-rewrite-1"
+        assert db.has_platform_message_id(
+            "s_source_replace", "desktop-rewrite-1"
+        )
+
+    def test_archive_and_compact_preserves_internal_source_message_id(self, db):
+        db.create_session(session_id="s_source_compact", source="desktop")
+        db.append_message(
+            "s_source_compact",
+            role="user",
+            content="pre-compaction turn",
+        )
+
+        inserted = db.archive_and_compact(
+            "s_source_compact",
+            [
+                {
+                    "role": "user",
+                    "content": "compacted live source",
+                    "_source_message_id": "desktop-compact-1",
+                }
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s_source_compact")
+        assert inserted == 1
+        assert [message["content"] for message in conv] == [
+            "compacted live source"
+        ]
+        assert conv[0]["message_id"] == "desktop-compact-1"
+        assert db.has_platform_message_id(
+            "s_source_compact", "desktop-compact-1"
+        )
+
     def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="first prompt")

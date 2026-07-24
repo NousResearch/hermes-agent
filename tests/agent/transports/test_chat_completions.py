@@ -171,6 +171,25 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_source_message_ids(self, transport):
+        """Persisted platform identities are transcript metadata, not API fields."""
+        msgs = [
+            {
+                "role": "user",
+                "content": "hi",
+                "message_id": "desktop-queued-1",
+                "platform_message_id": "legacy-platform-1",
+            },
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert "message_id" not in result[0]
+        assert "platform_message_id" not in result[0]
+        assert result[0]["content"] == "hi"
+        assert msgs[0]["message_id"] == "desktop-queued-1"
+        assert msgs[0]["platform_message_id"] == "legacy-platform-1"
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""

@@ -45,8 +45,8 @@ def mirror_to_session(
     at the SQLite boundary (only role+content persist), so on replay an
     assistant-role mirror is indistinguishable from a real assistant turn and
     produces ``assistant → assistant`` pairs that break strict-alternation
-    providers (issue #2221). A user-role mirror collapses safely via
-    ``repair_message_sequence``'s consecutive-user merge on every provider.
+    providers (issue #2221). A user-role mirror remains distinct in canonical
+    history and merges only on the per-request API copy for strict providers.
 
     Returns True if mirrored successfully, False if no matching session or error.
     All errors are caught -- this is never fatal.

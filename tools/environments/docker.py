@@ -617,6 +617,24 @@ class DockerEnvironment(BaseEnvironment):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
 
+        # Store normalized user volume "host:container" pairs for the
+        # reuse-validation check below (#69575).  When a user edits
+        # docker_volumes in config.yaml, the persisted container from a
+        # prior run still carries the old mounts.  We detect the mismatch
+        # and force a fresh container so the new config takes effect
+        # without requiring the operator to manually ``docker rm -f``.
+        self._user_volume_pairs: set[str] = set()
+        for _vol in (volumes or []):
+            if not isinstance(_vol, str):
+                continue
+            _vol = _vol.strip()
+            if not _vol or ":" not in _vol:
+                continue
+            _parts = _vol.split(":")
+            _host = os.path.abspath(os.path.expanduser(_parts[0]))
+            _container = _parts[1]
+            self._user_volume_pairs.add(f"{_host}:{_container}")
+
         # Fail fast if Docker is not available.
         _ensure_docker_available()
 
@@ -936,6 +954,40 @@ class DockerEnvironment(BaseEnvironment):
                     except (subprocess.TimeoutExpired, OSError) as e:
                         logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                     existing = None
+                # Volume mount guard (#69575): if the operator edited
+                # ``docker_volumes`` in config.yaml, the persisted container
+                # still carries the old mounts.  Detect missing user-specified
+                # volumes and recreate so the new config takes effect without
+                # a manual ``docker rm -f``.  Only the "missing mount"
+                # direction is guarded: extra mounts in the container that
+                # are no longer in the config are harmless (just unused).
+                if existing is not None and self._user_volume_pairs:
+                    actual_mounts = self._container_bind_mounts(container_id)
+                    missing_volumes = self._user_volume_pairs - actual_mounts
+                    if missing_volumes:
+                        logger.warning(
+                            "Existing container %s is missing configured "
+                            "docker_volumes: %s — removing it and starting "
+                            "fresh (task=%s, profile=%s).",
+                            container_id[:12],
+                            ", ".join(sorted(missing_volumes)),
+                            task_label, profile_name,
+                        )
+                        try:
+                            subprocess.run(
+                                [self._docker_exe, "rm", "-f", container_id],
+                                capture_output=True,
+                                text=True,
+                                timeout=30,
+                                check=False,
+                                stdin=subprocess.DEVNULL,
+                            )
+                        except (subprocess.TimeoutExpired, OSError) as e:
+                            logger.warning(
+                                "Failed to remove volume-mismatched container %s: %s",
+                                container_id[:12], e,
+                            )
+                        existing = None
             if existing is not None:
                 container_id, state = existing
                 self._container_id = container_id
@@ -1266,6 +1318,52 @@ class DockerEnvironment(BaseEnvironment):
             return None
         mode = result.stdout.strip()
         return mode or None
+
+    def _container_bind_mounts(self, container_id: str) -> set[str]:
+        """Return the set of ``"host:container"`` bind-mount pairs on *container_id*.
+
+        Used by the reuse path to detect stale containers whose user-configured
+        ``docker_volumes`` no longer match the current config (#69575).
+        Returns an empty set on any inspection failure; the caller treats
+        "all user volumes missing" as a mismatch, so a failed inspect
+        triggers a fresh container (fail-safe).
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "inspect",
+                    "--format", "{{json .Mounts}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect Mounts failed: %s", e)
+            return set()
+        if result.returncode != 0:
+            logger.debug(
+                "docker inspect Mounts returned %d: %s",
+                result.returncode, result.stderr.strip(),
+            )
+            return set()
+        try:
+            mounts = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.debug("could not parse Mounts JSON: %s", e)
+            return set()
+        pairs: set[str] = set()
+        for m in mounts:
+            if not isinstance(m, dict):
+                continue
+            src = m.get("Source", "")
+            dst = m.get("Destination", "")
+            if src and dst:
+                pairs.add(f"{src}:{dst}")
+        return pairs
 
     def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).

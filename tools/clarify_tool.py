@@ -182,10 +182,17 @@ registry.register(
     name="clarify",
     toolset="clarify",
     schema=CLARIFY_SCHEMA,
+    # The callback comes only from framework kwargs, never from model ``args``.
+    # Prefer the threaded ``clarify_callback``; fall back to the legacy
+    # ``callback`` kwarg for direct registry callers. Absent both, fail closed.
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
-        callback=kw.get("callback")),
+        callback=(
+            kw["clarify_callback"]
+            if kw.get("clarify_callback") is not None
+            else kw.get("callback")
+        )),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

@@ -3084,8 +3084,23 @@ class TestConcurrentToolExecution:
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
                 tool_request_middleware_trace=[],
+                clarify_callback=agent.clarify_callback,
             )
             assert result == "result"
+
+    @pytest.mark.parametrize("quiet_mode", [False, True])
+    def test_sequential_forwards_clarify_callback(self, agent, quiet_mode):
+        def sentinel(*a, **k):
+            return None
+
+        agent.quiet_mode = quiet_mode
+        agent.clarify_callback = sentinel
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        with patch("run_agent.handle_function_call", return_value="search result") as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+        assert mock_hfc.call_args.kwargs["clarify_callback"] is sentinel
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

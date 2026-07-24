@@ -20250,8 +20250,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not tool_progress_enabled:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in {"tool.started",}:
+            # Act on tool.started and tool.completed events (ignore reasoning.available, etc.)
+            if event_type not in {"tool.started", "tool.completed",}:
                 return
 
             # Never render a progress bubble for the clarify tool.  The

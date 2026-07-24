@@ -62,7 +62,12 @@ def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
 
 def test_write_file_approval_mutates_and_request_includes_diff(tmp_path):
     target = tmp_path / "sample.txt"
-    target.write_text("before\n", encoding="utf-8")
+    # Seed with explicit LF (newline="") so the on-disk fixture is byte-identical
+    # across platforms. Path.write_text() uses text mode, which translates "\n"
+    # to os.linesep on Windows -> the seed file would hold CRLF, and write_file's
+    # line-ending-preservation then correctly keeps CRLF, making bytes_written 7
+    # ("after\r\n") instead of the 6 this test asserts.
+    target.write_text("before\n", encoding="utf-8", newline="")
     proposals = []
 
     def approve(proposal):

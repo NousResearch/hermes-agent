@@ -1447,7 +1447,11 @@ KANBAN_SHOW_SCHEMA = {
         "and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "verbatim in your reasoning. "
+        "Call it once with no arguments: the ``worker_context`` field "
+        "already contains the completed handoff results from every parent "
+        "task — do NOT call ``kanban_show`` again with a parent task id "
+        "to retrieve parent context; it is already there."
     ),
     "parameters": {
         "type": "object",

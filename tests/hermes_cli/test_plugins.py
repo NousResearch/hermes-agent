@@ -594,6 +594,61 @@ class TestPluginLoading:
         assert entry.module is None
         assert "exclusive" in (entry.error or "").lower()
 
+
+    def test_user_cron_scheduler_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
+        """User-installed cron scheduler plugins must NOT be loaded by the
+        general PluginManager — they belong to plugins/cron_providers.
+
+        Regression for #62951:
+            'PluginContext' object has no attribute 'register_cron_scheduler'
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "chronos-user"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "chronos-user"}))
+        (plugin_dir / "__init__.py").write_text(
+            "class FakeCron:\n"
+            "    pass\n"
+            "def register(ctx):\n"
+            "    ctx.register_cron_scheduler(FakeCron())\n"
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["chronos-user"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "chronos-user" in mgr._plugins
+        entry = mgr._plugins["chronos-user"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        assert not entry.enabled
+        assert entry.module is None
+        assert "exclusive" in (entry.error or "").lower()
+
+    def test_bundled_cron_providers_skipped_by_general_loader(self, tmp_path, monkeypatch):
+        """Bundled plugins/cron_providers/* must not enter the general loader.
+
+        Chronos ships under that category and uses register_cron_scheduler,
+        which PluginContext does not expose (#62951).
+        """
+        hermes_home = tmp_path / "hermes_home_bundled"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["chronos", "cron_providers/chronos"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "chronos" not in mgr._plugins
+        assert "cron_providers/chronos" not in mgr._plugins
+
     def test_explicit_standalone_kind_not_coerced(self, tmp_path, monkeypatch):
         """If a plugin explicitly declares ``kind: standalone`` in its
         manifest, the memory-provider heuristic must NOT override it —

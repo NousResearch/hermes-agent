@@ -761,15 +761,21 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
             return f"{str(remote_home).rstrip('/')}/.hermes"
 
         env_name = env.__class__.__name__
-        if env_name in {"DockerEnvironment", "SingularityEnvironment", "ModalEnvironment"}:
+        # Only backends that actually expose the host cache inside the sandbox:
+        # Docker bind-mounts the cache dirs and Modal uploads them. Singularity
+        # is deliberately excluded — it binds only credential files and skills,
+        # never the cache dirs, so a /root/.hermes/cache/... path would not exist
+        # in the instance and the agent would hit file-not-found.
+        if env_name in {"DockerEnvironment", "ModalEnvironment"}:
             return "/root/.hermes"
 
     # If no environment has been created yet, only backends with deterministic
-    # Hermes cache roots can be translated without side effects. SSH can still
-    # use a shell-visible tilde path; its first environment sync will upload
-    # the cache file before the first command runs.
+    # Hermes cache roots that genuinely surface the cache can be translated.
+    # SSH can still use a shell-visible tilde path; its first environment sync
+    # will upload the cache file before the first command runs. Singularity is
+    # omitted here for the same reason as above (cache is never mounted there).
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    if backend in {"docker", "singularity", "modal"}:
+    if backend in {"docker", "modal"}:
         return "/root/.hermes"
     if backend == "ssh":
         return "~/.hermes"

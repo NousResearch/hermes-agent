@@ -78,6 +78,56 @@ def test_postprocess_maps_ssh_cache_path_without_active_env(monkeypatch, tmp_pat
     assert result["agent_visible_image"] == "~/.hermes/cache/images/first-call.png"
 
 
+def test_postprocess_does_not_annotate_for_active_singularity_env(monkeypatch, tmp_path):
+    """Singularity binds only credential files + skills, never the cache dirs, so
+    a /root/.hermes/cache/... path would not exist inside the instance. The tool
+    must NOT advertise agent_visible_image for an active Singularity backend."""
+    from tools import image_generation_tool
+
+    hermes_home = tmp_path / ".hermes"
+    image_dir = hermes_home / "cache" / "images"
+    image_dir.mkdir(parents=True)
+    image_path = image_dir / "singularity.png"
+    image_path.write_bytes(b"png")
+
+    class SingularityEnvironment:  # name-matched stub; no _remote_home / cache mount
+        pass
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        image_generation_tool, "_active_terminal_env", lambda task_id: SingularityEnvironment()
+    )
+
+    raw = json.dumps({"success": True, "image": str(image_path)})
+    result = json.loads(image_generation_tool._postprocess_image_generate_result(raw))
+
+    assert result == {"success": True, "image": str(image_path)}
+    assert "agent_visible_image" not in result
+    assert "host_image" not in result
+
+
+def test_postprocess_does_not_map_singularity_cache_path_without_active_env(monkeypatch, tmp_path):
+    """TERMINAL_ENV=singularity with no env yet must not translate either — the
+    cache is never mounted into a Singularity instance."""
+    from tools import image_generation_tool
+
+    hermes_home = tmp_path / ".hermes"
+    image_dir = hermes_home / "cache" / "images"
+    image_dir.mkdir(parents=True)
+    image_path = image_dir / "no-env.png"
+    image_path.write_bytes(b"png")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "singularity")
+    monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: None)
+
+    raw = json.dumps({"success": True, "image": str(image_path)})
+    result = json.loads(image_generation_tool._postprocess_image_generate_result(raw))
+
+    assert result == {"success": True, "image": str(image_path)}
+    assert "agent_visible_image" not in result
+
+
 def test_postprocess_leaves_remote_image_urls_unchanged(monkeypatch):
     from tools import image_generation_tool
 

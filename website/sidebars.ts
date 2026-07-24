@@ -154,17 +154,9 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
+                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'computer-use',
-                  key: 'skills-bundled-computer-use',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/computer-use/computer-use-computer-use',
                   ],
                 },
                 {

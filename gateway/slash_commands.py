@@ -2271,7 +2271,7 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.personality.none_option"))
             for name, prompt in personalities.items():
                 if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                    preview = prompt.get("description") or (prompt.get("system_prompt") or "")[:50]
                 else:
                     preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
                 lines.append(t("gateway.personality.item", name=name, preview=preview))
@@ -3928,7 +3928,7 @@ class GatewaySlashCommandsMixin:
                         origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
                         if origin:
                             title = f"{title} — {origin.chat_name or origin.chat_id}"
-                    preview = s.get("preview", "")[:40]
+                    preview = (s.get("preview") or "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
                 lines.append(t("gateway.resume.list_footer_numbered"))

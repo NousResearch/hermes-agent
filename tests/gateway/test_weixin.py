@@ -27,6 +27,41 @@ def _make_adapter() -> WeixinAdapter:
     )
 
 
+class TestWeixinInboundVoiceTranscript:
+    def test_voice_transcript_keeps_voice_origin_marker(self):
+        item_list = [
+            {
+                "type": weixin.ITEM_VOICE,
+                "voice_item": {"text": "帮我查一下今天天气"},
+            }
+        ]
+
+        assert weixin._extract_text(item_list) == (
+            "[Voice transcription provided by Weixin]\n"
+            "帮我查一下今天天气"
+        )
+
+    def test_typed_text_remains_unmarked(self):
+        item_list = [
+            {
+                "type": weixin.ITEM_TEXT,
+                "text_item": {"text": "帮我查一下今天天气"},
+            }
+        ]
+
+        assert weixin._extract_text(item_list) == "帮我查一下今天天气"
+
+    def test_empty_voice_transcript_keeps_empty_fallback(self):
+        item_list = [
+            {
+                "type": weixin.ITEM_VOICE,
+                "voice_item": {"text": ""},
+            }
+        ]
+
+        assert weixin._extract_text(item_list) == ""
+
+
 class TestWeixinFormatting:
     def test_format_message_preserves_markdown(self):
         adapter = _make_adapter()

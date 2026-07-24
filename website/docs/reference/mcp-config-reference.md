@@ -47,7 +47,7 @@ mcp_servers:
 |---|---|---|---|
 | `command` | string | stdio | Executable to launch |
 | `args` | list | stdio | Arguments for the subprocess |
-| `env` | mapping | stdio | Environment passed to the subprocess |
+| `env` | mapping | stdio | Environment passed to the subprocess. Values support `${VAR}` placeholders resolved from the process environment (including `~/.hermes/.env`) — see [Runtime `${ENV_VAR}` substitution](/user-guide/features/mcp#runtime-env_var-substitution) |
 | `url` | string | HTTP | Remote MCP endpoint |
 | `headers` | mapping | HTTP | Headers for remote server requests |
 | `ssl_verify` | bool or string | HTTP | TLS verification. `true` (default) uses system CAs, `false` disables verification (insecure), or a string path to a custom CA bundle (PEM) |
@@ -169,7 +169,9 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      # Resolved from GITHUB_PERSONAL_ACCESS_TOKEN in ~/.hermes/.env — no
+      # need to duplicate the token value here.
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN}
     tools:
       include: [list_issues, create_issue, update_issue, search_code]
       resources: false

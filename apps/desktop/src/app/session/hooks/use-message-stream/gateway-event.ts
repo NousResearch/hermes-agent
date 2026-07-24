@@ -22,6 +22,7 @@ import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedCh
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
+import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
@@ -892,6 +893,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
+        } else if (sessionId && payload?.kind === 'goal') {
+          applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'review.summary') {
         // Self-improvement background review saved something to memory/skills

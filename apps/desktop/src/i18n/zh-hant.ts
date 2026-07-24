@@ -168,7 +168,9 @@ export const zhHant = defineLocale({
       backgroundDoneTitle: '背景工作已完成',
       backgroundFailedTitle: '背景工作失敗',
       creditsTitle: '額度'
-    }
+    },
+    gatewayErrorTitle: 'Hermes 錯誤',
+    gatewayErrorFallback: 'Hermes 回報了一個錯誤'
   },
 
   remoteDisplayBanner: {

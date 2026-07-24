@@ -172,7 +172,9 @@ export const en: Translations = {
       backgroundDoneTitle: 'Background task finished',
       backgroundFailedTitle: 'Background task failed',
       creditsTitle: 'Credits'
-    }
+    },
+    gatewayErrorTitle: 'Hermes error',
+    gatewayErrorFallback: 'Hermes reported an error'
   },
 
   remoteDisplayBanner: {

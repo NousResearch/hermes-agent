@@ -173,7 +173,9 @@ export const ja = defineLocale({
       backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
       backgroundFailedTitle: 'バックグラウンドタスクが失敗しました',
       creditsTitle: 'クレジット'
-    }
+    },
+    gatewayErrorTitle: 'Hermes エラー',
+    gatewayErrorFallback: 'Hermes がエラーを報告しました'
   },
 
   remoteDisplayBanner: {

@@ -217,6 +217,10 @@ export interface Translations {
       backgroundFailedTitle: string
       creditsTitle: string
     }
+    // Gateway turn-error toast (title + fallback body when the backend event
+    // carries no message).
+    gatewayErrorTitle: string
+    gatewayErrorFallback: string
   }
 
   remoteDisplayBanner: {

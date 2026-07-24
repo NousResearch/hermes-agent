@@ -948,8 +948,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // straight to dismissNotification(key).
         clearAgentNotice((event.payload as AgentNoticePayload | undefined)?.key)
       } else if (event.type === 'error') {
-        const errorMessage = payload?.message || 'Hermes reported an error'
-        const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
+        const rawErrorMessage = payload?.message || translateNow('notifications.gatewayErrorFallback')
+        const looksLikeProviderSetup = isProviderSetupErrorMessage(rawErrorMessage)
+        // The backend's provider-setup error is English prose; every surface
+        // the user actually reads (transcript failure line, native
+        // notification, onboarding reason) gets the localized equivalent —
+        // same copy the submit path uses for this condition.
+        const errorMessage = looksLikeProviderSetup
+          ? translateNow('desktop.providerCredentialRequired')
+          : rawErrorMessage
 
         // A turn that errors out has also ended — drop any open blocking prompt
         // for this session so an approval/sudo/secret overlay can't linger past
@@ -984,7 +991,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           notify({
             id: `gateway-error:${errorMessage}`,
             kind: 'error',
-            title: 'Hermes error',
+            title: translateNow('notifications.gatewayErrorTitle'),
             message: errorMessage
           })
         }

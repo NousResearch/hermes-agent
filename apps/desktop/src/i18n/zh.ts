@@ -168,7 +168,9 @@ export const zh: Translations = {
       backgroundDoneTitle: '后台任务已完成',
       backgroundFailedTitle: '后台任务失败',
       creditsTitle: '额度'
-    }
+    },
+    gatewayErrorTitle: 'Hermes 错误',
+    gatewayErrorFallback: 'Hermes 报告了一个错误'
   },
 
   remoteDisplayBanner: {

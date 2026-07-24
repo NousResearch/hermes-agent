@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import sys
 from typing import Iterator, Mapping, MutableMapping
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar(
@@ -18,6 +19,7 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar(
 )
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
+_MAX_DELEGATED_ANCESTOR_DEPTH = 32
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK",
@@ -49,9 +51,25 @@ def is_delegated_child_process_context() -> bool:
     """Return True in this process or a subprocess spawned by a child."""
     import os
 
-    return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(
+    if bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(
         os.environ.get(DELEGATED_CHILD_ENV_MARKER)
-    )
+    ):
+        return True
+    if sys.platform.startswith("linux"):
+        pid = os.getpid()
+        for _ in range(_MAX_DELEGATED_ANCESTOR_DEPTH):
+            try:
+                status = open(f"/proc/{pid}/status", encoding="utf-8").read()
+                ppid = next(int(line.split(":", 1)[1].strip()) for line in status.splitlines() if line.startswith("PPid:"))
+                if ppid <= 1 or ppid == pid:
+                    break
+                environ = open(f"/proc/{ppid}/environ", "rb").read()
+                if any(entry == f"{DELEGATED_CHILD_ENV_MARKER}=1".encode() for entry in environ.split(b"\0")):
+                    return True
+                pid = ppid
+            except (OSError, StopIteration, ValueError):
+                break
+    return False
 
 
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:

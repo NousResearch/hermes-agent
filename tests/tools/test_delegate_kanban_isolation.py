@@ -195,6 +195,31 @@ def test_delegate_child_process_marker_scrubs_foreground_terminal_kanban_keys(mo
     assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux /proc lineage")
+def test_env_unset_child_still_has_delegated_process_lineage():
+    """Removing the current env marker cannot evade the process lineage guard."""
+    inner = (
+        "import json, os; "
+        "from agent.delegation_context import is_delegated_child_process_context; "
+        "os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None); "
+        "print(json.dumps(is_delegated_child_process_context()))"
+    )
+    code = (
+        "import os, subprocess, sys; "
+        "env = dict(os.environ); env.pop('HERMES_DELEGATED_CHILD_CONTEXT', None); "
+        "subprocess.run([sys.executable, '-c', " + repr(inner) + "], env=env, check=True)"
+    )
+    env = dict(os.environ)
+    env["HERMES_DELEGATED_CHILD_CONTEXT"] = "1"
+    env["PYTHONPATH"] = str(_REPO_ROOT)
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=env, text=True,
+        capture_output=True, check=True,
+    )
+    assert json.loads(result.stdout.strip()) is True
+
+
 def test_delegate_child_execute_code_env_preserves_process_marker(monkeypatch, tmp_path):
     """execute_code has its own env scrubber; it must preserve child lineage."""
     home = tmp_path / ".hermes"

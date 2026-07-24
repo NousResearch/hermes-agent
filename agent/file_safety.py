@@ -163,6 +163,45 @@ def is_write_denied(path: str) -> bool:
     return _classify_write_denial(path) is not None
 
 
+def get_safe_tmp_dir() -> Optional[str]:
+    """Return a writable, profile-scoped temp directory under HERMES_WRITE_SAFE_ROOT.
+
+    A model reaching for a conventional ``/tmp/helper.py`` path has nowhere
+    valid to put it once a safe root is configured -- it just gets denied,
+    with no indication of where temp files *do* belong (#69962). This gives
+    ``get_write_denied_error`` something concrete to point at.
+
+    Prefers ``<hermes_home>/tmp`` when the active (profile-aware) HERMES_HOME
+    is already nested inside a safe root -- the common durable-profile
+    layout (``HERMES_WRITE_SAFE_ROOT=/opt/data``,
+    ``HERMES_HOME=/opt/data/profiles/<profile>``) -- so temp files stay
+    scoped per-profile instead of colliding across profiles in a shared
+    container. Falls back to ``<first_safe_root>/tmp`` when the active home
+    isn't under any safe root. Returns ``None`` when no safe root is
+    configured. The directory is created on demand so it's immediately
+    writable.
+    """
+    safe_roots = get_safe_write_roots()
+    if not safe_roots:
+        return None
+    try:
+        hermes_home = os.path.realpath(str(_hermes_home_path()))
+    except Exception:
+        hermes_home = ""
+    tmp_dir = None
+    for root in safe_roots:
+        if hermes_home and (hermes_home == root or hermes_home.startswith(root + os.sep)):
+            tmp_dir = os.path.join(hermes_home, "tmp")
+            break
+    if tmp_dir is None:
+        tmp_dir = os.path.join(sorted(safe_roots)[0], "tmp")
+    try:
+        os.makedirs(tmp_dir, exist_ok=True)
+    except OSError:
+        return None
+    return tmp_dir
+
+
 def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     """Return a user/model-facing error when writes to ``path`` are blocked."""
     denial = _classify_write_denial(path)
@@ -170,9 +209,11 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
         return None
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
+        safe_tmp = get_safe_tmp_dir()
+        tmp_hint = f" Temporary files belong in '{safe_tmp}'." if safe_tmp else ""
         return (
             f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
-            f"({roots_display}). Unset the variable or add this path's directory prefix."
+            f"({roots_display}). Unset the variable or add this path's directory prefix.{tmp_hint}"
         )
     return f"{verb} denied: '{path}' is a protected system/credential file."
 

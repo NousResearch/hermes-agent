@@ -504,6 +504,27 @@ class TestResumePendingSystemNote:
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
 
+    def test_orphaned_tool_call_interactive_note_avoids_restart_claim(self):
+        note = build_resume_recovery_note(
+            "orphaned_tool_call", "", interactive=True
+        )
+        assert "tool call that was never completed" in note
+        assert "automatically recovered" in note
+        assert "ask what they would like to do next" in note
+        assert "gateway restart" not in note
+        assert "back online" not in note
+
+    def test_orphaned_tool_call_noninteractive_note_continues_task(self):
+        note = build_resume_recovery_note(
+            "orphaned_tool_call", "", interactive=False
+        )
+        assert "tool call that was never completed" in note
+        assert "CONTINUE the interrupted task" in note
+        assert "session was restored successfully" not in note
+        assert "ask what they would like to do next" not in note
+        assert "gateway restart" not in note
+        assert "back online" not in note
+
     def test_new_message_guidance_identical_regardless_of_interactivity(self):
         """A real NEW user message always wins — same guidance either way."""
         a = build_resume_recovery_note("restart_timeout", "do the thing", interactive=True)

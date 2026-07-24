@@ -206,6 +206,32 @@ def test_inprocess_provider_stop_is_noop():
 
     assert InProcessCronScheduler().stop() is None
 
+def test_inprocess_provider_exits_when_stop_event_already_set():
+    """If the stop event is already set before start(), the provider exits
+    immediately without calling cron.scheduler.tick()."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    calls = []
+    stop = threading.Event()
+    stop.set()
+
+    provider = InProcessCronScheduler()
+
+    with patch(
+        "cron.scheduler.tick",
+        side_effect=lambda *args, **kwargs: calls.append(kwargs),
+    ):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={"interval": 0},
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert calls == []
 
 # ── Phase 2: config key, discovery, resolver ─────────────────────────────────
 

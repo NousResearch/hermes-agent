@@ -8180,7 +8180,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        user_provs=None,
+        custom_provs=None,
+        persist_global: bool = False,
+    ) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
@@ -8192,6 +8200,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "persist_global": persist_global,
         }
         self._invalidate(min_interval=0.0)
 
@@ -8499,10 +8508,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-    def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
+    def _handle_model_picker_selection(self, persist_global: bool | None = None) -> None:
         state = self._model_picker_state
         if not state:
             return
+        if persist_global is None:
+            persist_global = bool(state.get("persist_global"))
         selected = state.get("selected", 0)
         stage = state.get("stage")
         if stage == "provider":
@@ -8533,8 +8544,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if stage == "model":
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
-            back_idx = len(model_list)
-            cancel_idx = len(model_list) + 1
+            custom_idx = len(model_list)
+            back_idx = len(model_list) + 1
+            cancel_idx = len(model_list) + 2
+            if selected == custom_idx:
+                state["stage"] = "custom_model"
+                state["selected"] = 0
+                state["custom_error"] = ""
+                try:
+                    if getattr(self, "_app", None):
+                        self._app.current_buffer.reset()
+                except Exception:
+                    pass
+                self._invalidate(min_interval=0.0)
+                return
             if selected == back_idx:
                 state["stage"] = "provider"
                 state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
@@ -8572,6 +8595,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     )
                 return
             self._close_model_picker()
+            return
+        if stage == "custom_model":
+            provider_data = state.get("provider_data") or {}
+            try:
+                raw_model = self._app.current_buffer.text.strip() if getattr(self, "_app", None) else ""
+            except Exception:
+                raw_model = ""
+            if not raw_model:
+                state["custom_error"] = "Enter a model name, or press Esc to cancel."
+                self._invalidate(min_interval=0.0)
+                return
+
+            from hermes_cli.model_switch import switch_model
+            result = switch_model(
+                raw_input=raw_model,
+                current_provider=self.provider or "",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+                current_api_key=self.api_key or "",
+                is_global=persist_global,
+                explicit_provider=provider_data.get("slug"),
+                user_providers=state.get("user_provs"),
+                custom_providers=state.get("custom_provs"),
+            )
+            self._close_model_picker()
+            self._apply_model_switch_result(result, persist_global)
+            return
 
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model.
@@ -8686,6 +8736,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 provider_display,
                 user_provs=user_provs,
                 custom_provs=custom_provs,
+                persist_global=persist_global,
             )
             return
 
@@ -14052,8 +14103,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
+            elif state.get("stage") == "model":
+                max_idx = len(state.get("model_list") or []) + 2
             else:
-                max_idx = len(state.get("model_list") or []) + 1
+                max_idx = 0
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
             event.app.invalidate()
 
@@ -15170,12 +15223,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
-                title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
-                if model_list:
-                    hint = f"Select a model ({len(model_list)} available)"
+                provider_name = provider_data.get('name', provider_data.get('slug', 'Provider'))
+                title = f"⚙ Model Picker — {provider_name}"
+                if stage == "custom_model":
+                    typed = ""
+                    try:
+                        typed = cli_ref._app.current_buffer.text.strip() if getattr(cli_ref, "_app", None) else ""
+                    except Exception:
+                        typed = ""
+                    choices = [f"Model: {typed or '<type below>'}", "Esc cancels"]
+                    hint = state.get("custom_error") or f"Enter a custom model name for {provider_name}, then press Enter."
                 else:
-                    hint = "No models listed for this provider. Use Back or Cancel."
+                    choices = list(model_list) + ["Enter custom model name", "← Back", "Cancel"]
+                    if model_list:
+                        hint = f"Select a model ({len(model_list)} available), or enter a custom model name."
+                    else:
+                        hint = "No models listed for this provider. Enter a custom model name, go Back, or Cancel."
 
             box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)

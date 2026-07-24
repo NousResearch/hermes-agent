@@ -13088,6 +13088,55 @@ def cmd_profile(args):
         print()
 
 
+    elif action == "link":
+        from hermes_cli.profiles import link_profile, check_profile_links, unlink_profile
+
+        do_check = getattr(args, "check", False)
+        do_unlink = getattr(args, "unlink", False)
+        move_existing = getattr(args, "move", False)
+
+        if do_check:
+            name = args.profile_name
+            if not name:
+                print("Error: profile name required for --check")
+                sys.exit(1)
+            try:
+                for line in check_profile_links(name):
+                    print(line)
+            except (FileNotFoundError, ValueError) as e:
+                print(f"Error: {e}")
+                sys.exit(1)
+            return
+
+        if do_unlink:
+            name = args.profile_name
+            if not name:
+                print("Error: profile name required for --unlink")
+                sys.exit(1)
+            try:
+                for line in unlink_profile(name):
+                    print(line)
+            except (FileNotFoundError, ValueError) as e:
+                print(f"Error: {e}")
+                sys.exit(1)
+            return
+
+        # Default: create link
+        name = args.profile_name
+        path = args.path
+        if not name or not path:
+            print("Usage: hermes profile link <name> <path>")
+            print("       hermes profile link --check <name>")
+            print("       hermes profile link --unlink <name>")
+            sys.exit(1)
+        try:
+            for line in link_profile(name, Path(path), move_existing=move_existing):
+                print(line)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+
 def _render_distribution_plan(plan) -> None:
     """Print a human-readable summary of a pending distribution install."""
     from hermes_cli.profile_distribution import MANIFEST_FILENAME

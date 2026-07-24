@@ -871,6 +871,214 @@ def write_profile_meta(
 
 
 # ---------------------------------------------------------------------------
+# Profile linking (git-backed profiles, issue #44179)
+# ---------------------------------------------------------------------------
+
+# Files/dirs that are portable and safe to symlink to an external git repo.
+_LINKABLE_ITEMS: list[str] = [
+    "SOUL.md",
+    "config.yaml",
+    "mcp.json",
+    "skills",
+    "cron",
+    "plugins",
+]
+
+# Metadata file written by link_profile to record the link target.
+_LINK_META_FILE = ".profile-link.json"
+
+
+def link_profile(
+    profile_name: str,
+    external_path: Path,
+    *,
+    move_existing: bool = False,
+) -> list[str]:
+    """Symlink portable profile files from *external_path* into the profile dir.
+
+    The external directory becomes the source of truth — ``git pull`` there
+    instantly updates what Hermes reads.  Returns a list of human-readable
+    status lines describing what was linked / skipped.
+
+    Raises ``ValueError`` or ``FileNotFoundError`` on invalid input.
+    """
+    validate_profile_name(profile_name)
+    canon = normalize_profile_name(profile_name)
+    profile_dir = get_profile_dir(canon)
+
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(
+            f"Profile '{canon}' does not exist. Create it first with "
+            f"`hermes profile create {canon}`."
+        )
+    if not external_path.is_absolute():
+        external_path = Path.cwd() / external_path
+    external_path = external_path.resolve()
+    if not external_path.is_dir():
+        raise FileNotFoundError(f"External path does not exist: {external_path}")
+    # Check it's a git repo (or inside one)
+    git_dir = external_path / ".git"
+    if not git_dir.exists():
+        # Walk up to check parent dirs
+        found = False
+        for parent in external_path.parents:
+            if (parent / ".git").exists():
+                found = True
+                break
+        if not found:
+            raise ValueError(
+                f"External path is not a git repository: {external_path}\n"
+                f"Initialize with `git init` or point to an existing repo."
+            )
+
+    results: list[str] = []
+    link_meta: dict[str, str] = {}
+
+    for item_name in _LINKABLE_ITEMS:
+        src = external_path / item_name
+        dst = profile_dir / item_name
+
+        if not src.exists():
+            results.append(f"  SKIP  {item_name} — not found in external repo")
+            continue
+
+        if dst.is_symlink():
+            # Already a symlink — update target if different
+            current_target = dst.resolve()
+            if current_target == src.resolve():
+                results.append(f"  OK    {item_name} — already linked")
+                link_meta[item_name] = str(src)
+                continue
+            else:
+                dst.unlink()
+        elif dst.exists():
+            if move_existing:
+                # Move existing profile content into external repo
+                if dst.is_dir():
+                    if src.is_dir():
+                        # Merge: copy files from dst into src
+                        for child in dst.iterdir():
+                            target = src / child.name
+                            if not target.exists():
+                                shutil.move(str(child), str(src))
+                        shutil.rmtree(dst)
+                    else:
+                        shutil.rmtree(dst)
+                else:
+                    # dst is a file, src is also a file — back up dst
+                    backup = dst.with_suffix(dst.suffix + ".bak")
+                    shutil.move(str(dst), str(backup))
+                    results.append(f"  BACKUP {item_name} → {backup.name}")
+            else:
+                results.append(
+                    f"  SKIP  {item_name} — exists in profile (use --move to migrate)"
+                )
+                continue
+
+        # Create symlink: dst (profile) → src (external)
+        dst.symlink_to(src)
+        link_meta[item_name] = str(src)
+        results.append(f"  LINK  {item_name} → {src}")
+
+    # Write link metadata
+    meta_path = profile_dir / _LINK_META_FILE
+    meta_path.write_text(
+        json.dumps(
+            {"external_path": str(external_path), "linked_items": link_meta},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    results.append(f"\n  Link metadata saved to {meta_path}")
+    results.append(
+        f"  External repo: {external_path}"
+    )
+    return results
+
+
+def check_profile_links(profile_name: str) -> list[str]:
+    """Verify that symlinks from a linked profile are intact.
+
+    Returns a list of status lines.  Raises if the profile has no link metadata.
+    """
+    validate_profile_name(profile_name)
+    canon = normalize_profile_name(profile_name)
+    profile_dir = get_profile_dir(canon)
+
+    meta_path = profile_dir / _LINK_META_FILE
+    if not meta_path.exists():
+        raise FileNotFoundError(
+            f"Profile '{canon}' is not linked. "
+            f"Use `hermes profile link {canon} <path>` first."
+        )
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    external = Path(meta["external_path"])
+    results: list[str] = [f"Link target: {external}"]
+
+    for item_name, expected_src in meta.get("linked_items", {}).items():
+        dst = profile_dir / item_name
+        src = Path(expected_src)
+
+        if not dst.is_symlink():
+            results.append(f"  BROKEN {item_name} — not a symlink")
+        elif not dst.exists():
+            results.append(f"  BROKEN {item_name} — target missing: {src}")
+        elif dst.resolve() != src.resolve():
+            results.append(
+                f"  CHANGED {item_name} — points to {dst.resolve()}, expected {src}"
+            )
+        else:
+            results.append(f"  OK     {item_name}")
+
+    return results
+
+
+def unlink_profile(profile_name: str) -> list[str]:
+    """Remove symlinks and restore regular files for a linked profile.
+
+    Copies the external files back into the profile directory so it's
+    self-contained again.  Returns a list of status lines.
+    """
+    validate_profile_name(profile_name)
+    canon = normalize_profile_name(profile_name)
+    profile_dir = get_profile_dir(canon)
+
+    meta_path = profile_dir / _LINK_META_FILE
+    if not meta_path.exists():
+        raise FileNotFoundError(
+            f"Profile '{canon}' is not linked. Nothing to unlink."
+        )
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    results: list[str] = []
+
+    for item_name in meta.get("linked_items", {}):
+        dst = profile_dir / item_name
+
+        if not dst.is_symlink():
+            results.append(f"  SKIP  {item_name} — not a symlink")
+            continue
+
+        src = dst.resolve()
+        dst.unlink()
+
+        if src.exists():
+            if src.is_dir():
+                shutil.copytree(str(src), str(dst))
+            else:
+                shutil.copy2(str(src), str(dst))
+            results.append(f"  RESTORE {item_name} — copied from {src}")
+        else:
+            results.append(f"  REMOVE  {item_name} — target was missing")
+
+    # Remove link metadata
+    meta_path.unlink()
+    results.append(f"\n  Link metadata removed. Profile is now self-contained.")
+    return results
+
+
+# ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
 

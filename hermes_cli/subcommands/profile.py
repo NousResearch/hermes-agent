@@ -200,4 +200,42 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     )
     profile_info.add_argument("profile_name", help="Profile to inspect")
 
+    # ---------- Link subcommand (issue #44179) ----------
+    profile_link = profile_subparsers.add_parser(
+        "link",
+        help="Link a profile to an external git repo via symlinks",
+        description=(
+            "Create symlinks from the profile directory to an external "
+            "git-managed folder.  After linking, the external repo is the "
+            "source of truth — git pull instantly updates Hermes."
+        ),
+    )
+    profile_link.add_argument(
+        "profile_name",
+        nargs="?",
+        default=None,
+        help="Profile to link",
+    )
+    profile_link.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Path to external git repository",
+    )
+    profile_link.add_argument(
+        "--move",
+        action="store_true",
+        help="Move existing profile files into the external repo before linking",
+    )
+    profile_link.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify symlinks are intact (no profile_name/path required)",
+    )
+    profile_link.add_argument(
+        "--unlink",
+        action="store_true",
+        help="Remove symlinks and restore regular files",
+    )
+
     profile_parser.set_defaults(func=cmd_profile)

@@ -6198,6 +6198,21 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+# Cmdline substrings identifying this project's long-lived service processes:
+# the dashboard, and the headless backend (`hermes serve`) — the same
+# long-lived server under a different command name (the desktop app spawns
+# it). Shared by the stale-process scan below and the update flow's
+# ``--stop-services`` stop/relaunch path.
+_HERMES_SERVICE_CMDLINE_PATTERNS = [
+    "hermes dashboard",
+    "hermes_cli.main dashboard",
+    "hermes_cli/main.py dashboard",
+    "hermes serve",
+    "hermes_cli.main serve",
+    "hermes_cli/main.py serve",
+]
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -6226,17 +6241,7 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
+    patterns = _HERMES_SERVICE_CMDLINE_PATTERNS
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -6668,61 +6673,38 @@ def _restart_managed_dashboard_service(
     return True
 
 
-def _kill_stale_dashboard_processes(
-    reason: str = "the running backend no longer matches the updated frontend",
-    *,
-    restart_managed: bool = False,
-) -> None:
-    """Kill running ``hermes dashboard`` processes.
+def _desktop_child_pids() -> set[int]:
+    """PIDs of desktop-managed backend children from ``HERMES_DESKTOP_CHILD_PID``.
 
-    Called at the end of ``hermes update`` (default ``reason``) and also
-    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
-    dashboard has no service manager, so after a code update the running
-    process is guaranteed to be serving stale Python against a
-    freshly-updated JS bundle.  Leaving it alive produces silent
-    frontend/backend mismatches (new auth headers the old backend doesn't
-    recognise → every API call 401s).
+    The Hermes Desktop Electron app spawns ``hermes serve`` backends and sets
+    ``HERMES_DESKTOP_CHILD_PID`` (comma-separated; a lone int still parses for
+    back-compat) so update paths never kill processes the app supervises and
+    would immediately respawn.  (#37532)
+    """
+    raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
+    parsed: set[int] = set()
+    if not raw_pid:
+        return parsed
+    for part in raw_pid.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            parsed.add(int(part))
+        except (ValueError, TypeError):
+            pass
+    return parsed
+
+
+def _terminate_service_pids(
+    pids: list[int],
+) -> tuple[list[int], list[tuple[int, str]]]:
+    """Terminate dashboard/serve service PIDs; returns ``(killed, failed)``.
 
     POSIX: SIGTERM, wait up to ~3s for graceful exit, SIGKILL any survivors.
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
-
-    Manually-started dashboards are not auto-restarted because we don't know
-    the original launch args (--host, --port, --insecure, --tui, --no-open).
-    When ``restart_managed`` is true (the ``hermes update`` path), a detected
-    ``hermes-dashboard.service`` is restarted through systemd instead of
-    raw-killing its main PID.
     """
-    if restart_managed and _restart_managed_dashboard_service(reason):
-        return
-
-    # When the Hermes Desktop Electron app spawns this dashboard as a
-    # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
-    # path can skip killing the desktop-managed process.  (#37532)
-    exclude: set[int] | None = None
-    raw_pid = os.environ.get("HERMES_DESKTOP_CHILD_PID")
-    if raw_pid:
-        # The desktop may manage several backends (one per active profile) and
-        # passes them comma-separated; a lone int still parses for back-compat.
-        parsed: set[int] = set()
-        for part in raw_pid.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                parsed.add(int(part))
-            except (ValueError, TypeError):
-                pass
-        if parsed:
-            exclude = parsed
-
-    pids = _find_stale_dashboard_pids(exclude_pids=exclude)
-    if not pids:
-        return
-
-    print()
-    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
-
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
 
@@ -6783,6 +6765,53 @@ def _kill_stale_dashboard_processes(
                 killed.append(pid)
             except (PermissionError, OSError) as e:
                 failed.append((pid, str(e)))
+
+    return killed, failed
+
+
+def _kill_stale_dashboard_processes(
+    reason: str = "the running backend no longer matches the updated frontend",
+    *,
+    restart_managed: bool = False,
+) -> None:
+    """Kill running ``hermes dashboard`` processes.
+
+    Called at the end of ``hermes update`` (default ``reason``) and also
+    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
+    dashboard has no service manager, so after a code update the running
+    process is guaranteed to be serving stale Python against a
+    freshly-updated JS bundle.  Leaving it alive produces silent
+    frontend/backend mismatches (new auth headers the old backend doesn't
+    recognise → every API call 401s).
+
+    POSIX: SIGTERM, wait up to ~3s for graceful exit, SIGKILL any survivors.
+    Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
+    equivalent for background console apps.
+
+    Manually-started dashboards are not auto-restarted because we don't know
+    the original launch args (--host, --port, --insecure, --tui, --no-open) —
+    unless the update ran with ``--stop-services``, which records each
+    process's command line before stopping it and relaunches it afterwards.
+    When ``restart_managed`` is true (the ``hermes update`` path), a detected
+    ``hermes-dashboard.service`` is restarted through systemd instead of
+    raw-killing its main PID.
+    """
+    if restart_managed and _restart_managed_dashboard_service(reason):
+        return
+
+    # When the Hermes Desktop Electron app spawns this dashboard as a
+    # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
+    # path can skip killing the desktop-managed process.  (#37532)
+    exclude = _desktop_child_pids() or None
+
+    pids = _find_stale_dashboard_pids(exclude_pids=exclude)
+    if not pids:
+        return
+
+    print()
+    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
+
+    killed, failed = _terminate_service_pids(pids)
 
     for pid in killed:
         print(f"    ✓ stopped PID {pid}")
@@ -10627,6 +10656,257 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
         )
 
 
+def _dashboard_service_main_pid() -> int | None:
+    """Best-effort MainPID of a systemd-managed dashboard unit (POSIX only).
+
+    Used by ``--stop-services`` to leave a systemd-owned dashboard to
+    ``_restart_managed_dashboard_service``: raw-killing its main PID reads as
+    a clean stop to systemd, so ``Restart=on-failure`` would not revive it.
+    Returns ``None`` on Windows, without systemd, or when no unit is active.
+    """
+    if sys.platform == "win32":
+        return None
+    for scope in (("--user",), ()):
+        try:
+            result = subprocess.run(
+                [
+                    "systemctl",
+                    *scope,
+                    "show",
+                    "-p",
+                    "MainPID",
+                    "--value",
+                    _DASHBOARD_SYSTEMD_UNIT,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        try:
+            pid = int((result.stdout or "").strip() or "0")
+        except ValueError:
+            continue
+        if pid > 0:
+            return pid
+    return None
+
+
+def _stop_hermes_services_for_update(args) -> dict | None:
+    """Stop this install's dashboard/serve processes before the venv sync.
+
+    Opt-in via ``hermes update --stop-services``. The dashboard and the
+    headless ``hermes serve`` backend run from this install's venv: on
+    Windows they keep native ``.pyd`` files locked (dead-ending the update at
+    the venv-process guard below), and on every platform they keep serving
+    pre-update code during the sync. Gateways already have a pause/resume
+    path around the sync; these services had none — they were only killed
+    after the update with a manual-restart hint, because their launch args
+    were unknown (#40449).
+
+    Records each stopped process's PID, command line, and working directory
+    so ``_restart_hermes_services_after_update`` can relaunch it. Never
+    touches desktop-app-managed backends (``HERMES_DESKTOP_CHILD_PID``), a
+    systemd-managed dashboard unit, or processes from other Hermes installs;
+    the venv-process guard's re-scan stays authoritative for whatever
+    remains, including anything this helper failed to stop. Returns a resume
+    token, or ``None`` when the flag is off or nothing was stopped. Never
+    raises.
+    """
+    if not getattr(args, "stop_services", False):
+        return None
+    try:
+        import psutil
+    except Exception:
+        print(
+            "⚠ --stop-services: psutil is unavailable, cannot identify Hermes "
+            "service processes — continuing without stopping services"
+        )
+        return None
+
+    venv_dir = PROJECT_ROOT / "venv"
+    try:
+        venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
+    try:
+        root_prefix = str(PROJECT_ROOT.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        root_prefix = str(PROJECT_ROOT).lower().rstrip(os.sep) + os.sep
+
+    skip: set[int] = _desktop_child_pids()
+    managed_pid = _dashboard_service_main_pid()
+    if managed_pid:
+        skip.add(managed_pid)
+    skip.add(os.getpid())
+    try:
+        for anc in psutil.Process().parents():
+            skip.add(int(anc.pid))
+    except Exception:
+        pass
+
+    services: list[dict] = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
+    except Exception:
+        return None
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid = info.get("pid")
+        if pid is None or int(pid) in skip:
+            continue
+        argv = list(info.get("cmdline") or [])
+        cmdline_raw = " ".join(argv)
+        if not any(p in cmdline_raw for p in _HERMES_SERVICE_CMDLINE_PATTERNS):
+            continue
+        # Same this-install ownership predicate as the venv-process guard:
+        # another install's dashboard is not ours to stop.
+        exe = info.get("exe")
+        try:
+            exe_norm = str(Path(exe).resolve()).lower() if exe else ""
+        except (OSError, ValueError):
+            exe_norm = str(exe).lower()
+        cmdline_low = cmdline_raw.lower()
+        cwd_raw = str(info.get("cwd") or "")
+        cwd_low = cwd_raw.lower().rstrip(os.sep) + os.sep
+        is_ours = bool(exe_norm) and exe_norm.startswith(venv_prefix)
+        if not is_ours and venv_prefix in cmdline_low:
+            is_ours = True
+        if not is_ours and "hermes_cli.main" in cmdline_low:
+            if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
+                is_ours = True
+        if not is_ours:
+            continue
+        label = "hermes dashboard" if "dashboard" in cmdline_low else "hermes serve"
+        services.append(
+            {
+                "pid": int(pid),
+                "argv": argv or None,
+                "cwd": cwd_raw or None,
+                "label": label,
+            }
+        )
+
+    if not services:
+        return None
+
+    print("→ Stopping Hermes service process(es) before updating (--stop-services)...")
+    for svc in services:
+        print(f"  → {svc['label']} (PID {svc['pid']})")
+
+    killed, failed = _terminate_service_pids([svc["pid"] for svc in services])
+    for pid, err_msg in failed:
+        print(f"  ✗ could not stop PID {pid}: {err_msg}")
+
+    # Wait for the stopped processes to actually exit: the venv-process guard
+    # re-scans live processes right after this, and our own dying PIDs must
+    # not trigger a spurious refusal.
+    import time as _time
+
+    from gateway.status import _pid_exists
+
+    pending = [int(pid) for pid in killed]
+    deadline = _time.monotonic() + 5.0
+    while pending:
+        if _time.monotonic() >= deadline:
+            break
+        pending = [pid for pid in pending if _pid_exists(pid)]
+        if pending:
+            _time.sleep(0.1)
+    unkillable = set(pending) | {pid for pid, _ in failed}
+    if unkillable:
+        # Leave them visible to the venv guard: a process we cannot stop
+        # still holds .pyd files, and refusing is the safe outcome.
+        print(
+            f"  ⚠ {len(unkillable)} process(es) still running; the venv guard "
+            "decides whether the update can proceed"
+        )
+
+    stopped = [svc for svc in services if svc["pid"] not in unkillable]
+    if not stopped:
+        return None
+    return {"resume_needed": True, "services": stopped}
+
+
+def _spawn_detached_service(argv: list[str], cwd: str | None) -> bool:
+    """Detached, windowless spawn of a recorded service command line."""
+    workdir = cwd if cwd and os.path.isdir(cwd) else str(PROJECT_ROOT)
+    kwargs: dict = {
+        "cwd": workdir,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if _is_windows():
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags,
+            windows_detach_flags_without_breakaway,
+        )
+
+        try:
+            subprocess.Popen(argv, creationflags=windows_detach_flags(), **kwargs)
+        except OSError:
+            # Job objects may deny CREATE_BREAKAWAY_FROM_JOB; retry without.
+            subprocess.Popen(
+                argv,
+                creationflags=windows_detach_flags_without_breakaway(),
+                **kwargs,
+            )
+    else:
+        subprocess.Popen(argv, start_new_session=True, **kwargs)
+    return True
+
+
+def _restart_hermes_services_after_update(token: dict | None) -> None:
+    """Relaunch services stopped by ``_stop_hermes_services_for_update``.
+
+    Called on every update outcome — success, venv-guard refusal, ZIP
+    fallback, zero-commit early return — and registered via ``atexit`` as a
+    safety net for error paths, mirroring
+    ``_resume_windows_gateways_after_update``. Idempotent: the first call
+    clears the token. Never raises (it runs at interpreter exit).
+    """
+    if not token or not token.get("resume_needed"):
+        return
+    token["resume_needed"] = False
+    services = token.get("services") or []
+    if not services:
+        return
+    print("→ Restarting Hermes service process(es) in the background...")
+    for svc in services:
+        argv = svc.get("argv")
+        label = svc.get("label") or "hermes service"
+        hint = "hermes dashboard" if "dashboard" in label else "hermes serve"
+        if not argv:
+            print(
+                f"  ⚠ PID {svc.get('pid')} had no recoverable command line — "
+                f"restart manually: {hint}"
+            )
+            continue
+        cmd_text = " ".join(str(a) for a in argv)
+        if not any(p in cmd_text for p in _HERMES_SERVICE_CMDLINE_PATTERNS):
+            # PID-reuse race at capture time: never replay a command line we
+            # would not have classified as a Hermes service.
+            print(f"  ⚠ not restarting unrecognized command line: {cmd_text[:80]}")
+            continue
+        try:
+            ok = _spawn_detached_service([str(a) for a in argv], svc.get("cwd"))
+        except Exception as exc:
+            logger.debug("Could not restart %s after update: %s", label, exc)
+            ok = False
+        if ok:
+            print(f"  ✓ Restarted {label} (was PID {svc.get('pid')})")
+        else:
+            print(f"  ✗ could not restart {label} — restart manually: {hint}")
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore tracked ``package-lock.json`` files that npm dirtied locally.
 
@@ -10791,6 +11071,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _windows_gateway_resume,
         )
 
+    # Opt-in (--stop-services): stop this install's dashboard/serve processes
+    # and record how to relaunch them. Registered with atexit AFTER the
+    # gateway resume above so the LIFO exit order restarts services first —
+    # the reverse of the stop order.
+    _services_resume = _stop_hermes_services_for_update(args)
+    if _services_resume:
+        import atexit as _atexit
+
+        _atexit.register(
+            _restart_hermes_services_after_update,
+            _services_resume,
+        )
+
     # With gateways paused, anything still running from the venv interpreter
     # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd
     # files locked and corrupt the dependency sync below. Refuse rather than
@@ -10805,6 +11098,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _venv_holders = _detect_venv_python_processes()
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
+            _restart_hermes_services_after_update(_services_resume)
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
 
@@ -10868,6 +11162,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         try:
             _update_via_zip(args)
         finally:
+            _restart_hermes_services_after_update(_services_resume)
             _resume_windows_gateways_after_update(_windows_gateway_resume)
         return
 
@@ -11055,6 +11350,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
                 print("✓ Already up to date!")
+            _restart_hermes_services_after_update(_services_resume)
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
@@ -12402,6 +12698,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("    Node.js dependency refresh did not complete.")
         else:
             _kill_stale_dashboard_processes(restart_managed=True)
+
+        # Relaunch services stopped by --stop-services only AFTER the stale
+        # sweep above — co-locating this with the gateway resume earlier
+        # would hand the freshly respawned processes straight back to that
+        # sweep as "stale".
+        _restart_hermes_services_after_update(_services_resume)
 
         print()
         print("Tip: You can now select a provider and model:")

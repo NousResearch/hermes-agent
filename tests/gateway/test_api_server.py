@@ -4407,6 +4407,585 @@ class TestSessionKeyHeader:
 
 
 # ---------------------------------------------------------------------------
+# Reasoning output items on /v1/responses (#21655, #7556)
+# ---------------------------------------------------------------------------
+
+
+def _parse_sse_events(body: str):
+    """Parse an SSE body into a list of (event_name, data_dict) tuples.
+
+    Spec-correct: multiple ``data:`` lines in one block are concatenated
+    with newlines before parsing; non-JSON payloads (e.g. ``[DONE]``
+    sentinels) are skipped rather than raising.
+    """
+    events = []
+    for block in body.split("\n\n"):
+        name, data_lines = None, []
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                name = line[len("event: "):]
+            elif line.startswith("data: "):
+                data_lines.append(line[len("data: "):])
+        if name is None or not data_lines:
+            continue
+        try:
+            events.append((name, json.loads("\n".join(data_lines))))
+        except ValueError:
+            continue
+    return events
+
+
+class TestResponsesReasoningItems:
+    """Reasoning output items are gated by display.platforms.api_server.show_reasoning.
+
+    Default off — existing Responses behavior must be byte-identical. When
+    enabled, the agent's ``reasoning.available`` events surface as
+    spec-shaped ``reasoning`` output items (streamed + final envelope).
+    """
+
+    @staticmethod
+    async def _agent_with_reasoning(reasoning_text, **kwargs):
+        reasoning_cb = kwargs.get("reasoning_callback")
+        text_cb = kwargs.get("stream_delta_callback")
+        if reasoning_cb:
+            reasoning_cb(reasoning_text)
+        if text_cb:
+            text_cb("Done.")
+        return (
+            {"final_response": "Done.", "messages": [], "api_calls": 1},
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+
+    def test_reasoning_items_enabled_reads_display_config(self, adapter):
+        with patch(
+            "gateway.run._load_gateway_config",
+            return_value={"display": {"platforms": {"api_server": {"show_reasoning": True}}}},
+        ):
+            assert adapter._reasoning_items_enabled() is True
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            assert adapter._reasoning_items_enabled() is False
+
+    def test_reasoning_items_enabled_logs_and_defaults_off_on_error(self, adapter, caplog):
+        import logging
+
+        with (
+            patch("gateway.run._load_gateway_config", side_effect=RuntimeError("config exploded")),
+            caplog.at_level(logging.DEBUG, logger="gateway.platforms.api_server"),
+        ):
+            assert adapter._reasoning_items_enabled() is False
+        assert any("show_reasoning" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_stream_gate_off_omits_reasoning_items(self, adapter):
+        """Default behavior is unchanged: no reasoning events, text untouched."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            seen_kwargs = {}
+
+            async def _mock_run_agent(**kwargs):
+                seen_kwargs.update(kwargs)
+                return await self._agent_with_reasoning("Plan: check the dates first.", **kwargs)
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=False),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert '"type": "reasoning"' not in body
+                assert "reasoning_summary" not in body
+                assert "Plan: check the dates first." not in body
+                assert "Done." in body
+                # Gate off => the agent is not even wired for reasoning deltas.
+                assert seen_kwargs.get("reasoning_callback") is None
+
+    @pytest.mark.asyncio
+    async def test_stream_gate_on_emits_reasoning_item_events(self, adapter):
+        """Gate on → spec-shaped reasoning item events + final envelope item."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return await self._agent_with_reasoning("Plan: check the dates first.", **kwargs)
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            events = _parse_sse_events(body)
+            names = [n for n, _ in events]
+            assert "response.reasoning_summary_part.added" in names
+            assert "response.reasoning_summary_text.delta" in names
+            assert "response.reasoning_summary_text.done" in names
+
+            added_items = [
+                d["item"] for n, d in events
+                if n == "response.output_item.added" and d.get("item", {}).get("type") == "reasoning"
+            ]
+            assert len(added_items) == 1
+            assert added_items[0]["status"] == "in_progress"
+
+            done_items = [
+                d["item"] for n, d in events
+                if n == "response.output_item.done" and d.get("item", {}).get("type") == "reasoning"
+            ]
+            assert len(done_items) == 1
+            assert done_items[0]["status"] == "completed"
+            assert done_items[0]["summary"] == [
+                {"type": "summary_text", "text": "Plan: check the dates first."}
+            ]
+
+            completed = [d for n, d in events if n == "response.completed"]
+            assert len(completed) == 1
+            output = completed[0]["response"]["output"]
+            reasoning_items = [it for it in output if it.get("type") == "reasoning"]
+            assert len(reasoning_items) == 1
+            assert reasoning_items[0]["summary"][0]["text"] == "Plan: check the dates first."
+            # Envelope item carries the same correlation fields as the streamed item.
+            assert reasoning_items[0]["id"] == done_items[0]["id"]
+            assert reasoning_items[0]["status"] == "completed"
+            message_items = [it for it in output if it.get("type") == "message"]
+            assert message_items and message_items[-1]["content"][0]["text"] == "Done."
+
+            # Stored response (store=True default) carries the reasoning item too.
+            response_id = completed[0]["response"]["id"]
+            stored = adapter._response_store.get(response_id)
+            assert stored is not None
+            stored_reasoning = [
+                it for it in stored["response"]["output"] if it.get("type") == "reasoning"
+            ]
+            assert len(stored_reasoning) == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_trimmed_in_completed_envelope(self, adapter):
+        """Incremental reasoning events carry the full text; only response.completed
+        and the store trim it (same policy as function_call args)."""
+        long_text = "R" * 2000
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return await self._agent_with_reasoning(long_text, **kwargs)
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            events = _parse_sse_events(body)
+            deltas = [d for n, d in events if n == "response.reasoning_summary_text.delta"]
+            assert any(d.get("delta") == long_text for d in deltas)
+
+            # Incremental "done" events carry the FULL reasoning text, consistent
+            # with the deltas above and with how function_call args stream.
+            summary_done = [d for n, d in events if n == "response.reasoning_summary_text.done"]
+            assert len(summary_done) == 1
+            assert summary_done[0]["text"] == long_text
+
+            done_items = [
+                d["item"] for n, d in events
+                if n == "response.output_item.done" and d.get("item", {}).get("type") == "reasoning"
+            ]
+            assert len(done_items) == 1
+            assert done_items[0]["summary"][0]["text"] == long_text
+
+            completed = [d for n, d in events if n == "response.completed"][0]
+            reasoning_items = [
+                it for it in completed["response"]["output"] if it.get("type") == "reasoning"
+            ]
+            assert len(reasoning_items) == 1
+            envelope_text = reasoning_items[0]["summary"][0]["text"]
+            assert len(envelope_text) < 700
+            assert "more chars" in envelope_text
+
+            stored = adapter._response_store.get(completed["response"]["id"])
+            assert stored is not None
+            stored_reasoning = [
+                it for it in stored["response"]["output"] if it.get("type") == "reasoning"
+            ]
+            assert len(stored_reasoning) == 1
+            assert stored_reasoning[0]["summary"][0]["text"] == envelope_text
+
+    @pytest.mark.asyncio
+    async def test_stream_falls_back_to_final_reasoning_when_callback_is_silent(self, adapter):
+        """If the provider only reports reasoning in final messages, stream mode still includes it."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                text_cb = kwargs.get("stream_delta_callback")
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {
+                        "final_response": "Done.",
+                        "messages": [
+                            {"role": "user", "content": "hi"},
+                            {"role": "assistant", "content": "Done.", "reasoning_content": "thought about it"},
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            events = _parse_sse_events(body)
+            event_names = [name for name, _ in events]
+            assert "response.reasoning_summary_part.added" in event_names
+            assert "response.reasoning_summary_text.delta" in event_names
+            assert "response.reasoning_summary_text.done" in event_names
+            fallback_added = [
+                data["item"]
+                for name, data in events
+                if name == "response.output_item.added"
+                and data.get("item", {}).get("type") == "reasoning"
+            ]
+            fallback_done = [
+                data["item"]
+                for name, data in events
+                if name == "response.output_item.done"
+                and data.get("item", {}).get("type") == "reasoning"
+            ]
+            assert len(fallback_added) == 1
+            assert len(fallback_done) == 1
+            assert fallback_added[0]["id"] == fallback_done[0]["id"]
+            assert fallback_done[0]["summary"] == [
+                {"type": "summary_text", "text": "thought about it"}
+            ]
+            completed = [d for n, d in events if n == "response.completed"]
+            assert len(completed) == 1
+            output = completed[0]["response"]["output"]
+            reasoning_items = [it for it in output if it.get("type") == "reasoning"]
+            assert len(reasoning_items) == 1
+            assert reasoning_items[0]["summary"][0]["text"] == "thought about it"
+
+            stored = adapter._response_store.get(completed[0]["response"]["id"])
+            assert stored is not None
+            stored_reasoning = [
+                it for it in stored["response"]["output"] if it.get("type") == "reasoning"
+            ]
+            assert len(stored_reasoning) == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_fallback_reasoning_interleaves_like_batch(self, adapter):
+        """Silent-callback fallback interleaves reasoning per message in the stored
+        output (reasoning -> tool -> result -> reasoning), matching the
+        non-streaming _extract_output_items order rather than clustering all
+        reasoning after the tool items."""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "reasoning_content": "First inspect the journal.",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "one entry"},
+            {"role": "assistant", "reasoning_content": "Now answer.", "content": "Answer."},
+        ]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                # Tool lifecycle fires live; the reasoning callback stays silent
+                # so the final-message fallback path is exercised.
+                ts = kwargs.get("tool_start_callback")
+                tc = kwargs.get("tool_complete_callback")
+                if ts:
+                    ts("call_1", "search", {})
+                if tc:
+                    tc("call_1", "search", {}, "one entry")
+                text_cb = kwargs.get("stream_delta_callback")
+                if text_cb:
+                    text_cb("Answer.")
+                return (
+                    {"final_response": "Answer.", "messages": messages, "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            events = _parse_sse_events(body)
+            completed = [d for n, d in events if n == "response.completed"][0]
+            stream_types = [it["type"] for it in completed["response"]["output"]]
+
+            batch = APIServerAdapter._extract_output_items(
+                {"messages": messages, "final_response": "Answer."},
+                start_index=1,
+                include_reasoning=True,
+            )
+            assert stream_types == [it["type"] for it in batch]
+            assert stream_types == [
+                "reasoning",
+                "function_call",
+                "function_call_output",
+                "reasoning",
+                "message",
+            ]
+
+    @pytest.mark.asyncio
+    async def test_input_ignores_echoed_reasoning_items(self, adapter):
+        """Spec-compliant clients may echo reasoning items back; they must be skipped."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {"role": "user", "content": "first question"},
+                            {"type": "reasoning", "id": "rs_1",
+                             "summary": [{"type": "summary_text", "text": "earlier thinking"}]},
+                            {"role": "assistant", "content": "earlier answer"},
+                            {"type": "reasoning", "id": "rs_2", "summary": []},
+                            {"role": "user", "content": "actual question"},
+                        ],
+                    },
+                )
+                assert resp.status == 200
+                kwargs = mock_run.call_args.kwargs
+                assert kwargs["user_message"] == "actual question"
+                # No empty turns injected by the skipped reasoning items.
+                assert all(m.get("content") for m in kwargs["conversation_history"])
+
+            # Reasoning item in LAST position must not shadow the real user message.
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {"role": "user", "content": "hello"},
+                            {"type": "reasoning", "id": "rs_3", "summary": []},
+                        ],
+                    },
+                )
+                assert resp.status == 200
+                assert mock_run.call_args.kwargs["user_message"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_deltas_accumulate_into_one_item(self, adapter):
+        """Multiple reasoning deltas before text form a single reasoning item."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                reasoning_cb = kwargs.get("reasoning_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if reasoning_cb:
+                    reasoning_cb("Plan: check ")
+                    reasoning_cb("the dates first.")
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {"final_response": "Done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            events = _parse_sse_events(body)
+            deltas = [d for n, d in events if n == "response.reasoning_summary_text.delta"]
+            assert [d["delta"] for d in deltas] == ["Plan: check ", "the dates first."]
+            done_items = [
+                d["item"] for n, d in events
+                if n == "response.output_item.done" and d.get("item", {}).get("type") == "reasoning"
+            ]
+            assert len(done_items) == 1
+            assert done_items[0]["summary"] == [
+                {"type": "summary_text", "text": "Plan: check the dates first."}
+            ]
+
+    @pytest.mark.asyncio
+    async def test_stream_whitespace_only_reasoning_is_skipped(self, adapter):
+        """Whitespace-only reasoning text emits nothing (matches the batch strip check)."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return await self._agent_with_reasoning("  \n\t ", **kwargs)
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert '"type": "reasoning"' not in body
+                assert "reasoning_summary" not in body
+
+    @pytest.mark.asyncio
+    async def test_conversation_history_ignores_echoed_reasoning_items(self, adapter):
+        """Echoed reasoning items in conversation_history are skipped, not 400ed."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "actual question",
+                        "conversation_history": [
+                            {"role": "user", "content": "first question"},
+                            {"type": "reasoning", "id": "rs_1",
+                             "summary": [{"type": "summary_text", "text": "earlier thinking"}]},
+                            {"role": "assistant", "content": "earlier answer"},
+                        ],
+                    },
+                )
+                assert resp.status == 200
+                history = mock_run.call_args.kwargs["conversation_history"]
+                assert all(m.get("content") for m in history)
+                assert all(m.get("type") != "reasoning" for m in history)
+
+    @pytest.mark.asyncio
+    async def test_batch_envelope_includes_reasoning_item_when_enabled(self, adapter):
+        """Non-streaming envelope mirrors the gate: reasoning item from message fields."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {
+                        "final_response": "Done.",
+                        "messages": [
+                            {"role": "user", "content": "hi"},
+                            {"role": "assistant", "content": "Done.",
+                             "reasoning_content": "thought about it"},
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=True),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                reasoning_items = [it for it in data["output"] if it.get("type") == "reasoning"]
+                assert len(reasoning_items) == 1
+                assert reasoning_items[0]["summary"][0]["text"] == "thought about it"
+                assert reasoning_items[0]["id"].startswith("rs_")
+                assert reasoning_items[0]["status"] == "completed"
+
+            with (
+                patch.object(adapter, "_reasoning_items_enabled", return_value=False),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert all(it.get("type") != "reasoning" for it in data["output"])
+
+    def test_batch_output_preserves_reasoning_tool_result_order(self):
+        """Reasoning stays beside the assistant message that produced it."""
+        result = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "reasoning_content": "First inspect the journal.",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {
+                                "name": "mcp__journal__search",
+                                "arguments": '{"query":"Ithaca"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "one matching entry",
+                },
+                {
+                    "role": "assistant",
+                    "reasoning_content": "Now answer from that evidence.",
+                    "content": "Ken wrote about Ithaca.",
+                },
+            ],
+            "final_response": "Ken wrote about Ithaca.",
+        }
+
+        items = APIServerAdapter._extract_output_items(result, include_reasoning=True)
+
+        assert [item["type"] for item in items] == [
+            "reasoning",
+            "function_call",
+            "function_call_output",
+            "reasoning",
+            "message",
+        ]
+        assert items[0]["summary"][0]["text"] == "First inspect the journal."
+        assert items[3]["summary"][0]["text"] == "Now answer from that evidence."
+
+
 # Per-client model routing (model_routes)
 # ---------------------------------------------------------------------------
 

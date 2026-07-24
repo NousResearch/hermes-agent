@@ -1,0 +1,238 @@
+"""Confirm the DESKTOP side of the Hindsight browser-connect flow, end to end,
+against a fake UI — no real Hindsight Cloud, no Zitadel, no browser, no Cloud
+changes.
+
+A local server stands in for the Hindsight UI's ``/connect/desktop`` route: it
+"mints" an API key and 302-redirects it to the desktop's loopback callback,
+exactly as the counter-proposal describes. We drive the whole desktop path:
+bind loopback → open (fake) browser → UI 302 with ?key= → capture → validate the
+CSRF state → store the key as the provider's ``apiKey``.
+"""
+
+import json
+import os
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
+
+import httpx
+import pytest
+
+from plugins.memory.hindsight import oauth_flow
+
+MINTED_KEY = "hsk_testconnect_0123456789abcdef"
+
+
+def _make_ui(*, state_override: str | None = None):
+    """A fake Hindsight UI: /connect/desktop 302s a minted key to the loopback."""
+
+    class _FakeUI(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != "/connect/desktop":
+                self.send_response(404)
+                self.end_headers()
+                return
+            q = parse_qs(parsed.query)
+            port = q["port"][0]
+            state = state_override if state_override is not None else q["state"][0]
+            # The desktop identifies its surface so the consent side can attribute it.
+            assert q["source"][0] == "hermes-desktop"
+            # The UI (user already signed in) creates a key via its existing
+            # key-creation path, then hands it back over the loopback redirect.
+            location = (
+                f"http://127.0.0.1:{port}/callback?state={state}&key={MINTED_KEY}"
+            )
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def log_message(self, *args):
+            return
+
+    return _FakeUI
+
+
+def _serve(handler_cls, monkeypatch):
+    server = HTTPServer(("127.0.0.1", 0), handler_cls)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv(
+        "HINDSIGHT_CONNECT_URL", f"http://127.0.0.1:{port}/connect/desktop"
+    )
+    return server
+
+
+def _browser_driver(url: str) -> None:
+    """Stand in for the user's browser: follow the UI's 302 into the loopback."""
+    resp = httpx.get(url, follow_redirects=False, timeout=5.0)
+    location = resp.headers["Location"]
+    for _ in range(100):
+        try:
+            httpx.get(location, timeout=1.0)
+            return
+        except Exception:
+            time.sleep(0.02)
+
+
+@pytest.fixture(autouse=True)
+def _reset_status():
+    oauth_flow._set_status("idle", "")
+    yield
+    oauth_flow._set_status("idle", "")
+
+
+def test_connect_stores_minted_key(monkeypatch, tmp_path):
+    server = _serve(_make_ui(), monkeypatch)
+    try:
+        cfg = tmp_path / "hindsight" / "config.json"
+        key = oauth_flow.connect_via_loopback(
+            config_path=cfg, open_url=_browser_driver, timeout=10.0
+        )
+        assert key == MINTED_KEY
+        # Stored where the Hindsight provider actually reads it.
+        data = json.loads(cfg.read_text())
+        assert data["apiKey"] == MINTED_KEY
+        # POSIX mode bits aren't enforced on Windows; keep the connect-path
+        # assertions cross-platform and guard only the permission check.
+        if os.name != "nt":
+            assert (cfg.stat().st_mode & 0o777) == 0o600
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "connect_url, expected",
+    [
+        # Prod and dev UI hosts map to their sibling API hosts.
+        ("https://ui.hindsight.vectorize.io/connect/desktop",
+         "https://api.hindsight.vectorize.io"),
+        ("https://ui.dev.hindsight.vectorize.io/connect/desktop",
+         "https://api.dev.hindsight.vectorize.io"),
+        # A host that doesn't follow the ui.* convention → leave api_url alone.
+        ("http://127.0.0.1:5173/connect/desktop", None),
+        ("https://memory.acme.example/connect/desktop", None),
+    ],
+)
+def test_resolve_api_url_maps_ui_host_to_api(monkeypatch, connect_url, expected):
+    monkeypatch.delenv("HINDSIGHT_API_URL", raising=False)
+    monkeypatch.setenv("HINDSIGHT_CONNECT_URL", connect_url)
+    assert oauth_flow.resolve_api_url() == expected
+
+
+def test_resolve_api_url_explicit_override_wins(monkeypatch):
+    monkeypatch.setenv("HINDSIGHT_CONNECT_URL", "https://ui.dev.hindsight.vectorize.io/connect/desktop")
+    monkeypatch.setenv("HINDSIGHT_API_URL", "https://api.self-hosted.example/")
+    # Explicit override beats the derived host, trailing slash trimmed.
+    assert oauth_flow.resolve_api_url() == "https://api.self-hosted.example"
+
+
+def test_connect_stores_api_url_aligned_to_connect_env(monkeypatch, tmp_path):
+    # Drive the real flow against a fake UI, but claim a prod-shaped connect URL
+    # so the stored api_url is derived from it (not the loopback host).
+    server = _serve(_make_ui(), monkeypatch)
+    try:
+        monkeypatch.delenv("HINDSIGHT_API_URL", raising=False)
+        monkeypatch.setattr(
+            oauth_flow,
+            "resolve_api_url",
+            lambda: "https://api.dev.hindsight.vectorize.io",
+        )
+        cfg = tmp_path / "hindsight" / "config.json"
+        oauth_flow.connect_via_loopback(
+            config_path=cfg, open_url=_browser_driver, timeout=10.0
+        )
+        data = json.loads(cfg.read_text())
+        assert data["apiKey"] == MINTED_KEY
+        assert data["api_url"] == "https://api.dev.hindsight.vectorize.io"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_connect_rejects_state_mismatch(monkeypatch, tmp_path):
+    # UI returns the WRONG state → CSRF guard fires, nothing is stored.
+    server = _serve(_make_ui(state_override="not-the-real-state"), monkeypatch)
+    try:
+        cfg = tmp_path / "hindsight" / "config.json"
+        with pytest.raises(ValueError, match="state mismatch"):
+            oauth_flow.connect_via_loopback(
+                config_path=cfg, open_url=_browser_driver, timeout=10.0
+            )
+        assert not cfg.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_memory_oauth_router_dispatches_to_hindsight():
+    """The generic connect framework resolves the hindsight flow by convention,
+    so /api/memory/providers/hindsight/oauth/{start,status} work with no new
+    route code — the same wiring Honcho uses."""
+    from hermes_cli.memory_oauth import _resolve_flow
+
+    flow = _resolve_flow("hindsight")
+    assert callable(getattr(flow, "start_loopback_flow_background", None))
+    assert callable(getattr(flow, "get_flow_status", None))
+
+
+def test_background_flow_reports_connected(monkeypatch, tmp_path):
+    server = _serve(_make_ui(), monkeypatch)
+    try:
+        cfg = tmp_path / "hindsight" / "config.json"
+        # Point BOTH the flow and the connection detector at the temp config.
+        monkeypatch.setattr(oauth_flow, "resolve_config_path", lambda: cfg)
+        # The background flow uses the real webbrowser.open — swap in our driver.
+        import webbrowser
+
+        monkeypatch.setattr(webbrowser, "open", _browser_driver)
+
+        initial = oauth_flow.start_loopback_flow_background(timeout=10.0)
+        assert initial["state"] in ("pending", "connected")
+
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if oauth_flow.get_flow_status()["state"] == "connected":
+                break
+            time.sleep(0.05)
+
+        status = oauth_flow.get_flow_status()
+        assert status["state"] == "connected"
+        assert status["connected"] is True
+        assert status["auth"] == "apikey"
+        assert json.loads(cfg.read_text())["apiKey"] == MINTED_KEY
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_second_start_while_pending_returns_status_without_deadlock(
+    monkeypatch, tmp_path
+):
+    """A repeated start while the first flow is still pending must return the
+    idempotent status, not deadlock. Regression: ``start_loopback_flow_background``
+    used to call ``get_flow_status()`` while holding the non-reentrant
+    ``_status_lock``, so a second start re-acquired the same lock and hung."""
+    monkeypatch.setattr(oauth_flow, "resolve_config_path", lambda: tmp_path / "c.json")
+    # No-op browser → the first flow blocks in the loopback wait and stays
+    # pending/alive, so the second start hits the idempotent branch.
+    import webbrowser
+
+    monkeypatch.setattr(webbrowser, "open", lambda *a, **k: None)
+
+    first = oauth_flow.start_loopback_flow_background(timeout=2.0)
+    assert first["state"] == "pending"
+
+    result: dict[str, object] = {}
+
+    def _second():
+        result["status"] = oauth_flow.start_loopback_flow_background(timeout=2.0)
+
+    t = threading.Thread(target=_second, daemon=True)
+    t.start()
+    t.join(timeout=5.0)
+
+    assert not t.is_alive(), "second start() deadlocked while a flow was pending"
+    assert result["status"]["state"] == "pending"

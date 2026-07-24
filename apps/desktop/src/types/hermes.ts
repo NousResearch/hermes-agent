@@ -106,6 +106,10 @@ export interface EnvVarInfo {
   // the dedicated Messaging page. The Keys page hides these to avoid
   // duplicating the richer channel-configuration UI.
   channel_managed?: boolean
+  // Memory provider whose browser "Connect" flow can provision this credential
+  // (loopback sign-in). When set, the credential card renders a Connect button
+  // in place of the plain "Get a key" link. Empty for ordinary credentials.
+  connect_provider?: string
   description: string
   is_password: boolean
   is_set: boolean

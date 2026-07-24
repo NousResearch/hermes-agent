@@ -2,6 +2,11 @@ import { normalize } from '@/lib/text'
 
 import type { Locale } from './types'
 
+// Languages are listed in order of approximate contributor interest.
+// When adding a new locale: (1) add its `Locale` to types.ts,
+// (2) add an entry here, (3) add its `configValue` alias to LOCALE_ALIASES,
+// (4) register it in catalog.ts, (5) supply an es.ts (or defineLocale partial).
+
 export const DEFAULT_LOCALE: Locale = 'en'
 
 export const LOCALE_OPTIONS = [
@@ -28,6 +33,12 @@ export const LOCALE_OPTIONS = [
     name: '日本語',
     englishName: 'Japanese',
     configValue: 'ja'
+  },
+  {
+    id: 'es',
+    name: 'Español',
+    englishName: 'Spanish',
+    configValue: 'es'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -64,7 +75,16 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   zh_hant_hk: 'zh-hant',
   ja: 'ja',
   'ja-jp': 'ja',
-  ja_jp: 'ja'
+  ja_jp: 'ja',
+  es: 'es',
+  'es-es': 'es',
+  es_es: 'es',
+  'es-ar': 'es',
+  es_ar: 'es',
+  'es-mx': 'es',
+  es_mx: 'es',
+  'es-419': 'es',
+  es_419: 'es'
 }
 
 export function isLocale(value: unknown): value is Locale {

@@ -1508,6 +1508,93 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 401
 
+    # ── POST /api/chat/file-upload (browser drop/paste, any file type) ──
+
+    def test_chat_file_upload_writes_to_default_profile_uploads(self):
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            files={"file": ("../../report.pdf", b"%PDF-1.4\n", "application/pdf")},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        target = Path(data["path"])
+        assert data["ok"] is True
+        assert data["mime_type"] == "application/pdf"
+        assert data["bytes"] == len(b"%PDF-1.4\n")
+        assert target.parent == get_hermes_home() / "uploads"
+        assert target.name.startswith("dashboard_")
+        assert target.name.endswith("_report.pdf")
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"%PDF-1.4")
+
+    def test_chat_file_upload_writes_to_requested_profile_uploads(self):
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        resp = self.client.post(
+            "/api/chat/file-upload?profile=worker",
+            files={"file": ("leads.csv", b"a,b,c\n", "text/csv")},
+        )
+
+        assert resp.status_code == 200
+        target = Path(resp.json()["path"])
+        assert target.parent == worker_home / "uploads"
+        assert target.is_file()
+        assert target.read_bytes() == b"a,b,c\n"
+
+    def test_chat_file_upload_accepts_non_image_mime(self):
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            files={"file": ("note.txt", b"hello", "text/plain")},
+        )
+
+        assert resp.status_code == 200
+        assert Path(resp.json()["path"]).read_bytes() == b"hello"
+
+    def test_chat_file_upload_rejects_empty_payload(self):
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            files={"file": ("empty.pdf", b"", "application/pdf")},
+        )
+
+        assert resp.status_code == 400
+        assert "empty" in resp.json()["detail"].lower()
+
+    def test_chat_file_upload_enforces_size_cap(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_CHAT_FILE_UPLOAD_MAX_BYTES", 4)
+
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            files={"file": ("large.pdf", b"%PDF-1.4\n", "application/pdf")},
+        )
+
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"].lower()
+        # The streaming path must not leave a partial temp file behind.
+        up_dir = get_hermes_home() / "uploads"
+        leftovers = [p for p in up_dir.iterdir() if "large" in p.name]
+        assert leftovers == []
+
+    def test_chat_file_upload_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            files={"file": ("note.txt", b"hello", "text/plain")},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+
+        assert resp.status_code == 401
+
     # ── Dashboard font override ─────────────────────────────────────────
 
     def test_get_dashboard_font_defaults_to_theme(self):

@@ -52,7 +52,10 @@ import {
 } from "@/lib/pty-mobile-input";
 import {
   imageFilesFromTransfer,
-  transferMayContainImage,
+  nonImageFilesFromTransfer,
+  runOrderedUploads,
+  transferMayContainFile,
+  uploadChatFile,
   uploadChatImage,
 } from "@/lib/chatImagePaste";
 import { PluginSlot } from "@/plugins";
@@ -593,36 +596,63 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       term.focus();
     };
-    const uploadAndAttachImages = (files: File[]) => {
+    const uploadAndAttachImages = async (files: File[]) => {
       if (!files.length) return;
-      void (async () => {
-        const paths: string[] = [];
-        for (const file of files) {
-          const uploaded = await uploadChatImage(file, scopedProfile);
-          if (imageUploadDisposed) return;
-          paths.push(uploaded.path);
-        }
-        await driveImageAttach(paths);
-      })().catch(reportImageUploadError);
+      const paths: string[] = [];
+      for (const file of files) {
+        const uploaded = await uploadChatImage(file, scopedProfile);
+        if (imageUploadDisposed) return;
+        paths.push(uploaded.path);
+      }
+      await driveImageAttach(paths);
+    };
+    // Non-image files (PDFs, docs, …): upload to HERMES_HOME/uploads, then
+    // type the gateway-visible paths into the TUI input (no Return) so the
+    // user can add instructions before sending.
+    const uploadAndInsertFiles = async (files: File[]) => {
+      if (!files.length) return;
+      const paths: string[] = [];
+      for (const file of files) {
+        const uploaded = await uploadChatFile(file, scopedProfile);
+        if (imageUploadDisposed) return;
+        paths.push(uploaded.path);
+      }
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setBanner("File uploaded, but chat is not connected — try again.");
+        return;
+      }
+      ws.send(paths.join(" ") + " ");
+      term.focus();
+    };
+    // Serialize image + non-image writes so a mixed drop/paste can't interleave
+    // a file path into the image command draft (PR #62869 review).
+    const dispatchTransfer = (images: File[], others: File[]) => {
+      void runOrderedUploads(images, others, {
+        attachImages: uploadAndAttachImages,
+        insertFiles: uploadAndInsertFiles,
+      }).catch(reportImageUploadError);
     };
     const handleBrowserPaste = (ev: ClipboardEvent) => {
-      const files = imageFilesFromTransfer(ev.clipboardData);
-      if (!files.length) return;
+      const images = imageFilesFromTransfer(ev.clipboardData);
+      const others = nonImageFilesFromTransfer(ev.clipboardData);
+      if (!images.length && !others.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      dispatchTransfer(images, others);
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
-      if (!transferMayContainImage(ev.dataTransfer)) return;
+      if (!transferMayContainFile(ev.dataTransfer)) return;
       ev.preventDefault();
       if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
     };
     const handleBrowserDrop = (ev: DragEvent) => {
-      const files = imageFilesFromTransfer(ev.dataTransfer);
-      if (!files.length) return;
+      const images = imageFilesFromTransfer(ev.dataTransfer);
+      const others = nonImageFilesFromTransfer(ev.dataTransfer);
+      if (!images.length && !others.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      dispatchTransfer(images, others);
     };
     host.addEventListener("paste", handleBrowserPaste, { capture: true });
     host.addEventListener("dragover", handleBrowserDragOver, { capture: true });
@@ -679,7 +709,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 );
               }
               if (files.length) {
-                uploadAndAttachImages(files);
+                void uploadAndAttachImages(files).catch(reportImageUploadError);
                 return;
               }
             }

@@ -211,6 +211,16 @@ class TestToolsetConsistency:
             for inc in ts["includes"]:
                 assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
+    def test_coding_toolset_includes_all_desktop_gated_tools(self):
+        """The coding posture toolset must include all four desktop-gated tools
+        (read_terminal, close_terminal, open_preview, focus_pane) since coding
+        posture sessions run inside the desktop app."""
+        desktop_tools = {"read_terminal", "close_terminal", "open_preview", "focus_pane"}
+        coding_tools = set(TOOLSETS["coding"]["tools"])
+        assert desktop_tools.issubset(coding_tools), (
+            f"coding toolset missing desktop tools: {desktop_tools - coding_tools}"
+        )
+
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.
 

@@ -72,6 +72,7 @@ export const zh: Translations = {
       cron: "定时任务",
       documentation: "文档",
       keys: "密钥",
+      memory: "记忆",
       logs: "日志",
       models: "模型",
       profiles: "多Agent配置",
@@ -191,6 +192,23 @@ export const zh: Translations = {
     perDayAvg: "/天 平均",
     acrossModels: "共 {count} 个模型",
     inOut: "输入 {input} / 输出 {output}",
+  },
+
+  memory: {
+    title: "记忆",
+    userProfile: "用户资料",
+    notes: "记忆笔记",
+    refresh: "刷新",
+    addEntry: "添加条目",
+    emptyStore: "还没有条目。",
+    entryCount: "条目",
+    chars: "字符",
+    edit: "编辑",
+    delete: "删除",
+    saveFailed: "保存失败",
+    addFailed: "添加失败",
+    deleteFailed: "删除失败",
+    target: "目标",
   },
 
   models: {

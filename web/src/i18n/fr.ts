@@ -73,6 +73,7 @@ export const fr: Translations = {
       cron: "Cron",
       documentation: "Documentation",
       keys: "Clés",
+      memory: "Mémoire",
       logs: "Journaux",
       models: "Modèles",
       profiles: "profils : multi agents",
@@ -193,6 +194,23 @@ export const fr: Translations = {
     perDayAvg: "/jour moy",
     acrossModels: "sur {count} modèles",
     inOut: "{input} entrée / {output} sortie",
+  },
+
+  memory: {
+    title: "Mémoire",
+    userProfile: "Profil utilisateur",
+    notes: "Notes mémoire",
+    refresh: "Actualiser",
+    addEntry: "Ajouter une entrée",
+    emptyStore: "Aucune entrée pour le moment.",
+    entryCount: "entrées",
+    chars: "caractères",
+    edit: "Modifier",
+    delete: "Supprimer",
+    saveFailed: "Échec de l’enregistrement",
+    addFailed: "Échec de l’ajout",
+    deleteFailed: "Échec de la suppression",
+    target: "Cible",
   },
 
   models: {

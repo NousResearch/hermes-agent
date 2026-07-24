@@ -73,6 +73,7 @@ export const it: Translations = {
       cron: "Cron",
       documentation: "Documentazione",
       keys: "Chiavi",
+      memory: "Memoria",
       logs: "Log",
       models: "Modelli",
       profiles: "profili : multi agent",
@@ -193,6 +194,23 @@ export const it: Translations = {
     perDayAvg: "/giorno medio",
     acrossModels: "su {count} modelli",
     inOut: "{input} in / {output} out",
+  },
+
+  memory: {
+    title: "Memoria",
+    userProfile: "Profilo utente",
+    notes: "Note di memoria",
+    refresh: "Aggiorna",
+    addEntry: "Aggiungi voce",
+    emptyStore: "Ancora nessuna voce.",
+    entryCount: "voci",
+    chars: "caratteri",
+    edit: "Modifica",
+    delete: "Elimina",
+    saveFailed: "Salvataggio non riuscito",
+    addFailed: "Aggiunta non riuscita",
+    deleteFailed: "Eliminazione non riuscita",
+    target: "Destinazione",
   },
 
   models: {

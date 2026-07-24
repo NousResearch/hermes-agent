@@ -73,6 +73,7 @@ export const tr: Translations = {
       cron: "Cron",
       documentation: "Dokümantasyon",
       keys: "Anahtarlar",
+      memory: "Bellek",
       logs: "Günlükler",
       models: "Modeller",
       profiles: "profiller : çoklu agent",
@@ -193,6 +194,23 @@ export const tr: Translations = {
     perDayAvg: "/gün ort",
     acrossModels: "{count} model üzerinden",
     inOut: "{input} giriş / {output} çıkış",
+  },
+
+  memory: {
+    title: "Bellek",
+    userProfile: "Kullanıcı profili",
+    notes: "Bellek notları",
+    refresh: "Yenile",
+    addEntry: "Girdi ekle",
+    emptyStore: "Henüz girdi yok.",
+    entryCount: "girdi",
+    chars: "karakter",
+    edit: "Düzenle",
+    delete: "Sil",
+    saveFailed: "Kaydetme başarısız",
+    addFailed: "Ekleme başarısız",
+    deleteFailed: "Silme başarısız",
+    target: "Hedef",
   },
 
   models: {

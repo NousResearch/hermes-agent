@@ -73,6 +73,7 @@ export const ru: Translations = {
       cron: "Cron",
       documentation: "Документация",
       keys: "Ключи",
+      memory: "Память",
       logs: "Журналы",
       models: "Модели",
       profiles: "профили: мульти-агенты",
@@ -193,6 +194,23 @@ export const ru: Translations = {
     perDayAvg: "/день в среднем",
     acrossModels: "по {count} моделям",
     inOut: "{input} вход / {output} выход",
+  },
+
+  memory: {
+    title: "Память",
+    userProfile: "Профиль пользователя",
+    notes: "Заметки памяти",
+    refresh: "Обновить",
+    addEntry: "Добавить запись",
+    emptyStore: "Записей пока нет.",
+    entryCount: "записей",
+    chars: "символов",
+    edit: "Изменить",
+    delete: "Удалить",
+    saveFailed: "Не удалось сохранить",
+    addFailed: "Не удалось добавить",
+    deleteFailed: "Не удалось удалить",
+    target: "Цель",
   },
 
   models: {

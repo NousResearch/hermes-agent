@@ -73,6 +73,7 @@ export const ga: Translations = {
       cron: "Cron",
       documentation: "Doiciméadú",
       keys: "Eochracha",
+      memory: "Cuimhne",
       logs: "Logaí",
       models: "Samhlacha",
       profiles: "próifílí : il-agents",
@@ -193,6 +194,23 @@ export const ga: Translations = {
     perDayAvg: "/lá meán",
     acrossModels: "thar {count} samhail",
     inOut: "{input} isteach / {output} amach",
+  },
+
+  memory: {
+    title: "Cuimhne",
+    userProfile: "Próifíl úsáideora",
+    notes: "Nótaí cuimhne",
+    refresh: "Athnuaigh",
+    addEntry: "Cuir iontráil leis",
+    emptyStore: "Níl aon iontrálacha fós.",
+    entryCount: "iontráil",
+    chars: "carachtair",
+    edit: "Cuir in eagar",
+    delete: "Scrios",
+    saveFailed: "Theip ar shábháil",
+    addFailed: "Theip ar chur leis",
+    deleteFailed: "Theip ar scriosadh",
+    target: "Sprioc",
   },
 
   models: {

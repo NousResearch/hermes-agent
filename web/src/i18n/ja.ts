@@ -73,6 +73,7 @@ export const ja: Translations = {
       cron: "Cron",
       documentation: "ドキュメント",
       keys: "キー",
+      memory: "メモリ",
       logs: "ログ",
       models: "モデル",
       profiles: "プロファイル : マルチエージェント",
@@ -193,6 +194,23 @@ export const ja: Translations = {
     perDayAvg: "/日 平均",
     acrossModels: "{count} モデル全体",
     inOut: "{input} 入力 / {output} 出力",
+  },
+
+  memory: {
+    title: "メモリ",
+    userProfile: "ユーザープロファイル",
+    notes: "メモリノート",
+    refresh: "更新",
+    addEntry: "エントリを追加",
+    emptyStore: "まだエントリがありません。",
+    entryCount: "件",
+    chars: "文字",
+    edit: "編集",
+    delete: "削除",
+    saveFailed: "保存に失敗しました",
+    addFailed: "追加に失敗しました",
+    deleteFailed: "削除に失敗しました",
+    target: "対象",
   },
 
   models: {

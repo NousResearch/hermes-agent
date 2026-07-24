@@ -73,6 +73,7 @@ export const uk: Translations = {
       cron: "Cron",
       documentation: "Документація",
       keys: "Ключі",
+      memory: "Пам’ять",
       logs: "Журнали",
       models: "Моделі",
       profiles: "профілі: мульти-агенти",
@@ -193,6 +194,23 @@ export const uk: Translations = {
     perDayAvg: "/день у сер.",
     acrossModels: "по {count} моделях",
     inOut: "{input} вх. / {output} вих.",
+  },
+
+  memory: {
+    title: "Пам’ять",
+    userProfile: "Профіль користувача",
+    notes: "Нотатки пам’яті",
+    refresh: "Оновити",
+    addEntry: "Додати запис",
+    emptyStore: "Записів ще немає.",
+    entryCount: "записів",
+    chars: "символів",
+    edit: "Редагувати",
+    delete: "Видалити",
+    saveFailed: "Не вдалося зберегти",
+    addFailed: "Не вдалося додати",
+    deleteFailed: "Не вдалося видалити",
+    target: "Ціль",
   },
 
   models: {

@@ -134,6 +134,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "mistral": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.mistral.ai/v1",
+        base_url_env_var="MISTRAL_BASE_URL",
+    ),
     "alibaba": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
@@ -324,6 +329,10 @@ ALIASES: Dict[str, str] = {
 
     # deepseek
     "deep-seek": "deepseek",
+
+    # mistral
+    "mistral-ai": "mistral",
+    "mistralai": "mistral",
 
     # alibaba
     "dashscope": "alibaba",
@@ -804,6 +813,8 @@ def resolve_provider_full(
                         transport="openai_chat",
                         api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()),
                         base_url=_pcfg.inference_base_url or "",
+                        base_url_env_var=_pcfg.base_url_env_var or "",
+                        auth_type=_pcfg.auth_type or "api_key",
                         source="hermes-auth-registry",
                     )
         except Exception:

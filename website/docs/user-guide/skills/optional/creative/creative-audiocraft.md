@@ -1,16 +1,34 @@
 ---
-name: audiocraft-audio-generation
-description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound."
-version: 1.0.0
-author: Orchestra Research
-license: MIT
-dependencies: [audiocraft, torch>=2.0.0, transformers>=4.30.0]
-platforms: [linux, macos]
-metadata:
-  hermes:
-    tags: [Multimodal, Audio Generation, Text-to-Music, Text-to-Audio, MusicGen]
-
+title: "Audiocraft Audio Generation — AudioCraft: MusicGen text-to-music, AudioGen text-to-sound"
+sidebar_label: "Audiocraft Audio Generation"
+description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Audiocraft Audio Generation
+
+AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Optional — install with `hermes skills install official/creative/audiocraft` |
+| Path | `optional-skills/creative/audiocraft` |
+| Version | `1.0.0` |
+| Author | Orchestra Research |
+| License | MIT |
+| Dependencies | `audiocraft`, `torch>=2.0.0`, `transformers>=4.30.0` |
+| Platforms | linux, macos |
+| Tags | `Multimodal`, `Audio Generation`, `Text-to-Music`, `Text-to-Audio`, `MusicGen` |
+| Related skills | [`heartmula`](/docs/user-guide/skills/optional/creative/creative-heartmula), [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # AudioCraft: Audio Generation
 
@@ -130,6 +148,7 @@ torchaudio.save("sound.wav", wav[0].cpu(), sample_rate=16000)
 
 ### Architecture overview
 
+<!-- ascii-guard-ignore -->
 ```
 AudioCraft Architecture:
 ┌──────────────────────────────────────────────────────────────┐
@@ -149,6 +168,7 @@ AudioCraft Architecture:
 │        Converts tokens back to audio waveform                 │
 └──────────────────────────────────────────────────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 ### Model variants
 
@@ -556,8 +576,8 @@ for desc in descriptions:
 
 ## References
 
-- **[Advanced Usage](references/advanced-usage.md)** - Training, fine-tuning, deployment
-- **[Troubleshooting](references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft/references/advanced-usage.md)** - Training, fine-tuning, deployment
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

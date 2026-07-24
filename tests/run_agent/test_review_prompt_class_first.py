@@ -21,15 +21,28 @@ from run_agent import AIAgent
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
+def test_skill_review_prompt_uses_neutral_framing_30220():
+    """#30220: drop the 'Be ACTIVE — most sessions produce at least one
+    skill update' pressure. The prompt previously framed inaction as a
+    'missed learning opportunity', which biased the reviewer toward
+    saving low-signal entries that polluted the library. The new
+    contract is signal-quality-driven: only update when a signal fired,
+    and 'Nothing to save.' is a valid, frequent, first-class outcome."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
+    lower = prompt.lower()
+    # The pre-#30220 false-positive pressure phrases MUST be gone.
+    assert "most sessions produce at least one skill update" not in lower, (
+        "pre-#30220 active-by-default pressure must be removed"
     )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
+    assert "missed learning opportunity" not in lower, (
+        "pre-#30220 'inaction is a miss' framing must be removed"
+    )
+    # The new neutral framing must be present.
+    assert "valid and frequent outcome" in lower, (
+        "must explicitly mark 'Nothing to save.' as valid and frequent"
+    )
+    assert "only act when a signal" in lower or "only when a signal" in lower, (
+        "must require a fired signal before acting"
     )
 
 
@@ -127,18 +140,42 @@ def test_skill_review_prompt_still_has_opt_out_clause():
 # ---------------------------------------------------------------------------
 
 def test_combined_review_prompt_has_memory_section():
-    """Memory half must still cover user facts and preferences."""
+    """Memory half must still cover user facts and preferences. After
+    #30220 the single ``**Memory**`` header was split into ``**USER.md**``
+    and ``**MEMORY.md**`` with explicit target='user' / target='memory'
+    routing — both sub-stores must still be reachable from the prompt."""
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "**Memory**" in prompt
+    assert "**USER.md**" in prompt and "**MEMORY.md**" in prompt
     assert "memory tool" in prompt
+    # The combined prompt must still mention BOTH targets explicitly so
+    # the reviewer knows which store to write to.
+    assert "target='user'" in prompt
+    assert "target='memory'" in prompt
 
 
-def test_combined_review_prompt_skills_biased_toward_active_updates():
-    """Skills half must carry the active-update bias."""
+def test_combined_review_prompt_uses_neutral_framing_30220():
+    """#30220: the combined prompt previously told the reviewer to 'Be
+    ACTIVE — most sessions produce at least one skill update', and that
+    'Nothing to save.' should NOT be reached for as a default. Both
+    clauses biased the reviewer toward false positives. The new
+    contract: signal-quality decides, 'Nothing to save.' is a valid
+    and frequent outcome."""
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "**Skills**" in prompt
-    assert "ACTIVE" in prompt or "active" in prompt.lower()
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower()
+    lower = prompt.lower()
+    # Pre-#30220 pressure phrases must be gone.
+    assert "most sessions produce at least one skill update" not in lower, (
+        "pre-#30220 active-by-default pressure must be removed"
+    )
+    assert "missed learning opportunity" not in lower, (
+        "pre-#30220 'inaction is a miss' framing must be removed"
+    )
+    assert "don't reach for that conclusion" not in lower, (
+        "pre-#30220 anti-default clause on 'Nothing to save.' must be removed"
+    )
+    # New neutral framing must be present.
+    assert "valid and frequent outcome" in lower, (
+        "must explicitly mark 'Nothing to save.' as valid and frequent"
+    )
 
 
 def test_combined_review_prompt_treats_user_corrections_as_skill_signal():

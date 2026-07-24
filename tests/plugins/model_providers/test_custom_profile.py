@@ -7,7 +7,9 @@ nothing when reasoning was *enabled*, so a configured ``reasoning_effort``
 was silently dropped for every custom endpoint.
 
 These tests pin the wire-shape contract:
-  - disabled            → extra_body.think = False
+  - disabled + local endpoint  → extra_body.think = False + reasoning_effort="none"
+  - disabled + remote endpoint → nothing emitted (avoids HTTP 400 from APIs
+                                 that reject reasoning_effort="none")
   - enabled + effort    → top-level reasoning_effort (native OpenAI-compat
                           format GLM/ARK expect), passed through verbatim
                           including ``max``/``xhigh``
@@ -48,27 +50,51 @@ class TestCustomReasoningWireShape:
         assert eb == {}
         assert tl == {}
 
-    def test_disabled_sends_think_false(self, custom_profile):
-        """enabled=False → reasoning_effort='none' top-level + think=False.
+    def test_disabled_sends_think_false_for_local(self, custom_profile):
+        """enabled=False + local base_url → reasoning_effort='none' + think=False.
 
-        Both fields are required: Ollama's /v1/chat/completions silently
+        Both fields are required for Ollama: /v1/chat/completions silently
         ignores extra_body.think (only /api/chat honours it — ollama#14820)
-        but respects top-level reasoning_effort (#25758). think=False stays
-        for proxies and the native /api/chat path.
+        but respects top-level reasoning_effort (#25758).
         """
         eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False}, model="glm-5.2"
+            reasoning_config={"enabled": False}, model="glm-5.2",
+            base_url="http://localhost:11434/v1",
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
 
-    def test_effort_none_sends_think_false(self, custom_profile):
-        """effort='none' is the disable alias → same dual emission."""
+    def test_disabled_omits_for_remote(self, custom_profile):
+        """enabled=False + remote base_url → nothing emitted.
+
+        Remote OpenAI-compatible APIs (ofox, Volcengine ARK, etc.) reject
+        reasoning_effort="none" as invalid.  Omit so the server default applies.
+        """
         eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "none"}, model="glm-5.2"
+            reasoning_config={"enabled": False}, model="doubao-seed-2.1-pro",
+            base_url="https://api.ofox.ai/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_effort_none_sends_think_false_for_local(self, custom_profile):
+        """effort='none' + local → same dual emission as enabled=False."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"}, model="glm-5.2",
+            base_url="http://127.0.0.1:11434/v1",
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
+
+    def test_effort_none_omits_for_remote(self, custom_profile):
+        """effort='none' + remote → nothing emitted."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"},
+            model="doubao-seed-2.1-pro",
+            base_url="https://api.ofox.ai/v1",
+        )
+        assert eb == {}
+        assert tl == {}
 
     @pytest.mark.parametrize(
         "effort", ["minimal", "low", "medium", "high", "xhigh", "max"]
@@ -102,6 +128,59 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": True, "effort": "high"}, model="glm-5.2"
         )
         assert eb.get("think") is not True
+
+
+class TestCustomReasoningDisableConfig:
+    """``reasoning_disable`` config key overrides the locality heuristic."""
+
+    def test_disable_none_forces_on_remote(self, custom_profile, monkeypatch):
+        """reasoning_disable='none' → always send fields, even remote."""
+        import sys
+        _mod = sys.modules["plugins.model_providers.custom"]
+        monkeypatch.setattr(_mod, "_read_reasoning_disable_method", lambda ctx: "none")
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="doubao-seed-2.1-pro",
+            base_url="https://api.ofox.ai/v1",
+        )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disable_omit_suppresses_on_local(self, custom_profile, monkeypatch):
+        """reasoning_disable='omit' → never send fields, even local."""
+        import sys
+        _mod = sys.modules["plugins.model_providers.custom"]
+        monkeypatch.setattr(_mod, "_read_reasoning_disable_method", lambda ctx: "omit")
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.2",
+            base_url="http://localhost:11434/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_disable_auto_keeps_locality_default(self, custom_profile, monkeypatch):
+        """reasoning_disable='auto' (default) → locality heuristic applies."""
+        import sys
+        _mod = sys.modules["plugins.model_providers.custom"]
+        monkeypatch.setattr(_mod, "_read_reasoning_disable_method", lambda ctx: "auto")
+        # Local → fields emitted
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.2",
+            base_url="http://localhost:11434/v1",
+        )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+
+        # Remote → fields omitted
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="doubao-seed-2.1-pro",
+            base_url="https://api.ofox.ai/v1",
+        )
+        assert eb == {}
+        assert tl == {}
 
 
 class TestCustomReasoningWithNumCtx:

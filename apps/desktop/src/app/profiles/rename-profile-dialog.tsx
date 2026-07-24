@@ -102,7 +102,7 @@ export function RenameProfileDialog({
               aria-invalid={invalid}
               autoFocus
               id="rename-profile-name"
-              onChange={event => setName(event.target.value)}
+              onChange={event => setName(event.target.value.toLowerCase())}
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>

@@ -1,6 +1,9 @@
 # Hermes 靜態訊息目錄 -- 繁體中文（台灣／香港）
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+auth:
+  no_provider_configured: "未設定推理提供方。執行 'hermes model' 選擇提供方和模型，或在 ~/.hermes/.env 中設定 API 金鑰（OPENROUTER_API_KEY、OPENAI_API_KEY 等）。"
+
 provider:
   custom_endpoint: "自訂端點"
 

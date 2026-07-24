@@ -16,6 +16,14 @@ provider:
   # identifiers and stay untranslated; this label is prose, not an identifier.
   custom_endpoint: "Custom endpoint"
 
+auth:
+  # Raised when provider resolution exhausts every source (config, env keys,
+  # OAuth logins, Bedrock).  The paired machine-readable code
+  # `no_provider_configured` stays on the exception for clients to match on;
+  # this text is display prose.  Command names, env-var names, and paths are
+  # identifiers and stay untranslated in every locale.
+  no_provider_configured: "No inference provider configured. Run 'hermes model' to choose a provider and model, or set an API key (OPENROUTER_API_KEY, OPENAI_API_KEY, etc.) in ~/.hermes/.env."
+
 approval:
   # CLI approval prompt -- shown when a dangerous command needs user review.
   dangerous_header: "⚠️  DANGEROUS COMMAND: {description}"

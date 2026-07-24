@@ -18,6 +18,16 @@ describe('isProviderSetupErrorMessage', () => {
     ).toBe(true)
   })
 
+  it('matches the localized auth.no_provider_configured catalog entries', () => {
+    expect(
+      isProviderSetupErrorMessage(
+        "未配置推理提供方。运行 'hermes model' 选择提供方和模型，或在 ~/.hermes/.env 中设置 API 密钥（OPENROUTER_API_KEY、OPENAI_API_KEY 等）。"
+      )
+    ).toBe(true)
+    expect(isProviderSetupErrorMessage('未設定推理提供方。')).toBe(true)
+    expect(isProviderSetupErrorMessage('推論プロバイダーが設定されていません。')).toBe(true)
+  })
+
   it('does not match bare env var mentions from auxiliary warnings', () => {
     expect(isProviderSetupErrorMessage('OPENROUTER_API_KEY not set')).toBe(false)
     expect(isProviderSetupErrorMessage('Run `hermes setup` or set OPENROUTER_API_KEY.')).toBe(false)

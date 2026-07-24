@@ -6,6 +6,7 @@ import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { chipRowProps } from './overlayPrimitives.js'
+import { SelectableRow } from './selectableRow.js'
 import { TextInput } from './textInput.js'
 
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
@@ -129,12 +130,24 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
       <Text />
 
       {opts.map((o, i) => (
-        <Text key={o}>
+        <SelectableRow
+          index={i}
+          isActive={sel === i}
+          key={o}
+          onActivate={n => {
+            const choice = opts[n]
+
+            if (choice) {
+              onChoice(choice)
+            }
+          }}
+          onSelect={setSel}
+        >
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
             {sel === i ? '▸ ' : '  '}
             {i + 1}. {LABELS[o]}
           </Text>
-        </Text>
+        </SelectableRow>
       ))}
 
       <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text>
@@ -214,12 +227,20 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
       {heading}
 
       {[...choices, 'Other (type your answer)'].map((c, i) => (
-        <Text key={i}>
+        <SelectableRow
+          index={i}
+          isActive={sel === i}
+          key={i}
+          onActivate={n => {
+            n === choices.length ? setTyping(true) : choices[n] && onAnswer(choices[n]!)
+          }}
+          onSelect={setSel}
+        >
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
             {sel === i ? '▸ ' : '  '}
             {i + 1}. {c}
           </Text>
-        </Text>
+        </SelectableRow>
       ))}
 
       <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{choices.length} quick pick · Esc/Ctrl+C cancel</Text>
@@ -278,10 +299,18 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
       <Text />
 
       {rows.map((row, i) => (
-        <Text key={row.label}>
+        <SelectableRow
+          index={i}
+          isActive={sel === i}
+          key={row.label}
+          onActivate={n => {
+            n === 0 ? onCancel() : onConfirm()
+          }}
+          onSelect={setSel}
+        >
           <Text color={sel === i ? accent : t.color.muted}>{sel === i ? '▸ ' : '  '}</Text>
           <Text color={sel === i ? row.color : t.color.muted}>{row.label}</Text>
-        </Text>
+        </SelectableRow>
       ))}
 
       <Text color={t.color.muted}>↑/↓ select · Enter confirm · Y/N quick · Esc cancel</Text>

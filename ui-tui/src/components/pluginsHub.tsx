@@ -7,6 +7,7 @@ import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
 import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
+import { SelectableRow } from './selectableRow.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 44
@@ -209,15 +210,26 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
         const active = clampedIdx === lineIdx
 
         return (
-          <Text
-            color={t.color.muted}
-            {...chipRowProps(t, active)}
+          <SelectableRow
+            index={lineIdx}
+            isActive={active}
             key={effectiveRows[lineIdx]?.name ?? row}
-            wrap="truncate-end"
+            onActivate={n => {
+              const target = effectiveRows[n]
+
+              if (target) {
+                setIdx(n)
+                toggle(target)
+              }
+            }}
+            onSelect={setIdx}
+            width={width}
           >
-            {active ? '▸ ' : '  '}
-            {i + 1}. {row}
-          </Text>
+            <Text color={t.color.muted} {...chipRowProps(t, active)} wrap="truncate-end">
+              {active ? '▸ ' : '  '}
+              {i + 1}. {row}
+            </Text>
+          </SelectableRow>
         )
       })}
 

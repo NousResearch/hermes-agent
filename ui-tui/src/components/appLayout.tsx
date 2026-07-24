@@ -1,9 +1,9 @@
 // Importing the apps barrel registers the reference widget apps at startup.
 import '../sdk/apps/index.js'
 
-import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
+import { AlternateScreen, Box, InlineMouse, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
@@ -11,7 +11,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
-import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
+import { INLINE_MODE, MOUSE_TRACKING, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
@@ -525,9 +525,19 @@ export const AppLayout = memo(function AppLayout({
 
   // Inline mode skips AlternateScreen so the host terminal's native
   // scrollback captures rows scrolled off the top; composer + progress
-  // stay anchored via normal flex-column flow.
-  const Shell = INLINE_MODE ? Fragment : AlternateScreen
-  const shellProps = INLINE_MODE ? {} : { mouseTracking }
+  // stay anchored via normal flex-column flow. It still arms mouse tracking
+  // via <InlineMouse> (a Fragment with the DEC side effect) so composer
+  // click-to-position works in the primary buffer too (issue #30536).
+  //
+  // Termux keeps its mouse-off default (native touch selection must not be
+  // intercepted): fall back to the boot MOUSE_TRACKING preset there, which
+  // is 'off' unless the user explicitly set HERMES_TUI_MOUSE_TRACKING. Every
+  // other inline host honors the runtime `display.mouse_tracking` config.
+  const Shell = INLINE_MODE ? InlineMouse : AlternateScreen
+
+  const shellProps = {
+    mouseTracking: INLINE_MODE && TERMUX_TUI_MODE ? MOUSE_TRACKING : mouseTracking
+  }
 
   return (
     <Shell {...shellProps}>

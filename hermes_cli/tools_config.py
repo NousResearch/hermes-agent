@@ -382,6 +382,15 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "deepinfra",
             },
+            {
+                "name": "Gradium",
+                "badge": "paid",
+                "tag": "Multilingual TTS, needs API key + 'gradium' pip package",
+                "env_vars": [
+                    {"key": "GRADIUM_API_KEY", "prompt": "Gradium API key", "url": "https://studio.gradium.ai/platform/api-keys"},
+                ],
+                "tts_provider": "gradium",
+            },
         ],
     },
     "web": {

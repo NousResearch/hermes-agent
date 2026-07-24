@@ -53,6 +53,7 @@ _BUILTIN_NAMES = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "gradium",
     "neutts",
     "kittentts",
     "piper",

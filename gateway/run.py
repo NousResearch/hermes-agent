@@ -3021,6 +3021,21 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _is_synthetic_empty_terminal_response(agent_result: dict, response: str) -> bool:
+    """True when ``response == "(empty)"`` is Hermes' terminal sentinel."""
+    if response != "(empty)" or not isinstance(agent_result, dict):
+        return False
+
+    messages = agent_result.get("messages")
+    if not isinstance(messages, list):
+        return False
+
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return bool(msg.get("_empty_terminal_sentinel"))
+    return False
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -3029,9 +3044,10 @@ def _normalize_empty_agent_response(
 ) -> str:
     """Normalize empty/None agent responses into user-facing messages.
 
-    Consolidates the existing ``failed`` handler and adds a catch-all for
-    the case where the agent did work (api_calls > 0) but returned no text.
-    Fix for #18765.
+    Consolidates the existing ``failed`` handler and catch-all handling for
+    empty / synthetic-empty replies when the agent did work but produced no
+    user-visible text. Intentional ``end_turn_tool_batch`` completions remain
+    silent for the messaging layer.
 
     Also surfaces a retry hint when the agent never ran at all
     (api_calls == 0) for a non-interrupted, non-failed turn -- this is the
@@ -3039,7 +3055,9 @@ def _normalize_empty_agent_response(
     message hits a stale generation token and returns an empty result,
     leaving the platform with nothing to send. (#31884)
     """
-    if response:
+    synthetic_empty = _is_synthetic_empty_terminal_response(agent_result, response)
+
+    if response and not synthetic_empty:
         return response
 
     if agent_result.get("failed"):
@@ -3082,6 +3100,14 @@ def _normalize_empty_agent_response(
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+        if agent_result.get("turn_exit_reason") == "end_turn_tool_batch":
+            return ""
+        if synthetic_empty:
+            return (
+                "⚠️ The model returned no response after processing tool "
+                "results. This can happen with some models — try again or "
+                "rephrase your question."
+            )
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."
@@ -3102,6 +3128,9 @@ def _normalize_empty_agent_response(
             "⚠️ Your message wasn't processed (the previous turn was still "
             "being cleaned up). Please send it again."
         )
+
+    if synthetic_empty:
+        return ""
 
     return response
 
@@ -13790,17 +13819,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 _intentional_silence = False
 
-            # Convert the agent's internal "(empty)" sentinel into a
-            # user-friendly message.  "(empty)" means the model failed to
-            # produce visible content after exhausting all retries (nudge,
-            # prefill, empty-retry, fallback).  Sending the raw sentinel
-            # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)" and not _intentional_silence:
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -22147,7 +22165,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 0 if (_session_was_split or _compacted_in_place) else len(agent_history)
             )
 
-            if not final_response:
+            # Successful end_turn exits often have empty prose; avoid the old
+            # ``if not final_response`` bailout unless failure metadata matches.
+            _empty_final = final_response is None or final_response == ""
+            if _empty_final and (
+                result.get("failed")
+                or result.get("partial")
+                or result.get("error")
+            ):
                 final_response = _normalize_empty_agent_response(
                     result, final_response or "", history_len=len(agent_history),
                 )
@@ -22166,6 +22191,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "compression_deferred": result.get("compression_deferred", False),
+                    "turn_exit_reason": result.get("turn_exit_reason"),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
                     "compacted_in_place": _compacted_in_place,
@@ -22176,6 +22202,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
+
+            # Downstream MEDIA scan uses ``not in final_response``.
+            if final_response is None:
+                final_response = ""
 
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
@@ -22281,6 +22311,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
+                "failed": result_holder[0].get("failed", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
                 # Soft lock-contention defer (#69870 consumer): distinct from
@@ -22290,6 +22321,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     result_holder[0].get("compression_deferred", False)
                     if result_holder[0] else False
                 ),
+                "turn_exit_reason": result.get("turn_exit_reason"),
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "compacted_in_place": _compacted_in_place,

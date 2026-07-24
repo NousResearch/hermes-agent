@@ -5617,6 +5617,9 @@ def run_conversation(
                 # flag so it can fire again if the model goes empty on
                 # a LATER tool round.
                 agent._post_tool_empty_retried = False
+                agent._last_tool_calls_all_end_turn = agent._tool_batch_has_end_turn(
+                    assistant_message.tool_calls
+                )
 
                 previous_msg = messages[-1] if messages else None
                 current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
@@ -5705,6 +5708,22 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    break
+
+                if getattr(agent, "_last_tool_calls_all_end_turn", False):
+                    _turn_exit_reason = "end_turn_tool_batch"
+                    messages.append(agent._build_empty_assistant_placeholder())
+                    clean = agent._strip_think_blocks(turn_content).strip()
+                    if (
+                        clean
+                        and getattr(agent, "interim_assistant_callback", None) is not None
+                    ):
+                        agent._response_was_previewed = True
+                    final_response = clean
+                    agent._last_content_with_tools = None
+                    agent._last_content_tools_all_housekeeping = False
+                    agent._last_tool_calls_all_end_turn = False
+                    agent._empty_content_retries = 0
                     break
 
                 # Reset per-turn retry counters after successful tool
@@ -5952,6 +5971,24 @@ def run_conversation(
                         m.get("role") == "tool"
                         for m in messages[-5:]  # check recent messages
                     )
+                    # If any recent tool was an end_turn tool, the model
+                    # going silent is correct behaviour — skip the nudge.
+                    # Using "any" rather than "all": a mixed batch like
+                    # [kb_search, trigger_handover] should also suppress
+                    # the nudge because trigger_handover ended the turn.
+                    if _prior_was_tool:
+                        from tools.registry import registry as _reg
+
+                        _recent_tool_names = [
+                            m.get("name")
+                            for m in messages[-5:]
+                            if m.get("role") == "tool" and m.get("name")
+                        ]
+                        _prior_any_end_turn = bool(_recent_tool_names) and any(
+                            _reg.is_end_turn(n) for n in _recent_tool_names
+                        )
+                    else:
+                        _prior_any_end_turn = False
                     # Detect Qwen3/Ollama-style in-content thinking blocks.
                     # Ollama puts <think> in the content field (not in
                     # reasoning_content), so _has_structured below would
@@ -5966,6 +6003,7 @@ def run_conversation(
                     )
                     if (
                         _prior_was_tool
+                        and not _prior_any_end_turn  # silent after end_turn tool is intentional
                         and not getattr(agent, "_post_tool_empty_retried", False)
                         and not _has_inline_thinking  # thinking model still working — let prefill handle
                     ):
@@ -6017,7 +6055,11 @@ def run_conversation(
                         or getattr(assistant_message, "reasoning_details", None)
                         or _has_inline_thinking
                     )
-                    if _has_structured and agent._thinking_prefill_retries < 2:
+                    if (
+                        _has_structured
+                        and not _prior_any_end_turn
+                        and agent._thinking_prefill_retries < 2
+                    ):
                         agent._thinking_prefill_retries += 1
                         logger.info(
                             "Thinking-only response (no visible content) — "

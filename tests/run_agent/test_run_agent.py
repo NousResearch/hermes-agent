@@ -4327,6 +4327,146 @@ class TestRunConversation:
         assert result["final_response"] == "Done searching"
         assert mock_handle_function_call.call_args.args[:2] == ("web_search", {})
 
+    def test_end_turn_tool_batch_stops_without_followup_nudge(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="Let me check with my side and come back to you shortly.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        agent.client.chat.completions.create.return_value = resp1
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("tools.registry.registry.is_end_turn", return_value=True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("image")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 1
+        assert result["final_response"] == "Let me check with my side and come back to you shortly."
+        assert result["messages"][-1]["role"] == "assistant"
+        assert result["messages"][-1]["content"] == "(empty)"
+        assert not any("nudging to continue" in m.lower() for m in status_messages)
+
+    def test_end_turn_tool_in_mixed_batch_stops_without_followup_nudge(self, agent):
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("read_file")
+        tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tc2 = _mock_tool_call(name="read_file", arguments='{"path":"README.md"}', call_id="c2")
+        resp1 = _mock_response(
+            content="I checked the details and will hand this over now.",
+            finish_reason="tool_calls",
+            tool_calls=[tc1, tc2],
+        )
+        agent.client.chat.completions.create.return_value = resp1
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        def _is_end_turn(name):
+            return name == "read_file"
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("tools.registry.registry.is_end_turn", side_effect=_is_end_turn),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("image")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 1
+        assert result["final_response"] == "I checked the details and will hand this over now."
+        assert result["messages"][-1]["role"] == "assistant"
+        assert result["messages"][-1]["content"] == "(empty)"
+        assert not any("nudging to continue" in m.lower() for m in status_messages)
+
+    def test_mixed_batch_with_end_turn_suppresses_empty_response_nudge(self, agent):
+        # Counter-example: [kb_search (non-end_turn), trigger_handover (end_turn)].
+        # With "all" semantics, kb_search would cause the nudge to fire.
+        # With "any" semantics, trigger_handover's presence suppresses it.
+        # We bypass _tool_batch_has_end_turn so the loop continues past tool
+        # execution and reaches the _prior_any_end_turn guard.
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("kb_search")
+        tc1 = _mock_tool_call(name="kb_search", arguments="{}", call_id="c1")
+        tc2 = _mock_tool_call(name="trigger_handover", arguments="{}", call_id="c2")
+        resp1 = _mock_response(
+            content="Let me look that up and hand over.",
+            finish_reason="tool_calls",
+            tool_calls=[tc1, tc2],
+        )
+        resp2 = _mock_response(content="", finish_reason="stop")
+        resp3 = _mock_response(content="Done.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        def _is_end_turn(name):
+            return name == "trigger_handover"
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"ok": true}'),
+            patch("tools.registry.registry.is_end_turn", side_effect=_is_end_turn),
+            patch.object(agent, "_tool_batch_has_end_turn", return_value=False),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("help me")
+
+        assert not any("nudging to continue" in m.lower() for m in status_messages)
+
+    def test_non_end_turn_tools_still_fire_empty_response_nudge(self, agent):
+        # Baseline: when no end_turn tool is present, an empty response after
+        # tool calls should still trigger the recovery nudge.
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="", finish_reason="stop")
+        resp3 = _mock_response(content="Done.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"result": "data"}'),
+            patch("tools.registry.registry.is_end_turn", return_value=False),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("search for something")
+
+        assert any("nudging to continue" in m.lower() for m in status_messages)
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -4706,7 +4846,7 @@ class TestRunConversation:
         assert "No reply:" in result["final_response"]
 
     def test_empty_response_emits_status_for_gateway(self, agent):
-        """_emit_status is called during empty retries so gateway users see feedback."""
+        """_buffer_status is called during empty retries so gateway users see feedback."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
 
@@ -4725,6 +4865,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
             patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("answer me")
@@ -4783,6 +4924,7 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
             patch.object(agent, "_emit_status", side_effect=_capture_status),
         ):
             result = agent.run_conversation("ask me")

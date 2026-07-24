@@ -415,6 +415,24 @@ class TestGatewaySurfacesNullResponse:
 
         assert result == "Hello!"
 
+    def test_end_turn_tool_batch_empty_response_is_silent(self):
+        """end_turn-only tool exits leave empty final prose; avoid #18765 warning."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "",
+            "api_calls": 2,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "end_turn_tool_batch",
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "", history_len=5,
+        )
+
+        assert response == ""
+
     def test_silent_drop_after_stop_surfaces_hint(self):
         """Regression for #31884: after /stop, the next user message hits a
         stale generation token in _run_agent and returns with api_calls=0,
@@ -439,6 +457,75 @@ class TestGatewaySurfacesNullResponse:
         assert result, "Silent-drop turn must surface a user-facing hint"
         lowered = result.lower()
         assert "send it again" in lowered or "try again" in lowered
+
+    def test_end_turn_tool_batch_synthetic_empty_is_silent(self):
+        """Synthetic ``(empty)`` should still stay silent for end_turn batches."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "(empty)",
+            "api_calls": 2,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "end_turn_tool_batch",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "(empty)",
+                    "_empty_terminal_sentinel": True,
+                }
+            ],
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "(empty)", history_len=5,
+        )
+
+        assert response == ""
+
+    def test_synthetic_empty_response_surfaces_retry_message(self):
+        """Synthetic ``(empty)`` should become a warning on non-end_turn exits."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "(empty)",
+            "api_calls": 2,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "empty_response_exhausted",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "(empty)",
+                    "_empty_terminal_sentinel": True,
+                }
+            ],
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "(empty)", history_len=5,
+        )
+
+        assert "returned no response after processing tool results" in response
+
+    def test_literal_empty_string_text_passes_through(self):
+        """Literal model text ``(empty)`` is not Hermes' synthetic sentinel."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": "(empty)",
+            "api_calls": 1,
+            "partial": False,
+            "interrupted": False,
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "messages": [{"role": "assistant", "content": "(empty)"}],
+        }
+
+        response = _normalize_empty_agent_response(
+            agent_result, "(empty)", history_len=5,
+        )
+
+        assert response == "(empty)"
 
 
 # ===========================================================================

@@ -91,6 +91,74 @@ class TestStrictApiValidation:
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
 
+    def test_reasoning_fields_stripped_for_strict_provider(self, monkeypatch):
+        """Strict chat_completions requests must not carry reasoning replay
+        fields — providers like Fireworks/Mistral reject them with HTTP 400
+        'Extra inputs are not permitted'. Only the wire copy is stripped;
+        persisted history keeps the fields for future replay.
+        """
+        agent = _make_agent(
+            monkeypatch,
+            "fireworks",
+            api_mode="chat_completions",
+            base_url="https://api.fireworks.ai/inference/v1",
+        )
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning": "trajectory-only reasoning",
+                "reasoning_content": "provider-facing reasoning",
+                "reasoning_details": [
+                    {"signature": "sig_1", "type": "thinking"}
+                ],
+            },
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assistant_msg = kwargs["messages"][1]
+        assert "reasoning" not in assistant_msg
+        assert "reasoning_details" not in assistant_msg
+        # reasoning_content is a provider-schema field (DeepSeek/Kimi
+        # echo-back) reconciled elsewhere — not this sanitizer's job.
+        assert assistant_msg["reasoning_content"] == "provider-facing reasoning"
+        # History untouched — future turns can still replay reasoning state.
+        assert messages[1]["reasoning"] == "trajectory-only reasoning"
+        assert messages[1]["reasoning_details"] == [
+            {"signature": "sig_1", "type": "thinking"}
+        ]
+
+    def test_reasoning_details_kept_for_openrouter_replay(self, monkeypatch):
+        """OpenRouter consumes replayed reasoning_details for multi-turn
+        reasoning continuity — the strict-provider strip must not apply
+        there. Trajectory-only reasoning is still stripped unconditionally.
+        """
+        agent = _make_agent(monkeypatch, "openrouter")
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning": "trajectory-only reasoning",
+                "reasoning_details": [
+                    {"signature": "sig_1", "type": "thinking"}
+                ],
+            },
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assistant_msg = kwargs["messages"][1]
+        assert assistant_msg["reasoning_details"] == [
+            {"signature": "sig_1", "type": "thinking"}
+        ]
+        assert "reasoning" not in assistant_msg
+        assert messages[1]["reasoning"] == "trajectory-only reasoning"
+
     def test_codex_preserves_fields_for_replay(self, monkeypatch):
         """Codex mode should preserve fields for Responses API replay."""
         agent = _make_agent(monkeypatch, "openrouter")

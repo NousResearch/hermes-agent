@@ -1126,7 +1126,9 @@ def run_conversation(
                             _sanitize_model = _agg_slot["model"]
                 agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
-            # The signature field helps maintain reasoning continuity
+            # The signature field helps maintain reasoning continuity.
+            # ChatCompletionsTransport.convert_messages() strips it per-endpoint:
+            # strict providers reject it with 400 "Extra inputs are not permitted".
             api_messages.append(api_msg)
 
         # Build the final system message: cached prompt + ephemeral system prompt.

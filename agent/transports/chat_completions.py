@@ -16,6 +16,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from utils import base_url_host_matches
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -128,6 +129,25 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _base_url_consumes_reasoning_details(base_url: Any) -> bool:
+    """True when the target endpoint consumes replayed ``reasoning_details``.
+
+    ``reasoning_details`` is OpenRouter's unified reasoning format: OpenRouter
+    (and the OpenRouter-compatible Nous portal) read it from assistant replay
+    messages to maintain reasoning continuity across turns, so it must stay on
+    the wire for those routes. It is not part of the OpenAI Chat Completions
+    message schema, and strict providers (Fireworks, Mistral, ...) reject any
+    payload containing it with HTTP 400 ``Extra inputs are not permitted``, so
+    it must be stripped for every other endpoint — including strict endpoints
+    that inherit it from an OpenRouter turn earlier in a mixed-provider
+    session. Unknown/empty base URLs strip (the safe default).
+    """
+    url = str(base_url or "")
+    return base_url_host_matches(url, "openrouter.ai") or base_url_host_matches(
+        url, "nousresearch.com"
+    )
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -148,6 +168,19 @@ class ChatCompletionsTransport(ProviderTransport):
         - Codex Responses API fields: ``codex_reasoning_items`` /
           ``codex_message_items`` on the message, ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
+        - ``reasoning`` on assistant messages — trajectory-only reasoning
+          text, never part of any provider's request schema. Stripped
+          unconditionally, mirroring the main-loop replay build in
+          ``run_conversation()``.
+        - ``reasoning_details`` on assistant messages — OpenRouter's
+          structured reasoning replay format. Kept when the outgoing
+          ``base_url`` is an endpoint that consumes it for multi-turn
+          reasoning continuity (OpenRouter, Nous); stripped for every other
+          endpoint, where strict providers reject any payload containing it
+          with ``Extra inputs are not permitted`` — including endpoints that
+          inherit the field from an OpenRouter turn earlier in a
+          mixed-provider session. Only the wire copy is stripped; persisted
+          history keeps the fields for future replay.
         - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
           stripped unless the outgoing ``model`` is itself Gemini-family.
           Gemini 3 thinking models attach it for replay, but strict providers
@@ -177,6 +210,9 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+        strip_reasoning_details = not _base_url_consumes_reasoning_details(
+            kwargs.get("base_url")
+        )
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -188,6 +224,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "reasoning" in msg
+                or (strip_reasoning_details and "reasoning_details" in msg)
             ):
                 needs_sanitize = True
                 break
@@ -231,6 +269,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "reasoning" in msg
+                or (strip_reasoning_details and "reasoning_details" in msg)
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
@@ -239,6 +279,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                out_msg.pop("reasoning", None)
+                if strip_reasoning_details:
+                    out_msg.pop("reasoning_details", None)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
@@ -330,8 +373,12 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         # Codex sanitization: drop reasoning_items / call_id / response_item_id.
         # Pass model so the Gemini thought_signature (extra_content) is kept for
-        # Gemini targets and stripped for strict non-Gemini providers.
-        sanitized = self.convert_messages(messages, model=model)
+        # Gemini targets and stripped for strict non-Gemini providers, and
+        # base_url so reasoning_details is kept for endpoints that consume
+        # the replay (OpenRouter, Nous) and stripped for strict ones.
+        sanitized = self.convert_messages(
+            messages, model=model, base_url=params.get("base_url")
+        )
 
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")

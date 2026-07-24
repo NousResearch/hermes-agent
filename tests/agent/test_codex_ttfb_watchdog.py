@@ -271,6 +271,111 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     assert "codex_ttfb_kill" not in closes
 
 
+def test_active_custom_codex_stream_outlives_generic_stale_timeout(
+    tmp_path, monkeypatch
+):
+    """A custom Responses endpoint that keeps emitting SSE events is alive.
+
+    The generic non-streaming timeout measures total wall-clock duration, so
+    applying it to an active Responses stream aborts legitimate long reasoning
+    at the provider timeout and triggers unnecessary fallback churn.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.provider = "custom"
+    agent._base_url_lower = "https://aigateway.example/v1"
+    agent._base_url_hostname = "aigateway.example"
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 1.0
+    )
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "5")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_active_stream(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            agent._codex_stream_last_event_ts = time.time()
+            time.sleep(0.05)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_active_stream)
+
+    resp = h.interruptible_api_call(agent, {"model": "gpt-5.6-sol", "input": "hi"})
+
+    assert resp is sentinel
+    assert "stale_call_kill" not in closes
+    assert "codex_hard_timeout_kill" not in closes
+
+
+def test_active_custom_codex_stream_still_hits_absolute_hard_timeout(
+    tmp_path, monkeypatch
+):
+    """SSE activity suppresses only the generic timeout, never the hard cap."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.provider = "custom"
+    agent._base_url_lower = "https://aigateway.example/v1"
+    agent._base_url_hostname = "aigateway.example"
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 1.0
+    )
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "2")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    stop = {"flag": False}
+
+    def fake_active_hang(api_kwargs, client=None, on_first_delta=None):
+        while not stop["flag"] and not agent._interrupt_requested:
+            agent._codex_stream_last_event_ts = time.time()
+            time.sleep(0.05)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_active_hang)
+
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(
+                agent, {"model": "gpt-5.6-sol", "input": "hi"}
+            )
+        assert "absolute hard timeout" in str(excinfo.value)
+        assert "codex_hard_timeout_kill" in closes
+        assert "stale_call_kill" not in closes
+    finally:
+        stop["flag"] = True
+
+
 def test_event_idle_kills_after_first_event_then_silence(tmp_path, monkeypatch):
     """If Codex emits an opening SSE event and then goes silent, kill it via
     the stream-idle watchdog instead of waiting for the long non-stream stale
@@ -351,6 +456,44 @@ def test_wait_notice_reports_ttfb_before_first_event():
     )
 
     assert recovery == "; auto-reconnect at 120s"
+
+
+def test_wait_notice_uses_hard_ceiling_after_stream_activity():
+    """An active Codex stream must not advertise the shorter generic timeout."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=60.0,
+        ttfb_enabled=True,
+        ttfb_timeout=120.0,
+        last_event_ts=130.0,
+        call_start=100.0,
+        idle_enabled=False,
+        idle_timeout=60.0,
+        elapsed=30.0,
+        hard_timeout=1500.0,
+    )
+
+    assert recovery == "; auto-reconnect at 1500s"
+
+
+def test_wait_notice_keeps_generic_timeout_before_first_event():
+    """SSE activity is required before the longer hard ceiling takes over."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=60.0,
+        ttfb_enabled=False,
+        ttfb_timeout=120.0,
+        last_event_ts=None,
+        call_start=100.0,
+        idle_enabled=False,
+        idle_timeout=60.0,
+        elapsed=30.0,
+        hard_timeout=1500.0,
+    )
+
+    assert recovery == "; auto-reconnect at 60s"
 
 
 @pytest.mark.parametrize(

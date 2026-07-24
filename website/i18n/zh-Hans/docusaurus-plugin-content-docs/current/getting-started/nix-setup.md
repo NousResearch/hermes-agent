@@ -401,7 +401,7 @@ hermes-env: |
 - **`USER.md`** — 关于 Agent 正在交互的用户的上下文信息。
 - 你放置在此处的任何其他文件对 Agent 都可见，作为工作区文件。
 
-Agent 身份文件是独立的：Hermes 从 `$HERMES_HOME/SOUL.md` 加载其主要 `SOUL.md`，在 NixOS 模块中对应 `${services.hermes-agent.stateDir}/.hermes/SOUL.md`。将 `SOUL.md` 放入 `documents` 只会创建一个工作区文件，不会替换主角色文件。
+全局 Agent 身份回退是独立的：Hermes 从 `$HERMES_HOME/SOUL.md` 加载它，在 NixOS 模块中对应 `${services.hermes-agent.stateDir}/.hermes/SOUL.md`。放入 `documents` 的 `SOUL.md` 是工作区本地候选文件，仅当该目录位于服务活动 CWD 的信任边界内且启用了项目上下文发现时才会覆盖全局回退。
 
 ```nix
 {

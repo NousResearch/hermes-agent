@@ -1,14 +1,14 @@
 ---
 sidebar_position: 9
 title: "个性与 SOUL.md"
-description: "通过全局 SOUL.md、内置个性预设和自定义角色定义来自定义 Hermes Agent 的个性"
+description: "通过 SOUL.md、内置个性预设和自定义角色定义来自定义 Hermes Agent 的个性"
 ---
 
 # 个性与 SOUL.md
 
 Hermes Agent 的个性完全可自定义。`SOUL.md` 是**主要身份标识**——它是系统提示词（prompt）中的第一项内容，定义了 Agent 是谁。
 
-- `SOUL.md` — 存放在 `HERMES_HOME` 中的持久角色文件，作为 Agent 的身份标识（系统提示词中的第 1 个槽位）
+- `SOUL.md` — 持久角色文件，作为 Agent 的身份标识（系统提示词中的第 1 个槽位）；可信的 CWD 本地 soul 可在当前会话覆盖全局身份
 - 内置或自定义的 `/personality` 预设 — 会话级系统提示词覆盖层
 
 如果你想改变 Hermes 的身份，或将其替换为完全不同的 Agent 角色，请编辑 `SOUL.md`。
@@ -21,33 +21,40 @@ Hermes 现在会自动在以下位置生成默认的 `SOUL.md`：
 ~/.hermes/SOUL.md
 ```
 
-更准确地说，它使用当前实例的 `HERMES_HOME`，因此如果你以自定义主目录运行 Hermes，它将使用：
+更准确地说，它使用当前实例的 `HERMES_HOME`，因此如果你以自定义主目录运行 Hermes，全局回退为：
 
 ```text
 $HERMES_HOME/SOUL.md
 ```
+
+可信工作目录也可以为当前会话提供本地 soul。Hermes 仅在启用项目上下文发现时信任 CWD 本地 soul；`skip_context_files=True` 的隔离模式只使用全局 `$HERMES_HOME/SOUL.md` 回退。
+
+本地候选顺序为 `.hermes/soul.md`、`.hermes/SOUL.md`、`soul.md`、`SOUL.md`。位于 git 仓库内时会向上搜索至 git 根目录；不在 git 仓库内时只检查 CWD。
 
 ### 重要行为
 
 - **SOUL.md 是 Agent 的主要身份标识。** 它占据系统提示词的第 1 个槽位，替代硬编码的默认身份。
 - 如果 `SOUL.md` 尚不存在，Hermes 会自动创建一个初始文件
 - 已有的用户 `SOUL.md` 文件不会被覆盖
-- Hermes 仅从 `HERMES_HOME` 加载 `SOUL.md`
-- Hermes 不会在当前工作目录中查找 `SOUL.md`
+- CWD 本地 soul 仅在启用项目上下文发现时覆盖全局身份
+- 跳过上下文文件但仍启用 SOUL 身份时，只使用 `$HERMES_HOME/SOUL.md`
+- `/status` 会以安全的逻辑标签显示当前 SOUL.md 来源
+- 若没有本地 soul，则回退到 `$HERMES_HOME/SOUL.md`
 - 如果 `SOUL.md` 存在但为空，或无法加载，Hermes 将回退到内置的默认身份
 - 如果 `SOUL.md` 有内容，该内容在经过安全扫描和截断处理后将原样注入
 - SOUL.md **不会**在上下文文件部分重复出现——它仅作为身份标识出现一次
 
-这使 `SOUL.md` 成为真正的每用户或每实例身份标识，而不仅仅是一个附加层。
+这使 `SOUL.md` 成为真正的身份层，而不仅仅是一个附加层。
 
 ## 此设计的原因
 
-这样可以保持个性的可预测性。
+这样既可以保持个性的可预测性，也支持按目录设置 agent 身份。
 
-如果 Hermes 从你启动它的任意目录加载 `SOUL.md`，你的个性可能会在不同项目之间意外改变。通过仅从 `HERMES_HOME` 加载，个性归属于 Hermes 实例本身。
+全局 `$HERMES_HOME/SOUL.md` 仍是稳定默认值。本地 soul 需要目录显式提供，并受项目上下文信任边界保护。
 
-这也让用户更容易理解：
-- "编辑 `~/.hermes/SOUL.md` 来更改 Hermes 的默认个性。"
+这提供两种清晰模式：
+- 编辑 `~/.hermes/SOUL.md` 来更改 Hermes 的默认个性
+- 在 agent 或工作区目录内添加 `.hermes/soul.md`，为该位置设置独立身份
 
 ## 编辑位置
 
@@ -61,6 +68,12 @@ $HERMES_HOME/SOUL.md
 
 ```bash
 $HERMES_HOME/SOUL.md
+```
+
+对于 CWD 本地 agent 身份：
+
+```bash
+.hermes/soul.md
 ```
 
 ## SOUL.md 应该写什么？
@@ -153,8 +166,9 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 - 命令、端口、路径、部署说明
 
 一个实用的判断规则：
-- 如果它应该随你到处适用，属于 `SOUL.md`
-- 如果它属于某个项目，属于 `AGENTS.md`
+- 如果它应该随你到处适用，放在全局 `SOUL.md`
+- 如果它是某个 agent 或工作区的身份，使用本地 `.hermes/soul.md`
+- 如果它是项目/任务指令而不是身份，放在 `AGENTS.md`
 
 ## SOUL.md 与 `/personality`
 
@@ -207,7 +221,7 @@ Hermes 内置了多种个性，可通过 `/personality` 切换。
 /personality teacher
 ```
 
-这些是便捷的覆盖层，但你的全局 `SOUL.md` 仍然赋予 Hermes 持久的默认个性，除非覆盖层对其进行了实质性更改。
+这些是便捷的覆盖层，但当前选中的 `SOUL.md` 仍然赋予 Hermes 持久的默认个性，除非覆盖层对其进行了实质性更改。
 
 ## 在配置中定义自定义个性
 

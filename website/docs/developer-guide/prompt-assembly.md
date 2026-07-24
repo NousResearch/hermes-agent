@@ -39,7 +39,7 @@ This ordering matters for precedence discussions:
 - memory/profile snapshots are part of the **volatile** tier
 - both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
 
-When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
+When `skip_context_files` is set (e.g., subagent delegation), cwd-local SOUL files are never loaded. If `load_soul_identity` is also enabled, only the global `$HERMES_HOME/SOUL.md` fallback may load; otherwise Hermes uses the hardcoded `DEFAULT_AGENT_IDENTITY`.
 
 ### Concrete example: assembled system prompt
 
@@ -155,12 +155,15 @@ not a live mid-session mutation of a frozen prompt.
 
 ## How SOUL.md appears in the prompt
 
-`SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:
+`SOUL.md` serves as the agent's identity — the very first section of the system prompt. `$HERMES_HOME/SOUL.md` is the global fallback, while trusted project-context runs may select a cwd-local soul first. The loading logic in `prompt_builder.py` works as follows:
 
 ```python
 # From agent/prompt_builder.py (simplified)
-def load_soul_md() -> Optional[str]:
-    soul_path = get_hermes_home() / "SOUL.md"
+def load_soul_md(cwd=None, allow_local=True) -> Optional[str]:
+    local_cwd = cwd if cwd is not None else resolve_agent_cwd()
+    soul_path = _find_local_soul_md(local_cwd) if allow_local else None
+    if soul_path is None:
+        soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
@@ -168,6 +171,8 @@ def load_soul_md() -> Optional[str]:
     content = _truncate_content(content, "SOUL.md")       # Cap defaults to 20k chars, configurable
     return content
 ```
+
+Local candidates are checked in this order: `.hermes/soul.md`, `.hermes/SOUL.md`, `soul.md`, then `SOUL.md`. Inside a git repository the search walks from cwd through its parents and stops at the git root. Outside a git repository only cwd is searched, preventing an unrelated parent file under `/tmp`, a home directory, or the filesystem root from becoming the primary identity. Runs with `skip_context_files=True` pass `allow_local=False`, so only the trusted global fallback can load.
 
 When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_IDENTITY`. The `build_context_files_prompt()` function is then called with `skip_soul=True` to prevent SOUL.md from appearing twice (once as identity, once as a context file).
 
@@ -204,9 +209,9 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
     if project_context:
         sections.append(project_context)
 
-    # SOUL.md from HERMES_HOME (independent of project context)
+    # Cwd-local SOUL.md, then the HERMES_HOME fallback
     if not skip_soul:
-        soul_content = load_soul_md()
+        soul_content = load_soul_md(cwd=cwd_path)
         if soul_content:
             sections.append(soul_content)
 
@@ -261,7 +266,7 @@ Local memory and user profile data are captured in the system prompt's **volatil
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
-`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
+`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. Trusted cwd-local discovery follows the git-root boundary described above; isolation modes that skip project context use only `$HERMES_HOME/SOUL.md`. When a soul loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
 
 Long files are truncated before injection.
 
@@ -275,7 +280,8 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 
 ### Use these surfaces first
 
-- `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
+- `$HERMES_HOME/SOUL.md` — set the global fallback identity for the Hermes instance.
+- `.hermes/soul.md` (or another supported local candidate) — set a directory-scoped identity inside the trusted project-context boundary.
 - `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
 - Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
 - Skills — package reusable workflows and references without editing core prompt code.

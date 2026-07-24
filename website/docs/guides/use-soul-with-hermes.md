@@ -36,12 +36,13 @@ Do not use it for:
 Those belong in `AGENTS.md`.
 
 A good rule:
-- if it should apply everywhere, put it in `SOUL.md`
-- if it only belongs to one project, put it in `AGENTS.md`
+- if it should apply everywhere, put it in the global `SOUL.md`
+- if it is a directory-scoped agent identity, put it in `.hermes/soul.md`
+- if it is project instructions rather than identity, put it in `AGENTS.md`
 
 ## Where it lives
 
-Hermes now uses only the global SOUL file for the current instance:
+Hermes uses this global SOUL file as the fallback for the current instance:
 
 ```text
 ~/.hermes/SOUL.md
@@ -52,6 +53,8 @@ If you run Hermes with a custom home directory, it becomes:
 ```text
 $HERMES_HOME/SOUL.md
 ```
+
+Trusted project-context runs can override that fallback with `.hermes/soul.md`, `.hermes/SOUL.md`, `soul.md`, or `SOUL.md` in the cwd. Inside a git repository Hermes also checks parents up to the git root; outside a git repository it checks only cwd. Isolation modes that skip context files do not load local souls.
 
 ## First-run behavior
 
@@ -65,7 +68,7 @@ Important:
 
 ## How Hermes uses it
 
-When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text.
+When Hermes starts a session, it selects the trusted local SOUL candidate or the `HERMES_HOME` fallback, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means the selected SOUL.md completely replaces the built-in default identity text.
 
 If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
 
@@ -238,8 +241,8 @@ That iterative approach works better than trying to design the perfect personali
 ### I edited SOUL.md but Hermes still sounds the same
 
 Check:
-- you edited `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md`
-- not some repo-local `SOUL.md`
+- you edited the intended global fallback or a supported local candidate
+- local discovery is enabled and the local file is in cwd or, inside a git repository, between cwd and the git root
 - the file is not empty
 - your session was restarted after the edit
 - a `/personality` overlay is not dominating the result

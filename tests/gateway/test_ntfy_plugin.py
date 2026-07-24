@@ -758,6 +758,18 @@ class TestEnvEnablement:
         assert seed["home_channel"]["chat_id"] == "alerts"
         assert seed["home_channel"]["name"] == "Alerts Channel"
 
+    def test_home_channel_empty_name_falls_back_to_id(self, monkeypatch):
+        """A present-but-empty NTFY_HOME_CHANNEL_NAME (e.g. an env-only
+        Docker/compose/systemd config that exports the key blank) must fall
+        back to the chat_id, not yield an empty display name. Mirrors the
+        adjacent NTFY_HOME_CHANNEL `.strip() or topic` guard."""
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_HOME_CHANNEL", "alerts")
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "")
+        seed = _env_enablement()
+        assert seed["home_channel"]["chat_id"] == "alerts"
+        assert seed["home_channel"]["name"] == "alerts"
+
 
 # ---------------------------------------------------------------------------
 # 10. _standalone_send() — out-of-process cron delivery

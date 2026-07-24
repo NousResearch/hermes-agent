@@ -309,25 +309,6 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     [visible, selectedName]
   )
 
-  const headerActions = (
-    <div className="flex items-center gap-1.5">
-      <Button aria-label={t.commandCenter.refresh} onClick={() => void loadWebhooks()} size="icon-sm" variant="ghost">
-        <RefreshCw />
-      </Button>
-      <Button
-        disabled={!enabled || enabling}
-        onClick={() => {
-          setCreated(null)
-          setCreateOpen(true)
-        }}
-        size="sm"
-      >
-        <Plus />
-        {w.newSubscription}
-      </Button>
-    </div>
-  )
-
   const banners = (
     <>
       {!enabled && (
@@ -394,7 +375,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         </>
       ) : (
         <>
-          <PanelHeader actions={headerActions} subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
+          <PanelHeader subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
           {banners}
           <PanelBody>
             <PanelList

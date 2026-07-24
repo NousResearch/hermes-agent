@@ -20,6 +20,11 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from agent.secret_scope import (
+    UnscopedSecretError,
+    get_secret,
+    is_multiplex_active,
+)
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import (
@@ -29,17 +34,25 @@ from gateway.whatsapp_identity import (
 
 
 def _auth_env(name: str, default: str = "") -> str:
-    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
+    """Read allowlist/auth env; prefer profile secret_scope under multiplex.
+
+    Under multiplexing the active profile scope is authoritative: a missing or
+    empty key must NOT fall through to ``os.environ``, which may still hold
+    another profile's allowlist / allow-all flags. Non-multiplex deployments
+    keep the legacy getenv fallback for process-injected credentials.
+    """
     if not name:
         return default
+    default_s = (default or "").strip()
     try:
-        from agent.secret_scope import get_secret
-
         val = get_secret(name)
-        if val is not None and str(val).strip():
-            return str(val).strip()
-    except Exception:
-        pass
+    except UnscopedSecretError:
+        return default_s
+
+    if val is not None and str(val).strip():
+        return str(val).strip()
+    if is_multiplex_active():
+        return default_s
     return (os.getenv(name) or default).strip()
 
 
@@ -417,7 +430,7 @@ class GatewayAuthorizationMixin:
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
-                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                raw_chat_allowlist = _auth_env(chat_allowlist_env)
                 if raw_chat_allowlist:
                     allowed_group_ids = {
                         cid.strip()
@@ -459,7 +472,7 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            if allow_bots_var and _auth_env(allow_bots_var, "none").lower() in {"mentions", "all"}:
                 return True
 
         if not user_id:
@@ -816,13 +829,13 @@ class GatewayAuthorizationMixin:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
-            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+            if _auth_env(platform_env_map.get(platform, "")):
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):
-                if os.getenv(env_key, "").strip():
+                if _auth_env(env_key):
                     return "ignore"
 
-        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+        if _auth_env("GATEWAY_ALLOWED_USERS"):
             return "ignore"
 
         return "pair"

@@ -2602,6 +2602,15 @@ def get_model_context_length(
                     ctx = catalog
             return ctx
 
+    # Exact built-in entries are curated overrides. Prefer them over broad,
+    # provider-unaware OpenRouter metadata when the model slug is an exact
+    # match, so upstream-maintained static corrections remain authoritative
+    # until deliberately updated.
+    model_lower = model.lower()
+    exact_default = DEFAULT_CONTEXT_LENGTHS.get(model_lower)
+    if exact_default:
+        return exact_default
+
     # 6. OpenRouter live API metadata — provider-unaware fallback.
     # Only consulted when the provider is unknown (no effective_provider),
     # because OpenRouter data is community-maintained and can be incorrect

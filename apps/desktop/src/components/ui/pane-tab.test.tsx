@@ -90,3 +90,54 @@ describe('PaneTab close gestures', () => {
     expect(onPointerDown).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('PaneTab hover close button', () => {
+  it('renders a close button when onClose is set on a horizontal tab', () => {
+    const onClose = vi.fn()
+    render(
+      <PaneTab onClose={onClose}>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(screen.getByRole('button', { name: 'Close tab' })).toBeTruthy()
+  })
+
+  it('clicking the close button calls onClose and stops propagation', () => {
+    const onClose = vi.fn()
+    const onTabPointerDown = vi.fn()
+    render(
+      <PaneTab onClose={onClose} onPointerDown={onTabPointerDown}>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    const closeBtn = screen.getByRole('button', { name: 'Close tab' })
+    fireEvent.pointerDown(closeBtn)
+    fireEvent.click(closeBtn)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    // The tab's own pointerdown handler must NOT fire — the X is a leaf action.
+    expect(onTabPointerDown).not.toHaveBeenCalled()
+  })
+
+  it('does not render a close button on vertical tabs', () => {
+    const onClose = vi.fn()
+    render(
+      <PaneTab onClose={onClose} vertical>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(screen.queryByRole('button', { name: 'Close tab' })).toBeNull()
+  })
+
+  it('does not render a close button without onClose', () => {
+    render(
+      <PaneTab>
+        <PaneTabLabel>tab</PaneTabLabel>
+      </PaneTab>
+    )
+
+    expect(screen.queryByRole('button', { name: 'Close tab' })).toBeNull()
+  })
+})

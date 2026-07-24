@@ -1,0 +1,34 @@
+name: talk
+label: Nextcloud Talk
+kind: platform
+version: 0.1.0
+description: >
+  Nextcloud Talk gateway adapter for Hermes. Receives Talk bot webhooks
+  (HMAC-verified per the spreed ChecksumVerificationService scheme), relays
+  chat messages to the agent, and posts replies via the Talk bot message API
+  (bot-signed). Proof-of-concept for the AiSync agent fleet.
+author: AiSync
+# Config lives under ``platforms.talk.extra`` in config.yaml (base_url, secret,
+# port, webhook_path, allow_all). These env vars are optional overrides and are
+# surfaced by ``hermes config``.
+optional_env:
+  - name: TALK_BASE_URL
+    description: "Nextcloud base URL, e.g. https://drive.aisyncservices.com"
+    prompt: "Nextcloud base URL"
+    password: false
+  - name: TALK_BOT_SECRET
+    description: "Shared secret registered with the Talk bot (40-128 chars)"
+    prompt: "Talk bot shared secret"
+    password: true
+  - name: TALK_PORT
+    description: "Inbound webhook listen port (container-internal)"
+    prompt: "Webhook port"
+    password: false
+  - name: TALK_ALLOW_ALL
+    description: "Allow any Talk user to trigger the bot (true/false)"
+    prompt: "Allow all users?"
+    password: false
+  - name: TALK_ALLOWED_USERS
+    description: "Comma-separated Talk actor ids (e.g. users/nate) allowed to trigger the bot"
+    prompt: "Allowed actor ids"
+    password: false

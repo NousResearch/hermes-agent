@@ -1203,7 +1203,8 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
     The MattermostAdapter reads its runtime configuration via
-    ``os.getenv()`` for ``MATTERMOST_REQUIRE_MENTION``,
+    ``os.getenv()`` for ``MATTERMOST_REPLY_MODE``,
+    ``MATTERMOST_REQUIRE_MENTION``,
     ``MATTERMOST_FREE_RESPONSE_CHANNELS``, and
     ``MATTERMOST_ALLOWED_CHANNELS``.  Rather than rewrite those call sites
     to read from ``PlatformConfig.extra``, this hook keeps the env-driven
@@ -1215,6 +1216,13 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     update.  Returns ``None`` because no extras are seeded into
     ``PlatformConfig.extra`` directly (everything flows through env).
     """
+    reply_mode = mattermost_cfg.get("reply_mode")
+    if reply_mode is not None and not os.getenv("MATTERMOST_REPLY_MODE"):
+        # YAML 1.1 parses bare ``off`` as boolean False.
+        reply_mode_value = (
+            "off" if reply_mode is False else str(reply_mode).strip().lower()
+        )
+        os.environ["MATTERMOST_REPLY_MODE"] = reply_mode_value
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
@@ -1277,10 +1285,10 @@ def register(ctx) -> None:
         # hermes_cli/setup.py::_setup_mattermost function.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of
-        # ``config.yaml`` ``mattermost:`` keys (require_mention,
-        # free_response_channels, allowed_channels) into ``MATTERMOST_*``
-        # env vars that the adapter reads via ``os.getenv()``.  Replaces
-        # the hardcoded block that used to live in ``gateway/config.py``.
+        # ``config.yaml`` ``mattermost:`` keys (reply_mode,
+        # require_mention, free_response_channels, allowed_channels) into
+        # ``MATTERMOST_*`` env vars that the adapter reads via ``os.getenv()``.
+        # Replaces the hardcoded block that used to live in ``gateway/config.py``.
         # Hook contract: #24836 / #25443.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration.

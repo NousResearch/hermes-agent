@@ -1428,6 +1428,105 @@ def _env_model_seed() -> str:
     return (os.environ.get("HERMES_MODEL", "") or os.environ.get("HERMES_INFERENCE_MODEL", "")).strip()
 
 
+
+def resolve_skin() -> dict:
+    try:
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
+
+        init_skin_from_config(_load_cfg())
+        skin = get_active_skin()
+        return {
+            "name": skin.name,
+            "colors": skin.colors,
+            # Paired palettes: the TUI detects the terminal's polarity and
+            # prefers the matching hand-tuned block over adapting `colors`.
+            "light_colors": skin.light_colors,
+            "dark_colors": skin.dark_colors,
+            "branding": skin.branding,
+            "banner_logo": skin.banner_logo,
+            "banner_hero": skin.banner_hero,
+            "tool_prefix": skin.tool_prefix,
+            "help_header": (skin.branding or {}).get("help_header", ""),
+            "customCSS": skin.custom_css,
+        }
+    except Exception:
+        return {}
+
+
+# Signature of the last skin broadcast: (name, active user-file mtime). Lets the
+# per-tool reconcile fire ``skin.changed`` on any real move — a name switch OR a
+# live color edit to the active skin — and nothing else.
+_last_skin_sig: tuple[str, float | None] | None = None
+
+
+def _skin_sig() -> tuple[str, float | None]:
+    """(active skin name, its user-file mtime). Built-ins have no file, so only
+    their name moves; a user skin's mtime lets an in-place color edit repaint too."""
+    name = str((_load_cfg().get("display") or {}).get("skin") or "default")
+    override = get_hermes_home_override()
+    home = override if isinstance(override, str) and override else _hermes_home
+    try:
+        mtime: float | None = (Path(home) / "skins" / f"{name}.yaml").stat().st_mtime
+    except OSError:
+        mtime = None
+    return name, mtime
+
+
+def _note_skin_broadcast() -> None:
+    """Sync the reconcile baseline after the /skin RPC emits, so the per-tool
+    check doesn't re-broadcast the skin /skin just applied."""
+    global _last_skin_sig
+    try:
+        _last_skin_sig = _skin_sig()
+    except Exception:
+        pass
+
+
+def _broadcast_skin_if_changed() -> None:
+    """Emit ``skin.changed`` when the active skin moved — the agent switched it
+    (``hermes config set display.skin``) OR edited the active skin's colors in
+    place ("I don't like that coral" → tweak the YAML).
+
+    Routes through the SAME live path as ``/skin`` so every surface (TUI + desktop)
+    repaints, no slash command. The signature check is a dict lookup + one stat,
+    so polling it is ~free.
+    """
+    global _last_skin_sig
+    try:
+        sig = _skin_sig()
+    except Exception:
+        return
+    if sig == _last_skin_sig:
+        return
+    _last_skin_sig = sig
+    try:
+        _broadcast_global_event("skin.changed", resolve_skin())
+    except Exception:
+        pass
+
+
+_skin_watcher_started = False
+
+
+def _ensure_skin_watcher() -> None:
+    """Poll the config for skin changes and broadcast ``skin.changed`` — so a skin
+    Hermes activates (``hermes config set display.skin``) or recolors goes live on
+    every surface within ~half a second, on its own, with no tool-hook or slash
+    command in the loop. Idempotent; started at gateway.ready."""
+    global _skin_watcher_started
+    if _skin_watcher_started:
+        return
+    _skin_watcher_started = True
+    _note_skin_broadcast()  # seed the baseline so only a real change repaints
+
+    def _loop() -> None:
+        while True:
+            time.sleep(0.5)
+            _broadcast_skin_if_changed()
+
+    threading.Thread(target=_loop, name="hermes-skin-watcher", daemon=True).start()
+
+
 def _resolve_model() -> str:
     if env := _env_model_seed():
         return env

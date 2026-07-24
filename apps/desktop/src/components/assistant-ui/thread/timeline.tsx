@@ -187,7 +187,13 @@ export const ThreadTimeline: FC = () => {
     const compute = () => {
       raf = 0
 
-      const top = viewport.getBoundingClientRect().top
+      const rect = viewport.getBoundingClientRect()
+      const top = rect.top
+      const height = rect.height
+      const scrollable = viewport.scrollHeight > viewport.clientHeight
+      const atBottom =
+        scrollable &&
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 8
 
       const offsets = entries.map(entry => {
         const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
@@ -195,7 +201,7 @@ export const ThreadTimeline: FC = () => {
         return node ? node.getBoundingClientRect().top - top : null
       })
 
-      const next = activeTimelineIndex(offsets)
+      const next = activeTimelineIndex(offsets, 8, height, atBottom)
 
       setActiveIndex(prev => (prev === next ? prev : next))
     }

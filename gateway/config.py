@@ -2491,11 +2491,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # explicitly disabled it, never re-enable here just because
             # check_fn() / is_connected() pass (e.g. a token is present but the
             # user set telegram.enabled: false). #41112.
-            if (
-                existing_cfg is not None
-                and not existing_cfg.enabled
-                and bool((existing_cfg.extra or {}).get("_enabled_explicit", False))
-            ):
+            if existing_cfg is not None and not existing_cfg.enabled:
                 continue
             # Seed candidate extras from ``env_enablement_fn`` so plugins
             # whose ``is_connected`` reads ``config.extra`` (e.g. Google

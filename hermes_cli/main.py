@@ -16319,6 +16319,28 @@ def main():
 
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
 
+    if _plugin_cli_discovery_needed():
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_cli_commands
+
+            discover_plugins()
+            for _name, _spec in get_plugin_cli_commands().items():
+                if _name in getattr(subparsers, "choices", {}):
+                    continue
+                _plugin_parser = subparsers.add_parser(
+                    _name,
+                    help=_spec.get("help") or "Plugin command",
+                    description=_spec.get("description") or None,
+                )
+                _setup_fn = _spec.get("setup_fn")
+                if callable(_setup_fn):
+                    _setup_fn(_plugin_parser)
+                _handler_fn = _spec.get("handler_fn")
+                if callable(_handler_fn):
+                    _plugin_parser.set_defaults(func=_handler_fn)
+        except Exception:
+            logger.warning("plugin CLI command discovery failed", exc_info=True)
+
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
     # On some Python versions (notably <3.11), argparse fails to route
     # subcommand tokens when the parent parser has nargs='?' optional

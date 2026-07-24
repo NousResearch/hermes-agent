@@ -1443,7 +1443,20 @@ class PluginManager:
             # is imported only when the gateway / cron / setup / send_message
             # path actually asks for that platform. Every platform Hermes ships
             # remains available out of the box — it just loads on first use.
+            #
+            # Exception: an explicitly-enabled bundled platform must load
+            # normally so plugin-owned CLI commands (for example
+            # `hermes photon setup`) are registered during plugin CLI
+            # discovery. Otherwise the plugin can appear enabled in
+            # `hermes plugins list` while its setup command is unreachable.
             if manifest.source == "bundled" and manifest.kind == "platform":
+                is_enabled = (
+                    enabled is not None
+                    and (lookup_key in enabled or manifest.name in enabled)
+                )
+                if is_enabled:
+                    self._load_plugin(manifest)
+                    continue
                 self._register_deferred_platform(manifest)
                 continue
 
@@ -1999,6 +2012,10 @@ class PluginManager:
             )
         return result
 
+    def get_cli_commands(self) -> Dict[str, dict]:
+        """Return plugin-registered top-level CLI commands."""
+        return dict(self._cli_commands)
+
     # -----------------------------------------------------------------------
     # Plugin skill lookups
     # -----------------------------------------------------------------------
@@ -2044,6 +2061,11 @@ def discover_plugins(force: bool = False) -> None:
     manifests and reload state in the current process.
     """
     get_plugin_manager().discover_and_load(force=force)
+
+
+def get_plugin_cli_commands() -> Dict[str, dict]:
+    """Return plugin-registered top-level CLI command specs."""
+    return get_plugin_manager().get_cli_commands()
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

@@ -1682,6 +1682,20 @@ def _resolve_media_ext(filename: str, mime_type: str) -> str:
     return ""
 
 
+def _looks_like_text_document(data: bytes) -> bool:
+    """Return True when extensionless bytes look like a plain UTF-8 text upload."""
+    if not data or b"\x00" in data:
+        return False
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not text.strip():
+        return False
+    control_chars = sum(1 for ch in text if ord(ch) < 32 and ch not in "\r\n\t")
+    return control_chars == 0
+
+
 def cache_media_bytes(
     data: bytes,
     *,
@@ -1739,12 +1753,17 @@ def cache_media_bytes(
     # uploads. Known extensions keep their precise MIME; everything else is
     # tagged application/octet-stream (or the caller-supplied MIME) so the
     # agent knows it's an arbitrary file and reaches for terminal tools.
-    fallback_name = filename or (f"document{ext}" if ext else "document.bin")
-    path = cache_document_from_bytes(data, fallback_name)
-    if ext in SUPPORTED_DOCUMENT_TYPES:
-        out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+    if not filename and not mime and not ext and _looks_like_text_document(data):
+        fallback_name = "document.txt"
+        out_mime = "text/plain"
+        display = fallback_name
     else:
-        out_mime = mime if mime else "application/octet-stream"
+        fallback_name = filename or (f"document{ext}" if ext else "document.bin")
+        if ext in SUPPORTED_DOCUMENT_TYPES:
+            out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+        else:
+            out_mime = mime if mime else "application/octet-stream"
+    path = cache_document_from_bytes(data, fallback_name)
     return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
 
 
@@ -1800,6 +1819,9 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    # Whether each text attachment was actually inlined into ``text``.
+    # Legacy adapters leave this empty; cached-only paths set False explicitly.
+    media_text_inlined: List[bool] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None
@@ -2167,6 +2189,7 @@ def merge_pending_message_event(
         if existing_is_photo and incoming_is_photo:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(getattr(event, "media_text_inlined", []))
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             _invalidate_pending_stt_cache(existing)
@@ -2176,6 +2199,7 @@ def merge_pending_message_event(
             if incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+                existing.media_text_inlined.extend(getattr(event, "media_text_inlined", []))
             if event.text:
                 if existing.text:
                     existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)

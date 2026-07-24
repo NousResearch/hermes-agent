@@ -1429,7 +1429,15 @@ def cmd_toggle() -> None:
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                       disabled, categories, console):
     """Custom curses screen with checkboxes + category action rows."""
-    from hermes_cli.curses_ui import flush_stdin
+    from hermes_cli.curses_ui import (
+        NAV_CANCEL,
+        NAV_DOWN,
+        NAV_SELECT,
+        NAV_TOGGLE,
+        NAV_UP,
+        _decode_menu_key,
+        flush_stdin,
+    )
 
     chosen = set(plugin_selected)
     n_plugins = len(plugin_keys)
@@ -1557,11 +1565,12 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
 
             stdscr.refresh()
             key = stdscr.getch()
+            action = _decode_menu_key(stdscr, key)
 
-            if key in {curses.KEY_UP, ord("k")}:
+            if action == NAV_UP:
                 if total_items > 0:
                     cursor = (cursor - 1) % total_items
-            elif key in {curses.KEY_DOWN, ord("j")}:
+            elif action == NAV_DOWN:
                 if total_items > 0:
                     cursor = (cursor + 1) % total_items
             elif key in {curses.KEY_NPAGE, ord("f")}:
@@ -1574,7 +1583,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                 cursor = 0
             elif key == curses.KEY_END:
                 cursor = max(0, total_items - 1)
-            elif key == ord(" "):
+            elif action == NAV_TOGGLE:
                 if cursor < n_plugins:
                     # Toggle general plugin
                     chosen.symmetric_difference_update({cursor})
@@ -1607,7 +1616,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
                             curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
                         curses.curs_set(0)
-            elif key in {curses.KEY_ENTER, 10, 13}:
+            elif action == NAV_SELECT:
                 if cursor < n_plugins:
                     # ENTER on a plugin checkbox — confirm and exit
                     result_holder["plugins_changed"] = True
@@ -1639,7 +1648,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
                             curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
                         curses.curs_set(0)
-            elif key in {27, ord("q")}:
+            elif action == NAV_CANCEL:
                 # Save plugin changes on exit
                 result_holder["plugins_changed"] = True
                 return

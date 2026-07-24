@@ -436,3 +436,116 @@ class TestCompositeMenuWritesCanonicalKey:
         saved_dis = mock_save_dis.call_args[0][0]
         assert "web/firecrawl" in saved_en
         assert "firecrawl" not in saved_dis  # stale bare-leaf alias cleared
+
+
+class TestCompositeMenuRawArrowKeys:
+    """The interactive plugins menu should handle raw CSI arrows like other
+    Hermes curses menus, not treat the leading ESC byte as "done".
+    """
+
+    class FakeStdscr:
+        def __init__(self, keys):
+            self.keys = list(keys)
+            self.timeout_ms = -1
+
+        def clear(self):
+            pass
+
+        def refresh(self):
+            pass
+
+        def addnstr(self, *_args, **_kwargs):
+            pass
+
+        def getmaxyx(self):
+            return (30, 120)
+
+        def getch(self):
+            if self.timeout_ms > 0:
+                if self.keys and self.keys[0] in (ord("["), ord("O")):
+                    return self.keys.pop(0)
+                return -1
+            if not self.keys:
+                raise StopIteration
+            return self.keys.pop(0)
+
+        def timeout(self, ms):
+            self.timeout_ms = ms
+
+    class FakeCurses:
+        A_BOLD = 1
+        A_DIM = 2
+        A_NORMAL = 0
+        COLOR_GREEN = 2
+        COLOR_YELLOW = 3
+        COLOR_CYAN = 6
+        COLOR_WHITE = 7
+        COLORS = 8
+        KEY_NPAGE = 338
+        KEY_PPAGE = 339
+        KEY_HOME = 262
+        KEY_END = 360
+        KEY_ENTER = 343
+
+        class error(Exception):
+            pass
+
+        def __init__(self, keys):
+            self.stdscr = TestCompositeMenuRawArrowKeys.FakeStdscr(keys)
+
+        def wrapper(self, fn):
+            fn(self.stdscr)
+
+        def curs_set(self, _value):
+            pass
+
+        def has_colors(self):
+            return False
+
+        def color_pair(self, _idx):
+            return 0
+
+    def _run_menu(self, keys, mock_save_en, mock_save_dis):
+        from hermes_cli.plugins_cmd import _run_composite_ui
+        from rich.console import Console
+
+        _run_composite_ui(
+            self.FakeCurses(keys),
+            ["alpha", "beta", "gamma"],
+            ["alpha", "beta", "gamma"],
+            set(),
+            set(),
+            [],
+            Console(),
+        )
+        return mock_save_en.call_args[0][0], mock_save_dis.call_args[0][0]
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_raw_csi_down_toggles_second_plugin(
+        self, _mock_en, mock_save_en, mock_save_dis,
+    ):
+        saved_en, saved_dis = self._run_menu(
+            [27, ord("["), ord("B"), ord(" "), ord("q")],
+            mock_save_en,
+            mock_save_dis,
+        )
+
+        assert saved_en == {"beta"}
+        assert "beta" not in saved_dis
+
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_raw_csi_up_wraps_and_toggles_last_plugin(
+        self, _mock_en, mock_save_en, mock_save_dis,
+    ):
+        saved_en, saved_dis = self._run_menu(
+            [27, ord("["), ord("A"), ord(" "), ord("q")],
+            mock_save_en,
+            mock_save_dis,
+        )
+
+        assert saved_en == {"gamma"}
+        assert "gamma" not in saved_dis

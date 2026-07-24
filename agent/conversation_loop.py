@@ -27,7 +27,10 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.codex_responses_adapter import (
+    _format_responses_error,
+    _summarize_user_message_for_log,
+)
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -86,6 +89,51 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+_CODEX_CONTEXT_OVERFLOW_CODES = frozenset({
+    "context_length_exceeded",
+    "max_tokens_exceeded",
+})
+
+
+class _CodexTerminalResponseError(RuntimeError):
+    """Structured terminal Responses failure for the shared classifier."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _codex_terminal_context_error(response: Any) -> Optional[RuntimeError]:
+    """Return a classified exception for terminal Responses context failures.
+
+    Codex Responses returns provider failures as ordinary response objects.
+    Raising a structured error lets the existing API-exception path compact
+    before rebuilding the request instead of retrying the same oversized input.
+    """
+    status = str(getattr(response, "status", "") or "").strip().lower()
+    if status not in {"failed", "cancelled"}:
+        return None
+
+    error_obj = getattr(response, "error", None)
+    code = (
+        error_obj.get("code")
+        if isinstance(error_obj, dict)
+        else getattr(error_obj, "code", None)
+    )
+    message = _format_responses_error(error_obj, status)
+    code_lower = str(code or "").strip().lower()
+    message_lower = message.lower()
+    if (
+        code_lower not in _CODEX_CONTEXT_OVERFLOW_CODES
+        and not any(item in message_lower for item in _CODEX_CONTEXT_OVERFLOW_CODES)
+    ):
+        return None
+
+    inferred_code = code_lower or next(
+        item for item in _CODEX_CONTEXT_OVERFLOW_CODES if item in message_lower
+    )
+    return _CodexTerminalResponseError(message, code=inferred_code)
 
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
@@ -2029,11 +2077,17 @@ def run_conversation(
                             _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
                             if _codex_resp_status in {"failed", "cancelled"}:
                                 _codex_error_obj = getattr(response, "error", None)
-                                _codex_error_msg = (
-                                    _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
-                                    else str(_codex_error_obj) if _codex_error_obj
-                                    else f"Responses API returned status '{_codex_resp_status}'"
+                                _codex_error_msg = _format_responses_error(
+                                    _codex_error_obj, _codex_resp_status
                                 )
+                                _context_error = _codex_terminal_context_error(response)
+                                if _context_error is not None:
+                                    logger.warning(
+                                        "Codex context overflow returned as terminal response; "
+                                        "routing to compression recovery instead of invalid-response retry. %s",
+                                        agent._client_log_context(),
+                                    )
+                                    raise _context_error
                                 logger.warning(
                                     "Codex response status='%s' (error=%s). Routing to fallback. %s",
                                     _codex_resp_status, _codex_error_msg,

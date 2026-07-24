@@ -93,6 +93,22 @@ class TestResolvePluginKey:
         assert _resolve_plugin_key("openai") is None
         assert _resolve_plugin_key("image_gen/openai") == "image_gen/openai"
 
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_directory_basename_resolves_only_when_unique(self, mock_user, mock_bundled, tmp_path):
+        from hermes_cli.plugins_cmd import _resolve_plugin_key, _resolve_plugin_key_and_source
+
+        _make_category_plugin(tmp_path, "tools", "clone-name", {"name": "manifest-name"})
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        assert _resolve_plugin_key("clone-name") == "tools/clone-name"
+        assert _resolve_plugin_key_and_source("clone-name") == ("tools/clone-name", "user")
+
+        _make_category_plugin(tmp_path, "other", "clone-name", {"name": "other-name"})
+        assert _resolve_plugin_key("clone-name") is None
+        assert _resolve_plugin_key_and_source("clone-name") is None
+
 
 # ---------------------------------------------------------------------------
 # cmd_enable / cmd_disable — write the canonical key
@@ -210,6 +226,31 @@ class TestEnableDisableNested:
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
         with pytest.raises(SystemExit):
             cmd_enable("does-not-exist")
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._resolve_tool_override_grant")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_enable_rejects_ambiguous_directory_basename(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_grant,
+        mock_user, mock_bundled, tmp_path,
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        _make_category_plugin(tmp_path, "tools", "same-dir", {"name": "first"})
+        _make_category_plugin(tmp_path, "other", "same-dir", {"name": "second"})
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        with pytest.raises(SystemExit):
+            cmd_enable("same-dir", allow_tool_override=True)
+
+        mock_save_en.assert_not_called()
+        mock_save_dis.assert_not_called()
+        mock_grant.assert_not_called()
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

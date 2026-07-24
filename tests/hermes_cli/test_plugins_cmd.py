@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import os
 import shutil
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -374,6 +377,13 @@ class TestReadManifest:
         assert result["name"] == "cool-plugin"
         assert result["version"] == "1.0.0"
 
+    def test_valid_yml(self, tmp_path):
+        manifest = {"name": "cool-plugin", "version": "1.0.0"}
+        (tmp_path / "plugin.yml").write_text(yaml.dump(manifest))
+        result = _read_manifest(tmp_path)
+        assert result["name"] == "cool-plugin"
+        assert result["version"] == "1.0.0"
+
     def test_missing_file_returns_empty(self, tmp_path):
         result = _read_manifest(tmp_path)
         assert result == {}
@@ -412,6 +422,28 @@ class TestCmdInstall:
         with pytest.raises(SystemExit) as exc_info:
             cmd_install("invalid")
         assert exc_info.value.code == 1
+
+    def test_plugin_yml_install_does_not_warn(self, tmp_path, monkeypatch, capsys):
+        from hermes_cli import plugins_cmd
+
+        target = tmp_path / "plugin-dir"
+        target.mkdir()
+        (target / "plugin.yml").write_text(
+            yaml.dump({"name": "manifest-name", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugins_cmd, "_resolve_git_url", lambda _: ("owner/repo", None))
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_install_plugin_core",
+            lambda *_args, **_kwargs: (target, {"name": "manifest-name"}, "manifest-name"),
+        )
+        monkeypatch.setattr(plugins_cmd, "_prompt_plugin_env_vars", lambda *_args: None)
+        monkeypatch.setattr(plugins_cmd, "_display_after_install", lambda *_args: None)
+
+        plugins_cmd.cmd_install("owner/repo", enable=False)
+
+        assert "doesn't contain plugin.yaml" not in capsys.readouterr().out
 
     @patch("hermes_cli.plugins_cmd._display_after_install")
     @patch("hermes_cli.plugins_cmd.shutil.move")
@@ -528,6 +560,226 @@ class TestCmdRemove:
             cmd_remove("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
+
+# ── cmd_enable/cmd_disable tests ──────────────────────────────────────────
+
+
+def _write_user_plugin(hermes_home: Path, dirname: str, manifest: dict) -> Path:
+    plugin_dir = hermes_home / "plugins" / dirname
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
+    return plugin_dir
+
+
+def _read_home_config(hermes_home: Path) -> dict:
+    return yaml.safe_load((hermes_home / "config.yaml").read_text()) or {}
+
+
+def _write_home_config(hermes_home: Path, config: dict) -> None:
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(config), encoding="utf-8"
+    )
+
+
+def _list_args(**kwargs):
+    defaults = {
+        "enabled": False,
+        "user": False,
+        "no_bundled": True,
+        "plain": False,
+        "json": False,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+class TestCmdEnableDisable:
+    """Test enable/disable config keys."""
+
+    def test_directory_name_enable_disable_uses_manifest_key(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from hermes_cli.plugins_cmd import cmd_disable, cmd_enable, cmd_list
+
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_user_plugin(
+            hermes_home,
+            "plugin-dir",
+            {
+                "name": "manifest-name",
+                "version": "1.0.0",
+                "description": "Manifest keyed plugin",
+            },
+        )
+
+        cmd_enable("plugin-dir")
+
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == ["manifest-name"]
+        assert config["plugins"]["disabled"] == []
+
+        capsys.readouterr()
+        cmd_list(_list_args(json=True))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == [
+            {
+                "name": "manifest-name",
+                "status": "enabled",
+                "version": "1.0.0",
+                "description": "Manifest keyed plugin",
+                "source": "user",
+            }
+        ]
+
+        cmd_disable("plugin-dir")
+
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == []
+        assert config["plugins"]["disabled"] == ["manifest-name"]
+
+        cmd_enable("manifest-name")
+
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == ["manifest-name"]
+        assert config["plugins"]["disabled"] == []
+
+    def test_bundled_directory_name_uses_manifest_key(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.plugins_cmd import cmd_disable, cmd_enable
+
+        hermes_home = tmp_path / "hermes_home"
+        bundled = tmp_path / "bundled_plugins"
+        plugin_dir = bundled / "plugin-dir"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "manifest-name", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            lambda: bundled,
+        )
+
+        cmd_enable("plugin-dir")
+
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == ["manifest-name"]
+        assert config["plugins"]["disabled"] == []
+
+        cmd_disable("manifest-name")
+
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == []
+        assert config["plugins"]["disabled"] == ["manifest-name"]
+
+    def test_enable_disable_cleans_legacy_directory_keys(self, tmp_path, monkeypatch):
+        from hermes_cli.plugins_cmd import cmd_disable, cmd_enable
+
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_user_plugin(
+            hermes_home,
+            "plugin-dir",
+            {"name": "manifest-name", "version": "1.0.0"},
+        )
+
+        _write_home_config(
+            hermes_home,
+            {"plugins": {"enabled": [], "disabled": ["plugin-dir"]}},
+        )
+
+        cmd_enable("plugin-dir")
+
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == ["manifest-name"]
+        assert config["plugins"]["disabled"] == []
+
+        _write_home_config(
+            hermes_home,
+            {"plugins": {"enabled": ["plugin-dir"], "disabled": []}},
+        )
+
+        cmd_disable("plugin-dir")
+
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == []
+        assert config["plugins"]["disabled"] == ["manifest-name"]
+
+    def test_dashboard_enable_disable_uses_manifest_key(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import plugins_cmd
+
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_user_plugin(
+            hermes_home,
+            "plugin-dir",
+            {"name": "manifest-name", "version": "1.0.0"},
+        )
+        toggled = []
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_toggle_plugin_toolset",
+            lambda name, *, enable: toggled.append((name, enable)),
+        )
+
+        result = plugins_cmd.dashboard_set_agent_plugin_enabled(
+            "plugin-dir", enabled=True
+        )
+
+        assert result == {"ok": True, "name": "manifest-name", "unchanged": False}
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == ["manifest-name"]
+        assert config["plugins"]["disabled"] == []
+        assert toggled == [("manifest-name", True)]
+
+        result = plugins_cmd.dashboard_set_agent_plugin_enabled(
+            "plugin-dir", enabled=False
+        )
+
+        assert result == {"ok": True, "name": "manifest-name", "unchanged": False}
+        config = _read_home_config(hermes_home)
+        assert config["plugins"]["enabled"] == []
+        assert config["plugins"]["disabled"] == ["manifest-name"]
+        assert toggled == [("manifest-name", True), ("manifest-name", False)]
+
+    def test_toolset_fallback_resolves_manifest_name(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import plugins_cmd
+
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_user_plugin(
+            hermes_home,
+            "plugin-dir",
+            {
+                "name": "manifest-name",
+                "version": "1.0.0",
+                "provides_tools": ["manifest_tool"],
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.discover_plugins",
+            lambda: (_ for _ in ()).throw(RuntimeError("manager unavailable")),
+        )
+
+        class _Entry:
+            toolset = "manifest-toolset"
+
+        class _Registry:
+            def get_entry(self, name):
+                return _Entry() if name == "manifest_tool" else None
+
+        monkeypatch.setattr("tools.registry.registry", _Registry())
+
+        assert plugins_cmd._get_plugin_toolset_key("manifest-name") == "manifest-toolset"
 
 
 # ── cmd_list tests ─────────────────────────────────────────────────────────
@@ -758,7 +1010,8 @@ class TestCursesRadiolist:
     def test_keyboard_interrupt_returns_cancel_value(self):
         from hermes_cli.curses_ui import curses_radiolist
 
-        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+        mock_curses = types.SimpleNamespace(wrapper=MagicMock(side_effect=KeyboardInterrupt))
+        with patch("sys.stdin") as mock_stdin, patch.dict("sys.modules", {"curses": mock_curses}):
             mock_stdin.isatty.return_value = True
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
             assert result == -1

@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -49,6 +50,25 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     return app
+
+
+def _parse_sse_events(body: str):
+    events = []
+    for block in body.split("\n\n"):
+        if not block.strip():
+            continue
+        event_name = None
+        data_lines = []
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line[len("event: "):]
+            elif line.startswith("data: "):
+                data_lines.append(line[len("data: "):])
+        if event_name is None:
+            continue
+        data = json.loads("\n".join(data_lines)) if data_lines else {}
+        events.append((event_name, data))
+    return events
 
 
 @pytest.mark.asyncio
@@ -338,6 +358,132 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_correlated_tool_lifecycle_events(adapter, session_db):
+    session_id = session_db.create_session("tool-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["tool_start_callback"]("call_search", "web_search", {"query": "hermes"})
+        kwargs["tool_complete_callback"](
+            "call_search",
+            "web_search",
+            {"query": "hermes"},
+            '{"items":[1]}',
+        )
+        return {
+            "final_response": "Found it.",
+            "session_id": session_id,
+            "messages": [
+                {"role": "user", "content": "search hermes"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_search",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"query":"hermes"}'},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": '{"items":[1]}',
+                    "tool_call_id": "call_search",
+                    "tool_name": "web_search",
+                },
+                {"role": "assistant", "content": "Found it."},
+            ],
+        }, {"total_tokens": 7}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "search hermes"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    events = _parse_sse_events(body)
+    started = next(data for name, data in events if name == "tool.started")
+    assert started["tool_call_id"] == "call_search"
+    assert started["tool_name"] == "web_search"
+    assert started["args"] == {"query": "hermes"}
+    assert started.get("message_id")
+
+    completed = next(data for name, data in events if name == "tool.completed")
+    assert completed["tool_call_id"] == "call_search"
+    assert completed["tool_name"] == "web_search"
+    assert isinstance(completed.get("duration_s"), (int, float))
+    assert "result_preview" not in completed
+
+    run_completed = next(data for name, data in events if name == "run.completed")
+    messages = run_completed["messages"]
+    assert any(
+        msg.get("role") == "assistant"
+        and any(tc.get("id") == "call_search" for tc in (msg.get("tool_calls") or []))
+        for msg in messages
+    )
+    assert any(
+        msg.get("role") == "tool"
+        and msg.get("tool_call_id") == "call_search"
+        and msg.get("content") == '{"items":[1]}'
+        for msg in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_drops_unmatched_tool_completion(adapter, session_db):
+    session_id = session_db.create_session("orphan-tool-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["tool_complete_callback"]("call_orphan", "web_search", {"query": "missing"}, "result")
+        return {"final_response": "Done.", "session_id": session_id}, {"total_tokens": 3}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "orphan completion"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    events = _parse_sse_events(body)
+    assert [name for name, _ in events if name == "tool.completed"] == []
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_keeps_parallel_tool_ids_distinct(adapter, session_db):
+    session_id = session_db.create_session("parallel-tool-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["tool_start_callback"]("call_a", "web_search", {"query": "a"})
+        kwargs["tool_start_callback"]("call_b", "web_search", {"query": "b"})
+        kwargs["tool_complete_callback"]("call_b", "web_search", {"query": "b"}, '{"items":["b"]}')
+        kwargs["tool_complete_callback"]("call_a", "web_search", {"query": "a"}, '{"items":["a"]}')
+        return {"final_response": "Done.", "session_id": session_id}, {"total_tokens": 3}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "parallel search"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    events = _parse_sse_events(body)
+    starts = [data["tool_call_id"] for name, data in events if name == "tool.started"]
+    completions = [data["tool_call_id"] for name, data in events if name == "tool.completed"]
+    assert starts == ["call_a", "call_b"]
+    assert completions == ["call_b", "call_a"]
 
 
 @pytest.mark.asyncio

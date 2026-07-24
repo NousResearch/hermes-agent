@@ -239,6 +239,21 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
         return "image/bmp"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
+    # HEIF/HEIC/AVIF — ISO-BMFF container: bytes 4-8 are the box type 'ftyp',
+    # bytes 8-12 the major brand. iPhone photos/screenshots are HEIC (often
+    # mislabeled .jpg by upload pipelines). None of the vision providers ingest
+    # HEIF, but _normalize_to_supported_image re-encodes it to PNG via
+    # pillow-heif (same soft-dependency pattern as SVG). Sniffed here so it
+    # reaches that step instead of being rejected as "not a recognized image".
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        brand = header[8:12]
+        if brand in (
+            b"heic", b"heix", b"heim", b"heis",  # HEVC-coded HEIF still/sequence
+            b"hevc", b"hevx",
+            b"mif1", b"msf1",                     # generic HEIF image / sequence
+            b"avif", b"avis",                     # AV1-coded (AVIF)
+        ):
+            return "image/avif" if brand.startswith(b"avi") else "image/heic"
     return None
 
 
@@ -337,7 +352,25 @@ def _normalize_to_supported_image(
             "(`pip install cairosvg`) — then re-run vision_analyze on the PNG.",
         )
 
-    # Other non-supported raster formats (BMP, TIFF, ...): re-encode via Pillow.
+    # Other non-supported raster formats (BMP, TIFF, HEIF/HEIC/AVIF, ...):
+    # re-encode via Pillow. HEIF/AVIF need the pillow-heif plugin registered
+    # first (Pillow has no built-in HEIF codec); it's a soft dependency, so a
+    # HEIF image with the plugin missing gets an actionable error rather than a
+    # generic failure — same posture as the SVG-without-rasterizer branch.
+    if detected_mime in ("image/heic", "image/avif"):
+        try:
+            import pillow_heif  # type: ignore
+            pillow_heif.register_heif_opener()
+        except Exception:
+            return (
+                None,
+                None,
+                f"This is a {'HEIC/HEIF' if detected_mime == 'image/heic' else 'AVIF'} "
+                "image (common for iPhone photos), which vision models cannot read "
+                "directly, and the pillow-heif decoder is not installed. Install it "
+                "(`pip install pillow-heif`) and re-run vision_analyze, or convert the "
+                "image to PNG/JPEG first.",
+            )
     try:
         from PIL import Image as _PILImage
         with _PILImage.open(image_path) as _img:

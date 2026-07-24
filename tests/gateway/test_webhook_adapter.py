@@ -634,6 +634,27 @@ class TestEventFilter:
             assert resp.status == 202
 
     @pytest.mark.asyncio
+    async def test_event_filter_accepts_payload_event_field(self):
+        """Generic webhooks may use a top-level `event` field."""
+        routes = {
+            "generic": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["task.success"],
+                "prompt": "event={event} msg={msg}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/generic",
+                json={"event": "task.success", "msg": "ok"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
     async def test_event_filter_accepts_payload_type_field(self):
         """Svix-style payloads often use a top-level `type` event field."""
         routes = {

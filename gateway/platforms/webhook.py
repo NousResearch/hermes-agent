@@ -630,6 +630,7 @@ class WebhookAdapter(BasePlatformAdapter):
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
+            or payload.get("event", "")
             or payload.get("type", "")
             or "unknown"
         )

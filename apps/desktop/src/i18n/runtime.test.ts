@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
 
 import { TRANSLATIONS } from './catalog'
+import { ru } from './ru'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
 import { zh } from './zh'
 
@@ -34,6 +35,44 @@ describe('desktop i18n runtime translator', () => {
 
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
+  })
+
+  it('translates Russian strings and applies the 11-14 plural exception', () => {
+    setRuntimeI18nLocale('ru')
+
+    expect(translateNow('common.save')).toBe('Сохранить')
+    expect(translateNow('notifications.more', 1)).toBe('Ещё 1 уведомление')
+    expect(translateNow('notifications.more', 2)).toBe('Ещё 2 уведомления')
+    expect(translateNow('notifications.more', 5)).toBe('Ещё 5 уведомлений')
+    expect(translateNow('notifications.more', 11)).toBe('Ещё 11 уведомлений')
+    expect(translateNow('notifications.more', 21)).toBe('Ещё 21 уведомление')
+    expect(translateNow('settings.appearance.uiScaleTitle')).toBe('Масштаб интерфейса')
+    expect(translateNow('settings.appearance.embedsTitle')).toBe('Встроенные предпросмотры')
+    expect(translateNow('settings.appearance.pet.title')).toBe('Питомец')
+    expect(translateNow('settings.appearance.pet.count', 11)).toBe('11 питомцев.')
+  })
+
+  it('translates Russian file, memory graph, and schema settings surfaces', () => {
+    setRuntimeI18nLocale('ru')
+
+    expect(translateNow('fileMenu.copyPath')).toBe('Копировать путь')
+    expect(translateNow('starmap.title')).toBe('Граф памяти')
+    expect(fieldCopyForSchemaKey(ru.settings.fieldLabels, 'display.show_reasoning')).toBe('Блоки рассуждений')
+    expect(fieldCopyForSchemaKey(ru.settings.fieldDescriptions, 'display.show_reasoning')).toBe(
+      'Показывать содержимое рассуждений, когда его предоставляет бэкенд.'
+    )
+  })
+
+  it('uses Russian forms for count labels that do not include surrounding copy', () => {
+    expect(ru.agents.workers(1)).toBe('1 воркер')
+    expect(ru.agents.workers(2)).toBe('2 воркера')
+    expect(ru.agents.tokens(5)).toBe('5 токенов')
+    expect(ru.commandCenter.installTheme.installs('1')).toBe('1 установка')
+    expect(ru.commandCenter.actions('2')).toBe('2 действия')
+    expect(ru.preview.web.filesChanged(1, 'http://localhost:3000')).toBe(
+      'Изменён 1 файл, обновление: http://localhost:3000'
+    )
+    expect(ru.desktop.skillCommandsAvailable(2)).toBe('Доступны 2 команды навыков.')
   })
 
   it('translates settings copy for newly supported locales', () => {

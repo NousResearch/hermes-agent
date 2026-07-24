@@ -4,7 +4,9 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1021,3 +1023,232 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+class TestCanonicalCostExport:
+    """Both supported response paths must export the same complete cost."""
+
+    @staticmethod
+    def _response(input_tokens, output_tokens, cache_read=0, cache_write=0):
+        cache_details = SimpleNamespace(
+            cached_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+        usage = SimpleNamespace(
+            # Anthropic response shape.
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_write,
+            # OpenAI chat response shape used by the included-route case.
+            prompt_tokens=input_tokens + cache_read + cache_write,
+            completion_tokens=output_tokens,
+            prompt_tokens_details=cache_details,
+        )
+        return SimpleNamespace(usage=usage)
+
+    @staticmethod
+    def _summary(input_tokens, output_tokens, cache_read=0, cache_write=0, request_count=1):
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+            "reasoning_tokens": 0,
+            "request_count": request_count,
+        }
+
+    @staticmethod
+    def _capture_summary_path(mod, monkeypatch, usage, *, provider, model, api_mode):
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-cost", root_ctx=None, root_span=None)
+        state.generations[mod._request_key(1)] = observation
+        task_key = mod._trace_key("task-cost", "session-cost")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+        captured = {}
+
+        def fake_end_observation(
+            obs,
+            *,
+            output=None,
+            metadata=None,
+            usage_details=None,
+            cost_details=None,
+        ):
+            captured["usage_details"] = usage_details
+            captured["cost_details"] = cost_details
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+        mod.on_post_llm_call(
+            task_id="task-cost",
+            session_id="session-cost",
+            api_call_count=1,
+            model=model,
+            provider=provider,
+            api_mode=api_mode,
+            response={"model": model},
+            usage=usage,
+        )
+        return captured["usage_details"], captured["cost_details"]
+
+    def _run_both_paths(
+        self,
+        mod,
+        monkeypatch,
+        usage,
+        *,
+        provider="anthropic",
+        model="priced-model",
+        api_mode="anthropic_messages",
+    ):
+        response_result = mod._usage_and_cost(
+            self._response(
+                usage["input_tokens"],
+                usage["output_tokens"],
+                usage.get("cache_read_tokens", 0),
+                usage.get("cache_write_tokens", 0),
+            ),
+            provider=provider,
+            api_mode=api_mode,
+            model=model,
+            base_url="",
+        )
+        summary_result = self._capture_summary_path(
+            mod,
+            monkeypatch,
+            usage,
+            provider=provider,
+            model=model,
+            api_mode=api_mode,
+        )
+        assert response_result[0] == summary_result[0]
+        return response_result[1], summary_result[1]
+
+    @pytest.mark.parametrize(
+        ("cache_read", "cache_write", "expected_total"),
+        [
+            (0, 0, 0.00002),
+            (2, 3, 0.0000255),
+        ],
+        ids=("no-cache", "cached"),
+    )
+    def test_known_costs_include_canonical_total_on_both_paths(
+        self,
+        monkeypatch,
+        cache_read,
+        cache_write,
+        expected_total,
+    ):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            input_cost_per_million=Decimal("1"),
+            output_cost_per_million=Decimal("2"),
+            cache_read_cost_per_million=Decimal("0.5"),
+            cache_write_cost_per_million=Decimal("1.5"),
+            source="custom_contract",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(10, 5, cache_read, cache_write)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        expected = {
+            "total": expected_total,
+            "input": 0.00001,
+            "output": 0.00001,
+        }
+        if cache_read:
+            expected["cache_read_input_tokens"] = 0.000001
+        if cache_write:
+            expected["cache_creation_input_tokens"] = 0.0000045
+        assert response_cost == pytest.approx(expected)
+        assert summary_cost == pytest.approx(expected)
+
+    def test_total_uses_request_cost_instead_of_component_sum(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            input_cost_per_million=Decimal("1"),
+            output_cost_per_million=Decimal("2"),
+            cache_read_cost_per_million=Decimal("0.5"),
+            cache_write_cost_per_million=Decimal("1.5"),
+            request_cost=Decimal("0.01"),
+            source="provider_models_api",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(10, 5, cache_read=2, cache_write=3)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        for cost_details in (response_cost, summary_cost):
+            component_sum = sum(
+                value for key, value in cost_details.items() if key != "total"
+            )
+            assert cost_details["total"] == pytest.approx(0.0100255)
+            assert component_sum == pytest.approx(0.0000255)
+
+    def test_request_only_price_still_exports_total(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            request_cost=Decimal("0.01"),
+            source="provider_models_api",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(0, 0)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        assert response_cost == {"total": 0.01}
+        assert summary_cost == {"total": 0.01}
+
+    def test_partial_cache_pricing_exports_no_costs(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        entry = pricing.PricingEntry(
+            input_cost_per_million=Decimal("1"),
+            output_cost_per_million=Decimal("2"),
+            cache_read_cost_per_million=None,
+            source="provider_models_api",
+        )
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: entry)
+        usage = self._summary(10, 5, cache_read=2)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        assert response_cost == {}
+        assert summary_cost == {}
+
+    def test_unknown_pricing_exports_no_costs(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        import agent.usage_pricing as pricing
+
+        monkeypatch.setattr(pricing, "get_pricing_entry", lambda *_, **__: None)
+        usage = self._summary(10, 5)
+
+        response_cost, summary_cost = self._run_both_paths(mod, monkeypatch, usage)
+        assert response_cost == {}
+        assert summary_cost == {}
+
+    def test_included_route_does_not_pin_total(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        usage = self._summary(10, 5, cache_read=2)
+
+        response_cost, summary_cost = self._run_both_paths(
+            mod,
+            monkeypatch,
+            usage,
+            provider="openai-codex",
+            model="gpt-5.3-codex",
+            api_mode="chat_completions",
+        )
+        assert response_cost == summary_cost
+        assert "total" not in response_cost

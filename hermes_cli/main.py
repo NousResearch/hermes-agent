@@ -15461,6 +15461,7 @@ def main():
 
             if not sessions:
                 print("No sessions found.")
+                db.close()
                 return
 
             # Short workspace label: the repo/dir basename, "—" when unbound. The
@@ -15475,28 +15476,28 @@ def main():
 
             if has_ws:
                 if has_titles:
-                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                    print("─" * 110)
+                    header = f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}"
                 else:
-                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                    print("─" * 100)
+                    header = f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}"
+                print(header)
+                print("─" * len(header))
                 for s in sessions:
                     last_active = _relative_time(s.get("last_active"))
                     ws = _ws_label(s)[:16]
                     if has_titles:
                         title = (s.get("title") or "—")[:26]
-                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
                     else:
                         preview = s.get("preview", "")[:36]
                         print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
                 return
 
             if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                header = f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'Src':<6} {'ID'}"
             else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
+                header = f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}"
+            print(header)
+            print("─" * len(header))
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 preview = (
@@ -15507,7 +15508,7 @@ def main():
                 if has_titles:
                     title = (s.get("title") or "—")[:30]
                     sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    print(f"{title:<32} {preview:<40} {last_active:<13} {s['source']:<6} {sid}")
                 else:
                     sid = s["id"]
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")

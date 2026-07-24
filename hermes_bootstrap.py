@@ -122,6 +122,62 @@ def apply_windows_utf8_bootstrap() -> bool:
     return True
 
 
+def _patch_platform_syscmd_ver() -> None:
+    """Patch ``platform._syscmd_ver`` to survive non-UTF-8 command output.
+
+    On Windows with ``PYTHONUTF8=1`` (PEP 540 UTF-8 mode),
+    ``platform._syscmd_ver()`` calls::
+
+        subprocess.check_output(
+            "ver",
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="locale",
+            shell=True,
+        )
+
+    ``encoding="locale"`` resolves to ``locale.getencoding()``, which
+    returns ``"utf-8"`` under PEP 540.  However, the Windows ``ver``
+    command writes its output in the system's active ANSI code page
+    (e.g. ``cp1252`` on US-English, ``cp936`` on Chinese).  Bytes that
+    are valid in that code page but not in UTF-8 — for example ``0xe9``
+    (``é`` in cp1252, an invalid start byte in UTF-8) — raise a
+    ``UnicodeDecodeError`` inside the subprocess reader thread.
+
+    This patch wraps the call so that ``UnicodeDecodeError`` is silently
+    caught and the function returns its input defaults, matching the
+    existing ``OSError`` fallback that ``_win32_ver`` already handles.
+
+    Applied only on Windows.  No-op on POSIX.  Idempotent.
+    """
+    if not _IS_WINDOWS:
+        return
+    import platform as _platform_mod  # noqa: WPS433 - lazy import to avoid cycles
+
+    _orig = _platform_mod._syscmd_ver
+    if getattr(_orig, "_hermes_patched", False):
+        return  # Already patched
+
+    def _patched(
+        system: str = "",
+        release: str = "",
+        version: str = "",
+        supported_platforms: tuple[str, ...] | None = None,
+    ) -> tuple[str, str, str]:
+        try:
+            return _orig(system, release, version, supported_platforms)
+        except UnicodeDecodeError:
+            # The ``ver`` command output contained bytes that couldn't be
+            # decoded as UTF-8 under PEP 540.  Return defaults — the same
+            # fallback the function already uses when the command fails
+            # with OSError/CalledProcessError.
+            return system, release, version
+
+    _patched._hermes_patched = True  # type: ignore[attr-defined]
+    _platform_mod._syscmd_ver = _patched
+
+
 def harden_import_path(src_root: str | None = None) -> None:
     """Stop a package in the current directory from shadowing Hermes modules.
 
@@ -188,6 +244,9 @@ def activate_durable_lazy_target() -> None:
 # the very top of their module, before importing anything else.  The
 # import side effect does the right thing.
 apply_windows_utf8_bootstrap()
+# Patch platform._syscmd_ver to survive non-UTF-8 ``ver`` command output
+# on Windows.  Only active on win32; no-op on POSIX.
+_patch_platform_syscmd_ver()
 
 # Activate the durable lazy-install target (immutable Docker images) so
 # packages installed into the data volume on a previous run are importable

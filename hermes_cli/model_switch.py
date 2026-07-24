@@ -965,6 +965,38 @@ def _configured_provider_matches(
     return matches
 
 
+def _resolve_named_custom_model_id(
+    model_name: str,
+    target_provider: str,
+    custom_providers: Optional[list],
+) -> str:
+    """Map a picker-prefixed custom model selection to its configured ID."""
+    provider = str(target_provider or "").strip().lower()
+    if not provider.startswith("custom:") or "/" not in model_name:
+        return model_name
+
+    prefix, candidate = model_name.split("/", 1)
+    prefix = prefix.strip().lower()
+    candidate = candidate.strip()
+    if not prefix or not candidate:
+        return model_name
+
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        entry_slugs = {
+            custom_provider_slug(str(entry.get(key) or "")).lower()
+            for key in ("name", "provider_key")
+            if str(entry.get(key) or "").strip()
+        }
+        if provider not in entry_slugs or f"custom:{prefix}" not in entry_slugs:
+            continue
+        for model_id in _declared_model_ids(entry.get("models")):
+            if model_id.lower() == candidate.lower():
+                return model_id
+    return model_name
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -1447,6 +1479,9 @@ def switch_model(
         api_mode = determine_api_mode(target_provider, base_url)
 
     # --- Normalize model name for target provider ---
+    new_model = _resolve_named_custom_model_id(
+        new_model, target_provider, custom_providers
+    )
     new_model = normalize_model_for_provider(new_model, target_provider)
 
     # --- Validate ---

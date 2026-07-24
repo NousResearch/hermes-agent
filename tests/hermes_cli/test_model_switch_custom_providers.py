@@ -283,6 +283,48 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.api_key == "no-key-required"
 
 
+def test_picker_selection_resolves_named_custom_provider_model_id(monkeypatch):
+    """Picker prefixes must not leak into a named custom provider API model id."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "test-key",
+            "base_url": "https://token.sensenova.cn/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: _MOCK_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *a, **k: None,
+    )
+
+    result = switch_model(
+        raw_input="sensenova/deepseek-v4-flash",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        explicit_provider="custom:sensenova",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "sensenova",
+                "base_url": "https://token.sensenova.cn/v1",
+                "models": [
+                    {"id": "deepseek-v4-flash", "name": "deepseek-v4-flash"}
+                ],
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom:sensenova"
+    assert result.new_model == "deepseek-v4-flash"
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""

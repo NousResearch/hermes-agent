@@ -128,6 +128,108 @@ def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     assert response.status_code == 413
 
 
+def test_fs_write_text_writes_safe_file(client, tmp_path):
+    target = tmp_path / "notes.txt"
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert target.read_text() == "hello"
+
+
+def test_fs_write_text_rejects_protected_oauth_file(client, tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    target = hermes_home / ".anthropic_oauth.json"
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "not json"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
+def test_fs_write_text_rejects_mcp_token_files(client, tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    token_dir = hermes_home / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    target = token_dir / "github.json"
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "{}"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "auth.json",
+        "auth.lock",
+        "webhook_subscriptions.json",
+        "auth/google_oauth.json",
+        "cache/bws_cache.json",
+    ],
+)
+def test_fs_write_text_rejects_hermes_credential_stores(
+    client, tmp_path, monkeypatch, relative_path
+):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    target = hermes_home / relative_path
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "attacker-controlled"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("filename", [".env", ".env.local", ".env.production", ".envrc"])
+def test_fs_write_text_rejects_project_env_files(client, tmp_path, filename):
+    target = tmp_path / "project" / filename
+    target.parent.mkdir()
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "SECRET=attacker-controlled"},
+    )
+
+    assert response.status_code == 403
+    assert "protected" in response.json()["detail"].lower()
+    assert not target.exists()
+
+
+def test_fs_write_text_allows_env_example(client, tmp_path):
+    target = tmp_path / "project" / ".env.example"
+    target.parent.mkdir()
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(target), "content": "KEY=example"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert target.read_text() == "KEY=example"
+
+
 def test_fs_git_root_for_nested_file(client, tmp_path):
     (tmp_path / ".git").mkdir()
     nested = tmp_path / "pkg" / "mod"

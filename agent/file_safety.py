@@ -25,6 +25,32 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+_HERMES_CREDENTIAL_STORE_REL_PATHS = (
+    "auth.json",
+    "auth.lock",
+    ".anthropic_oauth.json",
+    ".env",
+    "webhook_subscriptions.json",
+    os.path.join("auth", "google_oauth.json"),
+    # Bitwarden Secrets Manager disk cache stores plaintext secret values.
+    os.path.join("cache", "bws_cache.json"),
+)
+
+
+# Common secret-bearing project-local environment file basenames.
+# These are blocked because .env files routinely contain API keys,
+# database passwords, and other credentials.
+_BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    ".env.staging",
+    ".envrc",
+}
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
@@ -177,20 +203,6 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     return f"{verb} denied: '{path}' is a protected system/credential file."
 
 
-# Common secret-bearing project-local environment file basenames.
-# These are blocked because .env files routinely contain API keys,
-# database passwords, and other credentials.
-_BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
-    ".env",
-    ".env.local",
-    ".env.development",
-    ".env.production",
-    ".env.test",
-    ".env.staging",
-    ".envrc",
-}
-
-
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
@@ -271,18 +283,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     # Credential / secret stores. Exact-file matches under either
     # HERMES_HOME or <root>.
-    credential_file_names = (
-        "auth.json",
-        "auth.lock",
-        ".anthropic_oauth.json",
-        ".env",
-        "webhook_subscriptions.json",
-        os.path.join("auth", "google_oauth.json"),
-        # Bitwarden Secrets Manager disk cache: stores plaintext secret values
-        # to avoid re-fetching across back-to-back CLI invocations. The file
-        # was introduced by #31968 but not added to this guard.
-        os.path.join("cache", "bws_cache.json"),
-    )
+    credential_file_names = _HERMES_CREDENTIAL_STORE_REL_PATHS
     for hd in hermes_dirs:
         for name in credential_file_names:
             try:

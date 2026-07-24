@@ -2364,7 +2364,7 @@ def text_to_speech_tool(
                 file_path, command_provider_config
             )
     else:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:

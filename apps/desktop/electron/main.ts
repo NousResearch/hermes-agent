@@ -243,7 +243,15 @@ if (REMOTE_DISPLAY_REASON) {
   app.disableHardwareAcceleration()
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
+  app.commandLine.appendSwitch('disable-gpu')
   app.commandLine.appendSwitch('disable-gpu-compositing')
+  app.commandLine.appendSwitch('disable-gpu-sandbox')
+  app.commandLine.appendSwitch('in-process-gpu')
+  // Intentionally do NOT append --no-sandbox here: detectRemoteDisplay() also
+  // triggers for SSH sessions and Linux X11 forwarding, so automatically
+  // disabling Chromium's sandbox would reach well beyond Windows RDP. The
+  // relaunch path treats --no-sandbox as a user/environment opt-out and
+  // preserves it across restarts; keep that opt-in semantics.
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )

@@ -53,7 +53,7 @@ changes.
 - [x] Install dependencies locally in the repository.
 - [x] Run formatting, type checks, linting, and unit tests for the web, TUI,
       desktop, and shared packages.
-- [ ] Build production bundles and fix reproducible failures.
+- [x] Build production bundles and fix reproducible failures.
 
 ## Milestone 4 — Gateway and integrations
 
@@ -119,6 +119,9 @@ changes.
 - 2026-07-24: Root `npm run check` passed for all workspaces, including type
   checks, unit tests, builds invoked by workspace checks, and linting. Lint
   reported 24 warnings and zero errors.
+- 2026-07-24: Explicit production builds passed for the web UI, TUI, desktop,
+  and bootstrap-installer workspaces. Web emitted only a non-fatal large-chunk
+  advisory; all four build commands exited 0 and left the tracked tree clean.
 - 2026-07-24: `hermes doctor` exited 0 against repository-isolated state. Core
   tools are available; credential-gated integrations correctly remain disabled.
 - 2026-07-24: Local Ollama validation: qwen3/hermes-qwen report 40,960-token

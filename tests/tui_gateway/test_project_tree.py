@@ -105,6 +105,42 @@ def test_linked_worktrees_fold_under_their_common_repo_root():
     assert linked["path"] == "/elsewhere/wt"
 
 
+def test_overview_orders_lanes_by_recency_not_alphabetically():
+    # Two linked-worktree lanes under one common repo root whose ALPHABETICAL
+    # order (wt-aaa, wt-zzz) is the OPPOSITE of their activity order (wt-zzz is
+    # the more recently active). The overview (hydrate=False) empties lane
+    # session arrays for payload slimness — but the lane sort must still run on
+    # real recency, matching the drill-in (hydrate=True) order, not collapse to
+    # alphabetical because the rows were dropped before sorting.
+    resolve = _resolver(
+        {
+            "/repo": ("/repo", "/repo"),
+            "/wt-aaa": ("/repo", "/wt-aaa"),
+            "/wt-zzz": ("/repo", "/wt-zzz"),
+        }
+    )
+    sessions = [
+        _session("/repo", branch="main", last_active=5000),
+        _session("/wt-aaa", last_active=1000),  # alphabetically first, older
+        _session("/wt-zzz", last_active=9000),  # alphabetically last, newer
+    ]
+
+    def _non_trunk_labels(hydrate):
+        tree = pt.build_tree([], sessions, [], resolve, hydrate=hydrate)
+        project = tree["projects"][0]
+        return [
+            g["label"]
+            for repo in project["repos"]
+            for g in repo["groups"]
+            if not g["isMain"]
+        ]
+
+    # Overview path: recency order (newer first), NOT alphabetical.
+    assert _non_trunk_labels(hydrate=False) == ["wt-zzz", "wt-aaa"]
+    # Drill-in path already sorts by recency — the two paths must agree.
+    assert _non_trunk_labels(hydrate=True) == ["wt-zzz", "wt-aaa"]
+
+
 def test_kanban_task_worktrees_collapse_into_one_bucket():
     resolve = _resolver(
         {

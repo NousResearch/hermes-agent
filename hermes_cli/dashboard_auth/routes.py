@@ -132,7 +132,7 @@ def _prefix(request: Request) -> str:
 @router.get("/login", name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
     # Read the ``next=`` query the gate's ``_unauth_response`` set on
-    # the redirect URL. Validate against the same same-origin rules the
+    # the redirect URL. Validate against the same-origin rules the
     # callback applies (defence in depth — the gate already filters,
     # but /login is reachable directly too).
     next_path = _validate_post_login_target(

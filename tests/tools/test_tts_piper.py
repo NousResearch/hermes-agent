@@ -220,7 +220,7 @@ class TestGeneratePiperTts:
 
         # The SynthesisConfig import happens inline inside _generate_piper_tts
         # via ``from piper import SynthesisConfig``. Inject a fake piper
-        # module so that that import resolves.
+        # module so that import resolves.
         monkeypatch.setitem(sys.modules, "piper", FakePiperModule)
 
         config = {

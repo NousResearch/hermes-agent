@@ -11172,9 +11172,18 @@ def _run_prompt_submit(
                 owns_event=lambda e: _session_owns_notification_event(sid, session, e),
                 skip_poll_observed=False,
             )
+            # Defer when background sub-agents are still running (#69127):
+            # submitting a completion notification as a new turn would
+            # interleave with the pending sub-agent result, producing
+            # confusing responses for the user.
+            try:
+                from tools.delegate_tool import list_active_subagents
+                _has_subagents = bool(list_active_subagents())
+            except Exception:
+                _has_subagents = False
             for index, (_evt, synth) in enumerate(drained):
                 with session["history_lock"]:
-                    if session.get("running"):
+                    if session.get("running") or _has_subagents:
                         for pending_evt, _pending_synth in drained[index:]:
                             process_registry.completion_queue.put(pending_evt)
                         break

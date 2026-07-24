@@ -17859,6 +17859,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         identity = self._completion_delivery_identity(evt)
         durable_claim_id = ""
         durable_delegation_id = ""
+        # --- Defer process-completion notifications when sub-agents are active ---
+        # Background process completions (notify_on_complete) that re-enter the
+        # session while delegate_task sub-agents are still running produce
+        # confusing interleaved responses — the notification creates a new agent
+        # turn that the user sees as an unrelated response wedged between the
+        # parent delegation and the eventual sub-agent result (#69127).
+        # Defer delivery when the parent session has active sub-agents; the
+        # completion_queue event from _move_to_finished remains available and
+        # will be delivered by the post-turn drain after sub-agents finish.
+        if evt.get("type") == "completion":
+            try:
+                from tools.delegate_tool import list_active_subagents
+                if list_active_subagents():
+                    logger.info(
+                        "Deferring process completion %s — session has active "
+                        "sub-agents (#69127)",
+                        evt.get("session_id", "?"),
+                    )
+                    return False  # retry: watcher loop will check again later
+            except Exception:
+                pass  # best-effort; deliver anyway on error
         if evt.get("type") == "async_delegation":
             durable_delegation_id = str(evt.get("delegation_id") or "")
             if durable_delegation_id:

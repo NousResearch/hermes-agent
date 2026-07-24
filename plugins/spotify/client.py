@@ -6,7 +6,13 @@ import json
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse
 
-import httpx
+# httpx is imported lazily inside SpotifyClient.request() — the only method
+# that actually constructs an HTTP call. The top-level import pulled in the
+# entire httpx + httpcore stack on every process that triggered plugin
+# discovery, even ones that never instantiate SpotifyClient.
+# ``from __future__ import annotations`` above keeps the ``httpx.Response``
+# parameter annotations valid as strings at runtime; nothing in the codebase
+# calls ``typing.get_type_hints()`` on these signatures.
 
 from hermes_cli.auth import (
     AuthError,
@@ -71,6 +77,7 @@ class SpotifyClient:
         allow_retry_on_401: bool = True,
         empty_response: Optional[Dict[str, Any]] = None,
     ) -> Any:
+        import httpx  # lazy — see module-level note
         url = f"{self.base_url}{path}"
         response = httpx.request(
             method,

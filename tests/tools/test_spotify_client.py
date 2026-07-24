@@ -56,7 +56,7 @@ def test_spotify_client_retries_once_after_401(monkeypatch: pytest.MonkeyPatch) 
             return _FakeResponse(401, {"error": {"message": "expired token"}})
         return _FakeResponse(200, {"devices": [{"id": "dev-1"}]})
 
-    monkeypatch.setattr(spotify_mod.httpx, "request", fake_request)
+    monkeypatch.setattr("httpx.request", fake_request)
 
     client = spotify_mod.SpotifyClient()
     payload = client.get_devices()
@@ -115,7 +115,7 @@ def test_spotify_client_formats_friendly_api_errors(
     def fake_request(method, url, headers=None, params=None, json=None, timeout=None):
         return _FakeResponse(status_code, payload, headers={"content-type": "application/json", "Retry-After": "7"})
 
-    monkeypatch.setattr(spotify_mod.httpx, "request", fake_request)
+    monkeypatch.setattr("httpx.request", fake_request)
 
     client = spotify_mod.SpotifyClient()
     with pytest.raises(spotify_mod.SpotifyAPIError) as exc:
@@ -137,7 +137,7 @@ def test_get_currently_playing_returns_explanatory_empty_payload(monkeypatch: py
     def fake_request(method, url, headers=None, params=None, json=None, timeout=None):
         return _FakeResponse(204, None, text="", headers={"content-type": "application/json"})
 
-    monkeypatch.setattr(spotify_mod.httpx, "request", fake_request)
+    monkeypatch.setattr("httpx.request", fake_request)
 
     client = spotify_mod.SpotifyClient()
     payload = client.get_currently_playing()
@@ -187,7 +187,7 @@ def test_library_contains_uses_generic_library_endpoint(monkeypatch: pytest.Monk
         seen.append((method, url, params))
         return _FakeResponse(200, [True])
 
-    monkeypatch.setattr(spotify_mod.httpx, "request", fake_request)
+    monkeypatch.setattr("httpx.request", fake_request)
 
     client = spotify_mod.SpotifyClient()
     payload = client.library_contains(uris=["spotify:album:abc", "spotify:track:def"])
@@ -231,7 +231,7 @@ def test_library_remove_uses_generic_library_endpoint(
         seen.append((method, url, params))
         return _FakeResponse(200, {})
 
-    monkeypatch.setattr(spotify_mod.httpx, "request", fake_request)
+    monkeypatch.setattr("httpx.request", fake_request)
 
     client = spotify_mod.SpotifyClient()
     getattr(client, method_name)(**{item_key: item_value})

@@ -1444,6 +1444,14 @@ def init_agent(
         short_uuid = uuid.uuid4().hex[:6]
         agent.session_id = f"{timestamp_str}_{short_uuid}"
 
+    # Provider-side cache scope is intentionally separate from the durable
+    # Hermes session row.  Compression rotates ``agent.session_id`` so the old
+    # DB row can be finalized, but Codex/OpenAI prompt caching benefits from a
+    # stable routing key across that rotation.  New /new sessions still get a
+    # fresh scope because this attribute is initialized with the initial
+    # session id and then preserved only inside a continuing agent instance.
+    agent.provider_cache_session_id = agent.session_id
+
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
     # coordination, and logging. Keep the ContextVar and os.environ

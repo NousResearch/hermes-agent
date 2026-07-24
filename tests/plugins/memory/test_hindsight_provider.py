@@ -895,11 +895,11 @@ class TestSyncTurn:
         assert item["context"] == "conversation between Hermes Agent and the User"
         assert item["tags"] == ["conv", "session1", "session:session-1"]
         content = json.loads(item["content"])
-        assert len(content) == 1
-        assert content[0][0]["role"] == "user"
-        assert content[0][0]["content"] == "User (fakeusername): hello"
-        assert content[0][1]["role"] == "assistant"
-        assert content[0][1]["content"] == "Assistant (fakeassistantname): hi there"
+        assert len(content) == 2
+        assert content[0]["role"] == "user"
+        assert content[0]["content"] == "User (fakeusername): hello"
+        assert content[1]["role"] == "assistant"
+        assert content[1]["content"] == "Assistant (fakeassistantname): hi there"
         assert item["metadata"]["source"] == "hermes"
         assert item["metadata"]["session_id"] == "session-1"
         assert item["metadata"]["platform"] == "discord"
@@ -912,7 +912,7 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0]["timestamp"])
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
 
     def test_sync_turn_skipped_when_auto_retain_off(self, provider_with_config):
@@ -962,14 +962,51 @@ class TestSyncTurn:
         assert call_kwargs["retain_async"] is False
         item = call_kwargs["items"][0]
         content = json.loads(item["content"])
-        assert len(content) == 3
-        assert content[-1][0]["role"] == "user"
-        assert content[-1][0]["content"] == "User: turn3-user"
-        assert content[-1][1]["role"] == "assistant"
-        assert content[-1][1]["content"] == "Assistant: turn3-asst"
+        assert len(content) == 6  # 3 turns × 2 messages each
+        assert content[-2]["role"] == "user"
+        assert content[-2]["content"] == "User: turn3-user"
+        assert content[-1]["role"] == "assistant"
+        assert content[-1]["content"] == "Assistant: turn3-asst"
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
+    def test_sync_turn_produces_flat_conversation_array(self, provider_with_config):
+        """Content must be a flat JSON array of message dicts for turn-aware chunking.
+
+        Hindsight's chunk_text() routes to _chunk_conversation() only when:
+            parsed = json.loads(content)
+            isinstance(parsed, list) and all(isinstance(turn, dict) for turn in parsed)
+
+        A nested array (list of pairs) fails this check and falls through to
+        dumb text splitting which can orphan messages mid-turn.
+        """
+        p = provider_with_config(retain_every_n_turns=2)
+        p.sync_turn("msg1-user", "msg1-asst")
+        p.sync_turn("msg2-user", "msg2-asst")
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = json.loads(item["content"])
+
+        # Must be a flat list of dicts (not nested list of lists)
+        assert isinstance(content, list)
+        assert all(isinstance(entry, dict) for entry in content), (
+            "Content must be a flat array of message dicts for Hindsight's "
+            "turn-aware chunking path to activate"
+        )
+        # 2 turns × 2 messages = 4 entries
+        assert len(content) == 4
+        # Every entry must have role, content, timestamp
+        for entry in content:
+            assert "role" in entry
+            assert "content" in entry
+            assert "timestamp" in entry
+        # Verify ordering
+        assert content[0]["role"] == "user"
+        assert content[1]["role"] == "assistant"
+        assert content[2]["role"] == "user"
+        assert content[3]["role"] == "assistant"
+    
     def test_sync_turn_accumulates_full_session_without_append_support(self, provider_with_config):
         """Legacy/overwrite APIs (no update_mode=append) resend the ENTIRE session each retain."""
         p = provider_with_config(retain_every_n_turns=2)
@@ -1217,11 +1254,21 @@ class TestSessionSwitchBufferFlush:
         kw = p._client.aretain_batch.call_args.kwargs
         assert kw["document_id"] == old_doc
         item = kw["items"][0]
-        # Both buffered turns must be present in the flushed payload.
+        # Both buffered turns must be present in the flushed payload
+        # AND must satisfy Hindsight's flat-dict contract for turn-aware chunking.
         content = json.loads(item["content"])
-        flat = json.dumps(content)
-        assert "turn1-user" in flat
-        assert "turn2-user" in flat
+        assert isinstance(content, list)
+        assert all(isinstance(entry, dict) for entry in content), (
+            "Session-switch flush must produce a flat array of message dicts"
+        )
+        # 2 turns x 2 messages = 4 entries in user/assistant order
+        assert len(content) == 4
+        assert content[0]["role"] == "user"
+        assert content[1]["role"] == "assistant"
+        assert content[2]["role"] == "user"
+        assert content[3]["role"] == "assistant"
+        assert "turn1-user" in content[0]["content"]
+        assert "turn2-user" in content[2]["content"]
         # Old session id must appear in lineage tags / metadata.
         assert "session:test-session" in item["tags"]
         assert item["metadata"]["session_id"] == "test-session"

@@ -149,9 +149,10 @@ class TestGenerate:
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
         assert captured["input"][0]["content"][0]["type"] == "input_text"
-        assert captured["tool_choice"]["type"] == "allowed_tools"
-        assert captured["tool_choice"]["mode"] == "required"
-        assert captured["tool_choice"]["tools"] == [{"type": "image_generation"}]
+        # Regression for #19505: the Codex backend 400s on every tool_choice
+        # shape we have for the hosted ``image_generation`` tool, so the
+        # provider must omit tool_choice entirely and rely on instructions.
+        assert "tool_choice" not in captured
 
         tool = captured["tools"][0]
         assert tool["type"] == "image_generation"

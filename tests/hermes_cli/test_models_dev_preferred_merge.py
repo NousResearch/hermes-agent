@@ -97,14 +97,15 @@ class TestProviderModelIdsPreferred:
         assert "claude-opus-4-7" in out
         assert "kimi-k2.6" in out
 
-    def test_kimi_coding_offline_catalog_includes_k2_7_code(self):
-        """Native Kimi users must see the newest Code model without live catalog help."""
+    def test_kimi_coding_offline_catalog_includes_k3(self):
+        """Native Kimi users must see the newest models without live catalog help."""
         assert "kimi-coding" not in _MODELS_DEV_PREFERRED
         with patch("agent.models_dev.list_agentic_models", return_value=[]):
             out = provider_model_ids("kimi-coding")
+        assert "kimi-k3" in out
         assert "kimi-k2.7-code" in out
 
-    def test_kimi_coding_live_catalog_does_not_hide_curated_k2_7_code(self):
+    def test_kimi_coding_live_catalog_does_not_hide_curated_k3(self):
         """Kimi /models can lag inference; live results must not replace curated."""
         with (
             patch(
@@ -114,8 +115,8 @@ class TestProviderModelIdsPreferred:
             patch("providers.base.ProviderProfile.fetch_models", return_value=["kimi-k2.6"]),
         ):
             out = provider_model_ids("kimi-coding")
-        # Curated-first order; curated newest (k2.7-code) stays ahead of live.
-        assert out[:2] == ["kimi-k2.7-code", "kimi-k2.6"]
+        # Curated-first order; curated newest (k3) stays ahead of live.
+        assert out[:3] == ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]
 
     def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self):
         """Coding keys discover K3; legacy Moonshot keys must not advertise it."""
@@ -171,7 +172,7 @@ class TestProviderModelIdsPreferred:
                 custom_models = provider_model_ids("kimi-coding")
 
         assert "k3" in coding_models
-        assert coding_models[0] == "kimi-k2.7-code"
+        assert coding_models[0] == "kimi-k3"
         assert all(model.lower() != "k3" for model in legacy_models)
         assert all(model.lower() != "k3" for model in custom_models)
 
@@ -194,7 +195,7 @@ class TestProviderModelIdsPreferred:
             _model_flow_kimi({}, current_model="")
 
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
-        assert captured["models"][0] == "kimi-k2.7-code"
+        assert captured["models"][0] == "kimi-k3"
 
 
 class TestOpenRouterAndNousUnchanged:

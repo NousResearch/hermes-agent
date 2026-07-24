@@ -66,6 +66,13 @@ export function OverlayView({
         'p-[calc(var(--titlebar-height)+0.625rem)]',
         'sm:p-[calc(var(--titlebar-height)+0.875rem)]'
       )}
+      // Every OverlayView-based overlay (settings, command-center, agents, cron,
+      // profiles, star map, …) covers the chat while the composer stays mounted
+      // beneath it. This marker tells `composerFocusBlockedBySurface` to stand
+      // the global type-to-focus / soft `/` / Enter down, so keystrokes don't
+      // leak into the hidden composer (and the overlay's own bare-key shortcuts,
+      // e.g. star map's Space, keep working).
+      data-overlay-surface=""
       onClick={event => {
         if (event.target === event.currentTarget) {
           closeOverlay()

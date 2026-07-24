@@ -1,4 +1,4 @@
-"""Surface-agnostic core for the Phase 2b terminal-billing screens.
+"""Surface-agnostic core for the Phase 2b Remote Spending screens.
 
 One fetch/parse per concern, consumed identically by the CLI handler
 (``cli.py::_show_billing``), the TUI JSON-RPC methods

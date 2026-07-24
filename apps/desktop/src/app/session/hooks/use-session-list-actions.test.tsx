@@ -62,9 +62,18 @@ vi.mock('@/hermes', async importOriginal => ({
   listSidebarSessions: (...args: unknown[]) => listSidebarSessions(...args)
 }))
 
+// The refresh only reads the optimistic tombstone set; stub it so we don't pull
+// the whole projects store (gateway / fs / git) into this hook's test.
+const removed = vi.hoisted(() => ({ ids: new Set<string>() }))
+
+vi.mock('@/store/projects', () => ({
+  $removedSessionIds: { get: () => removed.ids }
+}))
+
 beforeEach(() => {
   listSidebarSessions.mockReset()
   listAllProfileSessions.mockReset()
+  removed.ids = new Set()
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
@@ -146,6 +155,28 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect(loadingStates).toEqual([false])
   })
 
+  it('drops rows the user just deleted, even when the backend page still lists them', async () => {
+    // A delete RPC is in flight: the row is tombstoned optimistically but the
+    // batched refresh still carries it (and a lineage-tip variant). Both must be
+    // filtered so the optimistic removal never flashes back.
+    removed.ids = new Set(['b', 'root-c'])
+    listSidebarSessions.mockResolvedValue(
+      sidebar({
+        sessions: [row('a'), row('b'), row('c', { _lineage_root_id: 'root-c' } as Partial<SessionInfo>)],
+        total: 3,
+        profile_totals: {}
+      })
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+
   it('still shows loading for the initial (empty-list) fetch', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')], total: 1, profile_totals: {} }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
@@ -203,5 +234,26 @@ describe('refreshSessions batches slices into one request', () => {
         messagingExclude: expect.arrayContaining(['cron'])
       })
     )
+  })
+
+  it('scopes the cron-jobs fetch to the active profile (all → unified view)', async () => {
+    const { getCronJobs } = await import('@/hermes')
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [], total: 0, profile_totals: {} }))
+
+    const scoped = renderHook(() => useSessionListActions({ profileScope: 'work' }))
+
+    await act(async () => {
+      await scoped.result.current.refreshCronJobs()
+    })
+
+    expect(getCronJobs).toHaveBeenLastCalledWith('work')
+
+    const unified = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
+
+    await act(async () => {
+      await unified.result.current.refreshCronJobs()
+    })
+
+    expect(getCronJobs).toHaveBeenLastCalledWith('all')
   })
 })

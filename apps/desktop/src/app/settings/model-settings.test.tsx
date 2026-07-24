@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -88,9 +89,13 @@ async function renderModelSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
-    <QueryClientProvider client={client}>
-      <ModelSettings />
-    </QueryClientProvider>
+    // The aux-task deep-link highlight reads useSearchParams, so the page
+    // needs a router context in tests (the app provides HashRouter at root).
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ModelSettings />
+      </QueryClientProvider>
+    </MemoryRouter>
   )
 }
 
@@ -426,6 +431,53 @@ describe('ModelSettings MoA preset editor', () => {
       // onValueChange), so nothing changes: no save, model still shown.
       expect(saveMoaModels).not.toHaveBeenCalled()
       expect(screen.getByText('nous · hermes-4')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('autosaves the selected preset when its enabled switch is toggled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({ enabled: false })
+          })
+        })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('saves a disabled reference model without removing it (per-slot enabled toggle)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Disable reference 1' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({
+              reference_models: [
+                expect.objectContaining({ provider: 'nous', model: 'hermes-4', enabled: false }),
+                expect.objectContaining({ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' })
+              ]
+            })
+          })
+        })
+      )
     } finally {
       vi.useRealTimers()
     }

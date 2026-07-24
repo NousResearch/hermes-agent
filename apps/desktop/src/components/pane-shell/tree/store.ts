@@ -343,6 +343,13 @@ export function treePanesWithPrefix(prefix: string): string[] {
   return tree ? allPaneIds(tree).filter(id => id.startsWith(prefix)) : []
 }
 
+/** The main tab strip's "+": open a new session as its own tab (reusing an
+ *  already-open unused tab when one exists, so repeated clicks don't pile up
+ *  empty sessions). The app wiring registers the concrete action so this
+ *  generic renderer stays session-agnostic; null until wired (the "+" hides).
+ *  An atom so the strip re-renders when the action becomes available. */
+export const $newSessionTabAction = atom<(() => void) | null>(null)
+
 /** ⌘1…⌘9: activate the Nth tab of the FOCUSED zone (the interaction tracker's
  *  group), but only when it's a real tab strip (≥2 panes). Returns false so the
  *  caller falls back to its default (profile switch) — the number keys mean
@@ -375,7 +382,15 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
   }
 
   const idx = Math.max(0, panes.indexOf(group!.active ?? ''))
-  activateTreePane(group!.id, panes[(idx + direction + panes.length) % panes.length])
+  const nextId = panes[(idx + direction + panes.length) % panes.length]
+  activateTreePane(group!.id, nextId)
+
+  // Cycling onto a session/main tab must surface the name card — a zone that
+  // was double-tap-hidden stays headerless otherwise ("the one that cycles
+  // never gets it").
+  if (nextId === 'workspace' || nextId.startsWith('session-tile:')) {
+    setTreeGroupHeaderHidden(group!.id, false)
+  }
 
   return true
 }

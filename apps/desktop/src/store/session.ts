@@ -1,3 +1,4 @@
+import type { ConnectionState } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
@@ -25,10 +26,49 @@ const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
+//
+// Scoped per profile: a single global key remembered ONE session across every
+// profile, so relaunching (or a cold start) under profile B would try to
+// restore a session that belongs to profile A — one of the ways a conversation
+// appears to bleed between profiles (#63590). Each profile now remembers its
+// own last session. The default profile keeps the original unsuffixed key so
+// existing installs' remembered session survives the upgrade.
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 
-export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
-export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
+function rememberedSessionKey(profile?: null | string): string {
+  const key = (profile ?? '').trim()
+
+  return !key || key === 'default' ? LAST_SESSION_KEY : `${LAST_SESSION_KEY}.${key}`
+}
+
+export const getRememberedSessionId = (profile?: null | string): null | string =>
+  storedString(rememberedSessionKey(profile))
+export const setRememberedSessionId = (id: null | string, profile?: null | string) =>
+  persistString(rememberedSessionKey(profile), id)
+
+/**
+ * The profile a routed session belongs to, for keying the remembered id.
+ *
+ * Prefer the owning profile recorded on the session row (the cross-profile
+ * aggregator tags each row), so the session is remembered under ITS profile
+ * even while a different one is live. Falls back to the active gateway profile
+ * for a session not yet in the in-memory list.
+ */
+export function rememberedSessionProfile(
+  sessions: readonly SessionInfo[],
+  sessionId: null | string,
+  activeProfile: null | string
+): string {
+  if (sessionId) {
+    const owner = sessions.find(session => sessionMatchesStoredId(session, sessionId))?.profile?.trim()
+
+    if (owner) {
+      return owner
+    }
+  }
+
+  return (activeProfile ?? '').trim() || 'default'
+}
 
 // The last non-overlay route (a page like /skills, or a session route), so a
 // relaunch lands back where you were instead of a bare new-chat.
@@ -112,12 +152,6 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
 export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
   configuredDefaultProjectDir = dir?.trim() || ''
-
-  // Cache only — new chats read this via workspaceCwdForNewSession(). Do not
-  // rewrite the live workspace (or localStorage) while a session is active.
-  if (configuredDefaultProjectDir && !$activeSessionId.get()) {
-    setCurrentCwd(configuredDefaultProjectDir)
-  }
 }
 
 interface AppAtom<T> {
@@ -142,6 +176,27 @@ export const sessionMatchesStoredId = (
   session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
   storedSessionId: string
 ): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
+
+/**
+ * Stable composer + `/queue` scope for a selected stored session.
+ *
+ * Same durability rule as {@link sessionPinId}: prefer the lineage root so
+ * auto-compression tip rotation does not remount the composer onto an empty
+ * draft/queue key mid-keystroke. Falls back to the live id when the row is
+ * not in the in-memory list yet.
+ */
+export function resolveComposerSessionKey(
+  selectedSessionId: string | null | undefined,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): string | null {
+  if (!selectedSessionId) {
+    return null
+  }
+
+  const row = sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))
+
+  return row ? sessionPinId(row) : selectedSessionId
+}
 
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
@@ -213,7 +268,7 @@ export function mergeSessionPage(
 }
 
 export const $connection = atom<HermesConnection | null>(null)
-export const $gatewayState = atom('idle')
+export const $gatewayState = atom<ConnectionState>('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
 // Cron-job sessions (source === 'cron') are fetched as their own list so the
@@ -319,7 +374,7 @@ export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
-export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
+export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
@@ -379,6 +434,19 @@ export const $currentModelSource = atom<ComposerModelSource>(getCurrentModelSour
 export const setCurrentModelSource = (source: ComposerModelSource) => {
   persistString(COMPOSER_MODEL_SOURCE_KEY, source || null)
   $currentModelSource.set(source)
+}
+
+// Monotonic intent token for async default refreshes. A profile/config request
+// may start before the user opens the picker and finish after their click; the
+// token lets that older response stand down even when the selected value is
+// unchanged (value comparisons alone cannot detect re-selecting the same row).
+let composerSelectionGeneration = 0
+
+export const getComposerSelectionGeneration = (): number => composerSelectionGeneration
+
+export const markComposerSelectionManual = (): void => {
+  composerSelectionGeneration += 1
+  setCurrentModelSource('manual')
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

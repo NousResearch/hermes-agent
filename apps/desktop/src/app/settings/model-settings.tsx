@@ -35,6 +35,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ListRow, Pill, SectionHeading } from './primitives'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -214,6 +215,14 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // place — mirrors the onboarding ApiKeyForm but scoped to the model picker.
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
+
+  // Deep link from the vision Capabilities detail (?tab=config:model&aux=vision):
+  // scroll the auxiliary task row into view and flash it once the list loads.
+  useDeepLinkHighlight({
+    elementId: task => `aux-task-${task}`,
+    param: 'aux',
+    ready: task => AUX_TASKS.some(meta => meta.key === task)
+  })
 
   // Every profile-scoped async here captures this and bails before writing back,
   // so a request in flight when the user switches profiles can't paint profile
@@ -877,88 +886,89 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             const isEditing = editingAuxTask === meta.key
 
             return (
-              <ListRow
-                action={
-                  !isEditing && (
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <Button
-                        disabled={!mainModel || applying}
-                        onClick={() => void setAuxiliaryToMain(meta.key)}
-                        size="sm"
-                        variant="text"
-                      >
-                        {m.setToMain}
-                      </Button>
-                      <Button
-                        disabled={!providers.length || applying}
-                        onClick={() => beginAuxiliaryEdit(meta.key)}
-                        size="sm"
-                        variant="textStrong"
-                      >
-                        {m.change}
-                      </Button>
-                    </div>
-                  )
-                }
-                below={
-                  isEditing && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                      <Select
-                        onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                        value={auxDraft.provider}
-                      >
-                        <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                          <SelectValue placeholder={m.provider} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {providerOptions.map(provider => (
-                            <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                              {provider.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Select
-                        onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                        value={auxDraft.model}
-                      >
-                        <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                          <SelectValue placeholder={m.model} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                            <SelectItem key={model} value={model}>
-                              {model}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        disabled={!auxDraft.provider || !auxDraft.model || applying}
-                        onClick={() => void applyAuxiliaryDraft(meta.key)}
-                        size="sm"
-                      >
-                        {applying ? m.applying : t.common.apply}
-                      </Button>
-                      <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                        {t.common.cancel}
-                      </Button>
-                    </div>
-                  )
-                }
-                description={
-                  <span className="font-mono text-[0.68rem]">
-                    {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
-                  </span>
-                }
-                key={meta.key}
-                title={
-                  <span className="flex items-baseline gap-2">
-                    {copy.label}
-                    <Pill>{copy.hint}</Pill>
-                  </span>
-                }
-              />
+              <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
+                <ListRow
+                  action={
+                    !isEditing && (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Button
+                          disabled={!mainModel || applying}
+                          onClick={() => void setAuxiliaryToMain(meta.key)}
+                          size="sm"
+                          variant="text"
+                        >
+                          {m.setToMain}
+                        </Button>
+                        <Button
+                          disabled={!providers.length || applying}
+                          onClick={() => beginAuxiliaryEdit(meta.key)}
+                          size="sm"
+                          variant="textStrong"
+                        >
+                          {m.change}
+                        </Button>
+                      </div>
+                    )
+                  }
+                  below={
+                    isEditing && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                          value={auxDraft.provider}
+                        >
+                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                            <SelectValue placeholder={m.provider} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {providerOptions.map(provider => (
+                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                {provider.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                          value={auxDraft.model}
+                        >
+                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                            <SelectValue placeholder={m.model} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
+                              <SelectItem key={model} value={model}>
+                                {model}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          disabled={!auxDraft.provider || !auxDraft.model || applying}
+                          onClick={() => void applyAuxiliaryDraft(meta.key)}
+                          size="sm"
+                        >
+                          {applying ? m.applying : t.common.apply}
+                        </Button>
+                        <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
+                          {t.common.cancel}
+                        </Button>
+                      </div>
+                    )
+                  }
+                  description={
+                    <span className="font-mono text-[0.68rem]">
+                      {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                    </span>
+                  }
+                  title={
+                    <span className="flex items-baseline gap-2">
+                      {copy.label}
+                      <Pill>{copy.hint}</Pill>
+                    </span>
+                  }
+                />
+              </div>
             )
           })}
         </div>
@@ -983,6 +993,15 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 ))}
               </SelectContent>
             </Select>
+            <label className="flex items-center gap-2 rounded-sm border border-border px-2 py-1 text-xs">
+              Enabled
+              <Switch
+                checked={currentMoaPreset.enabled !== false}
+                disabled={applying}
+                onCheckedChange={checked => updateMoaPreset(prev => ({ ...prev, enabled: checked }))}
+                size="xs"
+              />
+            </label>
             <Button
               disabled={applying}
               onClick={() => {
@@ -1059,6 +1078,21 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="grid gap-1">
             {currentMoaPreset.reference_models.map((slot, index) => (
               <ListRow
+                action={
+                  <Switch
+                    aria-label={`${slot.enabled !== false ? 'Disable' : 'Enable'} reference ${index + 1}`}
+                    checked={slot.enabled !== false}
+                    disabled={applying}
+                    onCheckedChange={checked =>
+                      updateMoaPreset(prev => ({
+                        ...prev,
+                        reference_models: prev.reference_models.map((s, i) =>
+                          i === index ? { ...s, enabled: checked === true } : s
+                        )
+                      }))
+                    }
+                  />
+                }
                 below={
                   <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
                     <Select
@@ -1127,6 +1161,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     </Button>
                   </div>
                 }
+                className={cn(slot.enabled === false && 'opacity-60')}
                 description={
                   <span className="font-mono text-[0.68rem]">
                     {slot.provider} · {slot.model || m.model}
@@ -1139,7 +1174,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             <Button
               disabled={applying}
               onClick={() =>
-                updateMoaPreset(prev => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))
+                updateMoaPreset(prev => ({
+                  ...prev,
+                  reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }]
+                }))
               }
               size="sm"
               variant="textStrong"

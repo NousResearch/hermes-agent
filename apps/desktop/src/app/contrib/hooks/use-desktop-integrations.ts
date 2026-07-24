@@ -3,7 +3,15 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import {
+  $sessions,
+  getRememberedRoute,
+  getRememberedSessionId,
+  rememberedSessionProfile,
+  setRememberedRoute,
+  setRememberedSessionId
+} from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isSecondaryWindow } from '@/store/windows'
@@ -63,7 +71,10 @@ export function useDesktopIntegrations({
   // you don't want to boot into a modal.
   useEffect(() => {
     if (routedSessionId) {
-      setRememberedSessionId(routedSessionId)
+      setRememberedSessionId(
+        routedSessionId,
+        rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
+      )
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
@@ -92,7 +103,7 @@ export function useDesktopIntegrations({
       return
     }
 
-    const last = getRememberedSessionId()
+    const last = getRememberedSessionId($activeGatewayProfile.get())
 
     if (last) {
       navigate(sessionRoute(last), { replace: true })
@@ -100,8 +111,14 @@ export function useDesktopIntegrations({
   }, [locationPathname, navigate])
 
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
-      setRememberedSessionId(null)
+    if (!resumeExhaustedSessionId) {
+      return
+    }
+
+    const owner = rememberedSessionProfile($sessions.get(), resumeExhaustedSessionId, $activeGatewayProfile.get())
+
+    if (getRememberedSessionId(owner) === resumeExhaustedSessionId) {
+      setRememberedSessionId(null, owner)
     }
   }, [resumeExhaustedSessionId])
 
@@ -155,10 +172,12 @@ export function useDesktopIntegrations({
   // OS-standard window close, esp. secondary windows). The Win/Linux keyboard
   // path is the `view.closeTab` keybind (use-keybinds), sharing closeActiveTab.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => void closeActiveTab())
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(
+      () => void closeActiveTab(id => navigate(sessionRoute(id)))
+    )
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {

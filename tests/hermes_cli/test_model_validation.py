@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli.models import (
     azure_foundry_model_api_mode,
     copilot_model_api_mode,
@@ -624,6 +626,15 @@ class TestValidateApiFound:
         assert result["persist"] is True
         assert result["recognized"] is True
 
+    def test_non_ascii_model_found_for_custom_endpoint(self):
+        result = _validate(
+            "小马模型", provider="openrouter",
+            api_models=["小马模型"], base_url="http://localhost:11434/v1",
+        )
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+
 
 # -- validate — API not found ------------------------------------------------
 
@@ -711,6 +722,63 @@ class TestValidateApiFallback:
         assert result["persist"] is True
         assert result["recognized"] is False
         assert "note" in result["message"].lower()
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "@小马助理",
+            "小马助理",
+            "-x",
+            "--provider",
+            "https://example.com/model",
+            "/tmp/model",
+            "x",
+            "x" * 201,
+        ],
+    )
+    def test_implausible_model_rejected_without_api_or_catalog(self, model_name):
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            result = _validate(
+                model_name,
+                provider="totally-unknown",
+                api_models=None,
+            )
+
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert result["recognized"] is False
+        assert "does not look like a valid model id" in result["message"].lower()
+
+    def test_single_dash_flag_rejected_in_catalog_fallback(self):
+        with patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["known-model"],
+        ):
+            result = _validate("-x", api_models=None)
+
+        assert result["accepted"] is False
+        assert result["persist"] is False
+
+    def test_custom_endpoint_rejects_implausible_model_when_probe_is_unreachable(self):
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": None,
+                "probed_url": "http://localhost:8000/v1/models",
+                "resolved_base_url": "http://localhost:8000/v1",
+                "suggested_base_url": None,
+                "used_fallback": False,
+            },
+        ):
+            result = validate_requested_model(
+                "@小马助理",
+                "custom",
+                api_key="local-key",
+                base_url="http://localhost:8000/v1",
+            )
+
+        assert result["accepted"] is False
+        assert result["persist"] is False
 
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(

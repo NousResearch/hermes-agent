@@ -4324,6 +4324,23 @@ def fetch_ollama_cloud_models(
     return []
 
 
+def _looks_like_unverified_model_id(model_name: str) -> bool:
+    """Return whether an unverified value is plausible enough to soft-accept.
+
+    This heuristic is intentionally limited to fallback paths where neither a
+    live endpoint nor a provider catalog can verify the value.  Exact IDs from
+    those authoritative sources must remain valid even when they use unusual
+    characters.
+    """
+    lowered = model_name.lower()
+    return (
+        2 <= len(model_name) <= 200
+        and any(ch.isascii() and ch.isalnum() for ch in model_name)
+        and not model_name.startswith(("@", "-", "/"))
+        and not lowered.startswith(("http://", "https://"))
+    )
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],
@@ -4471,6 +4488,14 @@ def validate_requested_model(
                 "persist": True,
                 "recognized": False,
                 "message": message,
+            }
+
+        if not _looks_like_unverified_model_id(requested):
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": f"`{requested}` does not look like a valid model ID.",
             }
 
         message = (
@@ -4845,6 +4870,11 @@ def validate_requested_model(
             suggestion_text = "\n  Similar models: " + ", ".join(
                 f"`{catalog_lower[s]}`" for s in suggestions
             )
+        if not _looks_like_unverified_model_id(requested):
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"`{requested}` does not look like a valid model ID.",
+            }
         return {
             "accepted": True,
             "persist": True,
@@ -4856,8 +4886,20 @@ def validate_requested_model(
             ),
         }
 
-    # No catalog available — accept with a warning, matching the comment's
-    # stated intent ("Accept and persist, but warn").
+    # No catalog available and the /models probe was unreachable.  Only apply
+    # plausibility checks here, after authoritative discovery paths have had a
+    # chance to accept unusual but valid IDs.
+    if not _looks_like_unverified_model_id(requested):
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"`{requested}` does not look like a valid model ID. "
+                f"Model names are typically ASCII identifiers (e.g. `qwen-plus`, `glm-4`)."
+            ),
+        }
+
     return {
         "accepted": True,
         "persist": True,

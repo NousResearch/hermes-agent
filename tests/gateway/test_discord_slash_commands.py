@@ -81,6 +81,7 @@ from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 class FakeTree:
     def __init__(self):
         self.commands = {}
+        self.fetched_commands = []
 
     def command(self, *, name, description):
         def decorator(fn):
@@ -93,7 +94,13 @@ class FakeTree:
         self.commands[cmd.name] = cmd
 
     def get_commands(self):
-        return [SimpleNamespace(name=n) for n in self.commands]
+        return [
+            command if hasattr(command, "to_dict") else SimpleNamespace(name=name)
+            for name, command in self.commands.items()
+        ]
+
+    async def fetch_commands(self):
+        return list(self.fetched_commands)
 
 
 @pytest.fixture
@@ -1145,3 +1152,76 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreates_stale_nested_skill_command(adapter):
+    """A legacy nested /skill command is recreated as the current flat form."""
+    desired = {
+        "type": 1,
+        "name": "skill",
+        "description": "Run a Hermes skill",
+        "options": [
+            {
+                "type": 3,
+                "name": "name",
+                "description": "Which skill to run",
+                "required": True,
+                "autocomplete": True,
+            },
+            {
+                "type": 3,
+                "name": "args",
+                "description": "Optional arguments for the skill",
+                "required": False,
+            },
+        ],
+    }
+    adapter._client.tree.commands["skill"] = SimpleNamespace(to_dict=lambda _tree: desired)
+    adapter._client.tree.fetched_commands = [
+        SimpleNamespace(
+            id=777,
+            name="skill",
+            type=1,
+            to_dict=lambda: {
+                "type": 1,
+                "name": "skill",
+                "description": "Run a Hermes skill",
+                "options": [
+                    {
+                        "type": 2,
+                        "name": "media",
+                        "description": "Media skills",
+                        "options": [
+                            {
+                                "type": 1,
+                                "name": "gif-search",
+                                "description": "Search GIFs",
+                                "options": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            nsfw=False,
+            guild_only=False,
+            default_member_permissions=None,
+        )
+    ]
+    http = SimpleNamespace(
+        delete_global_command=AsyncMock(),
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+    )
+    adapter._client.http = http
+    adapter._client.application_id = 4242
+    adapter._sleep_between_command_sync_mutations = AsyncMock()
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    assert summary["updated"] == 0
+    http.delete_global_command.assert_awaited_once_with(4242, 777)
+    http.upsert_global_command.assert_awaited_once_with(4242, desired)
+    http.edit_global_command.assert_not_awaited()
+    adapter._sleep_between_command_sync_mutations.assert_awaited_once_with()

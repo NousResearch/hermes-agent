@@ -3,8 +3,8 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -14,7 +14,6 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { SearchField } from '@/components/ui/search-field'
 import {
   Select,
   SelectContent,
@@ -34,13 +33,26 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, Copy, Globe, Plus, RefreshCw, Trash2 } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
-import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
+import {
+  Panel,
+  PanelAddButton,
+  PanelBlock,
+  PanelBody,
+  PanelDetail,
+  PanelEmpty,
+  PanelHeader,
+  PanelList,
+  PanelListRow,
+  PanelMeta,
+  PanelPill,
+  PanelRowMenu,
+  PanelSectionLabel
+} from '../overlays/panel'
 
 const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack', 'email', 'github_comment']
 
@@ -86,6 +98,8 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const [restartError, setRestartError] = useState<null | string>(null)
   const [restarting, setRestarting] = useState(false)
   const [togglingName, setTogglingName] = useState<null | string>(null)
+  // Master/detail: the subscription whose config fills the right pane.
+  const [selectedName, setSelectedName] = useState<null | string>(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [name, setName] = useState('')
@@ -288,17 +302,15 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     )
   }, [query, subscriptions])
 
+  // Detail always reflects a concrete sub: the explicitly selected one, else the
+  // first visible row, so the right pane is never empty while subs exist.
+  const selectedSub = useMemo(
+    () => visible.find(s => s.name === selectedName) ?? visible[0] ?? null,
+    [visible, selectedName]
+  )
+
   const headerActions = (
     <div className="flex items-center gap-1.5">
-      {subscriptions.length > 0 && (
-        <SearchField
-          aria-label={w.search}
-          containerClassName="w-44"
-          onChange={setQuery}
-          placeholder={w.search}
-          value={query}
-        />
-      )}
       <Button aria-label={t.commandCenter.refresh} onClick={() => void loadWebhooks()} size="icon-sm" variant="ghost">
         <RefreshCw />
       </Button>
@@ -316,64 +328,130 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     </div>
   )
 
+  const banners = (
+    <>
+      {!enabled && (
+        <div className="mb-4 flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <Globe className="mt-0.5 size-5 shrink-0 text-amber-500" />
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium">{w.disabledTitle}</span>
+              <span className="text-xs text-(--ui-text-tertiary)">{w.disabledBody}</span>
+            </div>
+          </div>
+          <Button className="shrink-0" disabled={enabling} onClick={() => void handleEnable()} size="sm">
+            <Globe />
+            {enabling ? w.enabling : w.enable}
+          </Button>
+        </div>
+      )}
+
+      {restartNeeded && (
+        <div className="mb-4 flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2 text-sm">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+            <span>{restartError ?? w.restartNeeded}</span>
+          </div>
+          <Button
+            className="shrink-0"
+            disabled={restarting}
+            onClick={() => void restartGatewayNow()}
+            size="sm"
+            variant="secondary"
+          >
+            <RefreshCw />
+            {restarting ? w.restartingGateway : w.restartGateway}
+          </Button>
+        </div>
+      )}
+    </>
+  )
+
   return (
     <Panel onClose={onClose}>
-      <PanelHeader actions={headerActions} subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
       {!data ? (
-        <PageLoader label={w.loading} />
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pb-2">
-          {!enabled && (
-            <div className="flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-3">
-                <Globe className="mt-0.5 size-5 shrink-0 text-amber-500" />
-                <div className="flex flex-col gap-1">
-                  <span className="text-sm font-medium">{w.disabledTitle}</span>
-                  <span className="text-xs text-(--ui-text-tertiary)">{w.disabledBody}</span>
-                </div>
-              </div>
-              <Button className="shrink-0" disabled={enabling} onClick={() => void handleEnable()} size="sm">
-                <Globe />
-                {enabling ? w.enabling : w.enable}
-              </Button>
-            </div>
-          )}
-
-          {restartNeeded && (
-            <div className="flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-start gap-2 text-sm">
-                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
-                <span>{restartError ?? w.restartNeeded}</span>
-              </div>
+        <>
+          <PanelHeader subtitle={w.hint} title={w.subscriptions(0)} />
+          <PageLoader label={w.loading} />
+        </>
+      ) : subscriptions.length === 0 ? (
+        <>
+          <PanelHeader actions={headerActions} subtitle={w.hint} title={w.subscriptions(0)} />
+          {banners}
+          <PanelEmpty
+            action={
               <Button
-                className="shrink-0"
-                disabled={restarting}
-                onClick={() => void restartGatewayNow()}
+                disabled={!enabled || enabling}
+                onClick={() => {
+                  setCreated(null)
+                  setCreateOpen(true)
+                }}
                 size="sm"
-                variant="secondary"
               >
-                <RefreshCw />
-                {restarting ? w.restartingGateway : w.restartGateway}
+                <Plus />
+                {w.newSubscription}
               </Button>
-            </div>
-          )}
-
-          {visible.length === 0 ? (
-            <PanelEmpty description={w.empty} icon="globe" title={w.subscriptions(0)} />
-          ) : (
-            <ul className="flex flex-col gap-2">
+            }
+            description={w.empty}
+            icon="globe"
+          />
+        </>
+      ) : (
+        <>
+          <PanelHeader actions={headerActions} subtitle={w.hint} title={w.subscriptions(subscriptions.length)} />
+          {banners}
+          <PanelBody>
+            <PanelList
+              onSearchChange={setQuery}
+              searchLabel={w.search}
+              searchPlaceholder={w.search}
+              searchValue={query}
+            >
               {visible.map(sub => (
-                <WebhookRow
+                <PanelListRow
+                  active={selectedSub?.name === sub.name}
+                  dotClassName={sub.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50'}
                   key={sub.name}
-                  onDelete={() => setPendingDelete(sub.name)}
-                  onToggle={() => void handleToggle(sub.name, !sub.enabled)}
-                  sub={sub}
-                  toggling={togglingName === sub.name}
+                  menu={
+                    <PanelRowMenu
+                      items={[
+                        {
+                          icon: sub.enabled ? 'circle-slash' : 'check',
+                          label: sub.enabled ? w.disableRow : w.enableRow,
+                          onSelect: () => void handleToggle(sub.name, !sub.enabled)
+                        },
+                        { icon: 'trash', label: w.delete, onSelect: () => setPendingDelete(sub.name), tone: 'danger' }
+                      ]}
+                    />
+                  }
+                  onSelect={() => setSelectedName(sub.name)}
+                  title={sub.name}
                 />
               ))}
-            </ul>
-          )}
-        </div>
+              {visible.length === 0 && (
+                <p className="px-2 py-4 text-center text-xs text-muted-foreground">{w.empty}</p>
+              )}
+              <PanelAddButton
+                label={w.newSubscription}
+                onClick={() => {
+                  setCreated(null)
+                  setCreateOpen(true)
+                }}
+              />
+            </PanelList>
+
+            {selectedSub ? (
+              <WebhookDetail
+                onDelete={() => setPendingDelete(selectedSub.name)}
+                onToggle={() => void handleToggle(selectedSub.name, !selectedSub.enabled)}
+                sub={selectedSub}
+                toggling={togglingName === selectedSub.name}
+              />
+            ) : (
+              <PanelEmpty description={w.empty} icon="search" />
+            )}
+          </PanelBody>
+        </>
       )}
 
       {/* Create subscription dialog */}
@@ -511,7 +589,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   )
 }
 
-function WebhookRow({
+function WebhookDetail({
   onDelete,
   onToggle,
   sub,
@@ -526,54 +604,93 @@ function WebhookRow({
   const w = t.webhooks
 
   return (
-    <li className="flex items-start gap-4 rounded-md border border-border p-4">
-      <div className={cn('min-w-0 flex-1', !sub.enabled && 'opacity-60')}>
-        <div className="mb-1 flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{sub.name}</span>
-          <Badge variant="outline">{sub.deliver}</Badge>
-          {sub.deliver_only && <Badge variant="muted">{w.deliverOnly}</Badge>}
-          {!sub.enabled && <Badge variant="muted">{t.messaging.states.disabled}</Badge>}
-        </div>
-
-        {sub.description && <p className="mb-2 text-xs text-muted-foreground">{sub.description}</p>}
-
-        <div className="mb-2 flex flex-wrap items-center gap-1">
-          {sub.events.length === 0 ? (
-            <Badge variant="muted">{w.all}</Badge>
-          ) : (
-            sub.events.map(evt => (
-              <Badge key={evt} variant="muted">
-                {evt}
-              </Badge>
-            ))
-          )}
-        </div>
-
-        {sub.skills.length > 0 && (
-          <div className="mb-2 flex flex-wrap items-center gap-1">
-            {sub.skills.map(skill => (
-              <Badge key={skill} variant="outline">
-                {skill}
-              </Badge>
-            ))}
+    <PanelDetail>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{sub.name}</h3>
+            <PanelPill tone={sub.enabled ? 'good' : 'muted'}>
+              {sub.enabled ? t.messaging.states.enabled : t.messaging.states.disabled}
+            </PanelPill>
+            {sub.deliver_only && <PanelPill tone="warn">{w.deliverOnly}</PanelPill>}
           </div>
-        )}
+          <div className="flex shrink-0 items-center gap-0.5">
+            <Button
+              className="gap-1.5 text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-foreground"
+              disabled={toggling}
+              onClick={onToggle}
+              size="sm"
+              variant="ghost"
+            >
+              <Codicon name={sub.enabled ? 'circle-slash' : 'check'} size="0.875rem" />
+              {sub.enabled ? w.disableRow : w.enableRow}
+            </Button>
+            <Button
+              aria-label={w.delete}
+              className="text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-destructive"
+              onClick={onDelete}
+              size="icon-sm"
+              title={w.delete}
+              variant="ghost"
+            >
+              <Trash2 />
+            </Button>
+          </div>
+        </div>
 
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <span className="min-w-0 truncate font-mono">{sub.url}</span>
+        <PanelMeta
+          rows={[
+            { label: w.fieldDeliver, value: w.deliverOptions[sub.deliver] ?? sub.deliver },
+            {
+              label: w.fieldEvents,
+              value:
+                sub.events.length === 0 ? (
+                  w.all
+                ) : (
+                  <span className="flex flex-wrap gap-1">
+                    {sub.events.map(evt => (
+                      <PanelPill key={evt}>{evt}</PanelPill>
+                    ))}
+                  </span>
+                )
+            },
+            ...(sub.skills.length > 0
+              ? [
+                  {
+                    label: w.fieldSkills,
+                    value: (
+                      <span className="flex flex-wrap gap-1">
+                        {sub.skills.map(skill => (
+                          <PanelPill key={skill}>{skill}</PanelPill>
+                        ))}
+                      </span>
+                    )
+                  }
+                ]
+              : [])
+          ]}
+        />
+
+        <div className="flex items-center gap-1 rounded bg-foreground/5 px-2.5 py-1.5 text-[0.7rem] text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate font-mono text-foreground/80">{sub.url}</span>
           <CopyButton label={w.copy} value={sub.url} />
         </div>
-      </div>
+      </header>
 
-      <div className="flex shrink-0 items-center gap-1">
-        <Button disabled={toggling} onClick={onToggle} size="sm" variant="ghost">
-          {sub.enabled ? w.disableRow : w.enableRow}
-        </Button>
-        <Button aria-label={w.delete} onClick={onDelete} size="icon-sm" title={w.delete} variant="ghost">
-          <Trash2 />
-        </Button>
-      </div>
-    </li>
+      {sub.description ? (
+        <div className="space-y-1.5">
+          <PanelSectionLabel>{w.fieldDescription}</PanelSectionLabel>
+          <p className="text-xs leading-relaxed text-foreground/80">{sub.description}</p>
+        </div>
+      ) : null}
+
+      {sub.prompt ? (
+        <div className="space-y-1.5">
+          <PanelSectionLabel>{w.fieldPrompt}</PanelSectionLabel>
+          <PanelBlock>{sub.prompt}</PanelBlock>
+        </div>
+      ) : null}
+    </PanelDetail>
   )
 }
 

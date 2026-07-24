@@ -122,11 +122,16 @@ auxiliary:
     // A normal message crosses the tiny configured context budget. The mock
     // blocks only the resulting summary request, so these assertions run
     // during automatic compaction rather than a slash-command path.
+    // The payload must cross threshold_tokens (22k) on its OWN weight
+    // (~12k tokens) on top of the system prompt. Do not shrink it: at
+    // repeat(500) the trigger only worked because the ambient system prompt
+    // (skills index + tool schemas) happened to carry it over the line, and
+    // a 160-token skills-index cleanup on main broke the test for a day.
     await pasteAndSend(page, 'E2E_COMPACTION_HISTORY_ONE '.repeat(5))
     await waitForTranscript(page, MOCK_REPLY)
     await pasteAndSend(page, 'E2E_COMPACTION_HISTORY_TWO '.repeat(5))
     await waitForTranscript(page, MOCK_REPLY)
-    await pasteAndSend(page, 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(500))
+    await pasteAndSend(page, 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(1500))
     await fixture.mock.waitForHeldCompletion()
     await expect(page.getByRole('status', { name: 'Summarizing thread' }).last()).toBeVisible()
 

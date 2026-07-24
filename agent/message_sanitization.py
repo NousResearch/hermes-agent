@@ -25,7 +25,18 @@ logger = logging.getLogger(__name__)
 # inside the OpenAI SDK.  Used by every surrogate-sanitization helper
 # below as well as by run_agent and the CLI for paste-from-clipboard
 # scrubbing.
-_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+HERMES_INTERNAL_SYSTEM_MARKER_KEY = "_hermes_internal_system_marker"
+
+
+def make_internal_system_marker(content: str, **fields: Any) -> dict[str, Any]:
+    """Build a tagged Hermes-only system record for transcript history."""
+    return {
+        **fields,
+        "role": "system",
+        "content": content,
+        HERMES_INTERNAL_SYSTEM_MARKER_KEY: True,
+    }
 
 
 def _sanitize_surrogates(text: str) -> str:

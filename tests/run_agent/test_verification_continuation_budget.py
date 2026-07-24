@@ -57,6 +57,7 @@ def _assert_pending_response_survives(agent, result):
     assert [message["role"] for message in result["messages"]] == [
         "user",
         "assistant",
+
     ]
 
 

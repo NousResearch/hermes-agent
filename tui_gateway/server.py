@@ -28,6 +28,10 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
+from agent.message_sanitization import (
+    HERMES_INTERNAL_SYSTEM_MARKER_KEY,
+    make_internal_system_marker,
+)
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -2127,6 +2131,9 @@ def _persist_branch_seed(session: dict) -> None:
                     # append_message would otherwise stamp time.time() and the
                     # branch's copied history would all appear authored "now".
                     timestamp=msg.get("timestamp"),
+                    internal_system_marker=bool(
+                        msg.get(HERMES_INTERNAL_SYSTEM_MARKER_KEY)
+                    ),
                 )
             session["_branch_seed_persisted"] = True
         except Exception:
@@ -2945,11 +2952,11 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
-    # Persist as a user message, not a system message.  The gateway appends
-    # this marker after prior conversation turns, and strict OpenAI-compatible
-    # providers (vLLM, Qwen) reject system messages that are not at the
-    # beginning of the API message list (#48338).
-    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    # Persist as a tagged system message for correct transcript semantics.
+    # The pre-call sanitizer demotes only this explicit marker on the provider
+    # copy, preserving strict-provider compatibility without rewriting ordinary
+    # system prefills.
+    entry = make_internal_system_marker(marker)
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -2966,9 +2973,9 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         if db is not None:
             db.append_message(
                 session_id=session_key,
-                role="user",
+                role="system",
                 content=marker,
-                display_kind="model_switch",
+                internal_system_marker=True,
             )
             return
 
@@ -2977,9 +2984,9 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             if scoped_db is not None:
                 scoped_db.append_message(
                     session_id=session_key,
-                    role="user",
+                    role="system",
                     content=marker,
-                    display_kind="model_switch",
+                    internal_system_marker=True,
                 )
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
@@ -4884,7 +4891,7 @@ def _apply_personality_to_session(
                 "From this point forward, respond in your normal default style.]"
             )
         with session["history_lock"]:
-            session["history"].append({"role": "user", "content": marker})
+            session["history"].append(make_internal_system_marker(marker))
             session["history_version"] = int(session.get("history_version", 0)) + 1
         info = _session_info(agent)
         _emit("session.info", sid, info)
@@ -9577,6 +9584,9 @@ def _(rid, params: dict) -> dict:
                 role=msg.get("role", "user"),
                 content=msg.get("content"),
                 timestamp=msg.get("timestamp"),
+                internal_system_marker=bool(
+                    msg.get(HERMES_INTERNAL_SYSTEM_MARKER_KEY)
+                ),
             )
         db.set_session_title(new_key, title)
     except Exception as e:

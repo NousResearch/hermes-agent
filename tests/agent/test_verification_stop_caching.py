@@ -1,16 +1,18 @@
 """Verification-loop synthetic scaffolding must never reach durable session state.
 
-verify_on_stop / pre_verify inject a synthetic user nudge to keep the agent
+verify_on_stop / pre_verify inject a synthetic system nudge to keep the agent
 going one more turn before it can claim completion. The assistant response is
 real content that persists and is emitted to the UI as an interim message.
-Only the nudge (the synthetic user message) is flagged, so only the nudge
-gets stripped from the durable transcript. This test file verifies:
+Only the tagged nudge is flagged, so only the nudge gets stripped from the
+durable transcript. This test file verifies:
 
   - The verification-loop flags remain registered in
     ``_EPHEMERAL_SCAFFOLDING_FLAGS`` (so nudges are stripped).
   - The DB flush drops only the nudge, keeping the assistant candidate.
   - The JSON log drops only the nudge, keeping the assistant candidate.
 """
+
+from datetime import datetime
 
 import json
 import sys
@@ -36,10 +38,10 @@ def test_verification_flags_registered_as_ephemeral(tmp_path, monkeypatch):
 
     # The nudge messages ARE scaffolding (they carry the synthetic flag).
     assert ra._is_ephemeral_scaffolding(
-        {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True}
+        {"role": "system", "content": "[System: run tests]", "_pre_verify_synthetic": True}
     )
     assert ra._is_ephemeral_scaffolding(
-        {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True}
+        {"role": "system", "content": "[System: run tests]", "_verification_stop_synthetic": True}
     )
     # Real messages (including the assistant candidate) are not.
     assert not ra._is_ephemeral_scaffolding({"role": "user", "content": "hi"})
@@ -47,19 +49,21 @@ def test_verification_flags_registered_as_ephemeral(tmp_path, monkeypatch):
 
 
 def _make_agent(ra, session_id, tmp_path):
-    agent = ra.AIAgent(
-        session_id=session_id,
-        api_key="test-key",
-        base_url="http://127.0.0.1:8000/v1",
-        provider="openai-compat",
-        model="test-model",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
+    """Build only the attributes exercised by persistence methods."""
+    agent = ra.AIAgent.__new__(ra.AIAgent)
+    agent.session_id = session_id
+    agent.model = "test-model"
+    agent.base_url = "http://127.0.0.1:8000/v1"
+    agent.platform = "test"
+    agent.session_start = datetime.now()
+    agent._cached_system_prompt = None
+    agent.tools = []
     agent._session_db = MagicMock()
     agent._session_db_created = True
     agent._session_json_enabled = True
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
     agent.logs_dir = tmp_path / "logs"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
     return agent
@@ -77,7 +81,7 @@ def test_db_flush_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
         # Assistant candidate — NOT flagged synthetic, persists.
         {"role": "assistant", "content": "premature done"},
         # Nudge — flagged synthetic, gets dropped.
-        {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True},
+        {"role": "system", "content": "[System: run tests]", "_verification_stop_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
 
@@ -107,7 +111,7 @@ def test_json_log_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
         # Assistant candidate — NOT flagged synthetic, persists.
         {"role": "assistant", "content": "premature done"},
         # Nudge — flagged synthetic, gets dropped.
-        {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True},
+        {"role": "system", "content": "[System: run tests]", "_pre_verify_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
 

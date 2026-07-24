@@ -4265,6 +4265,48 @@ class TestRunConversation:
         assert hook_events[0]["retryable"] is False
         assert hook_events[0]["reason"] == FailoverReason.content_policy_blocked.value
 
+    def test_api_payload_preserves_system_prefill_and_demotes_internal_marker(
+        self, agent
+    ):
+        self._setup_agent(agent)
+        marker_key = "_hermes_internal_system_marker"
+        agent.prefill_messages = [
+            {"role": "system", "content": "Configured system prefill."}
+        ]
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {
+                "role": "system",
+                "content": "[System: model changed]",
+                marker_key: True,
+            },
+        ]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("continue", conversation_history=history)
+
+        assert result["completed"] is True
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        prefill = next(
+            msg for msg in sent if msg.get("content") == "Configured system prefill."
+        )
+        marker = next(
+            msg
+            for msg in sent
+            if "[System: model changed]" in (msg.get("content") or "")
+        )
+        assert prefill["role"] == "system"
+        assert marker["role"] == "user"
+        assert all(marker_key not in msg for msg in sent)
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

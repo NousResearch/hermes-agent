@@ -10,6 +10,7 @@ recovery every turn.
 """
 
 from run_agent import AIAgent
+from agent.message_sanitization import make_internal_system_marker
 
 
 def _bare_agent():
@@ -397,7 +398,30 @@ def test_flush_guard_clamps_overshooting_cursor():
     assert agent._last_flushed_db_idx == 2
 
 
+def test_flush_persists_internal_system_marker_metadata():
+    class _DB:
+        def __init__(self):
+            self.rows = []
+
+        def append_message(self, **kwargs):
+            self.rows.append(kwargs)
+
+    agent = _bare_agent()
+    agent._session_db = _DB()
+    agent._session_db_created = True
+    agent.session_id = "s1"
+    agent._persist_user_message_override = None
+    agent._last_flushed_db_idx = 0
+    marker = make_internal_system_marker("[System: model changed]")
+
+    AIAgent._flush_messages_to_session_db(agent, [marker], conversation_history=[])
+
+    assert agent._session_db.rows[0]["role"] == "system"
+    assert agent._session_db.rows[0]["internal_system_marker"] is True
+
+
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
+
 
 def test_repair_merges_parallel_tool_calls_split_across_assistants():
     """Two adjacent assistant(tool_calls) collapse into one turn (#29148).

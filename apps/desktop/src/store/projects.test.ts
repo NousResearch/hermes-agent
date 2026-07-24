@@ -224,6 +224,13 @@ describe('projectNameForCwd', () => {
     expect(projectNameForCwd('/repos/website/src/app')).toBe('Website')
   })
 
+  it('resolves against the supplied profile tree snapshot', () => {
+    $projectTree.set([treeNode({ id: 'p_personal', label: 'Personal', path: '/repos/shared' })])
+    const workTree = [treeNode({ id: 'p_work', label: 'Work', path: '/repos/shared' })]
+
+    expect(projectNameForCwd('/repos/shared/src', workTree)).toBe('Work')
+  })
+
   it('matches nested repo and worktree paths, not just the project root', () => {
     $projectTree.set([
       treeNode({

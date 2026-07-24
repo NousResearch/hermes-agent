@@ -1,0 +1,104 @@
+name: Beta CI
+
+on:
+  push:
+    branches:
+      - beta/core-orchestrator
+      - "beta/issue-*"
+  pull_request:
+    branches:
+      - beta/core-orchestrator
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  beta-core:
+    name: Beta core
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Validate Python compilation and imports
+        run: |
+          python -m compileall -q agent tools
+          python -c "from agent.beta.orchestrator import orchestrate_request"
+          python -c "from tools.beta_orchestrate_tool import beta_orchestrate"
+
+      - name: Run Beta core tests
+        run: |
+          mkdir -p test-results
+          pytest tests/test_beta_identity.py tests/agent/beta tests/agent/test_system_prompt.py \
+            -q --junitxml=test-results/beta-core.xml
+
+      - name: Upload Beta core test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-core-test-results
+          path: test-results/beta-core.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  full-suite:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install project and complete test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,all]"
+
+      - name: Run complete test suite
+        run: |
+          mkdir -p test-results
+          pytest -q --junitxml=test-results/full-suite.xml
+
+      - name: Upload complete test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-suite-test-results
+          path: test-results/full-suite.xml
+          if-no-files-found: warn
+          retention-days: 14

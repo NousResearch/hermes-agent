@@ -642,10 +642,13 @@ class TestToolHandlers:
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "user likes dark mode"}
         ))
-        assert result["result"] == "Memory stored successfully."
+        # Tool path queues like sync_turn; drain writer before asserting HTTP.
+        assert "queued" in result["result"].lower()
+        provider._retain_queue.join()
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
+        assert call_kwargs.get("retain_async") is True
         item = call_kwargs["items"][0]
         assert item["content"] == "user likes dark mode"
         # bank_id/retain_async are call-level args, never item keys.
@@ -655,6 +658,7 @@ class TestToolHandlers:
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
+        p._retain_queue.join()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["tags"] == ["pref", "ui"]
 
@@ -664,22 +668,26 @@ class TestToolHandlers:
             "hindsight_retain",
             {"content": "likes dark mode", "tags": ["client:x", "ui"]},
         )
+        p._retain_queue.join()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["tags"] == ["pref", "ui", "client:x"]
 
     def test_retain_without_tags(self, provider):
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
+        provider._retain_queue.join()
         item = provider._client.aretain_batch.call_args.kwargs["items"][0]
         assert "tags" not in item
 
     def test_retain_passes_observation_scopes(self, provider_with_config):
         p = provider_with_config(observation_scopes="per_tag")
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
+        p._retain_queue.join()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["observation_scopes"] == "per_tag"
 
     def test_retain_omits_observation_scopes_by_default(self, provider):
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
+        provider._retain_queue.join()
         item = provider._client.aretain_batch.call_args.kwargs["items"][0]
         assert "observation_scopes" not in item
 
@@ -747,12 +755,25 @@ class TestToolHandlers:
         assert "error" in result
 
     def test_retain_error_handling(self, provider):
+        # Tool path returns immediately after enqueue. Writer logs HTTP
+        # failures without failing the tool response (fire-and-forget queue).
         provider._client.aretain_batch.side_effect = RuntimeError("connection failed")
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "test"}
         ))
+        assert "error" not in result
+        assert "queued" in result["result"].lower()
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_called_once()
+
+    def test_retain_rejects_when_shutting_down(self, provider):
+        provider._shutting_down.set()
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "test"}
+        ))
         assert "error" in result
-        assert "connection failed" in result["error"]
+        assert "shutting down" in result["error"].lower()
+        provider._client.aretain_batch.assert_not_called()
 
     def test_recall_error_handling(self, provider):
         provider._client.arecall.side_effect = RuntimeError("timeout")

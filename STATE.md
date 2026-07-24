@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 04:01 PDT (UTC-07:00)
+Last verification time: 2026-07-24 04:07 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -61,8 +61,11 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 - Root: `/home/len/hermes-agent`
 - Branch: `main`
-- Repository baseline at this snapshot: `fc5433ce7`
-- Upstream relation at this verification: 15 commits ahead of `origin/main`
+- Repository baseline before the current managed-node API milestone:
+  `5ac206acc`
+- Upstream relation at this verification: 16 commits ahead of `origin/main`;
+  the verified managed-node API milestone is present in the working tree but
+  cannot be committed while `.git` is mounted read-only
 - `DESIRED.md` is an untracked user file and was left untouched
 - Python environment: repository-local `.venv`
 - Repository-local generated state: `.tmp`, `.cache`, `.tools`, and `.venv`
@@ -119,6 +122,11 @@ the snapshot is stale; reconcile any discovered drift back into this file.
   hash-chained audit history.
 - Added the operator-facing `hermes harness nodes` CLI for enrollment,
   inventory, lifecycle transitions, history, and audit verification.
+- Added a versioned `/api/control-plane/v1` managed-node API over the same
+  `NodeRegistry`, with explicit enrollment, inventory, lifecycle, history, and
+  audit JSON contracts plus stable lifecycle error/status mappings.
+- Verified bidirectional API/CLI visibility against one isolated temporary
+  `HERMES_HOME` and `control-plane.db`.
 
 ### Packaging, security, and operations
 
@@ -139,25 +147,25 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 ## Outstanding blockers
 
 - No unresolved Harness control-plane development blocker is known.
+- Committing this completed milestone is blocked by the workspace policy:
+  `.git` is read-only, so Git cannot create `.git/index.lock`.
 - Model selection and provider/account credentials are deferred deployment
   configuration for swappable backends, not control-plane blockers.
 
 ## Active priorities
 
-1. Expose managed-node inventory and lifecycle through a versioned
-   control-plane API using the same domain registry as the CLI.
-2. Add authenticated enrollment and revocable node credentials without storing
+1. Add authenticated enrollment and revocable node credentials without storing
    plaintext secrets in control-plane state.
-3. Add observed health/capability reports and desired-policy reconciliation.
-4. Review the local commit series and decide whether to push it or open a pull
+2. Add observed health/capability reports and desired-policy reconciliation.
+3. Review the local commit series and decide whether to push it or open a pull
    request against the desired remote branch.
-5. Select and configure an inference backend only when deployment work requires
+4. Select and configure an inference backend only when deployment work requires
    one, then run its backend contract smoke tests.
 
 ## Next recommended task
 
-Add a versioned managed-node API over the model-independent registry, retaining
-the CLI and API as consistent views of one authoritative control-plane store.
+Add authenticated managed-node enrollment and revocable node credentials
+without storing plaintext secrets in control-plane state.
 
 ## References
 

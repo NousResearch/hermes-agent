@@ -15,7 +15,7 @@ SAM：通过点、框、掩码实现零样本图像分割。
 | | |
 |---|---|
 | 来源 | 可选 — 通过 `hermes skills install official/mlops/segment-anything` 安装 |
-| 路径 | `optional-skills/mlops/models/segment-anything` |
+| 路径 | `optional-skills/mlops/models/segment-anything-model` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
 | 许可证 | MIT |
@@ -92,7 +92,7 @@ import numpy as np
 from segment_anything import sam_model_registry, SamPredictor
 
 # 加载模型
-sam = sam_model_registry["vit_h"](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/checkpoint="sam_vit_h_4b8939.pth")
+sam = sam_model_registry["vit_h"](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything-model/checkpoint="sam_vit_h_4b8939.pth")
 sam.to(device="cuda")
 
 # 创建预测器
@@ -478,7 +478,7 @@ decoded_mask = mask_utils.decode(rle)
 
 ```python
 # 在 VRAM 有限时使用较小模型
-sam = sam_model_registry["vit_b"](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/checkpoint="sam_vit_b_01ec64.pth")
+sam = sam_model_registry["vit_b"](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything-model/checkpoint="sam_vit_b_01ec64.pth")
 
 # 批量处理图像
 # 在大批量之间清空 CUDA 缓存
@@ -513,8 +513,8 @@ mask_generator = SamAutomaticMaskGenerator(
 
 ## 参考资料
 
-- **[高级用法](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/references/advanced-usage.md)** - 批处理、微调、集成
-- **[故障排查](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/references/troubleshooting.md)** - 常见问题与解决方案
+- **[高级用法](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything-model/references/advanced-usage.md)** - 批处理、微调、集成
+- **[故障排查](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything-model/references/troubleshooting.md)** - 常见问题与解决方案
 
 ## 资源
 

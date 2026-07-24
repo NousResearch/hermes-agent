@@ -238,6 +238,30 @@ def _emit_cancelled_terminal_post_tool_call(
     return result
 
 
+def _session_allowed_tool_names(agent) -> frozenset:
+    """Return the authoritative dispatch scope for this agent.
+
+    Exact API requests pin an immutable admission set. Runtime schema refreshes
+    may replace ``valid_tool_names`` but can never widen that set. Legacy agents
+    continue to use their live valid-name snapshot.
+    """
+    exact = getattr(agent, "_exact_allowed_tool_names", None)
+    if exact is not None:
+        try:
+            return frozenset(exact)
+        except TypeError:
+            return frozenset()
+    return frozenset(getattr(agent, "valid_tool_names", set()) or set())
+
+
+def _tool_name_allowed_by_session_scope(agent, function_name: str) -> bool:
+    exact = getattr(agent, "_exact_allowed_tool_names", None)
+    if exact is not None:
+        return function_name in _session_allowed_tool_names(agent)
+    enabled = getattr(agent, "enabled_toolsets", None)
+    return enabled is None or function_name in _session_allowed_tool_names(agent)
+
+
 def _tool_search_scoped_names(agent) -> frozenset:
     """Return the deferrable tool names the session may invoke via tool_call.
 
@@ -278,6 +302,8 @@ def _tool_search_scoped_names(agent) -> frozenset:
             skip_tool_search_assembly=True,
         ) or []
         names = _ts.scoped_deferrable_names(scoped_defs)
+        if getattr(agent, "_exact_allowed_tool_names", None) is not None:
+            names = frozenset(names).intersection(_session_allowed_tool_names(agent))
     except Exception:
         names = frozenset()
     try:
@@ -425,6 +451,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # the session was not granted is rejected before any checkpoint,
         # hook, or dispatch fires.
         _ts_scope_block = None
+        _ts_unwrapped = False
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
@@ -433,6 +460,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     if _underlying in _tool_search_scoped_names(agent):
                         function_name = _underlying
                         function_args = _underlying_args
+                        _ts_unwrapped = True
                     else:
                         _ts_scope_block = json.dumps({
                             "error": (
@@ -442,6 +470,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         }, ensure_ascii=False)
         except Exception:
             pass
+
+        # Schemas are not an authorization boundary: a buggy or adversarial
+        # provider can still emit an arbitrary tool name. Whenever the agent
+        # has an explicit toolset scope (including []), require membership
+        # before middleware, guardrails, hooks, checkpoints, or dispatch.
+        if (
+            _ts_scope_block is None
+            and not _ts_unwrapped
+            and not _tool_name_allowed_by_session_scope(agent, function_name)
+        ):
+            _ts_scope_block = json.dumps(
+                {"error": f"'{function_name}' is not available in this session."},
+                ensure_ascii=False,
+            )
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
@@ -1106,6 +1148,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # rationale, including the scope gate (the unwrap dispatches the
         # underlying tool directly, so session toolset scope is enforced here).
         _ts_scope_block: Optional[str] = None
+        _ts_unwrapped = False
         try:
             from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
@@ -1114,6 +1157,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     if _underlying in _tool_search_scoped_names(agent):
                         function_name = _underlying
                         function_args = _underlying_args
+                        _ts_unwrapped = True
                     else:
                         _ts_scope_block = (
                             f"'{_underlying}' is not available in this session. "
@@ -1121,6 +1165,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         )
         except Exception:
             pass
+
+        if (
+            _ts_scope_block is None
+            and not _ts_unwrapped
+            and not _tool_name_allowed_by_session_scope(agent, function_name)
+        ):
+            _ts_scope_block = f"'{function_name}' is not available in this session."
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
@@ -1513,7 +1564,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                    enabled_tools=list(_session_allowed_tool_names(agent)),
                     skip_pre_tool_call_hook=True,
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
@@ -1555,7 +1606,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                    enabled_tools=list(_session_allowed_tool_names(agent)),
                     skip_pre_tool_call_hook=True,
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),

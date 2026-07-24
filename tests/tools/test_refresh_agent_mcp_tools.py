@@ -44,6 +44,26 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert len(agent.tools) == 3
 
 
+def test_refresh_cannot_widen_an_exact_capability_scope(monkeypatch):
+    """Late MCP discovery may refresh schemas but never widen exact admission."""
+    agent = _agent(["web_search"], enabled=[])
+    agent._exact_allowed_tool_names = frozenset({"web_search"})
+
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [_tool("web_search"), _tool("web_extract")],
+    )
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert added == set()
+    assert agent.valid_tool_names == {"web_search"}
+    assert [tool["function"]["name"] for tool in agent.tools] == ["web_search"]
+
+
 def test_refresh_no_change_returns_empty_and_leaves_agent_untouched(monkeypatch):
     """No new tools → empty set, and the snapshot object is not swapped."""
     agent = _agent(["read_file", "terminal"])

@@ -429,6 +429,54 @@ class TestWorkerSpawnEnv:
         expected_ws = fresh_home / "kanban" / "boards" / "spawntest" / "workspaces"
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(expected_ws)
 
+    def test_default_spawn_strips_parent_profile_credentials(self, fresh_home, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+        monkeypatch.setattr(kb, "_resolve_worker_cli_toolsets", lambda _home: None)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-profile")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-parent-profile")
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-aux-parent-profile")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-parent-profile")
+        kb.create_board("spawntest")
+
+        task = kb.Task(
+            id="t_secret",
+            title="worker test",
+            body=None,
+            assignee="teknium",
+            status="ready",
+            priority=0,
+            created_by="user",
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+
+        kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
+
+        env = captured["env"]
+        assert env["HERMES_PROFILE"] == "teknium"
+        assert env["HERMES_KANBAN_TASK"] == "t_secret"
+        assert "OPENAI_API_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env
+
     def test_default_board_spawn_keeps_legacy_paths(self, fresh_home, monkeypatch):
         captured = {}
 

@@ -597,6 +597,9 @@ export interface Translations {
       loading: string
       failedLoad: string
       empty: string
+      searchTools: string
+      searchSettings: string
+      noMatch: string
     }
     mcp: {
       loading: string

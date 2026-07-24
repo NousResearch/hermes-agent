@@ -77,6 +77,7 @@ export interface ConfigDisplayConfig {
   battery?: boolean
   bell_on_complete?: boolean
   busy_input_mode?: string
+  copy_on_select?: boolean
   details_mode?: string
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string

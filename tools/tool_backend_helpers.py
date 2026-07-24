@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict
 
 from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_BROWSER_PROVIDER = "local"
@@ -28,6 +31,16 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     reflect a just-purchased subscription, credits, or pool grant immediately.
     """
     try:
+        from hermes_cli.auth import (
+            format_nous_oauth_exhaustion_message,
+            get_nous_oauth_exhaustion_cooldown,
+        )
+
+        cooldown = get_nous_oauth_exhaustion_cooldown()
+        if cooldown is not None:
+            logger.warning("%s", format_nous_oauth_exhaustion_message(cooldown))
+            return False
+
         from hermes_cli.nous_account import get_nous_portal_account_info
 
         if force_fresh:

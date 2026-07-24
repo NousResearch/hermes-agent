@@ -585,46 +585,86 @@ class HermesACPAgent(acp.Agent):
         return f"{raw_provider}:{raw_model}"
 
     def _build_model_state(self, state: SessionState) -> SessionModelState | None:
-        """Return the ACP model selector payload for editors like Zed."""
+        """Return authenticated providers and their models for ACP clients.
+
+        The shared Hermes inventory is also used by ``hermes model``, the TUI,
+        and the dashboard. Keeping ACP on that substrate prevents its selector
+        from silently collapsing to the current provider's curated list.
+        """
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
 
         try:
-            from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
+            from hermes_cli.inventory import build_models_payload, load_picker_context
+            from hermes_cli.models import normalize_provider, provider_label
 
             normalized_provider = normalize_provider(provider)
-            provider_name = provider_label(normalized_provider)
+            context = load_picker_context().with_overrides(
+                current_provider=normalized_provider,
+                current_model=model,
+                current_base_url=str(getattr(state.agent, "base_url", "") or ""),
+            )
+            payload = build_models_payload(
+                context,
+                explicit_only=True,
+                include_unconfigured=False,
+                picker_hints=False,
+                canonical_order=True,
+                pricing=False,
+                capabilities=False,
+                refresh=False,
+                probe_custom_providers=False,
+                probe_current_custom_provider=False,
+                max_models=None,
+            )
+
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
-
-            for model_id, description in curated_models_for_provider(normalized_provider):
-                rendered_model = str(model_id or "").strip()
-                if not rendered_model:
+            for row in payload.get("providers") or []:
+                row_provider = normalize_provider(str(row.get("slug") or "").strip())
+                if not row_provider:
                     continue
-                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
-                if choice_id in seen_ids:
-                    continue
-                desc_parts = [f"Provider: {provider_name}"]
-                if description:
-                    desc_parts.append(str(description).strip())
-                if rendered_model == model:
-                    desc_parts.append("current")
-                available_models.append(
-                    ModelInfo(
-                        model_id=choice_id,
-                        name=rendered_model,
-                        description=" • ".join(part for part in desc_parts if part),
-                    )
+                provider_name = str(row.get("name") or "").strip() or provider_label(
+                    row_provider
                 )
-                seen_ids.add(choice_id)
+                for model_entry in row.get("models") or []:
+                    if isinstance(model_entry, dict):
+                        rendered_model = str(
+                            model_entry.get("id")
+                            or model_entry.get("model")
+                            or model_entry.get("name")
+                            or ""
+                        ).strip()
+                    else:
+                        rendered_model = str(model_entry or "").strip()
+                    if not rendered_model:
+                        continue
+                    choice_id = self._encode_model_choice(row_provider, rendered_model)
+                    if choice_id in seen_ids:
+                        continue
+                    is_current = (
+                        row_provider == normalized_provider and rendered_model == model
+                    )
+                    description = f"Provider: {provider_name}"
+                    if is_current:
+                        description += " • current"
+                    available_models.append(
+                        ModelInfo(
+                            model_id=choice_id,
+                            name=f"{provider_name} · {rendered_model}",
+                            description=description,
+                        )
+                    )
+                    seen_ids.add(choice_id)
 
             current_model_id = self._encode_model_choice(normalized_provider, model)
             if current_model_id and current_model_id not in seen_ids:
+                provider_name = provider_label(normalized_provider)
                 available_models.insert(
                     0,
                     ModelInfo(
                         model_id=current_model_id,
-                        name=model,
+                        name=f"{provider_name} · {model}",
                         description=f"Provider: {provider_name} • current",
                     ),
                 )

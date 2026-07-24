@@ -1,0 +1,54 @@
+name: a2a-platform
+label: A2A
+kind: platform
+version: 0.1.0
+description: >
+  A2A (Agent-to-Agent) protocol support for Hermes Agent — both directions of
+  the open Linux Foundation standard for inter-agent communication.
+
+  OUTBOUND (client tools): a2a_discover, a2a_call, a2a_list let the agent fetch
+  another agent's Agent Card and send it tasks over JSON-RPC — works with any
+  A2A-compliant peer (Hermes, LangChain, CrewAI, Google ADK, OpenClaw, ...).
+
+  INBOUND (platform adapter): exposes Hermes as an A2A-discoverable agent. An
+  Agent Card is served at /.well-known/agent.json and incoming tasks are routed
+  into the agent's live gateway session like any other platform — so the agent
+  that replies is the same one talking to its user, with full memory and
+  context, not a throwaway clone.
+
+  Security is on by default: no bearer token configured => localhost-only bind.
+  Inbound task text passes through prompt-injection filters; outbound text is
+  scrubbed of credential-shaped strings; every exchange is audit-logged and
+  persisted to disk outside the context-compaction pipeline so conversations
+  survive compaction and restarts.
+
+  Pure stdlib transport (http.server + urllib) — no a2a-sdk dependency required.
+author: Nous Research
+# requires_env / optional_env are surfaced in the `hermes config` UI via the
+# platform-plugin env var injector in hermes_cli/config.py.
+requires_env: []
+optional_env:
+  - name: A2A_BEARER_TOKEN
+    description: "Bearer token required on inbound A2A calls. UNSET => bind to 127.0.0.1 only (no remote access)."
+    prompt: "A2A bearer token (or empty for localhost-only)"
+    password: true
+  - name: A2A_HOST
+    description: "Inbound bind host. Defaults to 127.0.0.1; only widens to 0.0.0.0 when a bearer token is set AND you opt in here."
+    prompt: "A2A bind host (default 127.0.0.1)"
+    password: false
+  - name: A2A_PORT
+    description: "Inbound A2A server port (default 9900)."
+    prompt: "A2A port (default 9900)"
+    password: false
+  - name: A2A_AGENT_NAME
+    description: "Name advertised on this agent's Agent Card (default: hostname-derived)."
+    prompt: "A2A agent name"
+    password: false
+  - name: A2A_ALLOW_ALL_USERS
+    description: "Allow any authenticated A2A peer to reach the agent (dev only)."
+    prompt: "Allow all A2A peers? (true/false)"
+    password: false
+  - name: A2A_HOME_CHANNEL
+    description: "Task/context id used as the cron / notification delivery target for deliver=a2a."
+    prompt: "A2A home channel (or empty)"
+    password: false

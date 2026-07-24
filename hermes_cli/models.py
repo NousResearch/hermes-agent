@@ -160,6 +160,43 @@ def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
     return out
 
 
+def _is_xai_main_model_candidate(
+    model_id: str,
+    models_dev_entry: Optional[dict[str, Any]] = None,
+) -> bool:
+    """True when an xAI model belongs in the main-agent model picker."""
+    key = str(model_id or "").strip().lower()
+    if not key or key.startswith("grok-imagine-"):
+        return False
+
+    context_window: Optional[int] = None
+    if isinstance(models_dev_entry, dict):
+        limit = models_dev_entry.get("limit")
+        if isinstance(limit, dict):
+            raw_context = limit.get("context")
+            if isinstance(raw_context, (int, float)) and raw_context > 0:
+                context_window = int(raw_context)
+
+    try:
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, MINIMUM_CONTEXT_LENGTH
+
+        if context_window is None:
+            for default_model, length in sorted(
+                DEFAULT_CONTEXT_LENGTHS.items(), key=lambda item: len(item[0]), reverse=True
+            ):
+                if default_model in key:
+                    context_window = length
+                    break
+        return not (
+            isinstance(context_window, int)
+            and 0 < context_window < MINIMUM_CONTEXT_LENGTH
+        )
+    except Exception:
+        # Picker construction must remain import-safe. Validation still
+        # applies the hard context-floor rejection before persistence.
+        return True
+
+
 def _xai_curated_models() -> list[str]:
     """Derive the xAI-direct curated list from models.dev disk cache.
 
@@ -177,7 +214,10 @@ def _xai_curated_models() -> list[str]:
         xai = data.get("xai") if isinstance(data, dict) else None
         models = xai.get("models") if isinstance(xai, dict) else None
         if isinstance(models, dict) and models:
-            ids = [mid for mid in models.keys() if isinstance(mid, str)]
+            ids = [
+                mid for mid, entry in models.items()
+                if isinstance(mid, str) and _is_xai_main_model_candidate(mid, entry)
+            ]
             if ids:
                 return _xai_merge_curated_extras(_xai_promote_top(sorted(ids)))
     except Exception:
@@ -4340,6 +4380,7 @@ def validate_requested_model(
 
     Returns a dict with:
       - accepted: whether the CLI should switch to the requested model now
+      - hard_reject: optional true when callers must not override rejection
       - persist: whether it is safe to save to config
       - recognized: whether it matched a known provider catalog
       - message: optional warning / guidance for the user
@@ -4388,6 +4429,66 @@ def validate_requested_model(
             "recognized": False,
             "message": "Model names cannot contain spaces.",
         }
+
+    def _reject_below_main_context_floor(model_id: str) -> Optional[dict[str, Any]]:
+        endpoint = (base_url or "").strip()
+        if endpoint and "://" not in endpoint:
+            endpoint = f"https://{endpoint}"
+        try:
+            endpoint_host = urllib.parse.urlparse(endpoint).hostname or ""
+        except ValueError:
+            endpoint_host = ""
+        is_xai_endpoint = endpoint_host.lower() == "api.x.ai"
+        if normalized not in {"xai", "xai-oauth"} and not is_xai_endpoint:
+            return None
+        model_key = model_id.strip().lower()
+        is_media_model = model_key.startswith("grok-imagine-")
+        if not (is_media_model or model_key.startswith("grok-")):
+            return None
+        context_window: Optional[int] = None
+        try:
+            from agent.model_metadata import (
+                MINIMUM_CONTEXT_LENGTH,
+                get_model_context_length,
+            )
+            context_window = get_model_context_length(
+                model_id,
+                provider=normalized,
+                base_url=base_url or "",
+                api_key=api_key or "",
+            )
+        except Exception:
+            context_window = None
+            MINIMUM_CONTEXT_LENGTH = 64_000
+        below_floor = (
+            isinstance(context_window, int)
+            and context_window > 0
+            and context_window < MINIMUM_CONTEXT_LENGTH
+        )
+        if not (is_media_model or below_floor):
+            return None
+        if below_floor:
+            context_detail = (
+                f"`{model_id}` has a context window of {context_window:,} tokens, "
+                f"below Hermes Agent's {MINIMUM_CONTEXT_LENGTH:,}-token "
+                "minimum for the main agent model."
+            )
+        else:
+            context_detail = f"`{model_id}` is a Grok Imagine media-generation model."
+        guidance = f"Choose a model with at least {MINIMUM_CONTEXT_LENGTH:,} tokens for `/model`."
+        if is_media_model:
+            guidance += " Use Grok Imagine through the image/video generation tool path instead."
+        return {
+            "accepted": False,
+            "hard_reject": True,
+            "persist": False,
+            "recognized": True,
+            "message": f"{context_detail} {guidance}",
+        }
+
+    floor_rejection = _reject_below_main_context_floor(requested_for_lookup)
+    if floor_rejection is not None:
+        return floor_rejection
 
     if normalized == "lmstudio":
         from hermes_cli.auth import AuthError
@@ -4442,6 +4543,9 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
+                floor_rejection = _reject_below_main_context_floor(auto[0])
+                if floor_rejection is not None:
+                    return floor_rejection
                 return {
                     "accepted": True,
                     "persist": True,
@@ -4509,6 +4613,9 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
             if auto:
+                floor_rejection = _reject_below_main_context_floor(auto[0])
+                if floor_rejection is not None:
+                    return floor_rejection
                 return {
                     "accepted": True,
                     "persist": True,
@@ -4722,6 +4829,9 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
+                floor_rejection = _reject_below_main_context_floor(auto[0])
+                if floor_rejection is not None:
+                    return floor_rejection
                 return {
                     "accepted": True,
                     "persist": True,
@@ -4818,6 +4928,11 @@ def validate_requested_model(
     if catalog_models:
         catalog_lower = {m.lower(): m for m in catalog_models}
         if requested_for_lookup.lower() in catalog_lower:
+            floor_rejection = _reject_below_main_context_floor(
+                catalog_lower[requested_for_lookup.lower()]
+            )
+            if floor_rejection is not None:
+                return floor_rejection
             return {
                 "accepted": True,
                 "persist": True,
@@ -4830,6 +4945,9 @@ def validate_requested_model(
         )
         if auto:
             corrected = catalog_lower[auto[0]]
+            floor_rejection = _reject_below_main_context_floor(corrected)
+            if floor_rejection is not None:
+                return floor_rejection
             return {
                 "accepted": True,
                 "persist": True,

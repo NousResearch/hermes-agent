@@ -27,6 +27,7 @@ Optional hooks (override to opt in):
   on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
+  on_skill_write(action, name, content, metadata=None) — mirror built-in skill_manage writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
   backup_paths() -> list[str]            — extra on-disk paths to include in `hermes backup`
 """
@@ -294,6 +295,37 @@ class MemoryProvider(ABC):
           ``parent_session_id``, ``platform``, and ``tool_name``.
 
         Use to mirror built-in memory writes to your backend.
+        """
+
+    def on_skill_write(
+        self,
+        action: str,
+        name: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Called when the built-in skill_manage tool writes a skill/file.
+
+        action: 'create', 'edit', 'patch', 'delete', 'write_file', 'remove_file'
+        name: the skill name (e.g. 'my-skill')
+        content: the written payload, mapped per action —
+          create/edit: the full SKILL.md text
+          patch: the replacement text (``new_string``)
+          write_file: the supporting file body (``file_content``)
+          delete/remove_file: empty string
+        metadata: structured provenance for the write. Common keys include
+          ``write_origin``, ``execution_context``, ``session_id``,
+          ``parent_session_id``, ``platform``, and ``tool_name``.
+          Supporting-file mutations (write_file, remove_file, and patch with
+          a file target) also carry ``file_path`` (path relative to the skill
+          directory, e.g. 'references/api.md'); patch also carries
+          ``old_string`` (the replaced text).
+
+        Only committed writes are mirrored: failed writes and writes staged
+        for approval never reach this hook; approved staged writes fire it
+        from the approval-replay path instead.
+
+        Use to mirror built-in skill writes to your backend.
         """
 
     def backup_paths(self) -> List[str]:

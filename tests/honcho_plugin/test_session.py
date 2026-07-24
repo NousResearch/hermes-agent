@@ -923,6 +923,120 @@ class TestToolsModeInitBehavior:
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name_alt"] == "union-id"
 
 
+class TestMemoryFileMigrationIdempotency:
+    def _make_manager(self, honcho_session):
+        mgr = HonchoSessionManager()
+        session = HonchoSession(
+            key="test-session",
+            user_peer_id="joel",
+            assistant_peer_id="default",
+            honcho_session_id="test-session",
+        )
+        mgr._cache["test-session"] = session
+        mgr._sessions_cache["test-session"] = honcho_session
+        mgr._peers_cache["joel"] = MagicMock(name="user_peer")
+        mgr._peers_cache["default"] = MagicMock(name="assistant_peer")
+        return mgr
+
+    def test_existing_local_memory_messages_skip_upload_and_set_marker(self, tmp_path):
+        (tmp_path / "MEMORY.md").write_text("durable memory", encoding="utf-8")
+        honcho_session = MagicMock()
+        honcho_session.get_metadata.return_value = {}
+        honcho_session.messages.return_value = SimpleNamespace(
+            items=[SimpleNamespace(metadata={"source": "local_memory", "original_file": "MEMORY.md"})]
+        )
+        mgr = self._make_manager(honcho_session)
+
+        assert mgr.migrate_memory_files("test-session", str(tmp_path)) is False
+
+        honcho_session.upload_file.assert_not_called()
+        honcho_session.set_metadata.assert_called_once()
+        written = honcho_session.set_metadata.call_args.args[0]
+        assert written["hermes_memory_files_migrated"] is True
+        assert written["hermes_memory_files_migrated_reason"] == "existing_local_memory_messages"
+
+    def test_marker_skips_upload_without_scanning_messages(self, tmp_path):
+        (tmp_path / "MEMORY.md").write_text("durable memory", encoding="utf-8")
+        honcho_session = MagicMock()
+        honcho_session.get_metadata.return_value = {"hermes_memory_files_migrated": True}
+        mgr = self._make_manager(honcho_session)
+
+        assert mgr.migrate_memory_files("test-session", str(tmp_path)) is False
+
+        honcho_session.messages.assert_not_called()
+        honcho_session.upload_file.assert_not_called()
+
+    def test_upload_marks_session_after_success(self, tmp_path):
+        (tmp_path / "MEMORY.md").write_text("memory", encoding="utf-8")
+        (tmp_path / "USER.md").write_text("user", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("soul", encoding="utf-8")
+        honcho_session = MagicMock()
+        honcho_session.get_metadata.return_value = {"existing": "kept"}
+        honcho_session.messages.return_value = SimpleNamespace(items=[])
+        mgr = self._make_manager(honcho_session)
+
+        assert mgr.migrate_memory_files("test-session", str(tmp_path)) is True
+
+        assert honcho_session.upload_file.call_count == 3
+        honcho_session.set_metadata.assert_called_once()
+        written = honcho_session.set_metadata.call_args.args[0]
+        assert written["existing"] == "kept"
+        assert written["hermes_memory_files_migrated"] is True
+        assert written["hermes_memory_files_migrated_reason"] == "uploaded_local_memory_files"
+        assert written["hermes_memory_files_migrated_files"] == ["MEMORY.md", "SOUL.md", "USER.md"]
+
+    def test_partial_upload_failure_does_not_set_completion_marker(self, tmp_path):
+        # One failing upload must NOT mark the migration complete — the
+        # completion marker would permanently skip the failed file on every
+        # later startup. Only the files that made it up are recorded.
+        (tmp_path / "MEMORY.md").write_text("memory", encoding="utf-8")
+        (tmp_path / "USER.md").write_text("user", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("soul", encoding="utf-8")
+        honcho_session = MagicMock()
+        honcho_session.get_metadata.return_value = {}
+        honcho_session.messages.return_value = SimpleNamespace(items=[])
+
+        def _upload(file, peer, metadata):
+            if metadata["original_file"] == "SOUL.md":
+                raise RuntimeError("upload exploded")
+
+        honcho_session.upload_file.side_effect = _upload
+        mgr = self._make_manager(honcho_session)
+
+        assert mgr.migrate_memory_files("test-session", str(tmp_path)) is True
+
+        assert honcho_session.upload_file.call_count == 3
+        honcho_session.set_metadata.assert_called_once()
+        written = honcho_session.set_metadata.call_args.args[0]
+        assert "hermes_memory_files_migrated" not in written
+        assert written["hermes_memory_files_migrated_reason"] == "partial_local_memory_upload"
+        assert written["hermes_memory_files_migrated_files"] == ["MEMORY.md", "USER.md"]
+
+    def test_retry_after_partial_failure_uploads_only_missing_files(self, tmp_path):
+        # Second startup after a partial run: the files list without the
+        # completion marker means "retry", and only the missing file is
+        # re-uploaded (no duplicate floods for the ones that succeeded).
+        (tmp_path / "MEMORY.md").write_text("memory", encoding="utf-8")
+        (tmp_path / "USER.md").write_text("user", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("soul", encoding="utf-8")
+        honcho_session = MagicMock()
+        honcho_session.get_metadata.return_value = {
+            "hermes_memory_files_migrated_reason": "partial_local_memory_upload",
+            "hermes_memory_files_migrated_files": ["MEMORY.md", "USER.md"],
+        }
+        mgr = self._make_manager(honcho_session)
+
+        assert mgr.migrate_memory_files("test-session", str(tmp_path)) is True
+
+        honcho_session.messages.assert_not_called()
+        assert honcho_session.upload_file.call_count == 1
+        uploaded_meta = honcho_session.upload_file.call_args.kwargs["metadata"]
+        assert uploaded_meta["original_file"] == "SOUL.md"
+        written = honcho_session.set_metadata.call_args.args[0]
+        assert written["hermes_memory_files_migrated"] is True
+        assert written["hermes_memory_files_migrated_files"] == ["MEMORY.md", "SOUL.md", "USER.md"]
+
+
 class TestPerSessionMigrateGuard:
     """Verify migrate_memory_files is skipped under per-session strategy.
 

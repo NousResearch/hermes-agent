@@ -348,3 +348,81 @@ def test_codex_pool_refresh_holds_auth_store_lock_across_post(monkeypatch, tmp_p
     # The invariant: the single-use token POST ran inside the auth-store lock.
     assert lock_held["during_post"] is True
 
+
+
+# ---------------------------------------------------------------------------
+# Shared-mode (issue #65394): pool must not materialize providers.xai-oauth tokens
+# ---------------------------------------------------------------------------
+
+
+def test_pool_sync_back_skips_profile_when_shared_mode(tmp_path, monkeypatch):
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    profile_path = tmp_path / "profiles" / "work" / "auth.json"
+    root_path = tmp_path / "root" / "auth.json"
+    profile_path.parent.mkdir(parents=True)
+    root_path.parent.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_path.parent))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    monkeypatch.setenv("HERMES_XAI_SHARED_AUTH", "1")
+    monkeypatch.setenv("HOME", str(tmp_path / "not-root"))
+    monkeypatch.setattr(A, "_auth_file_path", lambda: profile_path)
+    monkeypatch.setattr(A, "_global_auth_file_path", lambda: root_path)
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(root_path, {"version": 1, "providers": {}})
+
+    pool = CredentialPool("xai-oauth", [])
+    pool._sync_device_code_entry_to_auth_store(
+        _entry("xai-oauth", id="e1", access_token="a", refresh_token="r")
+    )
+
+    profile = _read_store(profile_path)
+    # Must not materialize providers.xai-oauth tokens into the profile.
+    assert "xai-oauth" not in profile.get("providers", {})
+    root = _read_store(root_path)
+    assert "xai-oauth" not in root.get("providers", {})
+
+
+def test_pool_seed_from_shared_strips_refresh_token(tmp_path, monkeypatch):
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    hermes_home = tmp_path / "profile"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    monkeypatch.setenv("HERMES_XAI_SHARED_AUTH", "1")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+
+    (shared_dir / "xai_oauth.json").write_text(
+        json.dumps(
+            {
+                "_schema": 1,
+                "generation": 1,
+                "access_token": "shared-at",
+                "refresh_token": "shared-rt-must-not-fork",
+                "token_type": "Bearer",
+                "auth_mode": "oauth_device_code",
+                "last_refresh": "2026-07-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}}), encoding="utf-8"
+    )
+
+    pool = CP.load_pool("xai-oauth")
+    entries = pool.entries()
+    assert len(entries) >= 1
+    shared_entries = [e for e in entries if e.source == A.XAI_SHARED_SOURCE]
+    assert shared_entries, entries
+    entry = shared_entries[0]
+    assert entry.access_token == "shared-at"
+    # In-memory may briefly hold None; durable disk must never hold the RT.
+    assert not entry.refresh_token
+    raw = A.read_credential_pool("xai-oauth")
+    for row in raw if isinstance(raw, list) else []:
+        if isinstance(row, dict) and row.get("source") == A.XAI_SHARED_SOURCE:
+            assert not row.get("refresh_token")
+            assert "shared-rt-must-not-fork" not in json.dumps(row)

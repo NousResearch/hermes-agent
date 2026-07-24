@@ -26,11 +26,15 @@ def has_xai_credentials() -> bool:
     Resolution order, fast-to-slow:
 
     1. ``XAI_API_KEY`` env var (cheapest; covers explicit-key users).
-    2. ``~/.hermes/auth.json`` has a non-empty ``providers.xai-oauth.tokens.access_token``
-       (single file read, no expiry check, no refresh).
-    3. ``credential_pool.xai-oauth`` has any entry with a non-empty
-       ``access_token`` (covers multi-account ``hermes auth add xai-oauth``
-       grants that are pool-only / ``manual:device_code``).
+    2. **Shared mode (C2/F2/R7/H2):** the canonical shared store has usable
+       tokens (single file read, no refresh). Profile-disabled → False.
+       Empty shared + sole live local grant that can be auto-promoted (F1) →
+       True only when profile AND root together yield exactly one distinct
+       live identity (matches the promoter; no profile-first short-circuit).
+       Canonical READ / unreadable-store errors fail closed (False) with NO
+       legacy fallthrough.
+    3. (gate OFF only) ``~/.hermes/auth.json`` providers.xai-oauth access_token
+       or pool-only grants.
 
     Returns False on any exception so a corrupted auth store can't block
     other availability scans. Truthful refresh + expiry handling happens
@@ -38,6 +42,33 @@ def has_xai_credentials() -> bool:
     """
     if os.environ.get("XAI_API_KEY", "").strip():
         return True
+    try:
+        from hermes_cli import auth as auth_mod
+    except Exception:
+        auth_mod = None
+
+    # R7: under shared mode, never fall through to the legacy profile scan.
+    if auth_mod is not None and auth_mod._xai_shared_auth_enabled():
+        try:
+            if auth_mod._profile_xai_shared_disabled():
+                return False
+            shared = auth_mod._read_shared_xai_state(raise_on_unreadable=True)
+            if auth_mod._xai_shared_state_has_usable_tokens(shared):
+                return True
+            # Tombstoned / quarantined: not available, not promotable.
+            if auth_mod._shared_xai_state_is_quarantined(shared):
+                return False
+            # F1/R7/H2: never-initialized shared still counts when a sole live
+            # local grant can be auto-promoted. Consider profile AND root
+            # together (no profile-first short-circuit that would advertise
+            # available while the promoter rejects cross-store ambiguity).
+            return bool(
+                auth_mod._xai_sole_live_promotable_across_profile_and_root_for_probe()
+            )
+        except Exception:
+            # Shared-mode read/audit failure → fail closed (no legacy scan).
+            return False
+
     try:
         from hermes_constants import get_hermes_home
 
@@ -240,6 +271,11 @@ def maybe_mark_xai_storage_notice_seen(section_name: str) -> Optional[str]:
         return notice
 
 
+def is_xai_http_auth_status(status_code: Optional[int]) -> bool:
+    """True for HTTP statuses that mean the bearer is rejected (C3)."""
+    return status_code in {401, 403}
+
+
 def resolve_xai_http_credentials(
     *,
     force_refresh: bool = False,
@@ -258,10 +294,60 @@ def resolve_xai_http_credentials(
     Reactive callers should also pass the rejected bearer as ``api_key_hint``
     so a freshly loaded multi-account pool refreshes the exact issuing entry,
     not whichever entry its strategy would otherwise select first.
+
+    **Shared mode (C1/A6/F2):** resolves the canonical shared store first —
+    never pool-first — so a legacy local/manual pool row cannot win over the
+    fleet grant. On canonical failure / empty / profile-disabled, FAIL CLOSED:
+    do not select a surviving legacy pool row. Only ``XAI_API_KEY`` remains as
+    a non-OAuth fallback. Empty shared + sole local grant auto-promotes (F1)
+    via the shared resolver before any strip.
     """
+    import hermes_cli.auth as auth_mod
+
+    # C1/A6/F2: shared mode → canonical only (no legacy pool fallback).
+    if auth_mod._xai_shared_auth_enabled():
+        try:
+            creds = auth_mod.resolve_xai_oauth_runtime_credentials(
+                force_refresh=force_refresh,
+                refresh_if_expiring=not force_refresh,
+                rejected_access_token=api_key_hint,
+            )
+            access_token = str(creds.get("api_key") or "").strip()
+            if access_token:
+                override_base_url = str(
+                    get_env_value("HERMES_XAI_BASE_URL")
+                    or get_env_value("XAI_BASE_URL")
+                    or ""
+                ).strip().rstrip("/")
+                base_url = auth_mod._xai_validate_inference_base_url(
+                    override_base_url,
+                    fallback=str(
+                        creds.get("base_url") or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
+                    ).strip().rstrip("/"),
+                )
+                return {
+                    "provider": "xai-oauth",
+                    "api_key": access_token,
+                    "base_url": base_url,
+                    "source": auth_mod.XAI_SHARED_SOURCE,
+                    "generation": creds.get("generation"),
+                }
+        except Exception:
+            # Fail closed: do not select a legacy manual/pool OAuth row.
+            pass
+        # Non-OAuth API key is still allowed; OAuth pool is not.
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+        base_url = str(
+            get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1"
+        ).strip().rstrip("/")
+        return {
+            "provider": "xai",
+            "api_key": api_key,
+            "base_url": base_url,
+        }
+
     try:
         from agent.credential_pool import load_pool
-        import hermes_cli.auth as auth_mod
 
         pool = load_pool("xai-oauth")
         entry = (
@@ -308,3 +394,13 @@ def resolve_xai_http_credentials(
         "api_key": api_key,
         "base_url": base_url,
     }
+
+
+def force_refresh_xai_http_credentials(
+    rejected_api_key: Optional[str] = None,
+) -> Dict[str, str]:
+    """C3 helper: canonical force-refresh after a 401/403 with the rejected bearer."""
+    return resolve_xai_http_credentials(
+        force_refresh=True,
+        api_key_hint=rejected_api_key,
+    )

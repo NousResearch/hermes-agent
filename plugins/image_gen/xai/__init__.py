@@ -333,13 +333,49 @@ class XAIImageGenProvider(ImageGenProvider):
             payload["storage_options"] = storage_options
 
         try:
-            response = requests.post(
-                endpoint_url,
-                headers=headers,
-                json=payload,
-                timeout=120,
-            )
-            response.raise_for_status()
+            response = None
+            last_http_exc: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        endpoint_url,
+                        headers=headers,
+                        json=payload,
+                        timeout=120,
+                    )
+                    response.raise_for_status()
+                    last_http_exc = None
+                    break
+                except requests.HTTPError as exc:
+                    last_http_exc = exc
+                    status = (
+                        exc.response.status_code if exc.response is not None else 0
+                    )
+                    # C3: one canonical refresh + retry on 401/403 for OAuth.
+                    if (
+                        attempt == 0
+                        and status in {401, 403}
+                        and provider_name == "xai-oauth"
+                    ):
+                        try:
+                            from tools.xai_http import force_refresh_xai_http_credentials
+
+                            refreshed = force_refresh_xai_http_credentials(api_key)
+                            new_key = str(refreshed.get("api_key") or "").strip()
+                            if new_key and new_key != api_key:
+                                api_key = new_key
+                                headers["Authorization"] = f"Bearer {api_key}"
+                                continue
+                        except Exception as refresh_exc:
+                            logger.warning(
+                                "xAI image gen OAuth refresh after %s failed: %s",
+                                status,
+                                refresh_exc,
+                            )
+                    break
+            if last_http_exc is not None:
+                raise last_http_exc
+            assert response is not None
         except requests.HTTPError as exc:
             response = exc.response
             status = response.status_code if response is not None else 0

@@ -224,13 +224,81 @@ The auth store has no `xai-oauth` entry and no `XAI_API_KEY` is set. You haven't
 
 ## Logging Out
 
-To remove all stored xAI Grok OAuth credentials:
+To remove all stored xAI Grok OAuth credentials (legacy per-profile mode):
 
 ```bash
 hermes auth logout xai-oauth
+# or
+hermes logout --provider xai-oauth
 ```
 
 This clears both the singleton OAuth entry in `auth.json` and any credential-pool rows for `xai-oauth`. Use `hermes auth remove xai-oauth <index|id|label>` if you only want to drop a single pool entry (run `hermes auth list xai-oauth` to see them).
+
+### Shared-store mode (multi-profile)
+
+xAI rotates the refresh token on every refresh. If each Hermes profile keeps its
+own copy, concurrent refreshes kill the whole grant family. **Shared xAI mode**
+keeps exactly one durable refresh token in a canonical store that every profile
+reads under a shared lock.
+
+**Opt-in only** (setting `HERMES_SHARED_AUTH_DIR` for Nous is not enough). The
+user-facing switch is **config.yaml**, not an environment variable
+(AGENTS.md: non-secret feature flags belong in config.yaml; Hermes bridges
+them to internal env vars at process startup, same pattern as
+`terminal.cwd` → `TERMINAL_CWD`):
+
+```yaml
+# ~/.hermes/config.yaml  (or a profile's config.yaml)
+shared_auth:
+  providers: [xai-oauth]
+  # optional: override shared directory (default <hermes-root>/shared/)
+  # dir: ~/.hermes/shared
+```
+
+Or enable via CLI (writes the same config key and bridges for the current process):
+
+```bash
+hermes auth xai enable-shared
+```
+
+Restart every gateway, cron worker, and desktop launch so they reload
+config.yaml — the internal bridge sets `HERMES_XAI_SHARED_AUTH` /
+`HERMES_SHARED_AUTH_PROVIDERS` from that file. Do **not** put those env vars
+in `.env` by hand; they are internal bridge targets.
+
+Canonical files (default root = `~/.hermes/shared/`):
+
+- `xai_oauth.json` — access + refresh tokens, generation, discovery metadata
+- `xai_oauth.lock` — cross-process advisory lock (requires a **local filesystem**
+  with reliable locking — not NFS/SMB)
+
+Prefer a local path under the machine Hermes root (not NFS/SMB).
+
+**Login** with shared mode on writes the grant into the shared store and leaves
+only a non-secret `source: shared:xai-oauth` reference in the profile.
+
+**Migrate** an existing legacy grant once (does not elect a winner by clock;
+prefers an explicit source, then strips local secret copies):
+
+```bash
+hermes auth xai enable-shared   # if not already enabled in config.yaml
+hermes auth xai migrate-shared --source auto
+# or: --source profile | --source root
+# --force overwrites an existing shared grant
+```
+
+**Logout / disable semantics:**
+
+```bash
+# Turn off shared mode in config.yaml (canonical grant stays on disk)
+hermes auth xai disable-shared
+
+# Per-profile logout while shared mode is still on (marker only; grant stays)
+hermes logout --provider xai-oauth
+
+# Global logout — deletes the grant for EVERY profile (noisy on purpose)
+hermes logout --provider xai-oauth --global
+```
 
 ## See Also
 

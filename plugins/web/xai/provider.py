@@ -264,10 +264,12 @@ class XAIWebSearchProvider(WebSearchProvider):
                 break
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code if exc.response is not None else 0
-                if status == 401 and attempt == 0 and is_oauth_path:
+                # C3: refresh on auth-shaped 401 AND 403 (xAI often uses 403).
+                if status in {401, 403} and attempt == 0 and is_oauth_path:
                     logger.info(
-                        "xAI web search got 401 on first attempt; forcing OAuth "
+                        "xAI web search got %s on first attempt; forcing OAuth "
                         "refresh and retrying once.",
+                        status,
                     )
                     try:
                         refreshed = resolve_xai_http_credentials(
@@ -283,7 +285,8 @@ class XAIWebSearchProvider(WebSearchProvider):
                         # in retrying. Fall through to the error return below.
                     except Exception as refresh_exc:  # noqa: BLE001
                         logger.warning(
-                            "xAI web search OAuth refresh after 401 failed: %s",
+                            "xAI web search OAuth refresh after %s failed: %s",
+                            status,
                             refresh_exc,
                         )
                 body = ""

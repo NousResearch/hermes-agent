@@ -95,4 +95,44 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_spotify.add_argument(
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
     )
+    auth_xai = auth_subparsers.add_parser(
+        "xai",
+        help="Manage the canonical shared xAI OAuth store",
+    )
+    auth_xai_sub = auth_xai.add_subparsers(dest="xai_action")
+    auth_xai_migrate = auth_xai_sub.add_parser(
+        "migrate-shared",
+        help=(
+            "Install a chosen legacy xAI grant into the shared store and strip "
+            "profile-local secret copies (requires shared_auth.providers to "
+            "include xai-oauth; run `hermes auth xai enable-shared` first)"
+        ),
+    )
+    auth_xai_migrate.add_argument(
+        "--source",
+        choices=["auto", "profile", "root"],
+        default="auto",
+        help="Which legacy store to migrate (never elected by last_refresh clock)",
+    )
+    auth_xai_migrate.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing canonical shared grant",
+    )
+    # A8: --keep-legacy removed — sole ownership requires stripping every
+    # durable local RT. Keeping legacy copies directly forks the grant.
+    auth_xai_sub.add_parser(
+        "enable-shared",
+        help=(
+            "Enable shared xAI OAuth via config.yaml "
+            "(shared_auth.providers: [xai-oauth]) and re-enable this profile"
+        ),
+    )
+    auth_xai_sub.add_parser(
+        "disable-shared",
+        help=(
+            "Disable shared xAI OAuth in config.yaml (remove xai-oauth from "
+            "shared_auth.providers); does not delete the canonical grant"
+        ),
+    )
     auth_parser.set_defaults(func=cmd_auth)

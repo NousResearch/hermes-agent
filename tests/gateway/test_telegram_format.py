@@ -992,7 +992,6 @@ class TestEditMessageStreamingSafety:
         result = await adapter.edit_message("123", "456", oversized, finalize=False)
 
         # Must NOT create continuation messages during streaming.
-        assert result.success is True
         assert adapter._bot.send_message.await_count == 0, (
             "mid-stream overflow must not send continuation messages"
         )
@@ -1001,6 +1000,16 @@ class TestEditMessageStreamingSafety:
         # The edit must contain truncated content (≤ MAX_MESSAGE_LENGTH).
         edited_text = adapter._bot.edit_message_text.call_args.kwargs["text"]
         assert len(edited_text) <= adapter.MAX_MESSAGE_LENGTH
+        # The screen holds only a truncated prefix — the adapter must report
+        # partial delivery (not success), otherwise the stream consumer
+        # records the full text as visible and the gateway suppresses the
+        # real final send, leaving the truncated preview as the only
+        # delivery the user ever sees.
+        assert result.success is False
+        assert result.error_kind == "too_long"
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["delivered_prefix"] == edited_text
+        assert result.raw_response["last_message_id"] == "456"
 
     @pytest.mark.asyncio
     async def test_saturated_preview_dedups_repeat_oversized_edits(self):
@@ -1016,8 +1025,11 @@ class TestEditMessageStreamingSafety:
         adapter._bot.send_message = AsyncMock()
 
         # First oversized edit: delivers the truncated preview (1 API call).
+        # Truncated previews report partial delivery (partial_overflow) so
+        # the gateway never mistakes them for the full response.
         r1 = await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
-        assert r1.success is True
+        assert r1.success is False
+        assert r1.raw_response["partial_overflow"] is True
         assert adapter._bot.edit_message_text.await_count == 1
 
         # Stream keeps growing within the same chunk count: previews truncate
@@ -1027,7 +1039,8 @@ class TestEditMessageStreamingSafety:
         # instead of one per 0.8s tick.)
         for grow in (7000, 8000):
             r = await adapter.edit_message("123", "456", "x" * grow, finalize=False)
-            assert r.success is True
+            assert r.success is False
+            assert r.raw_response["partial_overflow"] is True
             assert r.message_id == "456"
         assert adapter._bot.edit_message_text.await_count == 1, (
             "identical saturated previews must not be re-sent"
@@ -1099,12 +1112,37 @@ class TestEditMessageStreamingSafety:
         content = "x" * adapter.MAX_MESSAGE_LENGTH
         result = await adapter.edit_message("123", "456", content, finalize=False)
 
-        assert result.success is True
         assert result.message_id == "456"
         adapter._bot.send_message.assert_not_called()
         assert adapter._bot.edit_message_text.await_count == 2
         retry_text = adapter._bot.edit_message_text.await_args_list[1].kwargs["text"]
         assert len(retry_text) <= adapter.MAX_MESSAGE_LENGTH
+        # Reactive truncation is partial delivery too — same contract as the
+        # pre-flight path so the consumer sends the missing tail on finalize.
+        assert result.success is False
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["delivered_prefix"] == retry_text
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_truncated_preview_not_modified_stays_partial(self):
+        """A repeated oversized tick edits the same truncated preview and
+        Telegram answers "message is not modified".  That must still be
+        reported as partial delivery — success here would restore the lying
+        bookkeeping that made the gateway suppress the real final send."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=Exception("Bad Request: message is not modified")
+        )
+        adapter._bot.send_message = AsyncMock()
+
+        result = await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+
+        adapter._bot.send_message.assert_not_called()
+        assert result.success is False
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["delivered_prefix"]
+        assert result.message_id == "456"
 
 
 # =========================================================================

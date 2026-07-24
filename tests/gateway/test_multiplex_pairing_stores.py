@@ -15,6 +15,7 @@ the per-profile stores actually materialize.
 import asyncio
 from unittest.mock import MagicMock, patch
 
+from gateway.pairing import PairingStore
 from gateway.run import GatewayRunner
 
 
@@ -23,6 +24,10 @@ def _bare_runner(multiplex: bool = True):
     runner.config = MagicMock(multiplex_profiles=multiplex)
     runner.adapters = {}
     runner._profile_adapters = {}
+    # Real GatewayRunner.__init__ always creates the legacy/global store.
+    # The default multiplex profile intentionally aliases it so the CLI,
+    # dashboard, pairing generation, and authorization all share one path.
+    runner.pairing_store = PairingStore()
     runner.pairing_stores = {}
     return runner
 

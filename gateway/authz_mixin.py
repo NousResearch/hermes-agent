@@ -330,18 +330,39 @@ class GatewayAuthorizationMixin:
         return False
 
     def _pairing_store_for(self, source: "SessionSource"):
-        """Pick the per-profile PairingStore for a source, falling back to global.
+        """Pick the per-profile PairingStore for a source.
 
         In a multiplexing gateway, each profile owns its own pairing whitelist
-        so isolation is preserved. When the source has no profile (single-
-        profile gateway, or a path that hasn't stamped profile yet) or the
-        profile isn't registered, fall back to ``self.pairing_store`` (the
-        global default) so existing behavior is preserved.
+        so isolation is preserved.
+
+        Under multiplexing a source carrying a profile MUST be answered from
+        that profile's store or not at all. Returning the default store for an
+        unregistered profile would let the default profile's pairing grants
+        authorize another profile's traffic — the store may be missing because
+        it failed to initialize, or because the profile is stale/unknown, and
+        neither is a reason to widen access. Returning ``None`` denies the
+        pairing grant specifically; the caller still evaluates the remaining
+        (profile-independent) authorization rules.
+
+        Without multiplexing an unset profile unambiguously means the one
+        active profile, so the global ``self.pairing_store`` is the correct and
+        only store — behavior there is unchanged.
         """
+        from gateway.run import logger
+
         per_profile = getattr(self, "pairing_stores", None) or {}
         profile = getattr(source, "profile", None)
         if profile and profile in per_profile:
             return per_profile[profile]
+        if profile and getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            logger.warning(
+                "No PairingStore registered for profile %r (%s/%s); denying the "
+                "pairing grant instead of consulting the default profile",
+                profile,
+                getattr(getattr(source, "platform", None), "value", "?"),
+                getattr(source, "chat_id", "?"),
+            )
+            return None
         return getattr(self, "pairing_store", None)
 
     def _is_user_authorized(self, source: SessionSource) -> bool:

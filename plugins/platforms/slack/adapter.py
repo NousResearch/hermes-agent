@@ -283,6 +283,59 @@ class _ThreadContextCache:
     messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SlackCustomMessageContext:
+    """Context passed to :meth:`SlackAdapter._on_custom_message`.
+
+    Public (no leading underscore) because out-of-tree adapter subclasses
+    depend on it; see ``SlackAdapter.CUSTOM_MESSAGE_HOOK_VERSION`` for the
+    compatibility marker.
+    """
+
+    # Normalized, mention-stripped text of *this* message only.  Deliberately
+    # NOT the string handed to the agent: entering a thread cold prepends the
+    # fetched transcript to that one, and a command parser reading it would
+    # take someone else's earlier message as its arguments.
+    text: str
+    # Whatever :meth:`SlackAdapter._classify_custom_message` returned for this
+    # message.  Opaque to core — never inspected, only round-tripped — so a
+    # subclass can pass a parsed command object and skip re-parsing here.
+    classification: Any
+    event: Dict[str, Any]  # Raw Slack message event
+    source: Any  # MessageSource built for this message
+    client: Any  # Workspace-specific AsyncWebClient
+    channel_id: str
+    user_id: str
+    team_id: str
+    ts: str  # This message's timestamp
+    thread_ts: Optional[str]  # Session thread key; may equal ``ts``
+    is_dm: bool
+    is_mentioned: bool
+    message_type: Any  # MessageType resolved for this message
+
+    @property
+    def reply_metadata(self) -> Dict[str, str]:
+        """``send()`` metadata that replies on the invoking surface.
+
+        Always carries ``slack_team_id`` when known: :meth:`SlackAdapter.send`
+        resolves the outbound workspace client from it, and without it falls
+        back to a process-wide ``channel_id → team_id`` map. Two workspaces the
+        bot is installed in can hold the *same* channel ID (and that map is
+        last-writer-wins across concurrent events), so an untagged reply can
+        post into the wrong workspace.
+
+        A synthetic ``thread_ts == ts`` marks a top-level channel message;
+        passing it through would open a reply thread instead of posting flat,
+        so only a real thread key becomes ``thread_id``.
+        """
+        metadata: Dict[str, str] = {}
+        if self.team_id:
+            metadata["slack_team_id"] = self.team_id
+        if self.thread_ts and self.thread_ts != self.ts:
+            metadata["thread_id"] = self.thread_ts
+        return metadata
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -852,6 +905,49 @@ def _is_slack_voice_clip(file_obj: Dict[str, Any]) -> bool:
     return name.startswith("audio_message")
 
 
+# Slack API error codes are a fixed lowercase-slug vocabulary
+# (``channel_not_found``, ``invalid_auth``, ``ratelimited``, …). Anything that
+# does not match this shape is treated as untrusted text and dropped rather
+# than logged.
+_SLACK_ERROR_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+# Returned to callers for every send failure. Deliberately constant: the
+# SendResult error can be rendered into a channel or a log line downstream, so
+# it must not vary with — and therefore cannot leak — the underlying exception.
+SEND_FAILED_ERROR = "Slack send failed"
+
+
+def _sanitized_slack_error(exc: BaseException) -> str:
+    """Describe a Slack SDK / network exception without leaking its contents.
+
+    ``SlackApiError.__str__`` embeds the entire ``SlackResponse`` — which
+    carries the request context, including the bot token that was used — and
+    aiohttp's errors can embed the full request URL, which for ``response_url``
+    delivery is itself a credential. Neither may reach a log line or a
+    ``SendResult.error``.
+
+    Returns the exception's type name, plus Slack's own stable error code when
+    the response carries one that matches the known slug shape. Both are fixed
+    vocabularies safe to log and to alert on; the raw exception, its args, and
+    its traceback are all discarded.
+    """
+    label = type(exc).__name__
+    response = getattr(exc, "response", None)
+    raw = None
+    if isinstance(response, dict):
+        raw = response.get("error")
+    elif response is not None:
+        # SlackResponse supports __getitem__; fall back to an attribute for
+        # other SDK shapes. Both are best-effort — a failure just means no code.
+        try:
+            raw = response["error"]
+        except Exception:
+            raw = getattr(response, "error", None)
+    if isinstance(raw, str) and _SLACK_ERROR_CODE_RE.match(raw):
+        return f"{label}({raw})"
+    return label
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -879,6 +975,12 @@ class SlackAdapter(BasePlatformAdapter):
     # "!" to "/" for known commands (see _handle_slack_message), so "!" is
     # the prefix that works everywhere — instruction text must show it.
     typed_command_prefix = "!"
+
+    # Contract version for the two-stage custom-message subclass seam
+    # (``_classify_custom_message`` + ``_on_custom_message``).  Bump when
+    # either hook's signature or SlackCustomMessageContext's fields change so
+    # out-of-tree plugin subclasses can detect an incompatible core.
+    CUSTOM_MESSAGE_HOOK_VERSION = 1
 
     # Slack has both halves the ``in_channel`` continuable-cron surface needs:
     # a flat-reply outbound gate (``reply_in_thread: false`` → ``_resolve_thread_ts``
@@ -1289,7 +1391,8 @@ class SlackAdapter(BasePlatformAdapter):
                 self._start_socket_mode_handler()
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(
-                    "[Slack] Socket Mode reconnect failed: %s", exc, exc_info=True
+                    "[Slack] Socket Mode reconnect failed: %s",
+                    _sanitized_slack_error(exc),
                 )
 
     async def _socket_watchdog_loop(self) -> None:
@@ -1585,9 +1688,11 @@ class SlackAdapter(BasePlatformAdapter):
                             )
             return SendResult(success=True, message_id=None)
         except Exception as e:
+            # The response_url is itself a bearer credential and aiohttp errors
+            # embed the request URL, so log only the sanitized type/code.
             logger.warning(
                 "[Slack] response_url POST failed: %s",
-                e,
+                _sanitized_slack_error(e),
             )
             return SendResult(success=False, error=str(e))
 
@@ -2212,7 +2317,9 @@ class SlackAdapter(BasePlatformAdapter):
             return True
 
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[Slack] Connection failed: %s", e, exc_info=True)
+            logger.error(
+                "[Slack] Connection failed: %s", _sanitized_slack_error(e)
+            )
             return False
         finally:
             if lock_acquired and not self._running:
@@ -2596,12 +2703,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:  # pragma: no cover - defensive logging
             # Clear the assistant status even when the failure happened
-            # BEFORE thread_ts was resolved (formatting, slash-context, DM
-            # resolution): stop_typing falls back to metadata / the uniquely
-            # tracked status for this channel, so a failed turn cannot leave
-            # "is thinking..." visible (#24117).
+            # before thread_ts was resolved. Never log the raw exception or
+            # traceback: SlackApiError can contain request credentials.
             await self._clear_thread_status_quietly(chat_id, metadata)
-            logger.error("[Slack] Send error: %s", e, exc_info=True)
+            logger.error("[Slack] Send error: %s", _sanitized_slack_error(e))
             _retryable = self._is_retryable_upload_error(e)
             _retry_after = None
             if _retryable:
@@ -2615,7 +2720,7 @@ class SlackAdapter(BasePlatformAdapter):
                         pass
             return SendResult(
                 success=False,
-                error=str(e),
+                error=SEND_FAILED_ERROR,
                 retryable=_retryable,
                 retry_after=_retry_after,
             )
@@ -2660,9 +2765,11 @@ class SlackAdapter(BasePlatformAdapter):
                 message_id=result.get("message_ts") or result.get("ts"),
                 raw_response=result,
             )
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[Slack] Ephemeral send error: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+        except Exception as e:
+            logger.error(
+                "[Slack] Ephemeral send error: %s", _sanitized_slack_error(e)
+            )
+            return SendResult(success=False, error=SEND_FAILED_ERROR)
 
     async def send_or_update_status(
         self,
@@ -2769,7 +2876,7 @@ class SlackAdapter(BasePlatformAdapter):
             if finalize:
                 await self._clear_thread_status_quietly(chat_id, metadata)
             return SendResult(success=True, message_id=message_id)
-        except Exception as e:  # pragma: no cover - defensive logging
+        except Exception as e:
             if finalize:
                 await self._clear_thread_status_quietly(chat_id, metadata)
             aiohttp_module = globals().get("aiohttp")
@@ -2813,10 +2920,9 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Failed to edit message %s in channel %s: %s",
                 message_id,
                 chat_id,
-                e,
-                exc_info=True,
+                _sanitized_slack_error(e),
             )
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=SEND_FAILED_ERROR)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a Slack message previously sent by this bot.
@@ -2941,7 +3047,10 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
-            logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+            logger.debug(
+                "[Slack] assistant.threads.setStatus failed: %s",
+                _sanitized_slack_error(e),
+            )
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
@@ -3020,7 +3129,10 @@ class SlackAdapter(BasePlatformAdapter):
                 status="",
             )
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+            logger.debug(
+                "[Slack] assistant.threads.setStatus clear failed: %s",
+                _sanitized_slack_error(e),
+            )
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.
@@ -3821,7 +3933,11 @@ class SlackAdapter(BasePlatformAdapter):
                 or user_id
             )
         except Exception as e:
-            logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
+            logger.debug(
+                "[Slack] users.info failed for %s: %s",
+                user_id,
+                _sanitized_slack_error(e),
+            )
             name = user_id
 
         self._user_name_cache[cache_key] = name
@@ -3995,8 +4111,13 @@ class SlackAdapter(BasePlatformAdapter):
             self._user_name_cache[cache_key] = name
             return is_bot
         except Exception as e:
-            logger.debug("[Slack] users.info bot check failed for %s: %s", user_id, e)
+            logger.debug(
+                "[Slack] users.info bot check failed for %s: %s",
+                user_id,
+                _sanitized_slack_error(e),
+            )
             self._user_is_bot_cache[cache_key] = False
+            self._user_name_cache.setdefault(cache_key, user_id)
             return False
 
     async def send_image_file(
@@ -4550,6 +4671,227 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str):
             return raw.strip().lower() not in {"0", "false", "no", "off"}
         return bool(raw)
+
+    def _gateway_runner(self) -> Any:
+        """Return the GatewayRunner driving this adapter, or ``None``.
+
+        ``gateway_runner`` is the reference run.py installs and the one
+        :meth:`build_source` already uses for profile routing; the
+        ``_message_handler`` bound-method owner is the older path some call
+        sites were wired through. Prefer the former so the seam resolves the
+        *same* runner that stamped ``source.profile``.
+        """
+        return self._owning_gateway_runner()
+
+    def _build_message_source(
+        self,
+        *,
+        channel_id: str,
+        is_dm: bool,
+        user_id: str,
+        thread_ts: Optional[str],
+        team_id: Any,
+        event: dict,
+        channel_name: Optional[str] = None,
+        user_name: Optional[str] = None,
+    ) -> Any:
+        """Build the SessionSource for an inbound Slack message.
+
+        Single source of truth for how a message event maps onto a
+        ``SessionSource``, so the authorization gate and the dispatched event
+        can never drift onto different chat types, thread keys, team scopes,
+        bot flags or routed profiles. ``user_name`` is the one field that
+        arrives late (it needs a users.info round-trip we don't make before
+        authorizing) and it is cosmetic — no authorization rule reads it.
+
+        ``build_source`` resolves ``source.profile`` from ``profile_routes``
+        only. A per-profile adapter with no matching route would come back
+        profile-less, because the wrapper in ``gateway/run.py`` that stamps
+        ownership runs on dispatch — and a classified custom message is handled
+        *before* dispatch, so it never gets there. ``apply_owner_profile`` fills
+        that gap from the adapter's recorded owner (routes still win), which is
+        what keeps authorization and runtime scope on the owning profile.
+        """
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_name or channel_id,
+            chat_type="dm" if is_dm else "group",
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_ts,
+            scope_id=str(team_id) if team_id else None,
+            # Slack Workflow Builder / app posts arrive as
+            # subtype=bot_message with user=None; flag them so the
+            # gateway SLACK_ALLOW_BOTS bypass can authorize them
+            # (they carry no user_id to match against the allowlist).
+            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
+        )
+        self.apply_owner_profile(source)
+        return source
+
+    def _is_message_source_authorized(self, source: Any) -> bool:
+        """Authorize an inbound message source under the gateway's own policy.
+
+        Delegates to ``GatewayRunner._is_user_authorized`` — the identical
+        check ordinary messages get from ``handle_message`` — passing the real
+        routed source. That matters beyond tidiness: the runner selects the
+        per-profile pairing store from ``source.profile``, so authorizing a
+        profile-less stand-in would consult the *default* profile's pairing
+        grants for a channel routed to a secondary profile.
+
+        Falls back to the env-only allowlist only when no runner is attached.
+        Once a runner owns authorization, an exception must fail closed rather
+        than silently replacing profile-aware policy with the default env gate.
+
+        Indeterminate ownership is refused outright: under multiplexing, judging
+        a profile-less source would silently apply the *default* profile's
+        policy to another profile's channel. Failing the command closed is the
+        only safe answer when we cannot tell whose policy applies.
+        """
+        if not self.apply_owner_profile(source):
+            logger.error(
+                "[Slack] Refusing custom message in %s: cannot determine the "
+                "owning profile under multiplexing",
+                getattr(source, "chat_id", "?"),
+            )
+            return False
+        auth_fn = getattr(self._gateway_runner(), "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                return bool(auth_fn(source))
+            except Exception:
+                logger.warning(
+                    "[Slack] Custom-message authorization failed closed",
+                    exc_info=True,
+                )
+                return False
+        return self._is_env_allowlisted_user(getattr(source, "user_id", "") or "")
+
+    def _profile_runtime_scope_for(self, source: Any) -> Any:
+        """Context manager entering the routed profile's runtime scope.
+
+        Mirrors ``GatewayRunner._run_agent``: gated on
+        ``gateway.multiplex_profiles``, resolving the home through the runner's
+        own ``_resolve_profile_home_for_source`` so HERMES_HOME (config, skills,
+        memory) and the credential scope match what an ordinary agent turn for
+        this source would see. A no-op on single-profile gateways.
+
+        Needed because a handled custom message *replaces* the agent turn —
+        it never reaches ``handle_message``, so it would otherwise run under
+        whichever profile happens to own the process.
+        """
+        from contextlib import nullcontext
+
+        runner = self._gateway_runner()
+        if not getattr(getattr(runner, "config", None), "multiplex_profiles", False):
+            return nullcontext()
+        if not self.apply_owner_profile(source):
+            # Multiplexing with no determinate owner: running the command would
+            # execute it against whichever profile's HERMES_HOME owns the
+            # process. Raise so the caller consumes the message instead.
+            raise RuntimeError(
+                "cannot determine the owning profile for a custom Slack message"
+            )
+        try:
+            from gateway.run import _profile_runtime_scope
+
+            # ``_require_served_profile_home`` over the plain resolver: the
+            # resolver falls back to the global HERMES_HOME for a profile this
+            # gateway does not serve, which would run the command under the
+            # multiplexer's own config and credentials. The validating variant
+            # raises instead, and the caller consumes the message.
+            resolve = getattr(runner, "_require_served_profile_home", None)
+            if not callable(resolve):
+                resolve = runner._resolve_profile_home_for_source
+            return _profile_runtime_scope(resolve(source))
+        except Exception:
+            logger.warning(
+                "[Slack] Could not enter routed profile scope; custom message will fail closed",
+                exc_info=True,
+            )
+            raise
+
+    def _classify_custom_message(self, text: str, event: dict) -> Any:
+        """Stage 1 of the custom-message seam: label a message, don't run it.
+
+        Subclasses (out-of-tree ``SlackAdapter`` plugins) may override this to
+        recognise their own Slack thread commands — plain ``!`` messages that
+        work inside threads, where Slack rejects native slash commands.
+        Return any truthy-or-not opaque token (a string, an enum, a parsed
+        command object) to claim the message, or ``None`` to decline.
+
+        ``text`` is the *raw* message text with our own ``<@bot>`` mention
+        removed and nothing else done to it — no ``!``→``/`` rewrite, no block
+        or attachment text appended — so the leading ``!`` the user actually
+        typed is still visible.
+
+        Contract, and the reason this is split from :meth:`_on_custom_message`:
+
+        * **Sync and side-effect-free.**  It runs on every inbound message,
+          including ones that are about to be dropped.  Do not send, mutate
+          state, or do I/O here — parse and return.
+        * **It runs before mention gating and before user authorization**, so
+          that a bare top-level ``!log`` is recognisable at all.  Classifying
+          is deliberately the one stage that precedes auth; nothing a token
+          buys takes effect until the caller has been authorized.  A returned
+          token then waives *only* the mention/session gate
+          (``require_mention`` / ``strict_mention`` / bot-thread /
+          active-session).  It never waives user authorization, the
+          ``allowed_channels`` whitelist, the bot/self-message filters, dedup,
+          or the subtype filter.
+        * **Classifying is not authorizing.**  Returning a token only means
+          "this looks like my command".  Core immediately authorizes the
+          caller's real routed source via :meth:`_is_message_source_authorized`
+          — the same ``GatewayRunner._is_user_authorized`` policy every
+          ordinary message is judged by — and silently drops the message if it
+          fails, so an unauthorized user can reach this method but can never
+          reach :meth:`_on_custom_message` or the mention bypass.
+        * **Raising drops the message.**  This is the only stage that can tell
+          a command from ordinary chat, so if it fails core cannot know either.
+          It logs (without the text) and consumes the event rather than
+          demoting a possibly side-effecting command to an agent prompt.  Keep
+          this method total — return ``None`` for anything unrecognised.
+
+        The base implementation classifies nothing, so core behavior is
+        unchanged unless a subclass overrides it.
+        """
+        return None
+
+    async def _on_custom_message(self, ctx: "SlackCustomMessageContext") -> bool:
+        """Stage 2 of the custom-message seam: execute a classified message.
+
+        Only called when :meth:`_classify_custom_message` returned a token,
+        which ``ctx.classification`` carries through unchanged — so a subclass
+        parses once and executes without reimplementing
+        :meth:`_handle_slack_message`.
+
+        Runs after user authorization (checked explicitly by core once
+        :meth:`_classify_custom_message` claims the message, since this hook
+        fires before the gateway's own auth would), after channel/mention
+        gating and text normalization, but *before* typing reactions, session
+        creation and any LLM dispatch.  Return ``True`` to mark the message fully handled; it is
+        then never forwarded to the agent.  Return ``False`` to fall through to
+        normal handling — that is how an alias like ``!explain`` can be
+        recognised here yet still be answered by the agent.  ``ctx`` carries
+        everything needed to reply (see :class:`SlackCustomMessageContext`);
+        use ``self.send()`` with ``ctx.reply_metadata``, or ``ctx.client``.
+
+        Because a handled command *replaces* the agent turn, this runs inside
+        the routed profile's runtime scope on a multiplexed gateway (see
+        :meth:`_profile_runtime_scope_for`): ``get_hermes_home()`` and
+        ``get_secret`` resolve against the profile that owns this channel, not
+        whichever profile owns the process.
+
+        If this raises, core **fails closed**: it logs, posts a generic error
+        on the invoking surface, and consumes the message.  A classified
+        message is a side-effecting command, so falling through to the LLM
+        after a failure would ask the agent to improvise a command it was
+        never meant to run.
+
+        The base implementation is a no-op, and is unreachable unless a
+        subclass also overrides :meth:`_classify_custom_message`.
+        """
+        return False
 
     async def _set_assistant_thread_title(
         self,
@@ -5347,6 +5689,11 @@ class SlackAdapter(BasePlatformAdapter):
 
         original_text = event.get("text", "")
 
+        # Snapshot the text exactly as typed, before the !→/ rewrite below.
+        # The classification seam matches on the leading "!" the user actually
+        # sent, which the rewrite would otherwise erase for known commands.
+        raw_text = original_text
+
         # Slack blocks native slash commands inside threads ("/queue is not
         # supported in threads. Sorry!").  As a workaround, recognise a
         # leading ``!`` as an alternate command prefix and rewrite it to
@@ -5636,6 +5983,67 @@ class SlackAdapter(BasePlatformAdapter):
                     return
                 if allow_bots == "mentions" and not is_mentioned:
                     return
+        # Stage 1 of the custom-message seam (see CUSTOM_MESSAGE_HOOK_VERSION).
+        # Sync and side-effect-free by contract: it only labels the message so
+        # the mention gate below can let a custom command through. Classifying
+        # is the one stage allowed to run before user auth — the token is not
+        # honoured until the authorization check right after this.
+        # Runs on the raw pre-rewrite text minus our own mention, so a subclass
+        # sees the leading "!" as typed in both "!log" and "<@bot> !log".
+        classification_text = raw_text
+        if bot_uid:
+            classification_text = classification_text.replace(f"<@{bot_uid}>", "")
+        classification_text = classification_text.strip()
+        try:
+            custom_token = self._classify_custom_message(classification_text, event)
+        except Exception as exc:
+            # Fail closed by CONSUMING the message, not by demoting it to
+            # ordinary chat. The classifier is the only thing that knows
+            # whether this was a command; if it failed we cannot know either,
+            # and forwarding a possibly-side-effecting command ("!log delete
+            # everything") to the agent asks it to improvise a command it was
+            # never meant to run. No reply — an error here would fire on every
+            # message a broken classifier touches. No message text in the log:
+            # it may carry user content.
+            logger.error(
+                "[Slack] custom message classifier failed - dropping event: %s",
+                _sanitized_slack_error(exc),
+            )
+            return
+
+        # Authorize the caller *before* the token buys anything. A classified
+        # message skips both remaining user-auth gates: the mention bypass
+        # below, and — because _on_custom_message runs ahead of
+        # handle_message — the gateway's own _is_user_authorized. So the seam
+        # has to run that exact check itself, and only for classified
+        # messages; everything else still gets it from the gateway, once.
+        #
+        # Judged on the REAL source, built by the same helper the dispatched
+        # event uses: chat type, thread key, team scope, bot flag and the
+        # routed profile all feed authorization, and the profile in particular
+        # selects which pairing store the runner consults — a profile-less
+        # stand-in would check the default profile's grants for a channel
+        # routed to a secondary one. Only user_name is missing here; it needs a
+        # users.info call we won't spend on an unauthorized caller, and no
+        # authorization rule reads it.
+        #
+        # Dropped silently: an error reply would confirm the command exists.
+        if custom_token is not None and not self._is_message_source_authorized(
+            self._build_message_source(
+                channel_id=channel_id,
+                is_dm=is_dm,
+                user_id=user_id,
+                thread_ts=thread_ts,
+                team_id=team_id,
+                event=event,
+            )
+        ):
+            logger.warning(
+                "[Slack] Unauthorized custom message from %s in %s - ignoring",
+                user_id,
+                channel_id,
+            )
+            return
 
         if not is_one_to_one_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
@@ -5663,8 +6071,11 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-            if force_process:
-                pass  # Explicit internal routing path (reaction trigger).
+            if force_process or custom_token is not None:
+                # Explicit reaction routing and classified custom commands may
+                # bypass mention/session gating only after the channel and
+                # routed-authorization checks above.
+                pass
             elif (
                 channel_id not in self._slack_require_mention_channels()
                 and (
@@ -5752,6 +6163,10 @@ class SlackAdapter(BasePlatformAdapter):
                 and not self._slack_thread_require_mention()
             ):
                 self._register_mentioned_thread(thread_ts, team_id=team_id)
+
+        # Keep the current turn available to the custom hook independently of
+        # any recovered thread context that is later sent to the agent.
+        current_message_text = text
 
         # Thread context rules:
         # - First message in a thread session (cold start): hydrate full
@@ -6189,7 +6604,19 @@ class SlackAdapter(BasePlatformAdapter):
         # Slack's AI Agent Messages tab shows visible app threads; title the
         # first DM thread turn from the user's prompt when Slack AI APIs are
         # available. This is best-effort and configurable via config.yaml.
-        if is_dm and thread_ts and msg_type != MessageType.COMMAND:
+        # ``thread_ts == ts``: only the thread ROOT names the thread — a later
+        # reply would rename an already-titled thread (including one the user
+        # named explicitly). ``custom_token is None``: a classified command is
+        # not a conversation topic, and unlike native slash commands it keeps
+        # its "!" (the /-rewrite only fires for known gateway commands), so
+        # ``!log`` / ``!name?`` would otherwise become the thread's title.
+        if (
+            is_dm
+            and thread_ts
+            and thread_ts == ts
+            and custom_token is None
+            and msg_type != MessageType.COMMAND
+        ):
             await self._set_assistant_thread_title(
                 channel_id,
                 thread_ts,
@@ -6197,21 +6624,71 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id=team_id,
             )
 
-        # Build source
-        source = self.build_source(
-            chat_id=channel_id,
-            chat_name=channel_name,
-            chat_type="dm" if is_dm else "group",
+        # Build the exact source shape used by the authorization gate above,
+        # adding only the resolved cosmetic channel/user names for dispatch.
+        source = self._build_message_source(
+            channel_id=channel_id,
+            channel_name=channel_name,
+            is_dm=is_dm,
             user_id=user_id,
+            thread_ts=thread_ts,
+            team_id=team_id,
+            event=event,
             user_name=user_name,
-            thread_id=thread_ts,
-            scope_id=str(team_id) if team_id else None,
-            # Slack Workflow Builder / app posts arrive as
-            # subtype=bot_message with user=None; flag them so the
-            # gateway SLACK_ALLOW_BOTS bypass can authorize them
-            # (they carry no user_id to match against the allowlist).
-            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
         )
+
+        # Stage 2 of the custom-message seam (see CUSTOM_MESSAGE_HOOK_VERSION).
+        # Only classified messages get here, and only once gating and
+        # normalization are done but before typing reactions, session creation
+        # and LLM dispatch — so a plugin can fully own the message.
+        if custom_token is not None:
+            custom_ctx = SlackCustomMessageContext(
+                # This message only — never the fetched thread transcript.
+                text=current_message_text,
+                classification=custom_token,
+                event=event,
+                source=source,
+                client=self._get_client(channel_id, team_id),
+                channel_id=channel_id,
+                user_id=user_id,
+                team_id=str(team_id) if team_id else "",
+                ts=ts,
+                thread_ts=thread_ts,
+                is_dm=is_dm,
+                is_mentioned=is_mentioned,
+                message_type=msg_type,
+            )
+            try:
+                # A handled command replaces the agent turn outright, so it has
+                # to run under the same routed-profile runtime scope that turn
+                # would have had — otherwise a secondary profile's command
+                # resolves config/skills/memory/credentials from whichever
+                # profile owns the process.
+                with self._profile_runtime_scope_for(source):
+                    handled = await self._on_custom_message(custom_ctx)
+            except Exception as exc:
+                # Fail closed. A classified message is a side-effecting
+                # command; falling through would hand a half-run command to
+                # the LLM to improvise. Report and consume it instead.
+                # No command text in the log — it may carry user content.
+                logger.error(
+                    "[Slack] custom message hook failed: %s",
+                    _sanitized_slack_error(exc),
+                )
+                try:
+                    await self.send(
+                        channel_id,
+                        "⚠️ That command failed. Please try again.",
+                        metadata=custom_ctx.reply_metadata,
+                    )
+                except Exception as report_exc:
+                    logger.error(
+                        "[Slack] failed to report custom message hook error: %s",
+                        _sanitized_slack_error(report_exc),
+                    )
+                return
+            if handled:
+                return
 
         # Per-channel ephemeral prompt
         from gateway.platforms.base import (
@@ -6445,8 +6922,10 @@ class SlackAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
-            logger.error("[Slack] send_exec_approval failed: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            logger.error(
+                "[Slack] send_exec_approval failed: %s", _sanitized_slack_error(e)
+            )
+            return SendResult(success=False, error=SEND_FAILED_ERROR)
 
     async def send_slash_confirm(
         self,
@@ -6526,8 +7005,40 @@ class SlackAdapter(BasePlatformAdapter):
                 success=True, message_id=result.get("ts", ""), raw_response=result
             )
         except Exception as e:
-            logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            logger.error(
+                "[Slack] send_slash_confirm failed: %s", _sanitized_slack_error(e)
+            )
+            return SendResult(success=False, error=SEND_FAILED_ERROR)
+
+    def _build_interactive_source(
+        self,
+        user_id: str,
+        *,
+        channel_id: str = "",
+        user_name: Optional[str] = None,
+        team_id: str = "",
+    ) -> Any:
+        """Build the routed ``SessionSource`` a Slack interactive payload speaks for.
+
+        Goes through ``build_source`` rather than constructing a
+        ``SessionSource`` directly so an interactive click resolves its profile
+        from ``gateway.profile_routes`` exactly like the message in the same
+        channel would. Without that, the routed profile is never even a
+        candidate and the caller cannot tell whose policy applies.
+
+        A button click carries no thread identity we need for authorization —
+        ``thread_id`` is deliberately left unset, mirroring the pre-existing
+        stand-in source this replaces.
+        """
+        chat_id = str(channel_id or user_id)
+        return self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_id,
+            chat_type="dm" if str(channel_id or "").startswith("D") else "group",
+            user_id=user_id,
+            user_name=str(user_name).strip() if user_name else None,
+            scope_id=str(team_id) if team_id else None,
+        )
 
     async def send_clarify(
         self,
@@ -6642,32 +7153,97 @@ class SlackAdapter(BasePlatformAdapter):
         user_name: Optional[str] = None,
         team_id: str = "",
     ) -> bool:
-        """Return whether a Slack interactive caller may perform gated actions."""
+        """Return whether a Slack interactive caller may perform gated actions.
+
+        Button clicks never reach ``handle_message``, so this is the *only*
+        authorization gate a dangerous-command approval or a slash confirmation
+        passes through. It must therefore land on the same policy an ordinary
+        message gets: ``GatewayRunner._is_user_authorized`` on a properly routed
+        source, from which the runner selects the per-profile pairing store.
+
+        Resolving the runner through :meth:`_gateway_runner` — not the
+        ``_message_handler`` bound-method owner — is what makes that hold under
+        multiplexing. A secondary profile's handler is a *closure*, so it has no
+        ``__self__``; the old lookup found no runner and quietly degraded every
+        secondary profile's buttons to the process-global env allowlist. That is
+        a strictly different (and typically wider) policy than the one guarding
+        that same profile's messages, and it is decided by env vars belonging to
+        whichever profile happens to own the process.
+
+        Fails closed instead of falling back whenever ownership is knowable: a
+        runner that raises, or an adapter that cannot name its owning profile
+        under multiplexing, must not hand the decision to the env allowlist.
+        The env path survives only for the single-profile, no-runner case, where
+        an unset profile unambiguously means the one active profile.
+        """
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
             return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
+        try:
+            source = self._build_interactive_source(
+                normalized_user_id,
+                channel_id=channel_id,
+                user_name=user_name,
+                team_id=team_id,
+            )
+        except Exception:
+            logger.warning(
+                "[Slack] Could not build the routed source for an interactive "
+                "click by %s — failing closed",
+                normalized_user_id,
+                exc_info=True,
+            )
+            return False
+
+        # Same precedence as inbound messages: an explicit route wins, else the
+        # adapter's recorded owner. False means multiplexing with no
+        # determinate owner — judging the click would apply the default
+        # profile's policy to another profile's channel.
+        if not self.apply_owner_profile(source):
+            logger.error(
+                "[Slack] Refusing interactive click in %s: cannot determine the "
+                "owning profile under multiplexing",
+                str(channel_id or "?"),
+            )
+            return False
+
+        auth_fn = getattr(self._gateway_runner(), "_is_user_authorized", None)
         if callable(auth_fn):
             try:
-                from gateway.session import SessionSource
-
-                source = SessionSource(
-                    platform=Platform.SLACK,
-                    chat_id=str(channel_id or normalized_user_id),
-                    chat_type="dm" if str(channel_id or "").startswith("D") else "group",
-                    user_id=normalized_user_id,
-                    user_name=str(user_name).strip() if user_name else None,
-                    scope_id=str(team_id) if team_id else None,
-                )
                 return bool(auth_fn(source))
             except Exception:
-                logger.debug(
-                    "[Slack] Falling back to env-only interactive auth for user %s",
+                logger.warning(
+                    "[Slack] Interactive authorization failed closed for user %s",
                     normalized_user_id,
                     exc_info=True,
                 )
+                return False
+
+        if getattr(source, "profile", None):
+            # A profile owner is stamped but no runner owns authorization. The
+            # env allowlist describes the process-global profile, not this one,
+            # so consulting it would answer a question about the wrong profile.
+            logger.error(
+                "[Slack] No gateway runner for an interactive click routed to "
+                "profile %r — refusing rather than applying the global env allowlist",
+                getattr(source, "profile", None),
+            )
+            return False
+
+        return self._is_env_allowlisted_user(normalized_user_id)
+
+    @staticmethod
+    def _is_env_allowlisted_user(user_id: str) -> bool:
+        """Env-only allowlist check — the fallback when no runner is reachable.
+
+        Shared by :meth:`_is_interactive_user_authorized` and
+        :meth:`_is_message_source_authorized` so the degraded path is identical
+        for buttons and for messages.
+        """
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return False
 
         if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
@@ -6792,27 +7368,19 @@ class SlackAdapter(BasePlatformAdapter):
                 blocks=sanitize_blocks(updated_blocks),
             )
         except Exception as e:
-            logger.warning("[Slack] Failed to update slash-confirm message: %s", e)
+            logger.warning(
+                "[Slack] Failed to update slash-confirm message: %s",
+                _sanitized_slack_error(e),
+            )
 
-        # Resolve via the module-level primitive and post any follow-up.
+        # Resolve via the module-level primitive.
+        result_text = None
         try:
             from tools import slash_confirm as _slash_confirm_mod
 
             result_text = await _slash_confirm_mod.resolve(
                 session_key, confirm_id, choice
             )
-            if result_text:
-                post_kwargs: Dict[str, Any] = {
-                    "channel": channel_id,
-                    "text": result_text,
-                }
-                # Inherit the thread so the reply stays in the same place.
-                thread_ts = message.get("thread_ts") or msg_ts
-                if thread_ts:
-                    post_kwargs["thread_ts"] = thread_ts
-                await self._get_client(
-                    channel_id, team_id=team_id or None
-                ).chat_postMessage(**post_kwargs)
             logger.info(
                 "Slack button resolved slash-confirm for session %s (choice=%s, user=%s)",
                 session_key,
@@ -6825,6 +7393,31 @@ class SlackAdapter(BasePlatformAdapter):
                 exc,
                 exc_info=True,
             )
+
+        # The follow-up post gets its own guard. Sharing the resolve's ``except``
+        # meant a Slack API failure here was logged raw with a traceback — and a
+        # SlackApiError stringifies to the whole request context, bot token
+        # included. It also conflated two unrelated outcomes: by this point the
+        # confirmation is already recorded and the agent thread already
+        # unblocked, so a failed post is cosmetic, not a failed resolve.
+        if result_text:
+            try:
+                post_kwargs: Dict[str, Any] = {
+                    "channel": channel_id,
+                    "text": result_text,
+                }
+                # Inherit the thread so the reply stays in the same place.
+                thread_ts = message.get("thread_ts") or msg_ts
+                if thread_ts:
+                    post_kwargs["thread_ts"] = thread_ts
+                await self._get_client(
+                    channel_id, team_id=team_id or None
+                ).chat_postMessage(**post_kwargs)
+            except Exception as e:
+                logger.warning(
+                    "[Slack] Failed to post slash-confirm follow-up: %s",
+                    _sanitized_slack_error(e),
+                )
 
     async def _handle_feedback_action(self, ack, body, action) -> None:
         """Ack Slack AI feedback button clicks and log the choice."""
@@ -6971,7 +7564,10 @@ class SlackAdapter(BasePlatformAdapter):
                 blocks=sanitize_blocks(updated_blocks),
             )
         except Exception as e:
-            logger.warning("[Slack] Failed to update approval message: %s", e)
+            logger.warning(
+                "[Slack] Failed to update approval message: %s",
+                _sanitized_slack_error(e),
+            )
 
         # (approval already resolved above; state consumed by atomic pop)
 
@@ -7320,7 +7916,10 @@ class SlackAdapter(BasePlatformAdapter):
             return content
 
         except Exception as e:
-            logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            logger.warning(
+                "[Slack] Failed to fetch thread context: %s",
+                _sanitized_slack_error(e),
+            )
             return ""
 
     async def _format_thread_context(
@@ -7531,7 +8130,10 @@ class SlackAdapter(BasePlatformAdapter):
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
+            logger.debug(
+                "[Slack] Failed to fetch thread parent text: %s",
+                _sanitized_slack_error(exc),
+            )
             return ""
 
     async def _collect_thread_root_images(

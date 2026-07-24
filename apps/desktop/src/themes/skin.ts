@@ -112,6 +112,9 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     // Single palette in both slots: a skin is one-mode, so the light/dark toggle
     // shouldn't invert it. renderedModeFor still paints `.dark` from luminance.
     colors: palette,
-    darkColors: palette
+    darkColors: palette,
+    // Pass through raw CSS so the desktop can inject it as a scoped <style>
+    // tag — users put CSS in their skin YAML instead of hacking app.asar.
+    customCSS: skin.customCSS?.trim() || undefined,
   }
 }

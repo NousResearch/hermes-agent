@@ -725,6 +725,43 @@ def _rewrite_compound_background(command: str) -> str:
     Handles redirects (``&>``, ``2>&1``) and skips content inside quoted
     strings and parenthesised subshells. Leaves simple ``cmd &`` alone —
     that construct doesn't have the subshell-wait bug.
+
+    A rewritten tail is a brace *group*, not a subshell, so bash requires
+    a statement terminator after the closing ``}`` before anything else
+    on the same line — otherwise ``{ B & } C`` is a syntax error at parse
+    time. Rather than insert a separator (which would change `C`'s
+    scheduling: originally `A && B & C` backgrounds the whole `A && B`
+    compound as one job and runs `C` immediately, so inserting `;` would
+    make `C` wait on `A` first — a real, measured behavior change, not
+    just a cosmetic one), this rewriter simply **skips** rewriting a
+    statement when a same-line command follows the backgrounding `&`.
+    That leaves the original (leaky but correct) bash behavior fully
+    intact for that shape rather than trade a syntax error for a
+    scheduling change.
+
+    Deliberate non-goal: the parenthesised spelling of this same bug,
+    `(A && B) &`, is left untouched. An earlier version of this function
+    attempted to rewrite the inside of the parens too, but that requires
+    textually parsing an arbitrary subshell body — which cannot be made
+    safe in general. Concretely it mis-rewrote arithmetic contexts
+    (`(( 1+1 )) &` — the outer double-paren is arithmetic evaluation, not
+    two nested subshells, but a textual parens-matcher can't tell the
+    difference and turned it into `({ ( 1+1 ) & }) &`, which runs `1+1`
+    as a *command* instead of evaluating it, a silent behavior change,
+    not just a syntax error) and would equally mishandle heredocs,
+    backtick substitutions, and reserved-word compounds (`while`, `case`,
+    `for`) if extended further. Two things make leaving this case alone
+    acceptable: (1) the top-level shell never blocks on a backgrounded
+    subshell either way (`(A && B) &` returns to the caller immediately,
+    verified — this is standard job-control behavior, not something the
+    rewrite needs to fix), and (2) the terminal tool's own hang risk from
+    a backgrounded process inheriting the stdout pipe is already handled
+    generically by the idle-after-exit drain timeout in
+    ``tools/environments/base.py`` (issue #8340), independent of shell
+    spelling. What's left unfixed is purely the resource-hygiene cost of
+    a leaked subshell stuck in ``wait4`` — a real but much smaller
+    problem than a silent semantic corruption, so it's accepted rather
+    than chased with more textual rewriting.
     """
     n = len(command)
     i = 0
@@ -836,9 +873,24 @@ def _rewrite_compound_background(command: str) -> str:
             if j >= 0 and command[j] in "<>":
                 i += 1
                 continue
-            # Real background operator
+            # Real background operator. Only rewrite when the backgrounded
+            # compound ends the statement cleanly: end-of-string or a newline.
+            # Those are the shapes where wrapping the tail in a brace group
+            # stays valid bash. A same-line command (`A && B & C`) is valid but
+            # MUST be skipped -- rewriting to `{ B & } C` is a parse error, and
+            # inserting a separator would change C's scheduling (see docstring).
+            # Every other continuation immediately after the `&` (`&;`, `& |`,
+            # `& &`) is ALREADY a bash parse error, so it must be left unchanged:
+            # wrapping it in a brace group would turn invalid shell the caller
+            # supplied into a valid, executable pipeline -- a validity inversion
+            # on LLM-supplied commands run straight through bash (#68948 review).
             if last_chain_op_end >= 0:
-                rewrites.append((last_chain_op_end, i))
+                j = i + 1
+                while j < n and command[j] in " \t":
+                    j += 1
+                next_char = command[j] if j < n else ""
+                if not next_char or next_char == "\n":
+                    rewrites.append((last_chain_op_end, i))
             last_chain_op_end = -1
             i += 1
             continue
@@ -863,6 +915,8 @@ def _rewrite_compound_background(command: str) -> str:
         suffix = result[amp_pos + 1 :]
         # `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
+        # (Callers only reach here when whatever follows on the same line
+        # is already a valid continuation — see the lookahead-skip above.)
         result = prefix + "{ " + middle + "& }" + suffix
 
     return result

@@ -1,0 +1,552 @@
+# Hermes static-message catalog -- Indonesian (Bahasa Indonesia)
+#
+# Only user-facing static messages from the CLI approval prompt and a handful
+# of gateway slash-command replies live here.  Agent-generated output, log
+# lines, error tracebacks, tool outputs, and slash-command descriptions stay
+# in English and are NOT translated -- see agent/i18n.py for scope rationale.
+#
+# Keys are dotted paths; nesting below is purely for readability.  Values may
+# contain {placeholder} tokens for str.format substitution.  When adding a
+# new key, add it to EVERY locale file (en/zh/ja/de/es/fr/tr/uk/id) in the same commit --
+# tests/agent/test_i18n.py asserts catalog parity.
+
+approval:
+  dangerous_header: '⚠️  PERINTAH BERISIKO: {description}'
+  choose_long: '      [s]ekali  |  [s]esi  |  [s]elalu  |  [t]olak'
+  choose_short: '      [s]ekali  |  [s]esi  |  [t]olak'
+  prompt_long: '      Pilihan [o/s/a/D]: '
+  prompt_short: '      Pilihan [o/s/D]: '
+  timeout: '      ⏱ Waktu habis - perintah ditolak'
+  allowed_once: '      ✓ Diizinkan sekali'
+  allowed_session: '      ✓ Diizinkan untuk sesi ini'
+  allowed_always: '      ✓ Ditambahkan ke daftar izin permanen'
+  denied: '      ✗ Ditolak'
+  cancelled: '      ✗ Dibatalkan'
+  blocklist_message: Perintah ini ada di daftar blokir dan tidak dapat diizinkan.
+gateway:
+  approval_expired: ⚠️ Persetujuan kadaluarsa (agent tidak menunggu lagi). Minta agent untuk mencoba lagi.
+  draining: ⏳ Menunggu {count} agent aktif sebelum restart...
+  goal_cleared: ✓ Goal dihapus.
+  no_active_goal: Tidak ada goal aktif.
+  config_read_failed: '⚠️ Gagal membaca config.yaml: {error}'
+  config_save_failed: '⚠️ Gagal menyimpan config: {error}'
+  model:
+    error_prefix: 'Error: {error}'
+    switched: Model diganti ke `{model}`
+    provider_label: 'Provider: {provider}'
+    context_label: 'Konteks: {tokens} token'
+    max_output_label: 'Output maks: {tokens} token'
+    cost_label: 'Biaya: {cost}'
+    capabilities_label: 'Kemampuan: {capabilities}'
+    prompt_caching_enabled: 'Prompt caching: aktif'
+    warning_prefix: 'Peringatan: {warning}'
+    saved_global: Disimpan ke config.yaml (`--global`)
+    session_only_hint: _(sesi saja — tambah `--global` untuk permanen)_
+    current_label: 'Saat ini: `{model}` di {provider}'
+    current_tag: ' (saat ini)'
+    more_models_suffix: ' (+{count} lagi)'
+    usage_switch_model: '`/model <nama>` — ganti model'
+    usage_switch_provider: '`/model <nama> --provider <slug>` — ganti provider'
+    usage_persist: '`/model <nama> --global` — simpan permanen'
+  agents:
+    header: 🤖 **Agent & Tugas Aktif**
+    active_agents: '**Agent aktif:** {count}'
+    this_chat: ' · chat ini'
+    more: '... dan {count} lagi'
+    running_processes: '**Proses background:** {count}'
+    async_jobs: '**Job async gateway:** {count}'
+    none: Tidak ada agent aktif atau proses berjalan.
+    state_starting: memulai
+    state_running: berjalan
+  approve:
+    no_pending: Tidak ada perintah yang menunggu persetujuan.
+    once_singular: ✅ Perintah diizinkan. Agent melanjutkan...
+    once_plural: ✅ Perintah diizinkan ({count} perintah). Agent melanjutkan...
+    session_singular: ✅ Perintah diizinkan (pattern diizinkan untuk sesi ini). Agent melanjutkan...
+    session_plural: ✅ Perintah diizinkan (pattern diizinkan untuk sesi ini) ({count} perintah). Agent melanjutkan...
+    always_singular: ✅ Perintah diizinkan (pattern diizinkan permanen). Agent melanjutkan...
+    always_plural: ✅ Perintah diizinkan (pattern diizinkan permanen) ({count} perintah). Agent melanjutkan...
+  background:
+    usage: 'Penggunaan: /background <prompt>
+
+      Contoh: /background Ringkas berita HN teratas hari ini
+
+
+      Jalankan prompt di sesi terpisah. Kamu bisa terus chat — hasilnya akan muncul saat selesai.'
+    started: '🔄 Task background dimulai: "{preview}"
+
+      Task ID: {task_id}
+
+      Kamu bisa terus chat — hasil muncul saat selesai.'
+  branch:
+    db_unavailable: Database sesi tidak tersedia.
+    no_conversation: Tidak ada percakapan untuk di-branch — kirim pesan dulu.
+    create_failed: 'Gagal membuat branch: {error}'
+    switch_failed: Branch dibuat tapi gagal pindah ke branch.
+    branched_one: '⑂ Branch ke **{title}** ({count} pesan disalin)
+
+      Asli: `{parent}`
+
+      Branch: `{new}`
+
+      Gunakan `/resume` untuk kembali ke asli.'
+    branched_many: '⑂ Branch ke **{title}** ({count} pesan disalin)
+
+      Asli: `{parent}`
+
+      Branch: `{new}`
+
+      Gunakan `/resume` untuk kembali ke asli.'
+  commands:
+    usage: 'Penggunaan: `/commands [halaman]`'
+    skill_header: '⚡ **Perintah Skill**:'
+    default_desc: Perintah skill
+    none: Tidak ada perintah tersedia.
+    header: 📚 **Perintah** ({total} total, halaman {page}/{total_pages})
+    nav_prev: '`/commands {page}` ← sebelum'
+    nav_next: selanjutnya → `/commands {page}`
+    out_of_range: _(Halaman {requested} di luar jangkauan, menampilkan halaman {page}.)_
+  compress:
+    not_enough: Percakapan belum cukup untuk dikompres (butuh minimal 4 pesan).
+    no_provider: Tidak ada provider terkonfigurasi -- tidak bisa kompres.
+    nothing_to_do: Belum ada yang dikompres (transkrip masih semua konteks terproteksi).
+    focus_line: 'Fokus: "{topic}"'
+    summary_failed: ⚠️ Gagal membuat ringkasan ({error}). {count} pesan historis dihapus dan diganti placeholder; konteks sebelumnya tidak bisa dipulihkan. Cek konfigurasi model auxiliary.compression.
+    aborted: ⚠️ Kompresi dibatalkan ({error}). Tidak ada pesan yang di-drop — percakapan tidak berubah. Jalankan /compress untuk retry, /reset untuk sesi baru, atau cek konfigurasi model auxiliary.compression.
+    aux_failed: ℹ️ Model kompresi `{model}` gagal ({error}). Dipulihkan menggunakan model utama — konteks utuh — tapi cek `auxiliary.compression.model` di config.yaml.
+    failed: 'Kompresi gagal: {error}'
+  debug:
+    upload_failed: '✗ Gagal upload laporan debug: {error}'
+    header: '**Laporan debug diupload:**'
+    auto_delete: ⏱ Paste akan auto-delete dalam 6 jam.
+    full_logs_hint: Untuk upload log lengkap, gunakan `hermes debug share` dari CLI.
+    share_hint: Bagikan link ini ke tim Hermes untuk dukungan.
+  deny:
+    stale: ❌ Perintah ditolak (persetujuan sudah kadaluarsa).
+    no_pending: Tidak ada perintah yang menunggu untuk ditolak.
+    denied_singular: ❌ Perintah ditolak.
+    denied_plural: ❌ Perintah ditolak ({count} perintah).
+  fast:
+    not_supported: ⚡ /fast hanya tersedia untuk model OpenAI yang support Priority Processing.
+    status: '⚡ Priority Processing
+
+
+      Mode saat ini: `{mode}`
+
+
+      _Penggunaan:_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ Argumen tidak dikenal: `{arg}`
+
+
+      **Opsi valid:** normal, fast, status'
+    saved: '⚡ ✓ Priority Processing: **{label}** (disimpan ke config)
+
+      _(berlaku pada pesan berikutnya)_'
+    session_only: '⚡ ✓ Priority Processing: **{label}** (sesi ini saja)'
+    label_fast: FAST
+    label_normal: NORMAL
+    status_fast: fast
+    status_normal: normal
+  footer:
+    status: '📎 Footer runtime: **{state}**
+
+      Fields: `{fields}`
+
+      Platform: `{platform}`'
+    usage: 'Penggunaan: `/footer [on|off|status]`'
+    saved: '📎 Footer runtime: **{state}**{example}
+
+      _(disimpan global — berlaku pada pesan berikutnya)_'
+    example_line: '
+
+      Contoh: `{preview}`'
+    state_on: 'ON'
+    state_off: 'OFF'
+  goal:
+    unavailable: Goal tidak tersedia di sesi ini.
+    no_goal_set: Tidak ada goal yang diset.
+    paused: '⏸ Goal di-pause: {goal}'
+    no_resume: Tidak ada goal untuk di-resume.
+    resumed: '▶ Goal di-resume: {goal}
+
+      Kirim pesan untuk melanjutkan, atau tunggu — aku akan ambil langkah berikutnya di turn berikutnya.'
+    invalid: 'Goal tidak valid: {error}'
+    set: '⊙ Goal diset (budget {budget}-turn): {goal}
+
+      Aku akan terus kerja sampai goal selesai, kamu pause/clear, atau budget habis.
+
+      Kontrol: /goal status · /goal pause · /goal resume · /goal clear'
+  help:
+    header: '📖 **Perintah Hermes**
+
+      '
+    skill_header: '
+
+      ⚡ **Perintah Skill** ({count} aktif):'
+    more_use_commands: '
+
+      ... dan {count} lagi. Gunakan `/commands` untuk daftar lengkap.'
+  insights:
+    invalid_days: 'Nilai --days tidak valid: {value}'
+    error: 'Error membuat insights: {error}'
+  kanban:
+    error_prefix: '⚠ kanban error: {error}'
+    subscribed_suffix: (subscribed — kamu akan dinotifikasi saat {task_id} selesai atau block)
+    truncated_suffix: … (truncated; gunakan `hermes kanban …` di terminal untuk output lengkap)
+    no_output: (tidak ada output)
+  personality:
+    none_configured: Tidak ada personality terkonfigurasi di `{path}/config.yaml`
+    header: '🎭 **Personality Tersedia**
+
+      '
+    none_option: • `none` — (tanpa overlay personality)
+    item: • `{name}` — {preview}
+    usage: '
+
+      Penggunaan: `/personality <nama>`'
+    save_failed: '⚠️ Gagal menyimpan perubahan personality: {error}'
+    cleared: '🎭 Personality dihapus — menggunakan perilaku agent dasar.
+
+      _(berlaku pada pesan berikutnya)_'
+    set_to: '🎭 Personality diset ke **{name}**
+
+      _(berlaku pada pesan berikutnya)_'
+    unknown: 'Personality tidak dikenal: `{name}`
+
+
+      Tersedia: {available}'
+  profile:
+    header: 👤 **Profile:** `{profile}`
+    home: 📂 **Home:** `{home}`
+  reasoning:
+    level_default: medium (default)
+    level_disabled: none (disabled)
+    scope_session: override sesi
+    scope_global: config global
+    status: '🧠 **Pengaturan Reasoning**
+
+
+      **Effort:** `{level}`
+
+      **Scope:** {scope}
+
+      **Display:** {display}
+
+
+      _Penggunaan:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: on ✓
+    display_off: 'off'
+    display_set_on: '🧠 ✓ Tampilan reasoning: **ON**
+
+      Model thinking akan ditampilkan sebelum respons di **{platform}**.'
+    display_set_off: '🧠 ✓ Tampilan reasoning: **OFF** untuk **{platform}**'
+    reset_global_unsupported: ⚠️ `/reasoning reset --global` tidak didukung. Gunakan `/reasoning <level> --global` untuk mengubah default global.
+    reset_done: 🧠 ✓ Override reasoning sesi dihapus; kembali ke config global.
+    unknown_arg: '⚠️ Argumen tidak dikenal: `{arg}`
+
+
+      **Level valid:** none, minimal, low, medium, high, xhigh
+
+      **Display:** show, hide
+
+      **Permanen:** tambah `--global` untuk simpan di luar sesi ini'
+    set_global: '🧠 ✓ Reasoning effort diset ke `{effort}` (disimpan ke config)
+
+      _(berlaku pada pesan berikutnya)_'
+    set_global_save_failed: '🧠 ✓ Reasoning effort diset ke `{effort}` (sesi saja — gagal simpan config)
+
+      _(berlaku pada pesan berikutnya)_'
+    set_session: '🧠 ✓ Reasoning effort diset ke `{effort}` (sesi saja — tambah `--global` untuk permanen)
+
+      _(berlaku pada pesan berikutnya)_'
+  reload_mcp:
+    cancelled: 🟡 /reload-mcp dibatalkan. Tool MCP tidak berubah.
+    always_followup: 'ℹ️ Panggilan `/reload-mcp` berikutnya akan berjalan tanpa konfirmasi. Re-enable via `approvals.mcp_reload_confirm: true` di config.yaml.'
+    confirm_prompt: '⚠️ **Konfirmasi /reload-mcp**
+
+
+      Reload server MCP rebuild tool set untuk sesi ini dan **invalidasi provider prompt cache** — pesan berikutnya akan re-send full input token. Di model high-reasoning atau long-context ini bisa mahal.
+
+
+      Pilih:
+
+      • **Approve Once** — reload sekarang
+
+      • **Always Approve** — reload sekarang dan hilangkan prompt ini permanen
+
+      • **Cancel** — tool MCP tidak berubah
+
+
+      _Fallback teks: balas `/approve`, `/always`, atau `/cancel`._'
+    header: '🔄 **Server MCP Di-reload**
+
+      '
+    reconnected: '♻️ Reconnected: {names}'
+    added: '➕ Ditambahkan: {names}'
+    removed: '➖ Dihapus: {names}'
+    none_connected: Tidak ada server MCP terkoneksi.
+    tools_available: '
+
+      🔧 {tools} tool tersedia dari {servers} server'
+    failed: '❌ MCP reload gagal: {error}'
+  reload_skills:
+    header: '🔄 **Skill Di-reload**
+
+      '
+    no_new: Tidak ada skill baru terdeteksi.
+    total: '
+
+      📚 {count} skill tersedia'
+    added_header: ➕ **Skill Ditambahkan:**
+    removed_header: ➖ **Skill Dihapus:**
+    item_with_desc: '    - {name}: {desc}'
+    item_no_desc: '    - {name}'
+    failed: '❌ Skill reload gagal: {error}'
+  reset:
+    header_default: ✨ Sesi di-reset! Mulai baru.
+    header_new: ✨ Sesi baru dimulai!
+    header_titled: '✨ Sesi baru dimulai: {title}'
+    title_rejected: '
+
+      ⚠️ Judul ditolak: {error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — sesi dimulai tanpa judul.'
+    title_empty_untitled: '
+
+      ⚠️ Judul kosong setelah cleanup — sesi dimulai tanpa judul.'
+    tip: '
+
+      ✦ Tip: {tip}'
+  restart:
+    in_progress: ⏳ Restart gateway sudah berjalan...
+    restarting: ♻ Restarting gateway. Jika tidak dinotifikasi dalam 60 detik, restart dari console dengan `hermes gateway restart`.
+  resume:
+    db_unavailable: Database sesi tidak tersedia.
+    parse_error: '⚠️ Gagal parse argumen `/resume`: {error}.
+
+      Gunakan kutip di judul dengan spasi, contoh: `/resume "Project A Plan"`.'
+    matrix_no_named_sessions: 'Tidak ada sesi bernama ditemukan di room Matrix ini.
+
+      Gunakan `/title Sesi Saya` untuk menamai sesi room ini, `/resume --all` untuk list semua sesi Matrix, atau `/resume --cross-room <nama sesi>` untuk cross room secara eksplisit.'
+    matrix_blocked_no_origin: '⚠️ Matrix /resume diblokir: sesi bernama ini tidak punya origin room, jadi Hermes tidak akan resume di room ini secara default. Gunakan `/resume --cross-room {name}` jika kamu secara sengaja ingin cross room.'
+    matrix_blocked_other_room: '⚠️ Matrix /resume diblokir: sesi itu milik room Matrix lain ({room}). Gunakan `/resume --cross-room {name}` jika kamu secara sengaja ingin resume di sini.'
+    matrix_cross_room_success: '⚠️ Cross-room resume: resumed **{title}** di room Matrix **{room}**.
+
+      Pesan berikutnya di room ini akan menggunakan transkrip itu sampai `/reset` atau `/resume` lain.{msg_part}'
+    no_named_sessions: 'Tidak ada sesi bernama ditemukan.
+
+      Gunakan `/title Sesi Saya` untuk menamai sesi saat ini, lalu `/resume Sesi Saya` untuk kembali ke sana.'
+    list_header: '📋 **Sesi Bernama**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_item_numbered: '{index}. **{title}**{preview_part}'
+    list_preview_suffix: ' — _{preview}_'
+    list_footer: '
+
+      Penggunaan: `/resume <nama sesi>`'
+    list_footer_numbered: '
+
+      Penggunaan: `/resume <nama sesi>` atau `/resume <nomor>` (contoh `/resume 1` untuk yang paling baru)'
+    list_failed: 'Gagal list sesi: {error}'
+    out_of_range: 'Index resume {index} di luar jangkauan.
+
+      Gunakan `/resume` tanpa argumen untuk lihat sesi tersedia.'
+    not_found: 'Sesi tidak ditemukan untuk ''**{name}**''.
+
+      Gunakan `/resume` tanpa argumen untuk lihat sesi tersedia.'
+    already_on: 📌 Sudah di sesi **{name}**.
+    switch_failed: Gagal pindah sesi.
+    resumed_one: ↻ Resumed sesi **{title}** ({count} pesan). Percakapan dipulihkan.
+    resumed_many: ↻ Resumed sesi **{title}** ({count} pesan). Percakapan dipulihkan.
+    resumed_no_count: ↻ Resumed sesi **{title}**. Percakapan dipulihkan.
+  retry:
+    no_previous: Tidak ada pesan sebelumnya untuk retry.
+  rollback:
+    not_enabled: "Checkpoint tidak aktif.\nAktifkan di config.yaml:\n```yaml\ncheckpoints:\n  enabled: true\n```"
+    none_found: Checkpoint tidak ditemukan untuk {cwd}
+    invalid_number: Nomor checkpoint tidak valid. Gunakan 1-{max}.
+    restored: '✅ Restored ke checkpoint {hash}: {reason}
+
+      Snapshot pre-rollback disimpan otomatis.'
+    restore_failed: ❌ {error}
+  set_home:
+    save_failed: 'Gagal menyimpan home channel: {error}'
+    success: '✅ Home channel diset ke **{name}** (ID: {chat_id}).
+
+      Cron job dan pesan cross-platform akan dikirim ke sini.'
+  status:
+    header: 📊 **Status Gateway Hermes**
+    matrix_scope_header: '**Matrix scope:**'
+    matrix_scope_room: '  room: {room}'
+    matrix_scope_room_id: '  room_id: {room_id}'
+    matrix_scope_thread: '  thread_id: {thread_id}'
+    matrix_scope_mode: '  session_scope: {scope}'
+    matrix_scope_key: '  session_key: {session_key}'
+    session_id: '**Session ID:** `{session_id}`'
+    title: '**Judul:** {title}'
+    created: '**Dibuat:** {timestamp}'
+    last_activity: '**Aktivitas Terakhir:** {timestamp}'
+    model: '**Model:** `{model}`'
+    model_provider: '**Model:** `{model}` ({provider})'
+    context: '**Konteks:** {used} / {total} ({pct}%)'
+    context_used: '**Konteks:** ~{used} token'
+    tokens: '**Token API Kumulatif (re-send per call):** {tokens}'
+    agent_running: '**Agent Berjalan:** {state}'
+    state_yes: Ya ⚡
+    state_no: Tidak
+    queued: '**Follow-up queued:** {count}'
+    platforms: '**Platform Terkoneksi:** {platforms}'
+  stop:
+    stopped_pending: ⚡ Dihentikan. Agent belum mulai — kamu bisa lanjut sesi ini.
+    stopped: ⚡ Dihentikan. Kamu bisa lanjut sesi ini.
+    no_active: Tidak ada task aktif untuk dihentikan.
+  title:
+    db_unavailable: Database sesi tidak tersedia.
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ Judul kosong setelah cleanup. Gunakan karakter yang bisa dicetak.
+    set_to: '✏️ Judul sesi diset: **{title}**'
+    not_found: Sesi tidak ditemukan di database.
+    current_with_title: '📌 Sesi: `{session_id}`
+
+      Judul: **{title}**'
+    current_no_title: '📌 Sesi: `{session_id}`
+
+      Belum ada judul. Penggunaan: `/title Judul Sesi Saya`'
+  topic:
+    not_telegram_dm: Perintah /topic hanya tersedia di chat privat Telegram.
+    no_session_db: Database sesi tidak tersedia.
+    unauthorized: Kamu tidak diizinkan menggunakan /topic di bot ini.
+    restore_needs_topic: Untuk restore sesi, buat atau buka topic Telegram dulu, lalu kirim /topic <session-id> di topic itu. Untuk membuat topic baru, buka All Messages dan kirim pesan di sana.
+    topics_disabled: 'Telegram topics belum aktif di bot ini.
+
+
+      Cara aktifkan:
+
+      1. Buka @BotFather.
+
+      2. Pilih bot kamu.
+
+      3. Buka Bot Settings → Threads Settings.
+
+      4. Aktifkan Threaded Mode dan pastikan user diizinkan membuat thread baru.
+
+
+      Lalu kirim /topic lagi.'
+    topics_user_disallowed: 'Telegram topics aktif, tapi user tidak diizinkan membuat topic.
+
+
+      Buka @BotFather → pilih bot → Bot Settings → Threads Settings, lalu matikan ''Disallow users to create new threads''.
+
+
+      Lalu kirim /topic lagi.'
+    enable_failed: 'Gagal aktifkan mode topic Telegram: {error}'
+    bound_status: 'Topic ini terlink ke:
+
+      Sesi: {label}
+
+      ID: {session_id}
+
+
+      Gunakan /new untuk mengganti topic ini dengan sesi baru.
+
+      Untuk kerja paralel, buka All Messages dan kirim pesan di sana untuk membuat topic lain.'
+    thread_ready: 'Topic multi-sesi Telegram aktif.
+
+
+      Topic ini akan digunakan sebagai sesi Hermes independen. Gunakan /new untuk mengganti sesi topic ini. Untuk kerja paralel, buka All Messages dan kirim pesan di sana untuk membuat topic lain.'
+    untitled_session: Sesi tanpa judul
+  undo:
+    nothing: Tidak ada yang di-undo.
+    removed: '↩️ Undo {turns} turn ({count} pesan).
+
+      Kembali ke: "{preview}"
+
+      Copy/edit teks di atas dan kirim untuk re-prompt dari sini.'
+    invalid_count: Count tidak valid "{arg}" — gunakan /undo atau /undo N.
+  update:
+    platform_not_messaging: ✗ /update hanya tersedia dari platform messaging. Jalankan `hermes update` dari terminal.
+    not_git_repo: ✗ Bukan git repository — tidak bisa update.
+    hermes_cmd_not_found: ✗ Tidak bisa lokasi command `hermes`. Hermes berjalan, tapi command update tidak menemukan executable di PATH atau via interpreter Python. Coba jalankan `hermes update` manual di terminal.
+    start_failed: '✗ Gagal mulai update: {error}'
+    starting: ⚕ Mulai update Hermes… Aku akan stream progres di sini.
+  usage:
+    rate_limits: ⏱️ **Rate Limits:** {state}
+    header_session: 📊 **Penggunaan Token Sesi**
+    label_model: 'Model: `{model}`'
+    label_input_tokens: 'Token input: {count}'
+    label_cache_read: 'Token cache read: {count}'
+    label_cache_write: 'Token cache write: {count}'
+    label_output_tokens: 'Token output: {count}'
+    label_total: 'Total: {count}'
+    label_api_calls: 'API calls: {count}'
+    label_cost: 'Biaya: {prefix}${amount}'
+    label_cost_included: 'Biaya: termasuk'
+    label_context: 'Konteks: {used} / {total} ({pct}%)'
+    label_compressions: 'Kompresi: {count}'
+    header_session_info: 📊 **Info Sesi**
+    label_messages: 'Pesan: {count}'
+    label_estimated_context: 'Estimasi konteks: ~{count} token'
+    detailed_after_first: _(Detail penggunaan tersedia setelah respons agent pertama)_
+    no_data: Data penggunaan tidak tersedia untuk sesi ini.
+  credits:
+    not_logged_in: Belum login ke Nous Portal. Login untuk lihat saldo credit dan top up.
+  verbose:
+    not_enabled: "Perintah `/verbose` tidak aktif untuk platform messaging.\n\nAktifkan di `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off: '⚙️ Tool progress: **OFF** — tidak ada aktivitas tool ditampilkan.'
+    mode_new: '⚙️ Tool progress: **NEW** — ditampilkan saat tool berubah (preview length: `display.tool_preview_length`, default 40).'
+    mode_all: '⚙️ Tool progress: **ALL** — setiap tool call ditampilkan (preview length: `display.tool_preview_length`, default 40).'
+    mode_verbose: '⚙️ Tool progress: **VERBOSE** — setiap tool call dengan argumen lengkap.'
+    saved_suffix: _(disimpan untuk **{platform}** — berlaku pada pesan berikutnya)_
+    save_failed: '_(gagal simpan ke config: {error})_'
+  voice:
+    enabled_voice_only: 'Mode voice aktif.
+
+      Aku akan balas voice saat kamu kirim pesan voice.
+
+      Gunakan /voice tts untuk balas voice di semua pesan.'
+    disabled_text: Mode voice dimatikan. Balasan text-only.
+    tts_enabled: 'Auto-TTS aktif.
+
+      Semua balasan akan menyertakan pesan voice.'
+    status_mode: 'Mode voice: {label}'
+    status_channel: 'Channel voice: #{channel}'
+    status_participants: 'Peserta: {count}'
+    status_member: '  - {name}{status}'
+    speaking: ' (speaking)'
+    enabled_short: Mode voice aktif.
+    disabled_short: Mode voice dimatikan.
+    label_off: Off (text saja)
+    label_voice_only: On (balas voice saat kirim pesan voice)
+    label_all: TTS (balas voice di semua pesan)
+    help: '{toggle}
+
+
+      **Cara /voice works**
+
+      • `/voice on` — balas voice saat kamu kirim pesan voice
+
+      • `/voice tts` — balas voice di *setiap* pesan
+
+      • `/voice off` — kembali ke text-only
+
+      • `/voice status` — tampilkan mode saat ini
+
+      • `/voice` (tanpa argumen) — toggle cepat antara on dan off{channels}'
+    help_channels: '
+
+
+      **Channel voice live (Discord)**
+
+      • Join channel voice dulu, lalu `/voice channel` — aku akan join, listen, dan speak balasan
+
+      • `/voice leave` — disconnect dari channel voice'
+  yolo:
+    disabled: ⚠️ YOLO mode **OFF** untuk sesi ini — perintah berisiko butuh persetujuan.
+    enabled: ⚡ YOLO mode **ON** untuk sesi ini — semua perintah auto-approved. Gunakan dengan hati-hati.
+  shared:
+    session_db_unavailable: Database sesi tidak tersedia.
+    session_db_unavailable_prefix: Database sesi tidak tersedia
+    session_not_found: Sesi tidak ditemukan di database.
+    warn_passthrough: ⚠️ {error}

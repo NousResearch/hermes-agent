@@ -326,6 +326,12 @@ def _assistant_content_as_text(content: Any) -> str:
     return str(content)
 
 
+def _register_optional_keybinding(kb: Any, key: Optional[str], handler) -> None:
+    """Register a prompt_toolkit keybinding only when a key is configured."""
+    if key:
+        kb.add(key)(handler)
+
+
 def _assistant_copy_text(content: Any) -> str:
     return _strip_reasoning_tags(_assistant_content_as_text(content))
 
@@ -5348,6 +5354,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Called at CLI startup after the prompt_toolkit binding is
         registered so the cached label always matches the live binding.
         """
+        self._voice_record_key_vad_cache = isinstance(raw_key, str) and raw_key == ""
+        if self._voice_record_key_vad_cache:
+            self._voice_record_key_display_cache = "hands-free (VAD)"
+            return
         try:
             from hermes_cli.voice import format_voice_record_key_for_status
             self._voice_record_key_display_cache = format_voice_record_key_for_status(raw_key)
@@ -11602,7 +11612,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # round-14 on #19835, same class as round-13).
         _ptt_display = self._voice_record_key_label()
         _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
-        _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
+        if getattr(self, "_voice_record_key_vad_cache", False):
+            _cprint(f"  {_DIM}Hands-free VAD mode active{_RST}")
+        else:
+            _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
 
@@ -14364,20 +14377,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 voice_record_key_from_config,
             )
             _raw_key = voice_record_key_from_config(load_config())
-            _voice_key = normalize_voice_record_key_for_prompt_toolkit(_raw_key)
-            if (
-                isinstance(_raw_key, str)
-                and _raw_key.strip().lower().split("+", 1)[0].strip() in {"super", "win", "windows"}
-                and _voice_key == "c-b"
-            ):
-                logger.warning(
-                    "voice.record_key %r uses a TUI-only modifier (super/win); "
-                    "CLI fell back to Ctrl+B. Use ctrl+<key> or alt+<key> for "
-                    "cross-runtime parity.",
-                    _raw_key,
-                )
+            if isinstance(_raw_key, str) and _raw_key == "":
+                _voice_key = None
+            else:
+                _voice_key = normalize_voice_record_key_for_prompt_toolkit(_raw_key)
+                if (
+                    isinstance(_raw_key, str)
+                    and _raw_key.strip().lower().split("+", 1)[0].strip() in {"super", "win", "windows"}
+                    and _voice_key == "c-b"
+                ):
+                    logger.warning(
+                        "voice.record_key %r uses a TUI-only modifier (super/win); "
+                        "CLI fell back to Ctrl+B. Use ctrl+<key> or alt+<key> for "
+                        "cross-runtime parity.",
+                        _raw_key,
+                    )
         except Exception:
             _voice_key = "c-b"
+            _raw_key = "ctrl+b"
 
         # Cache the UI label here — same ``_raw_key`` that drives the
         # prompt_toolkit binding below. Every status / placeholder /
@@ -14386,13 +14403,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # voice.record_key mid-session (Copilot round-13 on #19835).
         self.set_voice_record_key_cache(_raw_key)
 
-        @kb.add(_voice_key)
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.
 
             IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
             Any blocking call here (locks, sd.wait, disk I/O) freezes the
-            entire UI.  All heavy work is dispatched to daemon threads.
+            entire UI. All heavy work is dispatched to daemon threads.
             """
             if not cli_ref._voice_mode:
                 return
@@ -14450,6 +14466,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                 threading.Thread(target=_start_recording, daemon=True).start()
                 event.app.invalidate()
+
+        _register_optional_keybinding(kb, _voice_key, handle_voice_record)
         from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)

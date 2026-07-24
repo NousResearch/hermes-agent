@@ -104,3 +104,48 @@ class TestOneShot:
         assert bt._maybe_autoinstall_chromium() is True
         assert bt._maybe_autoinstall_chromium() is True
         assert len(runs) == 1
+
+
+class TestBrowserSubprocessEnvironment:
+    def test_linux_headless_browser_isolated_from_desktop_bus(self, monkeypatch):
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(
+            "tools.environments.local.hermes_subprocess_env",
+            lambda **_: {
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/0/bus",
+                "XDG_RUNTIME_DIR": "/run/user/0",
+            },
+        )
+
+        env = bt._build_browser_env()
+
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/dev/null"
+        assert env["XDG_RUNTIME_DIR"] == "/run/user/0"
+
+    def test_linux_graphical_browser_keeps_real_desktop_bus(self, monkeypatch):
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(
+            "tools.environments.local.hermes_subprocess_env",
+            lambda **_: {
+                "DISPLAY": ":1",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/dbus-real",
+            },
+        )
+
+        env = bt._build_browser_env()
+
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/tmp/dbus-real"
+
+    def test_linux_wayland_browser_keeps_real_desktop_bus(self, monkeypatch):
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(
+            "tools.environments.local.hermes_subprocess_env",
+            lambda **_: {
+                "WAYLAND_DISPLAY": "wayland-0",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/dbus-real",
+            },
+        )
+
+        env = bt._build_browser_env()
+
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/tmp/dbus-real"

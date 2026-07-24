@@ -72,7 +72,7 @@ describe('WslgWindowControls', () => {
     expect(screen.queryByLabelText('Window controls')).toBeNull()
   })
 
-  it('prevents pointer activation from stealing renderer focus', () => {
+  it('stops pointerdown propagation without cancelling the click', () => {
     desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
     renderControls()
     const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true })
@@ -81,7 +81,10 @@ describe('WslgWindowControls', () => {
     fireEvent(button, event)
     fireEvent.click(button)
 
-    expect(event.defaultPrevented).toBe(true)
+    // preventDefault on pointerdown kills the synthesized click under WSLg's
+    // RAIL compositor, so the button must NOT cancel the default — only stop
+    // propagation so the drag region doesn't swallow the press.
+    expect(event.defaultPrevented).toBe(false)
     expect(windowControls.toggleMaximize).toHaveBeenCalledOnce()
   })
 

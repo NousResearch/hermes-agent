@@ -21,7 +21,13 @@ interface WslgWindowControlsProps {
 const buttonClass =
   'grid h-full w-[46px] place-items-center border-0 bg-transparent p-0 text-muted-foreground transition-colors duration-75 select-none [-webkit-app-region:no-drag] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring hover:bg-white/10 hover:text-foreground active:bg-white/15'
 
-const preserveRendererFocus = (event: PointerEvent<HTMLButtonElement>) => event.preventDefault()
+// Match the native titlebar tools: stopPropagation (NOT preventDefault) on
+// pointerdown. preventDefault on pointerdown suppresses the synthesized click
+// under WSLg's XWayland/RAIL compositor, so the buttons render but never fire.
+// stopPropagation keeps the drag region from swallowing the press while leaving
+// the click intact; keyboard-focus reassertion after maximize is handled on the
+// main side in performWindowControl (win.focus()).
+const stopTitlebarDrag = (event: PointerEvent<HTMLButtonElement>) => event.stopPropagation()
 
 export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowControlsProps) {
   const location = useLocation()
@@ -43,7 +49,7 @@ export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowCont
         aria-label="Minimize window"
         className={buttonClass}
         onClick={controls.minimize}
-        onPointerDown={preserveRendererFocus}
+        onPointerDown={stopTitlebarDrag}
         type="button"
       >
         <Codicon name="chrome-minimize" size={10} />
@@ -52,7 +58,7 @@ export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowCont
         aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
         className={buttonClass}
         onClick={controls.toggleMaximize}
-        onPointerDown={preserveRendererFocus}
+        onPointerDown={stopTitlebarDrag}
         type="button"
       >
         <Codicon name={isMaximized ? 'chrome-restore' : 'chrome-maximize'} size={10} />
@@ -64,7 +70,7 @@ export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowCont
           'hover:bg-[#c42b1c] hover:text-white active:bg-[#b3271a] active:text-white dark:hover:bg-[#c42b1c]'
         )}
         onClick={controls.close}
-        onPointerDown={preserveRendererFocus}
+        onPointerDown={stopTitlebarDrag}
         type="button"
       >
         <Codicon name="chrome-close" size={10} />

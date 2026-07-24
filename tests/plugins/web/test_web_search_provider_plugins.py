@@ -496,3 +496,47 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+
+class TestGetProviderEnvScoping:
+    """Regression coverage for get_provider_env dotenv preference (#65459).
+
+    An empty result from the prefer-dotenv helper must be authoritative: in an
+    active profile scope an absent key is intentional, so we must not silently
+    re-resolve it through the environment-first path (which could pick a stale
+    process-global key).
+    """
+
+    def test_prefer_dotenv_result_is_authoritative_even_when_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agent import web_search_provider as wsp
+
+        # A stale process-global export that must NOT be used.
+        monkeypatch.setenv("TAVILY_API_KEY", "stale-process-key")
+
+        # Prefer-dotenv helper is available and authoritatively returns empty
+        # (profile scope has no such key).
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(
+            cfg, "get_env_value_prefer_dotenv", lambda name: "", raising=False
+        )
+
+        assert wsp.get_provider_env("TAVILY_API_KEY") == ""
+
+    def test_prefer_dotenv_value_wins_over_process_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agent import web_search_provider as wsp
+        import hermes_cli.config as cfg
+
+        monkeypatch.setenv("TAVILY_API_KEY", "stale-process-key")
+        monkeypatch.setattr(
+            cfg,
+            "get_env_value_prefer_dotenv",
+            lambda name: "dotenv-key ",
+            raising=False,
+        )
+
+        assert wsp.get_provider_env("TAVILY_API_KEY") == "dotenv-key"

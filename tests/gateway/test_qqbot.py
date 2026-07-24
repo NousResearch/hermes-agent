@@ -2254,3 +2254,151 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+# ---------------------------------------------------------------------------
+# Reconnect failure resource cleanup
+# ---------------------------------------------------------------------------
+
+class TestReconnectFailureCleanup:
+    """_reconnect() must close and clear _ws and _session on failure
+    so stale references don't leak resources."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_reconnect_backoff(self, monkeypatch):
+        # _reconnect(0) reads RECONNECT_BACKOFF[0] (production: 2s) and awaits
+        # it via asyncio.sleep. Stub it to zero so the five tests below still
+        # exercise the full _reconnect() path without burning real wall-clock
+        # time on the production backoff. Patch is scoped to this class and
+        # monkeypatch auto-restores it after each test.
+        monkeypatch.setattr(
+            "gateway.platforms.qqbot.adapter.RECONNECT_BACKOFF",
+            (0,),
+        )
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="test", client_secret="test", **extra))
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_closes_ws_and_session(self):
+        """_reconnect() must explicitly close stale _ws and _session on failure."""
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        ws_close = mock.AsyncMock()
+        old_ws = SimpleNamespace(closed=False, close=ws_close)
+        session_close = mock.AsyncMock()
+        old_session = SimpleNamespace(closed=False, close=session_close)
+        adapter._ws = old_ws
+        adapter._session = old_session
+
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("fail"))
+        adapter._http_client = mock.MagicMock()
+
+        result = await adapter._reconnect(0)
+
+        assert result is False
+        assert adapter._ws is None, "_ws should be cleared after failed reconnect"
+        assert adapter._session is None, "_session should be cleared after failed reconnect"
+        ws_close.assert_awaited_once()
+        session_close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_no_session_is_safe(self):
+        """_reconnect() should not fail when _session is already None."""
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        ws_close = mock.AsyncMock()
+        adapter._ws = SimpleNamespace(closed=False, close=ws_close)
+        adapter._session = None
+
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("fail"))
+        adapter._http_client = mock.MagicMock()
+
+        result = await adapter._reconnect(0)
+
+        assert result is False
+        assert adapter._ws is None
+        assert adapter._session is None
+        ws_close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_open_ws_created_session_then_failed(self):
+        """When _open_ws() creates a session before failing, that session
+        must be closed and cleared by the cleanup."""
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        # Simulate _open_ws having previously cleaned old refs and
+        # created a fresh session, then failing on ws_connect().
+        fresh_session_close = mock.AsyncMock()
+        fresh_session = SimpleNamespace(closed=False, close=fresh_session_close)
+        adapter._ws = None  # ws_connect failed, so _ws was never set
+        adapter._session = fresh_session
+
+        async def _open_ws_side_effect(_gateway_url):
+            # Simulate: _open_ws cleans old refs, creates session, then fails
+            adapter._session = fresh_session
+            raise RuntimeError("ws_connect failed")
+
+        adapter._open_ws = mock.AsyncMock(side_effect=_open_ws_side_effect)
+        adapter._ensure_token = mock.AsyncMock()
+        adapter._get_gateway_url = mock.AsyncMock(return_value="wss://example.com")
+
+        result = await adapter._reconnect(0)
+
+        assert result is False
+        assert adapter._ws is None
+        assert adapter._session is None
+        fresh_session_close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_close_exception_does_not_escape(self):
+        """If ws.close() or session.close() raises, _reconnect() must
+        still return False and clear both references."""
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        ws_close = mock.AsyncMock(side_effect=RuntimeError("close boom"))
+        old_ws = SimpleNamespace(closed=False, close=ws_close)
+        session_close = mock.AsyncMock(side_effect=RuntimeError("close boom"))
+        old_session = SimpleNamespace(closed=False, close=session_close)
+        adapter._ws = old_ws
+        adapter._session = old_session
+
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("fail"))
+        adapter._http_client = mock.MagicMock()
+
+        result = await adapter._reconnect(0)
+
+        assert result is False, "must return False even when cleanup raises"
+        assert adapter._ws is None, "_ws must be cleared even when ws.close() raises"
+        assert adapter._session is None, "_session must be cleared even when session.close() raises"
+        ws_close.assert_awaited_once()
+        session_close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_ws_close_failure_does_not_skip_session_close(self):
+        """If ws.close() raises, session.close() must still be attempted."""
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        ws_close = mock.AsyncMock(side_effect=RuntimeError("ws close boom"))
+        old_ws = SimpleNamespace(closed=False, close=ws_close)
+        session_close = mock.AsyncMock()
+        old_session = SimpleNamespace(closed=False, close=session_close)
+        adapter._ws = old_ws
+        adapter._session = old_session
+
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("fail"))
+        adapter._http_client = mock.MagicMock()
+
+        result = await adapter._reconnect(0)
+
+        assert result is False
+        assert adapter._ws is None
+        assert adapter._session is None
+        ws_close.assert_awaited_once()
+        session_close.assert_awaited_once(), "session.close() must still run after ws.close() fails"

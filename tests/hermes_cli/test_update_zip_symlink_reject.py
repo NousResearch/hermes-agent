@@ -80,6 +80,32 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
         )
 
 
+def test_update_via_zip_refuses_to_overwrite_git_checkout(tmp_path, monkeypatch, capsys):
+    """A ZIP fallback must leave a source checkout and its local work intact."""
+    fake_root = tmp_path / "install_dir"
+    fake_root.mkdir()
+    (fake_root / ".git").mkdir()
+    local_file = fake_root / "local-change.txt"
+    local_file.write_text("keep me\n")
+
+    from hermes_cli import main as hermes_main
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
+    args = type("Args", (), {})()
+
+    with patch("urllib.request.urlretrieve") as download:
+        with pytest.raises(SystemExit) as exc_info:
+            hermes_main._update_via_zip(args)
+
+    assert exc_info.value.code == 1
+    assert local_file.read_text() == "keep me\n"
+    download.assert_not_called()
+
+    output = capsys.readouterr().out
+    assert "No files were changed" in output
+    assert "Git checkout" in output
+
+
 def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     """A ZIP with only regular file members must extract without raising.
 

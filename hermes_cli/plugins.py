@@ -1601,7 +1601,7 @@ class PluginManager:
                 init_file = plugin_dir / "__init__.py"
                 if init_file.exists():
                     try:
-                        source_text = init_file.read_text(errors="replace")[:8192]
+                        source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
                         if (
                             "register_memory_provider" in source_text
                             or "MemoryProvider" in source_text

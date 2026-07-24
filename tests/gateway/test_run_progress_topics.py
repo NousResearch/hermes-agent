@@ -168,6 +168,26 @@ class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
         return await super().edit_message(chat_id, message_id, content)
 
 
+class SmallLimitMetadataProgressAdapter(SmallLimitProgressAdapter):
+    MAX_MESSAGE_LENGTH = 600
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
+    ) -> SendResult:
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            self.oversized_edits.append(content)
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "finalize": finalize,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
@@ -1224,6 +1244,27 @@ class TransformedStreamAgent:
         }
 
 
+class OverflowTransformedStreamAgent:
+    original = "A" * 350 + "\n" + "B" * 350
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback(self.original[:300])
+            time.sleep(0.12)
+            self.stream_delta_callback(self.original[300:])
+        return {
+            "final_response": self.original + "\n\n[plugin appended this]",
+            "response_previewed": True,
+            "response_transformed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 @pytest.mark.asyncio
 async def test_transformed_response_edits_streamed_message_in_place(monkeypatch, tmp_path):
     """When a transform_llm_output hook modifies the response after streaming,
@@ -1255,6 +1296,37 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     assert any("[plugin appended this]" in text for text in edited_texts), (
         f"expected transformed text in adapter.edits, got: {edited_texts!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_transformed_overflow_edits_only_plain_last_continuation(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OverflowTransformedStreamAgent,
+        session_id="sess-transformed-overflow",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=SmallLimitMetadataProgressAdapter,
+    )
+
+    assert result.get("already_sent") is True
+    transformed_edits = [
+        edit for edit in adapter.edits if "[plugin appended this]" in edit["content"]
+    ]
+    assert transformed_edits
+    transformed = transformed_edits[-1]
+    assert transformed["metadata"]["multi_chunk"] is True
+    assert not transformed["content"].startswith("A" * 100)
+    assert adapter.oversized_edits == []
 
 
 @pytest.mark.asyncio

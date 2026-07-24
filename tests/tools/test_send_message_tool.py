@@ -3219,6 +3219,64 @@ class TestSendViaAdapterStandaloneFallback:
         assert recorded["metadata"] == {"publish_topic": "alerts-channel"}
 
     @pytest.mark.asyncio
+    async def test_live_mattermost_adapter_receives_multi_chunk_metadata(self, monkeypatch):
+        from tools.send_message_tool import _send_via_adapter
+
+        platform = Platform("mattermost")
+        recorded = {}
+
+        class Adapter:
+            async def send(self, *, chat_id, content, metadata=None):
+                recorded["metadata"] = metadata
+                return SimpleNamespace(success=True, message_id="mattermost-id")
+
+        runner = SimpleNamespace(adapters={platform: Adapter()})
+        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run._gateway_runner_ref = lambda: runner
+        monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+        result = await _send_via_adapter(
+            platform,
+            SimpleNamespace(extra={}),
+            "channel-1",
+            "part 1",
+            multi_chunk=True,
+        )
+
+        assert result == {"success": True, "message_id": "mattermost-id"}
+        assert recorded["metadata"] == {"multi_chunk": True}
+
+    @pytest.mark.asyncio
+    async def test_standalone_mattermost_receives_multi_chunk_flag(self, monkeypatch):
+        from gateway.platform_registry import platform_registry
+        from tools.send_message_tool import _send_via_adapter
+
+        recorded = {}
+
+        async def fake_send(pconfig, chat_id, message, **kwargs):
+            recorded["kwargs"] = kwargs
+            return {"success": True, "message_id": "mattermost-id"}
+
+        entry = SimpleNamespace(standalone_sender_fn=fake_send)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        monkeypatch.setattr(
+            platform_registry,
+            "get",
+            lambda name: entry if name == "mattermost" else None,
+        )
+
+        result = await _send_via_adapter(
+            _FakePlatform("mattermost"),
+            SimpleNamespace(extra={}),
+            "channel-1",
+            "part 1",
+            multi_chunk=True,
+        )
+
+        assert result == {"success": True, "message_id": "mattermost-id"}
+        assert recorded["kwargs"]["multi_chunk"] is True
+
+    @pytest.mark.asyncio
     async def test_standalone_sender_fn_called_when_no_adapter(self, monkeypatch):
         """Registry has hook, runner ref returns None: the hook is awaited."""
         from tools.send_message_tool import _send_via_adapter

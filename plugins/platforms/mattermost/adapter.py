@@ -9,17 +9,27 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES
+                                Observe authorized unmentioned posts in allowlisted channels
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import hashlib
+import hmac
+import ipaddress
 import json
 import logging
 import os
 import re
+import secrets
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -102,6 +112,10 @@ class MattermostAdapter(BasePlatformAdapter):
 
         self._bot_user_id: str = ""
         self._bot_username: str = ""
+        # Passive observation is restricted to human senders. Cache successful
+        # Mattermost user lookups so ordinary channel chatter does not require
+        # one API request per post. Lookup failures are deliberately not cached.
+        self._sender_is_bot_cache: Dict[str, bool] = {}
 
         # aiohttp session + websocket handle
         self._session: Any = None  # aiohttp.ClientSession
@@ -118,9 +132,76 @@ class MattermostAdapter(BasePlatformAdapter):
 
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
+        self._interaction_url = str(config.extra.get("interaction_url") or "").strip()
+        parsed_interaction_url = urlparse(self._interaction_url)
+        interaction_hostname = parsed_interaction_url.hostname or ""
+        try:
+            interaction_is_loopback = ipaddress.ip_address(
+                interaction_hostname
+            ).is_loopback
+        except ValueError:
+            interaction_is_loopback = interaction_hostname == "localhost" or (
+                interaction_hostname.endswith(".localhost")
+            )
+        interaction_transport_safe = parsed_interaction_url.scheme == "https" or (
+            parsed_interaction_url.scheme == "http" and interaction_is_loopback
+        )
+        self._interaction_url_valid = bool(
+            interaction_transport_safe
+            and interaction_hostname
+            and not parsed_interaction_url.username
+            and not parsed_interaction_url.password
+        )
+        self._interaction_host = str(
+            config.extra.get("interaction_host") or "127.0.0.1"
+        ).strip()
+        try:
+            self._interaction_port = int(config.extra.get("interaction_port", 8789))
+        except (TypeError, ValueError):
+            self._interaction_port = 8789
+        self._interaction_path = parsed_interaction_url.path or "/mattermost/actions"
+        trusted_raw = config.extra.get("interaction_allowed_cidrs", ())
+        if isinstance(trusted_raw, str):
+            trusted_values = trusted_raw.split(",")
+        elif isinstance(trusted_raw, (list, tuple, set)):
+            trusted_values = trusted_raw
+        else:
+            trusted_values = ()
+        self._interaction_allowed_networks = []
+        for value in trusted_values:
+            try:
+                self._interaction_allowed_networks.append(
+                    ipaddress.ip_network(str(value).strip(), strict=False)
+                )
+            except ValueError:
+                logger.warning(
+                    "Mattermost: ignoring invalid interaction_allowed_cidrs entry: %r",
+                    value,
+                )
+        try:
+            self._interaction_timeout_seconds = max(
+                30,
+                min(3600, int(config.extra.get("interaction_timeout_seconds", 300))),
+            )
+        except (TypeError, ValueError):
+            self._interaction_timeout_seconds = 300
+        self._interaction_runner: Any = None
+        self._interaction_start_failed = False
+        self._pending_interactions: Dict[str, Dict[str, Any]] = {}
+        self._rich_posts = str(config.extra.get("rich_posts", "false")).lower() in {
+            "true", "1", "yes", "on",
+        }
+        self._feedback_buttons = str(
+            config.extra.get("feedback_buttons", "false")
+        ).lower() in {"true", "1", "yes", "on"}
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N802
+        """Rich posts need a final edit even when streamed text is unchanged."""
+        return self._rich_posts
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -254,6 +335,34 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
 
+    async def _api_delete(self, path: str) -> bool:
+        """DELETE /api/v4/{path}."""
+        import aiohttp
+
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return False
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(
+                url,
+                headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error(
+                        "MM API DELETE %s → %s: %s",
+                        path,
+                        resp.status,
+                        body[:200],
+                    )
+                    return False
+                return True
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return False
+
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> Optional[str]:
@@ -312,6 +421,13 @@ class MattermostAdapter(BasePlatformAdapter):
             self._base_url,
         )
 
+        if self._interactions_available():
+            try:
+                await self._start_interaction_server()
+            except Exception as exc:
+                self._interaction_start_failed = True
+                logger.error("Mattermost: failed to start interaction endpoint: %s", exc)
+
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
@@ -334,6 +450,8 @@ class MattermostAdapter(BasePlatformAdapter):
         if self._ws:
             await self._ws.close()
             self._ws = None
+
+        await self._stop_interaction_server()
 
         if self._session and not self._session.closed:
             await self._session.close()
@@ -364,30 +482,568 @@ class MattermostAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message (or multiple chunks) to a channel."""
+        """Send messages with optional Mattermost-native rich attachments."""
         if not content:
             return SendResult(success=True)
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
-
         last_id = None
         for chunk in chunks:
-            payload: Dict[str, Any] = _with_mentions_disabled({
-                "channel_id": chat_id,
-                "message": chunk,
-            })
+            payload: Dict[str, Any] = {"channel_id": chat_id, "message": chunk}
+            nonce = ""
+            force_plain = bool(
+                metadata
+                and (metadata.get("expect_edits") or metadata.get("multi_chunk"))
+            )
+            if self._rich_posts and len(chunks) == 1 and not force_plain:
+                actions = None
+                if self._feedback_buttons and self._interactions_available():
+                    nonce, actions = self._build_feedback_actions(chat_id)
+                try:
+                    from plugins.platforms.mattermost.rich_posts import (
+                        render_rich_post,
+                    )
+
+                    rendered = render_rich_post(chunk, actions=actions)
+                except Exception:
+                    logger.warning(
+                        "Mattermost: rich-post rendering failed; using Markdown",
+                        exc_info=True,
+                    )
+                    rendered = None
+                if rendered:
+                    payload.update(rendered)
+                    if nonce:
+                        attachment = payload["props"]["attachments"][0]
+                        remembered = self._remember_interaction(
+                            nonce,
+                            {
+                                "kind": "feedback",
+                                "channel_id": chat_id,
+                                "post_id": "",
+                                "expires_at": attachment["actions"][0]["integration"]["context"][
+                                    "expires_at"
+                                ],
+                                "choices": ["helpful", "not_helpful"],
+                                "attachment": attachment,
+                            },
+                        )
+                        if not remembered:
+                            attachment.pop("actions", None)
+                            nonce = ""
+
+            payload = _with_mentions_disabled(payload)
             # Thread support: reply_to or metadata["thread_id"] is the root post ID.
             resolved_root = await self._thread_root_for_send(reply_to, metadata)
             if resolved_root:
                 payload["root_id"] = resolved_root
 
             data = await self._post_preserving_thread(chat_id, payload, metadata)
+            if not data and (payload.get("props") or {}).get("attachments"):
+                if nonce:
+                    self._pending_interactions.pop(nonce, None)
+                plain_payload = dict(payload)
+                plain_payload.pop("props", None)
+                plain_payload["message"] = chunk
+                plain_payload = _with_mentions_disabled(plain_payload)
+                logger.warning(
+                    "Mattermost: rich post failed; retrying with plain Markdown"
+                )
+                data = await self._post_preserving_thread(
+                    chat_id, plain_payload, metadata
+                )
             if not data or "id" not in data:
+                if nonce:
+                    self._pending_interactions.pop(nonce, None)
                 return SendResult(success=False, error="Failed to create post")
             last_id = data["id"]
+            if nonce and nonce in self._pending_interactions:
+                self._pending_interactions[nonce]["post_id"] = last_id
 
         return SendResult(success=True, message_id=last_id)
+
+    # ------------------------------------------------------------------
+    # Native interactive approval support
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _secret_value(name: str) -> str:
+        """Read a secret through the authoritative profile-aware resolver."""
+        try:
+            from agent.secret_scope import get_secret
+        except ImportError:
+            # Defensive compatibility for loading this plugin outside the full
+            # Hermes package. In normal gateway operation the resolver exists.
+            return (os.getenv(name) or "").strip()
+
+        try:
+            value = get_secret(name)
+        except Exception:
+            # In multiplex mode an unscoped read is a security boundary, not a
+            # reason to fall back to another profile's process environment.
+            logger.warning("Mattermost: scoped secret lookup failed for %s", name)
+            return ""
+        return str(value).strip() if value is not None else ""
+
+    def _interaction_secret(self) -> str:
+        return self._secret_value("MATTERMOST_INTERACTION_SECRET")
+
+    def _interactions_available(self) -> bool:
+        """Return whether signed Mattermost callbacks are configured."""
+        return bool(
+            self._interaction_url_valid
+            and self._interaction_secret()
+            and self._interaction_allowed_networks
+            and not self._interaction_start_failed
+        )
+
+    def _interaction_source_is_trusted(self, remote: Any) -> bool:
+        """Accept callbacks only from explicitly configured network peers."""
+        try:
+            address = ipaddress.ip_address(str(remote or ""))
+        except ValueError:
+            return False
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return any(address in network for network in self._interaction_allowed_networks)
+
+    async def _handle_interaction_request(self, request: Any) -> Any:
+        """Handle Mattermost's bounded JSON action callback."""
+        from aiohttp import web
+
+        if not self._interaction_source_is_trusted(getattr(request, "remote", None)):
+            return web.json_response(
+                {"ephemeral_text": "Untrusted interaction source."}, status=403
+            )
+        if request.content_length is not None and request.content_length > 65_536:
+            return web.json_response(
+                {"ephemeral_text": "Interaction payload is too large."}, status=413
+            )
+        try:
+            payload = await request.json()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response(
+                {"ephemeral_text": "Interaction payload is too large."}, status=413
+            )
+        except Exception:
+            return web.json_response(
+                {"ephemeral_text": "Invalid interaction payload."}, status=400
+            )
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {"ephemeral_text": "Invalid interaction payload."}, status=400
+            )
+        body, status = await self._dispatch_interaction(payload)
+        return web.json_response(body, status=status)
+
+    async def _handle_interaction_health(self, _request: Any) -> Any:
+        from aiohttp import web
+
+        return web.json_response({"status": "ok", "platform": "mattermost"})
+
+    async def _start_interaction_server(self) -> None:
+        """Start the private callback listener used by Mattermost actions."""
+        if self._interaction_runner is not None or not self._interactions_available():
+            return
+        from aiohttp import web
+
+        app = web.Application(client_max_size=65_536)
+        app.router.add_post(self._interaction_path, self._handle_interaction_request)
+        app.router.add_get(
+            f"{self._interaction_path.rstrip('/')}/health",
+            self._handle_interaction_health,
+        )
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(
+                runner, self._interaction_host, self._interaction_port
+            )
+            await site.start()
+        except Exception:
+            await runner.cleanup()
+            raise
+        self._interaction_runner = runner
+        logger.info(
+            "Mattermost: interaction endpoint listening on http://%s:%d%s",
+            self._interaction_host,
+            self._interaction_port,
+            self._interaction_path,
+        )
+
+    async def _stop_interaction_server(self) -> None:
+        """Stop the Mattermost callback listener, if it was started."""
+        runner = self._interaction_runner
+        self._interaction_runner = None
+        if runner is not None:
+            await runner.cleanup()
+
+    def _interaction_signature(
+        self,
+        *,
+        nonce: str,
+        kind: str,
+        choice: str,
+        channel_id: str,
+        expires_at: int,
+    ) -> str:
+        message = "\x00".join(
+            (nonce, kind, choice, channel_id, str(expires_at))
+        ).encode()
+        return hmac.new(
+            self._interaction_secret().encode(), message, hashlib.sha256
+        ).hexdigest()
+
+    def _build_interaction_action(
+        self,
+        *,
+        nonce: str,
+        kind: str,
+        choice: str,
+        channel_id: str,
+        name: str,
+        style: str = "default",
+        expires_at: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if expires_at is None:
+            expires_at = int(time.time()) + self._interaction_timeout_seconds
+        context = {
+            "nonce": nonce,
+            "kind": kind,
+            "choice": choice,
+            "expires_at": expires_at,
+            "signature": self._interaction_signature(
+                nonce=nonce,
+                kind=kind,
+                choice=choice,
+                channel_id=channel_id,
+                expires_at=expires_at,
+            ),
+        }
+        return {
+            "id": f"hermes_{kind}_{choice}",
+            "type": "button",
+            "name": name,
+            "style": style,
+            "integration": {"url": self._interaction_url, "context": context},
+        }
+
+    def _build_feedback_actions(
+        self, channel_id: str
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        nonce = secrets.token_urlsafe(18)
+        expires_at = int(time.time()) + self._interaction_timeout_seconds
+        actions = [
+            self._build_interaction_action(
+                nonce=nonce,
+                kind="feedback",
+                choice="helpful",
+                channel_id=channel_id,
+                name="Helpful",
+                style="success",
+                expires_at=expires_at,
+            ),
+            self._build_interaction_action(
+                nonce=nonce,
+                kind="feedback",
+                choice="not_helpful",
+                channel_id=channel_id,
+                name="Not helpful",
+                style="default",
+                expires_at=expires_at,
+            ),
+        ]
+        return nonce, actions
+
+    def _remember_interaction(self, nonce: str, state: Dict[str, Any]) -> bool:
+        """Remember bounded, single-use callback state without evicting approvals for feedback."""
+        now = int(time.time())
+        for pending_nonce, pending_state in list(self._pending_interactions.items()):
+            if int(pending_state.get("expires_at") or 0) <= now:
+                self._pending_interactions.pop(pending_nonce, None)
+
+        if len(self._pending_interactions) >= 256:
+            feedback_nonce = next(
+                (
+                    pending_nonce
+                    for pending_nonce, pending_state in self._pending_interactions.items()
+                    if pending_state.get("kind") == "feedback"
+                ),
+                None,
+            )
+            if feedback_nonce is not None:
+                self._pending_interactions.pop(feedback_nonce, None)
+            elif state.get("kind") == "feedback":
+                return False
+            else:
+                self._pending_interactions.pop(next(iter(self._pending_interactions)))
+
+        self._pending_interactions[nonce] = state
+        return True
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+        approval_id: Optional[str] = None,
+    ) -> SendResult:
+        """Send a signed Mattermost attachment with approval buttons."""
+        if not self._interactions_available():
+            return SendResult(
+                success=False,
+                error=(
+                    "Mattermost interactions require a valid interaction_url, "
+                    "MATTERMOST_INTERACTION_SECRET, trusted interaction_allowed_cidrs, "
+                    "and a healthy callback listener"
+                ),
+            )
+        if not approval_id:
+            return SendResult(
+                success=False,
+                error="Mattermost interactive approvals require an exact approval ID",
+            )
+
+        nonce = secrets.token_urlsafe(18)
+        expires_at = int(time.time()) + self._interaction_timeout_seconds
+        actions = [
+            self._build_interaction_action(
+                nonce=nonce,
+                kind="approval",
+                choice="once",
+                channel_id=chat_id,
+                name="Allow Once",
+                style="primary",
+                expires_at=expires_at,
+            )
+        ]
+        if not smart_denied and allow_session:
+            actions.append(
+                self._build_interaction_action(
+                    nonce=nonce,
+                    kind="approval",
+                    choice="session",
+                    channel_id=chat_id,
+                    name="Allow Session",
+                    expires_at=expires_at,
+                )
+            )
+        if not smart_denied and allow_permanent:
+            actions.append(
+                self._build_interaction_action(
+                    nonce=nonce,
+                    kind="approval",
+                    choice="always",
+                    channel_id=chat_id,
+                    name="Always Allow",
+                    expires_at=expires_at,
+                )
+            )
+        actions.append(
+            self._build_interaction_action(
+                nonce=nonce,
+                kind="approval",
+                choice="deny",
+                channel_id=chat_id,
+                name="Deny",
+                style="danger",
+                expires_at=expires_at,
+            )
+        )
+
+        header = "**⚠️ Command Approval Required**"
+        if smart_denied:
+            header += "\n\n**Smart DENY:** owner override applies to this operation only."
+        command_preview = command[:6000] + ("…" if len(command) > 6000 else "")
+        text = (
+            f"{header}\n\n```\n{command_preview}\n```\n\n"
+            f"Reason: {description[:1000]}"
+        )
+        fallback = f"Command approval required: {command[:160]}"
+        attachment = {
+            "fallback": fallback,
+            "color": "warning",
+            "text": text,
+            "actions": actions,
+        }
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "message": fallback,
+            "props": {"attachments": [attachment]},
+        }
+        root_id = await self._thread_root_for_send(None, metadata)
+        if root_id:
+            payload["root_id"] = root_id
+
+        self._remember_interaction(
+            nonce,
+            {
+                "kind": "approval",
+                "channel_id": chat_id,
+                "post_id": "",
+                "session_key": session_key,
+                "approval_id": approval_id,
+                "expires_at": expires_at,
+                "choices": [
+                    action["integration"]["context"]["choice"] for action in actions
+                ],
+                "attachment": attachment,
+            },
+        )
+        data = await self._post_preserving_thread(chat_id, payload, metadata)
+        post_id = str(data.get("id") or "") if data else ""
+        if not post_id:
+            self._pending_interactions.pop(nonce, None)
+            return SendResult(success=False, error="Failed to post Mattermost approval")
+        self._pending_interactions[nonce]["post_id"] = post_id
+        return SendResult(success=True, message_id=post_id, raw_response=data)
+
+    def _is_interactive_user_authorized(
+        self,
+        user_id: str,
+        *,
+        channel_id: str = "",
+        user_name: Optional[str] = None,
+        team_id: str = "",
+    ) -> bool:
+        """Apply the profile-bound gateway policy to action callbacks."""
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return False
+        # GatewayRunner installs this callback with its bound profile name, so
+        # it consults the correct profile's allowlist and pairing store. Never
+        # reconstruct a profile-less SessionSource or fall back to global env
+        # authorization for a command-approval callback.
+        return (
+            self._is_sender_authorized(
+                normalized_user_id,
+                "group",
+                str(channel_id or normalized_user_id),
+            )
+            is True
+        )
+
+    async def _dispatch_interaction(
+        self, payload: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], int]:
+        """Validate and execute one Mattermost interaction callback."""
+        context = payload.get("context")
+        if not isinstance(context, dict):
+            return {"ephemeral_text": "Invalid or expired Hermes action."}, 401
+        nonce = str(context.get("nonce") or "")
+        kind = str(context.get("kind") or "")
+        choice = str(context.get("choice") or "")
+        supplied_signature = str(context.get("signature") or "")
+        raw_expires_at = context.get("expires_at")
+        if not isinstance(raw_expires_at, (int, str)):
+            return {"ephemeral_text": "Invalid Hermes action."}, 401
+        try:
+            expires_at = int(raw_expires_at)
+        except (TypeError, ValueError):
+            return {"ephemeral_text": "Invalid Hermes action."}, 401
+        state = self._pending_interactions.get(nonce)
+        if not state:
+            return {"ephemeral_text": "This Hermes action has expired."}, 200
+
+        channel_id = str(payload.get("channel_id") or "")
+        post_id = str(payload.get("post_id") or "")
+        expected_signature = self._interaction_signature(
+            nonce=nonce,
+            kind=kind,
+            choice=choice,
+            channel_id=channel_id,
+            expires_at=expires_at,
+        )
+        if not supplied_signature or not hmac.compare_digest(
+            supplied_signature, expected_signature
+        ):
+            return {"ephemeral_text": "Invalid Hermes action."}, 401
+        if (
+            kind != state.get("kind")
+            or choice not in state.get("choices", ())
+            or expires_at != state.get("expires_at")
+            or channel_id != state.get("channel_id")
+            or post_id != state.get("post_id")
+        ):
+            return {"ephemeral_text": "Invalid Hermes action target."}, 401
+        if time.time() > expires_at:
+            self._pending_interactions.pop(nonce, None)
+            return {"ephemeral_text": "This Hermes action has expired."}, 200
+
+        user_id = str(payload.get("user_id") or "")
+        user_name = str(payload.get("user_name") or user_id or "unknown")
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+            team_id=str(payload.get("team_id") or ""),
+        ):
+            return {"ephemeral_text": "You are not authorized for this action."}, 403
+
+        if kind == "feedback" and choice in {"helpful", "not_helpful"}:
+            state = self._pending_interactions.pop(nonce, None)
+            if not state:
+                return {"ephemeral_text": "This Hermes action has expired."}, 200
+            logger.info(
+                "Mattermost feedback clicked: value=%s user=%s channel=%s post=%s",
+                choice,
+                user_id,
+                channel_id,
+                post_id,
+            )
+            resolved_attachment = dict(state["attachment"])
+            resolved_attachment.pop("actions", None)
+            return {
+                "ephemeral_text": "Thanks for the feedback.",
+                "update": {
+                    "message": str(resolved_attachment.get("fallback") or ""),
+                    "props": {"attachments": [resolved_attachment]},
+                },
+            }, 200
+
+        if kind != "approval" or choice not in {"once", "session", "always", "deny"}:
+            return {"ephemeral_text": "Invalid Hermes action."}, 400
+
+        state = self._pending_interactions.pop(nonce, None)
+        if not state:
+            return {"ephemeral_text": "This Hermes action has expired."}, 200
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(
+                str(state["session_key"]),
+                choice,
+                approval_id=str(state["approval_id"]),
+            )
+        except Exception:
+            logger.exception("Mattermost: failed to resolve approval callback")
+            count = 0
+
+        label_map = {
+            "once": f"✅ Approved once by {user_name}",
+            "session": f"✅ Approved for session by {user_name}",
+            "always": f"✅ Approved permanently by {user_name}",
+            "deny": f"❌ Denied by {user_name}",
+        }
+        decision = label_map[choice]
+        if not count:
+            decision = "⌛ Approval expired — command was not run."
+        else:
+            self.resume_typing_for_chat(channel_id)
+        resolved_attachment = dict(state["attachment"])
+        resolved_attachment.pop("actions", None)
+        return {
+            "update": {
+                "message": decision,
+                "props": {"attachments": [resolved_attachment]},
+            }
+        }, 200
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return channel name and type."""
@@ -413,17 +1069,79 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Edit an existing post."""
+        """Edit a post; render rich structure only for a single final chunk."""
         formatted = self.format_message(content)
-        data = await self._api_put(
-            f"posts/{message_id}/patch",
-            _with_mentions_disabled({"message": formatted}),
-        )
+        payload: Dict[str, Any] = {"message": formatted}
+        nonce = ""
+        multi_chunk = bool((metadata or {}).get("multi_chunk"))
+        if finalize and self._rich_posts and not multi_chunk:
+            actions = None
+            if self._feedback_buttons and self._interactions_available():
+                nonce, actions = self._build_feedback_actions(chat_id)
+            try:
+                from plugins.platforms.mattermost.rich_posts import (
+                    render_rich_post,
+                )
+
+                rendered = render_rich_post(formatted, actions=actions)
+            except Exception:
+                logger.warning(
+                    "Mattermost: final rich-post edit failed to render",
+                    exc_info=True,
+                )
+                rendered = None
+            if rendered:
+                payload.update(rendered)
+                if nonce:
+                    attachment = payload["props"]["attachments"][0]
+                    remembered = self._remember_interaction(
+                        nonce,
+                        {
+                            "kind": "feedback",
+                            "channel_id": chat_id,
+                            "post_id": message_id,
+                            "expires_at": attachment["actions"][0]["integration"][
+                                "context"
+                            ]["expires_at"],
+                            "choices": ["helpful", "not_helpful"],
+                            "attachment": attachment,
+                        },
+                    )
+                    if not remembered:
+                        attachment.pop("actions", None)
+                        nonce = ""
+
+        payload = _with_mentions_disabled(payload)
+        data = await self._api_put(f"posts/{message_id}/patch", payload)
+        if not data and (payload.get("props") or {}).get("attachments"):
+            if nonce:
+                self._pending_interactions.pop(nonce, None)
+            data = await self._api_put(
+                f"posts/{message_id}/patch",
+                _with_mentions_disabled({"message": formatted, "props": {}}),
+            )
         if not data or "id" not in data:
+            if nonce:
+                self._pending_interactions.pop(nonce, None)
             return SendResult(success=False, error="Failed to edit post")
         return SendResult(success=True, message_id=data["id"])
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a Mattermost post used as an obsolete streaming chunk."""
+        del chat_id  # Mattermost deletes posts by globally unique post ID.
+        post_id = str(message_id or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", post_id):
+            logger.warning("Mattermost: refusing malformed post ID for deletion")
+            return False
+        return await self._api_delete(f"posts/{post_id}")
 
     async def send_image(
         self,
@@ -784,6 +1502,190 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
+    @staticmethod
+    def _mattermost_bool(value: Any, *, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    def _mattermost_config_value(self, key: str, env_name: str) -> Any:
+        env_value = os.getenv(env_name)
+        if env_value not in {None, ""}:
+            return env_value
+        return (self.config.extra or {}).get(key)
+
+    def _mattermost_channel_set(self, key: str, env_name: str) -> set[str]:
+        raw = self._mattermost_config_value(key, env_name)
+        if isinstance(raw, (list, tuple, set)):
+            return {str(value).strip() for value in raw if str(value).strip()}
+        return {value.strip() for value in str(raw or "").split(",") if value.strip()}
+
+    def _mattermost_require_mention(self) -> bool:
+        return self._mattermost_bool(
+            self._mattermost_config_value("require_mention", "MATTERMOST_REQUIRE_MENTION"),
+            default=True,
+        )
+
+    def _mattermost_observe_unmentioned_channel_messages(self) -> bool:
+        """Whether eligible unmentioned channel posts are persisted as context."""
+        configured = self._mattermost_config_value(
+            "observe_unmentioned_channel_messages",
+            "MATTERMOST_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES",
+        )
+        return self._mattermost_bool(configured)
+
+    def _mattermost_observation_enabled(
+        self, channel_id: str, allowed_channels: set[str]
+    ) -> bool:
+        """Fail closed unless passive observation has an explicit channel scope."""
+        return bool(
+            self._mattermost_observe_unmentioned_channel_messages()
+            and allowed_channels
+            and channel_id in allowed_channels
+        )
+
+    @staticmethod
+    def _mattermost_post_has_automation_marker(post: Dict[str, Any]) -> bool:
+        """Return True for incoming-webhook or explicitly bot-marked posts."""
+        props = post.get("props") or {}
+        if isinstance(props, str):
+            try:
+                props = json.loads(props)
+            except (TypeError, ValueError):
+                # Malformed automation metadata is not trustworthy enough for
+                # passive persistence. Fail closed.
+                return True
+        if not isinstance(props, dict):
+            return True
+        return any(
+            MattermostAdapter._mattermost_bool(props.get(key))
+            for key in ("from_webhook", "from_bot")
+        )
+
+    async def _mattermost_observation_sender_is_human(
+        self, post: Dict[str, Any]
+    ) -> bool:
+        """Verify that a passive-observation candidate came from a human.
+
+        Authorization and human-vs-automation are separate gates: an allowlisted
+        bot or webhook must still never enter shared passive context.
+        """
+        if self._mattermost_post_has_automation_marker(post):
+            return False
+        sender_id = str(post.get("user_id") or "").strip()
+        if not sender_id:
+            return False
+        cached = self._sender_is_bot_cache.get(sender_id)
+        if cached is not None:
+            return not cached
+        try:
+            user = await self._api_get(f"users/{sender_id}")
+        except Exception:
+            logger.warning(
+                "Mattermost: sender lookup failed; skipping passive observation "
+                "(user=%s)",
+                sender_id,
+                exc_info=True,
+            )
+            return False
+        if (
+            not isinstance(user, dict)
+            or type(user.get("is_bot")) is not bool
+        ):
+            logger.warning(
+                "Mattermost: sender lookup lacked a boolean is_bot; skipping passive "
+                "observation (user=%s)",
+                sender_id,
+            )
+            return False
+        is_bot = user["is_bot"]
+        if len(self._sender_is_bot_cache) >= 4096:
+            self._sender_is_bot_cache.pop(next(iter(self._sender_is_bot_cache)))
+        self._sender_is_bot_cache[sender_id] = is_bot
+        return not is_bot
+
+    def _mattermost_thread_id(self, post: Dict[str, Any], chat_type: str) -> Optional[str]:
+        thread_id = post.get("root_id") or None
+        if not thread_id and self._reply_mode == "thread" and chat_type != "dm":
+            thread_id = post.get("id") or None
+        return thread_id
+
+    @staticmethod
+    def _mattermost_observed_attributed_text(
+        sender_name: str, sender_id: str, message_text: str
+    ) -> str:
+        sender = sender_name or sender_id or "unknown"
+        user_id = sender_id or "unknown"
+        return f"[{sender}|{user_id}]\n{message_text}"
+
+    def _mattermost_observed_channel_prompt(self) -> str:
+        return (
+            "You are handling a Mattermost channel message.\n"
+            f"- Your identity: user_id={self._bot_user_id}, @-mention name "
+            f"in this workspace=@{self._bot_username}.\n"
+            "- observed Mattermost channel context may be provided in a separate "
+            "context-only block before the current message; it is not necessarily "
+            "addressed to you.\n"
+            "- Treat only the current addressed message as a request, and use "
+            "observed context only when that message asks for it."
+        )
+
+    def _observe_unmentioned_channel_message(
+        self,
+        *,
+        post: Dict[str, Any],
+        channel_id: str,
+        chat_type: str,
+        sender_id: str,
+        sender_name: str,
+        message_text: str,
+    ) -> None:
+        """Persist authorized Mattermost chatter without dispatching the agent."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            file_ids = post.get("file_ids") or []
+            observed_text = message_text
+            if file_ids:
+                suffix = (
+                    f"[Observed Mattermost post includes {len(file_ids)} attachment(s); "
+                    "passive observation does not download attachments.]"
+                )
+                observed_text = f"{observed_text}\n{suffix}" if observed_text else suffix
+            if not observed_text:
+                return
+            source = self.build_source(
+                chat_id=channel_id,
+                chat_type=chat_type,
+                user_id=None,
+                user_name=None,
+                thread_id=self._mattermost_thread_id(post, chat_type),
+                message_id=post.get("id", ""),
+                role_authorized=True,
+            )
+            session_entry = store.get_or_create_session(source)
+            entry: Dict[str, Any] = {
+                "role": "user",
+                "content": self._mattermost_observed_attributed_text(
+                    sender_name, sender_id, observed_text
+                ),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if post.get("id"):
+                entry["message_id"] = str(post["id"])
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "Mattermost: channel message observed (no bot trigger): channel=%s from=%s",
+                channel_id,
+                sender_id or "unknown",
+            )
+        except Exception as exc:
+            logger.warning("Mattermost: failed to observe channel message: %s", exc)
+
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
         """Process a single WebSocket event."""
         event_type = event.get("event")
@@ -819,10 +1721,16 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_type_raw = data.get("channel_type", "O")
         chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
 
+        # Resolve sender before mention gating. Passive observation must make a
+        # full authorization decision before anything reaches the transcript.
+        sender_id = post.get("user_id", "")
+        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
+
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
         # Mention-gating for non-DM channels.
+        observation_active = False
         # Config (config.yaml `mattermost.*` with env-var fallback):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
         #   free_response_channels / MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
@@ -831,15 +1739,9 @@ class MattermostAdapter(BasePlatformAdapter):
             # allowed_channels check (whitelist — must pass before other gating).
             # When set, messages from channels NOT in this list are silently
             # ignored, even if @mentioned.  DMs are already excluded above.
-            allowed_raw = self.config.extra.get("allowed_channels") if self.config.extra else None
-            if allowed_raw is None:
-                allowed_raw = os.getenv("MATTERMOST_ALLOWED_CHANNELS", "")
-            if isinstance(allowed_raw, list):
-                allowed_channels = {str(c).strip() for c in allowed_raw if str(c).strip()}
-            else:
-                allowed_channels = {
-                    c.strip() for c in str(allowed_raw).split(",") if c.strip()
-                }
+            allowed_channels = self._mattermost_channel_set(
+                "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS"
+            )
             if allowed_channels and channel_id not in allowed_channels:
                 logger.debug(
                     "Mattermost: ignoring message in non-allowed channel: %s",
@@ -847,13 +1749,16 @@ class MattermostAdapter(BasePlatformAdapter):
                 )
                 return
 
-            require_mention = os.getenv(
-                "MATTERMOST_REQUIRE_MENTION", "true"
-            ).lower() not in {"false", "0", "no"}
-
-            free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
-            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            require_mention = self._mattermost_require_mention()
+            free_channels = self._mattermost_channel_set(
+                "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS"
+            )
             is_free_channel = channel_id in free_channels
+            observation_active = (
+                require_mention
+                and not is_free_channel
+                and self._mattermost_observation_enabled(channel_id, allowed_channels)
+            )
 
             mention_patterns = [
                 f"@{self._bot_username}",
@@ -865,11 +1770,45 @@ class MattermostAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not has_mention:
+                if (
+                    observation_active
+                    and not message_text.lstrip().startswith("/")
+                    and self._is_sender_authorized(sender_id, chat_type, channel_id)
+                    is True
+                    and await self._mattermost_observation_sender_is_human(post)
+                ):
+                    self._observe_unmentioned_channel_message(
+                        post=post,
+                        channel_id=channel_id,
+                        chat_type=chat_type,
+                        sender_id=sender_id,
+                        sender_name=sender_name,
+                        message_text=message_text,
+                    )
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
                 )
                 return
+
+            # Addressed turns in observed channels share the same channel/thread
+            # session as passive rows. Authenticate before removing per-sender
+            # routing identity from the event source.
+            if observation_active:
+                if self._is_sender_authorized(
+                    sender_id, chat_type, channel_id
+                ) is not True:
+                    logger.debug(
+                        "Mattermost: ignoring unauthorized sender in observed channel: %s",
+                        sender_id,
+                    )
+                    return
+                if not await self._mattermost_observation_sender_is_human(post):
+                    logger.debug(
+                        "Mattermost: ignoring automated sender in observed channel: %s",
+                        sender_id,
+                    )
+                    return
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
@@ -878,20 +1817,9 @@ class MattermostAdapter(BasePlatformAdapter):
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
 
-        # Resolve sender info.
-        sender_id = post.get("user_id", "")
-        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
-
-        # Thread support: if the post is in a thread, use root_id. In
-        # thread mode, top-level channel posts are valid roots for progress.
-        thread_id = post.get("root_id") or None
-        if (
-            not thread_id
-            and self._reply_mode == "thread"
-            and channel_type_raw != "D"
-            and post_id
-        ):
-            thread_id = post_id
+        # Thread support: replies use root_id; in thread reply mode, a top-level
+        # channel post becomes the root for the session and response.
+        thread_id = self._mattermost_thread_id(post, chat_type)
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -964,6 +1892,27 @@ class MattermostAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, None,
         )
 
+        if observation_active:
+            source = dataclasses.replace(
+                source,
+                user_id=None,
+                user_name=None,
+                user_id_alt=None,
+                # The adapter completed the gateway's full authorization
+                # callback before converting this into a shared routing source.
+                role_authorized=True,
+            )
+            if msg_type != MessageType.COMMAND:
+                message_text = self._mattermost_observed_attributed_text(
+                    sender_name, sender_id, message_text
+                )
+            observe_prompt = self._mattermost_observed_channel_prompt()
+            _channel_prompt = (
+                f"{_channel_prompt}\n\n{observe_prompt}"
+                if _channel_prompt
+                else observe_prompt
+            )
+
         msg_event = MessageEvent(
             text=message_text,
             message_type=msg_type,
@@ -993,6 +1942,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
+    multi_chunk: bool = False,
 ) -> Dict[str, Any]:
     """Send via the Mattermost v4 REST API without a live gateway adapter.
 
@@ -1090,6 +2040,24 @@ async def _standalone_send(
                 "channel_id": chat_id,
                 "message": message,
             }
+            rich_posts = str(
+                (getattr(pconfig, "extra", {}) or {}).get("rich_posts", "false")
+            ).lower() in {"true", "1", "yes", "on"}
+            if (
+                rich_posts
+                and not multi_chunk
+                and len(message) <= MAX_POST_LENGTH
+            ):
+                try:
+                    from plugins.platforms.mattermost.rich_posts import (
+                        render_rich_post,
+                    )
+
+                    rendered = render_rich_post(message)
+                except Exception:
+                    rendered = None
+                if rendered:
+                    payload.update(rendered)
             if thread_id:
                 payload["root_id"] = thread_id
             if file_ids:
@@ -1100,7 +2068,28 @@ async def _standalone_send(
                 json=payload,
                 **_req_kw,
             ) as resp:
-                if resp.status not in {200, 201}:
+                if resp.status in {200, 201}:
+                    data = await resp.json()
+                elif "props" in payload:
+                    plain_payload = dict(payload)
+                    plain_payload.pop("props", None)
+                    plain_payload["message"] = message
+                    async with session.post(
+                        f"{base_url}/api/v4/posts",
+                        headers=headers,
+                        json=plain_payload,
+                        **_req_kw,
+                    ) as plain_resp:
+                        if plain_resp.status not in {200, 201}:
+                            body = await plain_resp.text()
+                            return {
+                                "error": (
+                                    f"Mattermost API error ({plain_resp.status}): "
+                                    f"{body[:400]}"
+                                )
+                            }
+                        data = await plain_resp.json()
+                else:
                     body = await resp.text()
                     return {
                         "error": (
@@ -1108,7 +2097,6 @@ async def _standalone_send(
                             f"{body[:400]}"
                         )
                     }
-                data = await resp.json()
             return {
                 "success": True,
                 "platform": "mattermost",
@@ -1212,8 +2200,8 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
 
     Env vars take precedence over YAML — every assignment is guarded
     by ``not os.getenv(...)`` so an explicit env var survives a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    update. Rich-post settings are returned as ``PlatformConfig.extra``
+    values because they are adapter-native rather than legacy env settings.
     """
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
@@ -1228,7 +2216,21 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    nested_extra = mattermost_cfg.get("extra")
+    extras = dict(nested_extra) if isinstance(nested_extra, dict) else {}
+    for key in (
+        "rich_posts",
+        "feedback_buttons",
+        "interaction_url",
+        "interaction_host",
+        "interaction_port",
+        "interaction_timeout_seconds",
+        "interaction_allowed_cidrs",
+        "observe_unmentioned_channel_messages",
+    ):
+        if key in mattermost_cfg:
+            extras[key] = mattermost_cfg[key]
+    return extras or None
 
 
 # ---------------------------------------------------------------------------

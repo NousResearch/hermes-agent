@@ -15,6 +15,7 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 import shlex
 import sys
 import tempfile
@@ -2049,8 +2050,9 @@ def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
     The callback signature is ``cb(approval_data: dict) -> None`` where
-    *approval_data* contains ``command``, ``description``, and
-    ``pattern_keys``.  The callback bridges sync→async (runs in the agent
+    *approval_data* contains ``command``, ``description``, ``pattern_keys``,
+    and an opaque ``approval_id`` for exact-entry resolution.  The callback
+    bridges sync→async (runs in the agent
     thread, must schedule the actual send on the event loop).
     """
     with _lock:
@@ -2072,7 +2074,8 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             approval_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2084,13 +2087,29 @@ def resolve_gateway_approval(session_key: str, choice: str,
     deny (``/deny <reason>``).  It is relayed back to the agent in the
     BLOCKED message so it can adapt instead of only hearing "denied".
 
+    When *approval_id* is provided, only that exact pending queue entry is
+    resolved. Calls that omit it retain the legacy FIFO or ``resolve_all``
+    behavior used by typed approval commands.
+
     Returns the number of approvals resolved (0 means nothing was pending).
     """
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if resolve_all:
+        if approval_id:
+            target_index = next(
+                (
+                    index
+                    for index, entry in enumerate(queue)
+                    if entry.data.get("approval_id") == approval_id
+                ),
+                None,
+            )
+            if target_index is None:
+                return 0
+            targets = [queue.pop(target_index)]
+        elif resolve_all:
             targets = list(queue)
             queue.clear()
         else:
@@ -3082,6 +3101,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
+    approval_data = dict(approval_data)
+    approval_data["approval_id"] = secrets.token_urlsafe(18)
     entry = _ApprovalEntry(approval_data)
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)

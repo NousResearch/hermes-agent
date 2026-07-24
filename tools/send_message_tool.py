@@ -688,6 +688,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    multi_chunk=False,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -720,6 +721,8 @@ async def _send_via_adapter(
                     metadata["thread_id"] = thread_id
                 if platform_name == "ntfy" and chat_id:
                     metadata["publish_topic"] = chat_id
+                if platform_name == "mattermost" and multi_chunk:
+                    metadata["multi_chunk"] = True
                 if not metadata:
                     metadata = None
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
@@ -740,13 +743,18 @@ async def _send_via_adapter(
 
     if entry is not None and entry.standalone_sender_fn is not None:
         try:
+            standalone_kwargs = {
+                "thread_id": thread_id,
+                "media_files": media_files,
+                "force_document": force_document,
+            }
+            if platform_name == "mattermost":
+                standalone_kwargs["multi_chunk"] = multi_chunk
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
+                **standalone_kwargs,
             )
         except asyncio.CancelledError:
             raise
@@ -1145,6 +1153,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                multi_chunk=len(chunks) > 1,
             )
 
         if isinstance(result, dict) and result.get("error"):

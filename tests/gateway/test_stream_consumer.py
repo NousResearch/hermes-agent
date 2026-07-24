@@ -645,6 +645,10 @@ class TestSegmentBreakOnToolBoundary:
         # The undelivered "world" tail must reach the user, and the next
         # segment must not duplicate "Hello" that was already visible.
         assert sent_texts == ["Hello ▉", "world", "Next segment"]
+        assert all(
+            call.kwargs.get("metadata", {}).get("multi_chunk") is True
+            for call in adapter.send.await_args_list[1:]
+        )
 
     @pytest.mark.asyncio
     async def test_segment_break_after_mid_stream_edit_failure_preserves_tail(self):
@@ -798,6 +802,7 @@ class TestSegmentBreakOnToolBoundary:
             SimpleNamespace(success=True, message_id="msg_1"),
             SimpleNamespace(success=True, message_id="msg_2"),
             SimpleNamespace(success=True, message_id="msg_3"),
+            SimpleNamespace(success=True, message_id="msg_4"),
         ])
         adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False, error="flood_control:6"))
         adapter.MAX_MESSAGE_LENGTH = 610
@@ -819,6 +824,15 @@ class TestSegmentBreakOnToolBoundary:
         assert len(sent_texts) == 3
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
+
+        assert consumer._finalized_overflow_prefix == ""
+        assert consumer._streamed_source_text == prefix + tail
+        assert await consumer.edit_transformed_final(
+            prefix + tail + "\n\n[plugin appendix]"
+        )
+        appendix_call = adapter.send.call_args_list[-1]
+        assert appendix_call.kwargs["content"] == "\n\n[plugin appendix]"
+        assert appendix_call.kwargs["metadata"]["multi_chunk"] is True
 
     @pytest.mark.asyncio
     async def test_fallback_final_sends_full_text_at_tool_boundary(self):
@@ -930,6 +944,10 @@ class TestSegmentBreakOnToolBoundary:
             c.kwargs.get("content", "") for c in adapter.send.call_args_list
         ]
         assert any("Done!" in s and "Working on i" not in s for s in sent_contents)
+        assert all(
+            call.kwargs.get("metadata", {}).get("multi_chunk") is True
+            for call in adapter.send.await_args_list
+        )
         # ...and the head-bearing partial was NOT deleted.
         adapter.delete_message.assert_not_awaited()
         assert consumer._final_response_sent is True
@@ -1051,6 +1069,58 @@ class TestFinalResponseDeliveryGuard:
         await task
 
         assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_stream_overflow_marks_sealed_edit_as_multi_chunk(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 600
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer.on_delta("a" * 300)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("b" * 400)
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        finalized_edits = [
+            call
+            for call in adapter.edit_message.await_args_list
+            if call.kwargs.get("finalize") is True
+        ]
+        assert finalized_edits
+        assert all(
+            call.kwargs.get("metadata", {}).get("multi_chunk") is True
+            for call in finalized_edits
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_overflow_marks_every_send_as_multi_chunk(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_fallback")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 600
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+
+        await consumer._send_fallback_final("x" * 1200)
+
+        assert adapter.send.await_count > 1
+        assert all(
+            call.kwargs.get("metadata", {}).get("multi_chunk") is True
+            for call in adapter.send.await_args_list
+        )
 
 
 class TestFinalContentDeliveredGuard:
@@ -1357,7 +1427,196 @@ class TestInterimCommentaryMessages:
 
         sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
         assert sent_texts == ["I'll inspect the repository first.", "Done."]
+        commentary_meta = adapter.send.call_args_list[0].kwargs["metadata"]
+        final_meta = adapter.send.call_args_list[1].kwargs["metadata"]
+        assert commentary_meta["expect_edits"] is True
+        assert commentary_meta["multi_chunk"] is True
+        assert final_meta["multi_chunk"] is True
         assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_transformed_overflow_edits_only_last_plain_continuation(self):
+        class MetadataAdapter:
+            async def edit_message(
+                self, chat_id, message_id, content, *, finalize=False, metadata=None
+            ):
+                self.edit = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                    "finalize": finalize,
+                    "metadata": metadata,
+                }
+                return SimpleNamespace(success=True, message_id=message_id)
+
+        adapter = MetadataAdapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "continuation-2"
+        consumer._is_multi_chunk = True
+        consumer._finalized_overflow_prefix = "first chunk\n"
+
+        delivered = await consumer.edit_transformed_final(
+            "first chunk\nlast chunk\n\n[plugin appended]"
+        )
+
+        assert delivered is True
+        assert adapter.edit["content"] == "last chunk\n\n[plugin appended]"
+        assert adapter.edit["finalize"] is True
+        assert adapter.edit["metadata"]["multi_chunk"] is True
+
+    @pytest.mark.asyncio
+    async def test_transformed_known_prefix_rewrite_uses_plain_replacement(self):
+        class Adapter:
+            MAX_MESSAGE_LENGTH = 600
+
+            def __init__(self):
+                self.edits = []
+                self.sends = []
+                self.deleted = []
+
+            async def edit_message(self, **kwargs):
+                self.edits.append(kwargs)
+                raise AssertionError("must not edit only the last continuation")
+
+            async def send(self, **kwargs):
+                self.sends.append(kwargs)
+                return SimpleNamespace(success=True, message_id="replacement-3")
+
+            async def delete_message(self, chat_id, message_id):
+                self.deleted.append((chat_id, message_id))
+                return True
+
+        adapter = Adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "continuation-2"
+        consumer._preview_message_ids = {"head-1", "continuation-2"}
+        consumer._segment_preview_message_ids = {"head-1", "continuation-2"}
+        consumer._is_multi_chunk = True
+        consumer._finalized_overflow_prefix = "old head\n"
+        consumer._streamed_source_text = "old head\nold tail"
+
+        assert await consumer.edit_transformed_final("rewritten response")
+        assert adapter.edits == []
+        assert adapter.sends[0]["content"] == "rewritten response"
+        assert adapter.sends[0]["metadata"]["multi_chunk"] is True
+        assert set(adapter.deleted) == {
+            ("chat_123", "head-1"),
+            ("chat_123", "continuation-2"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_transformed_known_prefix_over_limit_sends_plain_appendix(self):
+        class Adapter:
+            MAX_MESSAGE_LENGTH = 600
+
+            def __init__(self):
+                self.edits = []
+                self.sends = []
+
+            async def edit_message(self, **kwargs):
+                self.edits.append(kwargs)
+                raise AssertionError("must not issue an over-limit edit")
+
+            async def send(self, **kwargs):
+                self.sends.append(kwargs)
+                return SimpleNamespace(success=True, message_id="appendix-3")
+
+        head = "h" * 400
+        tail = "t" * 300
+        appendix = "a" * 400
+        adapter = Adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "continuation-2"
+        consumer._is_multi_chunk = True
+        consumer._finalized_overflow_prefix = head
+        consumer._streamed_source_text = head + tail
+
+        assert await consumer.edit_transformed_final(head + tail + appendix)
+        assert adapter.edits == []
+        assert adapter.sends[0]["content"] == appendix
+        assert adapter.sends[0]["metadata"]["multi_chunk"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "streamed",
+        [
+            "fallback head\nfallback tail",
+            "```python\nprint('code-fence overflow')\n```",
+        ],
+    )
+    async def test_transformed_unknown_prefix_sends_only_plain_appendix(
+        self, streamed
+    ):
+        """Unknown chunk boundaries must never receive the full response edit."""
+
+        class Adapter:
+            def __init__(self):
+                self.edits = []
+                self.sends = []
+
+            async def edit_message(self, **kwargs):
+                self.edits.append(kwargs)
+                raise AssertionError("must not overwrite the final continuation")
+
+            async def send(self, **kwargs):
+                self.sends.append(kwargs)
+                return SimpleNamespace(success=True, message_id="appendix-3")
+
+        adapter = Adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "continuation-2"
+        consumer._is_multi_chunk = True
+        consumer._finalized_overflow_prefix = ""
+        consumer._streamed_source_text = streamed
+
+        assert await consumer.edit_transformed_final(
+            streamed + "\n\n[plugin appendix]"
+        )
+        assert adapter.edits == []
+        assert len(adapter.sends) == 1
+        assert adapter.sends[0]["content"] == "\n\n[plugin appendix]"
+        assert adapter.sends[0]["metadata"]["multi_chunk"] is True
+
+    @pytest.mark.asyncio
+    async def test_transformed_rewrite_replaces_old_chunks_without_tail_overwrite(self):
+        class Adapter:
+            def __init__(self):
+                self.edits = []
+                self.sends = []
+                self.deleted = []
+
+            async def edit_message(self, **kwargs):
+                self.edits.append(kwargs)
+                raise AssertionError("must not overwrite the final continuation")
+
+            async def send(self, **kwargs):
+                self.sends.append(kwargs)
+                return SimpleNamespace(success=True, message_id="replacement-3")
+
+            async def delete_message(self, chat_id, message_id):
+                self.deleted.append((chat_id, message_id))
+                return True
+
+        adapter = Adapter()
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "continuation-2"
+        consumer._preview_message_ids = {
+            "commentary-0",
+            "head-1",
+            "continuation-2",
+        }
+        consumer._segment_preview_message_ids = {"head-1", "continuation-2"}
+        consumer._is_multi_chunk = True
+        consumer._streamed_source_text = "old response"
+
+        assert await consumer.edit_transformed_final("rewritten response")
+        assert adapter.edits == []
+        assert adapter.sends[0]["content"] == "rewritten response"
+        assert adapter.sends[0]["metadata"]["multi_chunk"] is True
+        assert set(adapter.deleted) == {
+            ("chat_123", "head-1"),
+            ("chat_123", "continuation-2"),
+        }
 
     @pytest.mark.asyncio
     async def test_failed_final_send_does_not_mark_final_response_sent(self):

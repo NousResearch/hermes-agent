@@ -391,6 +391,7 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
     "sms",
     "whatsapp_cloud",
     "line",
+    "mattermost",
 })
 
 # Platforms whose port-binding status depends on connection mode. Feishu in
@@ -410,6 +411,10 @@ def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bo
     """
     if platform_value not in PORT_BINDING_PLATFORM_VALUES:
         return False
+    if platform_value == "mattermost":
+        # Mattermost normally uses outbound WebSocket/REST only. It binds a
+        # local HTTP listener solely when native interactions are configured.
+        return bool(str((extra or {}).get("interaction_url") or "").strip())
     expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
     if expected_mode is not None:
         actual = str((extra or {}).get("connection_mode", "websocket")).strip().lower()

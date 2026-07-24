@@ -412,6 +412,13 @@ class FileSyncManager:
                             )
                             continue
 
+                        if not self._host_path_is_contained(host_path, file_mapping):
+                            logger.warning(
+                                "sync_back: refusing host path outside mapped roots: %s",
+                                host_path,
+                            )
+                            continue
+
                         if os.path.exists(host_path) and pushed_hash is not None:
                             host_hash = _sha256_file(host_path)
                             if host_hash != pushed_hash:
@@ -451,18 +458,69 @@ class FileSyncManager:
         For example, if the mapping has ``/root/.hermes/skills/a.md`` →
         ``~/.hermes/skills/a.md``, a new remote file at
         ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
+
+        Rejects remote suffixes that contain ``..`` and requires the
+        resolved host path to stay under the mapped host directory root.
+        Remote paths are always POSIX-shaped (sandbox); host paths use
+        local ``Path`` rules.
         """
         mapping = file_mapping if file_mapping is not None else []
         upload_only_host_paths = upload_only_host_paths or set()
         for host, remote in mapping:
             if self._is_upload_only_host_path(host, upload_only_host_paths):
                 continue
-            remote_dir = str(Path(remote).parent)
+            remote_dir = posixpath.dirname(remote)
             if remote_path.startswith(remote_dir + "/"):
                 host_dir = str(Path(host).parent)
                 suffix = remote_path[len(remote_dir):]
-                return host_dir + suffix
+                # Defence-in-depth: even if tar extract filtered ``..``,
+                # never concatenate a traversal suffix onto the host root.
+                suffix_parts = [p for p in suffix.replace("\\", "/").split("/") if p]
+                if ".." in suffix_parts:
+                    logger.warning(
+                        "sync_back: rejecting traversal suffix in remote path %s",
+                        remote_path,
+                    )
+                    return None
+                # Map POSIX suffix onto the local host directory.
+                local_suffix = suffix.replace("/", os.sep)
+                candidate = host_dir + local_suffix
+                try:
+                    resolved = Path(candidate).expanduser().resolve()
+                    root = Path(host_dir).expanduser().resolve()
+                    resolved.relative_to(root)
+                except (ValueError, OSError):
+                    logger.warning(
+                        "sync_back: inferred host path escapes mapped root: %s",
+                        candidate,
+                    )
+                    return None
+                return candidate
         return None
+
+    def _host_path_is_contained(
+        self,
+        host_path: str,
+        file_mapping: list[tuple[str, str]],
+    ) -> bool:
+        """Return True if *host_path* resolves under any mapped host directory."""
+        try:
+            resolved = Path(host_path).expanduser().resolve()
+        except OSError:
+            return False
+        roots: set[Path] = set()
+        for host, _remote in file_mapping:
+            try:
+                roots.add(Path(host).expanduser().resolve().parent)
+            except OSError:
+                continue
+        for root in roots:
+            try:
+                resolved.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
 
     @staticmethod
     def _is_upload_only_host_path(host_path: str, upload_only_host_paths: set[str]) -> bool:

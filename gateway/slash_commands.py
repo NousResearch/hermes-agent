@@ -1611,7 +1611,7 @@ class GatewaySlashCommandsMixin:
                                 enrich_model_switch_warnings_for_gateway,
                             )
 
-                            enrich_model_switch_warnings_for_gateway(
+                            await enrich_model_switch_warnings_for_gateway(
                                 result,
                                 _self,
                                 session_key=_session_key,
@@ -1917,7 +1917,7 @@ class GatewaySlashCommandsMixin:
                 enrich_model_switch_warnings_for_gateway,
             )
 
-            enrich_model_switch_warnings_for_gateway(
+            await enrich_model_switch_warnings_for_gateway(
                 result,
                 self,
                 session_key=session_key,

@@ -29,6 +29,7 @@ Usage::
 
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1882,17 +1883,30 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 
 def _extract_transcript_text(transcription: Any) -> str:
     """Normalize text and JSON transcription responses to a plain string."""
-    if isinstance(transcription, str):
-        return transcription.strip()
+    text: Optional[str] = None
 
-    if hasattr(transcription, "text"):
+    if isinstance(transcription, str):
+        text = transcription.strip()
+
+    if text is None and hasattr(transcription, "text"):
         value = getattr(transcription, "text")
         if isinstance(value, str):
-            return value.strip()
+            text = value.strip()
 
-    if isinstance(transcription, dict):
+    if text is None and isinstance(transcription, dict):
         value = transcription.get("text")
         if isinstance(value, str):
-            return value.strip()
+            text = value.strip()
 
-    return str(transcription).strip()
+    if text is None:
+        text = str(transcription).strip()
+
+    match = re.match(
+        r"\s*language\s+[\w.-]+(?:\s*<audio_language>[^<]*</audio_language>)?\s*<asr_text>\s*(?P<text>.*)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        text = match.group("text").strip()
+
+    return text

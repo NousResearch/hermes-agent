@@ -763,3 +763,151 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+
+# ---------------------------------------------------------------------------
+# fallback providers (ACP vs CLI parity)
+# ---------------------------------------------------------------------------
+
+
+class TestMakeAgentPassesFallbackProviders:
+    def test_passes_fallback_providers_list_into_aiagent(self, tmp_path, monkeypatch):
+        recorded: dict[str, object] = {}
+
+        def fake_agent(**kw):
+            recorded.update(kw)
+            out = MagicMock(name="ACPAgent")
+            out.model = kw.get("model", "")
+            out.provider = kw.get("provider")
+            out.base_url = kw.get("base_url")
+            out._print_fn = None
+            return out
+
+        def fake_resolve(requested=None, **kwargs):  # noqa: ARG001
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "",
+                "command": None,
+                "args": [],
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "openrouter", "default": "primary"},
+                "fallback_providers": [{"model": "fb-a", "provider": "zhipu"}],
+                "mcp_servers": {},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            mgr = SessionManager(db=db)
+            mgr.create_session(cwd="/work")
+
+        assert recorded.get("fallback_model") == [
+            {"model": "fb-a", "provider": "zhipu"},
+        ]
+
+    def test_normalizes_legacy_fallback_model_dict(self, tmp_path, monkeypatch):
+        recorded: dict[str, object] = {}
+
+        def fake_agent(**kw):
+            recorded.update(kw)
+            out = MagicMock(name="ACPAgent")
+            out.model = kw.get("model", "")
+            out._print_fn = None
+            return out
+
+        def fake_resolve(requested=None, **kwargs):  # noqa: ARG001
+            return {
+                "provider": "p",
+                "api_mode": "chat",
+                "base_url": "https://litellm.example",
+                "api_key": "",
+                "command": None,
+                "args": [],
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "p", "default": "primary"},
+                "fallback_model": {"model": "legacy-m", "provider": "legacy-p"},
+                "mcp_servers": {},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            mgr = SessionManager(db=db)
+            mgr.create_session(cwd="/work")
+
+        assert recorded.get("fallback_model") == [
+            {"model": "legacy-m", "provider": "legacy-p"},
+        ]
+
+    def test_merges_modern_and_legacy_fallback_keys(self, tmp_path, monkeypatch):
+        """Both keys participate when set; legacy is appended after de-dup."""
+        recorded: dict[str, object] = {}
+
+        def fake_agent(**kw):
+            recorded.update(kw)
+            out = MagicMock(name="ACPAgent")
+            out.model = kw.get("model", "")
+            out._print_fn = None
+            return out
+
+        def fake_resolve(requested=None, **kwargs):  # noqa: ARG001
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "",
+                "command": None,
+                "args": [],
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "openrouter", "default": "primary"},
+                "fallback_providers": [
+                    {"model": "fb-a", "provider": "zhipu"},
+                    {"model": "dup-m", "provider": "nous"},
+                ],
+                "fallback_model": [
+                    {"model": "legacy-m", "provider": "legacy-p"},
+                    {"model": "dup-m", "provider": "nous"},
+                ],
+                "mcp_servers": {},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            mgr = SessionManager(db=db)
+            mgr.create_session(cwd="/work")
+
+        assert recorded.get("fallback_model") == [
+            {"model": "fb-a", "provider": "zhipu"},
+            {"model": "dup-m", "provider": "nous"},
+            {"model": "legacy-m", "provider": "legacy-p"},
+        ]

@@ -1429,6 +1429,23 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    def test_includes_intake_harness_guidance(self, agent):
+        from agent.prompt_builder import INTAKE_HARNESS_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+
+        assert INTAKE_HARNESS_GUIDANCE in prompt
+        assert "understand → organize → prioritize → plan → execute" in prompt
+
+    def test_intake_harness_handles_noisy_input_before_execution(self, agent):
+        from agent.prompt_builder import INTAKE_HARNESS_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+
+        assert "duplicated, conflicting, or noisy" in INTAKE_HARNESS_GUIDANCE
+        assert "Do not execute the first visible command" in prompt
+        assert "quote or summarize the interpreted request" in prompt
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {

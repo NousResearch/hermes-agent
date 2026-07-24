@@ -102,6 +102,51 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         stop.set()
 
 
+def test_prepare_agent_startup_defers_mcp_for_explicit_oneshot_toolsets(monkeypatch):
+    """Oneshot owns its explicit MCP discovery so collisions stay targeted."""
+    calls = {"background": 0, "inline": 0}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(load_config=lambda: {}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.mcp_startup",
+        types.SimpleNamespace(
+            start_background_mcp_discovery=lambda **_kwargs: calls.__setitem__(
+                "background", calls["background"] + 1
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__(
+                "inline", calls["inline"] + 1
+            )
+        ),
+    )
+
+    main_mod._prepare_agent_startup(
+        _agent_args(oneshot="hello", toolsets="web")
+    )
+
+    assert calls == {"background": 0, "inline": 0}
+
+
 def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     state = {"active": False, "during_discover": None}
 
@@ -144,6 +189,125 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
 
     assert state["during_discover"] is True
     assert state["active"] is False
+
+
+def test_requested_mcp_toolsets_only_discover_matching_servers(monkeypatch):
+    state = {"oauth_active": False, "calls": []}
+
+    class SuppressInteractiveOAuth:
+        def __enter__(self):
+            state["oauth_active"] = True
+
+        def __exit__(self, *_exc):
+            state["oauth_active"] = False
+
+    def discover_for_servers(names, *, timeout):
+        state["calls"].append((list(names), timeout, state["oauth_active"]))
+        return ["mcp__requested__ping"]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(
+            suppress_interactive_oauth=lambda: SuppressInteractiveOAuth(),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools_for_servers=discover_for_servers,
+            get_mcp_status=lambda: [{
+                "name": "requested",
+                "connected": True,
+                "tools": 1,
+                "status": "connected",
+            }],
+        ),
+    )
+
+    result = mcp_startup.discover_requested_mcp_toolsets(
+        ["requested"], timeout=0.25
+    )
+
+    assert result == ["mcp__requested__ping"]
+    assert state["calls"] == [(["requested"], 0.25, True)]
+    assert state["oauth_active"] is False
+
+
+def test_requested_mcp_toolsets_fail_closed_when_tools_are_unavailable(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools_for_servers=lambda *_a, **_k: [],
+            get_mcp_status=lambda: [{
+                "name": "requested",
+                "connected": False,
+                "tools": 0,
+                "status": "failed",
+            }],
+        ),
+    )
+
+    with pytest.raises(
+        mcp_startup.RequestedMCPToolsetsUnavailableError,
+        match="requested",
+    ):
+        mcp_startup.discover_requested_mcp_toolsets(["requested"], timeout=0.25)
+
+
+def test_requested_mcp_toolsets_report_timeout_explicitly(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools_for_servers=lambda *_a, **_k: (_ for _ in ()).throw(
+                TimeoutError("MCP discovery timed out")
+            ),
+            get_mcp_status=lambda: [],
+        ),
+    )
+
+    with pytest.raises(
+        mcp_startup.RequestedMCPToolsetsUnavailableError,
+        match="timed out",
+    ):
+        mcp_startup.discover_requested_mcp_toolsets(["requested"], timeout=0.25)
+
+
+def test_requested_mcp_toolsets_report_discovery_errors_explicitly(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools_for_servers=lambda *_a, **_k: (_ for _ in ()).throw(
+                RuntimeError("connection refused")
+            ),
+            get_mcp_status=lambda: [],
+        ),
+    )
+
+    with pytest.raises(
+        mcp_startup.RequestedMCPToolsetsUnavailableError,
+        match="failed to initialize",
+    ):
+        mcp_startup.discover_requested_mcp_toolsets(["requested"], timeout=0.25)
 
 
 def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):

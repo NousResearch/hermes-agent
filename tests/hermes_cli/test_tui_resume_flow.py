@@ -1219,6 +1219,121 @@ def test_oneshot_run_agent_closes_agent_after_chat(monkeypatch):
     assert shutdown_messages == [[{"role": "user", "content": "hello"}]]
 
 
+def test_oneshot_discovers_explicit_mcp_toolsets_before_agent_build(monkeypatch):
+    import hermes_cli.oneshot as oneshot_mod
+
+    events = []
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            events.append("agent-built")
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, _prompt, **_kwargs):
+            return {"final_response": "done"}
+
+        def shutdown_memory_provider(self, messages=None):
+            pass
+
+        def close(self):
+            pass
+
+    def discover_requested_mcp_toolsets(names):
+        events.append(("mcp-discovery", list(names)))
+
+    monkeypatch.setitem(
+        sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAgent)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.mcp_startup",
+        types.SimpleNamespace(
+            discover_requested_mcp_toolsets=discover_requested_mcp_toolsets
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "gpt-test", "provider": "openai"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "key",
+            "base_url": "https://example.invalid",
+            "provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+
+    oneshot_mod._run_agent(
+        "hello",
+        model="gpt-test",
+        provider="openai",
+        toolsets=["web", "requested-mcp"],
+        requested_mcp_toolsets=["requested-mcp"],
+        use_config_toolsets=False,
+    )
+
+    assert events == [
+        ("mcp-discovery", ["requested-mcp"]),
+        "agent-built",
+    ]
+
+
+def test_oneshot_does_not_build_agent_when_requested_mcp_is_unavailable(monkeypatch):
+    import hermes_cli.oneshot as oneshot_mod
+
+    agent_built = []
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            agent_built.append(True)
+
+    def discover_requested_mcp_toolsets(_names):
+        raise RuntimeError("requested MCP toolsets did not become available")
+
+    monkeypatch.setitem(
+        sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAgent)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.mcp_startup",
+        types.SimpleNamespace(
+            discover_requested_mcp_toolsets=discover_requested_mcp_toolsets
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "gpt-test", "provider": "openai"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "key",
+            "base_url": "https://example.invalid",
+            "provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="requested MCP toolsets"):
+        oneshot_mod._run_agent(
+            "hello",
+            model="gpt-test",
+            provider="openai",
+            toolsets=["requested-mcp"],
+            requested_mcp_toolsets=["requested-mcp"],
+            use_config_toolsets=False,
+        )
+
+    assert agent_built == []
+
+
 def test_oneshot_run_agent_closes_agent_when_chat_raises(monkeypatch):
     import hermes_cli.oneshot as oneshot_mod
 
@@ -1526,14 +1641,15 @@ def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
 
 def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
-    import hermes_cli.config as config_mod
 
     from hermes_cli.oneshot import _validate_explicit_toolsets
 
-    monkeypatch.setattr(
-        config_mod,
-        "read_raw_config",
-        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            get_configured_mcp_servers=lambda: {"mcp-off": {"enabled": False}}
+        ),
     )
 
     valid, error = _validate_explicit_toolsets("mcp-off")
@@ -1547,14 +1663,15 @@ def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
 
 def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
-    import hermes_cli.config as config_mod
 
     from hermes_cli.oneshot import _validate_explicit_toolsets
 
-    monkeypatch.setattr(
-        config_mod,
-        "read_raw_config",
-        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            get_configured_mcp_servers=lambda: {"mcp-off": {"enabled": False}}
+        ),
     )
 
     valid, error = _validate_explicit_toolsets("web,mcp-off,nope")
@@ -1565,6 +1682,47 @@ def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
     assert "ignoring unknown --toolsets entries: nope" in err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
+
+
+def test_oneshot_validation_does_not_discover_mcp_with_builtin_name(monkeypatch):
+    from hermes_cli.oneshot import _validate_explicit_toolsets_with_mcp
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            get_configured_mcp_servers=lambda: {"web": {"command": "mcp-web"}}
+        ),
+    )
+
+    valid, requested_mcp_toolsets, error = _validate_explicit_toolsets_with_mcp("web")
+
+    assert valid == ["web"]
+    assert requested_mcp_toolsets == []
+    assert error is None
+
+
+def test_oneshot_validation_uses_effective_mcp_configuration(monkeypatch):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import _validate_explicit_toolsets_with_mcp
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            get_configured_mcp_servers=lambda: {
+                "managed-mcp": {"command": "managed-server"}
+            }
+        ),
+    )
+
+    valid, requested_mcp_toolsets, error = _validate_explicit_toolsets_with_mcp(
+        "managed-mcp"
+    )
+
+    assert valid == ["managed-mcp"]
+    assert requested_mcp_toolsets == ["managed-mcp"]
+    assert error is None
 
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):

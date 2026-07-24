@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import threading
 from contextlib import nullcontext
-from typing import Optional
+from typing import Iterable, Optional
 
 _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
+
+
+class RequestedMCPToolsetsUnavailableError(RuntimeError):
+    """An explicitly requested MCP toolset was not ready for oneshot."""
 
 
 def _has_configured_mcp_servers() -> bool:
@@ -118,6 +122,59 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
         from tools.mcp_tool import discover_mcp_tools
 
         discover_mcp_tools()
+
+
+def discover_requested_mcp_toolsets(
+    toolset_names: Iterable[str], timeout: "float | None" = None
+) -> list[str]:
+    """Synchronously discover explicitly requested MCP toolsets or fail.
+
+    Callers must pass MCP-only names validated against the effective MCP
+    configuration. A missing, failed, empty, or timed-out requested toolset is
+    an error: oneshot must not create an agent that silently lacks its requested
+    capabilities.
+    """
+    raw_names = [toolset_names] if isinstance(toolset_names, str) else toolset_names
+    requested = list(dict.fromkeys(name for name in raw_names if name))
+    if not requested:
+        return []
+
+    try:
+        from tools.mcp_oauth import suppress_interactive_oauth
+    except Exception:
+        suppress_interactive_oauth = nullcontext
+
+    try:
+        with suppress_interactive_oauth():
+            from tools.mcp_tool import discover_mcp_tools_for_servers, get_mcp_status
+
+            tool_names = discover_mcp_tools_for_servers(
+                requested,
+                timeout=_resolve_discovery_timeout(timeout),
+            )
+        statuses = {entry.get("name"): entry for entry in get_mcp_status()}
+    except TimeoutError as exc:
+        raise RequestedMCPToolsetsUnavailableError(
+            f"Requested MCP toolsets timed out: {', '.join(requested)}"
+        ) from exc
+    except Exception as exc:
+        raise RequestedMCPToolsetsUnavailableError(
+            f"Requested MCP toolsets failed to initialize: {', '.join(requested)}"
+        ) from exc
+
+    unavailable = [
+        name
+        for name in requested
+        if not statuses.get(name, {}).get("connected")
+        or not statuses.get(name, {}).get("tools")
+    ]
+    if unavailable:
+        raise RequestedMCPToolsetsUnavailableError(
+            "Requested MCP toolsets did not become available: "
+            f"{', '.join(unavailable)}"
+        )
+
+    return tool_names
 
 
 def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:

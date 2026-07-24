@@ -183,6 +183,20 @@ def _decode_header_value(raw: str) -> str:
     return " ".join(decoded)
 
 
+def _safe_payload_decode(payload: bytes, charset: "str | None") -> str:
+    """Decode an email payload, tolerating an unknown/invalid charset label.
+
+    ``charset`` comes from the attacker-controlled ``Content-Type``. An unknown
+    label (``charset=bogus``) makes ``bytes.decode`` raise ``LookupError``
+    *before* the ``errors="replace"`` handler ever runs, which would otherwise
+    abort the whole inbound fetch. Fall back to UTF-8 with replacement.
+    """
+    try:
+        return payload.decode(charset or "utf-8", errors="replace")
+    except LookupError:
+        return payload.decode("utf-8", errors="replace")
+
+
 def _extract_text_body(msg: email_lib.message.Message) -> str:
     """Extract the plain-text body from a potentially multipart email."""
     if msg.is_multipart():
@@ -195,8 +209,7 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/plain":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    return payload.decode(charset, errors="replace")
+                    return _safe_payload_decode(payload, part.get_content_charset())
         # Fallback: try text/html and strip tags
         for part in msg.walk():
             content_type = part.get_content_type()
@@ -206,15 +219,13 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/html":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    html = payload.decode(charset, errors="replace")
+                    html = _safe_payload_decode(payload, part.get_content_charset())
                     return _strip_html(html)
         return ""
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            text = payload.decode(charset, errors="replace")
+            text = _safe_payload_decode(payload, msg.get_content_charset())
             if msg.get_content_type() == "text/html":
                 return _strip_html(text)
             return text

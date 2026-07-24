@@ -162,6 +162,24 @@ class TestExtractTextBody(unittest.TestCase):
         self.assertIn("Hello from HTML", result)
         self.assertNotIn("<p>", result)
 
+    def test_unknown_body_charset_does_not_raise(self):
+        """The Content-Type charset is attacker-controlled. An unknown label
+        (``charset=bogus``) makes ``bytes.decode`` raise LookupError before the
+        ``errors='replace'`` handler runs, which would abort the inbound fetch.
+        It must fall back instead."""
+        import email as email_lib
+        from plugins.platforms.email.adapter import _extract_text_body
+
+        plain = email_lib.message_from_bytes(
+            b"Content-Type: text/plain; charset=bogus\n\nHello body"
+        )
+        self.assertEqual(_extract_text_body(plain), "Hello body")
+
+        html = email_lib.message_from_bytes(
+            b"Content-Type: text/html; charset=does-not-exist\n\n<p>Hi</p>"
+        )
+        self.assertIn("Hi", _extract_text_body(html))
+
     def test_multipart_prefers_plain(self):
         from plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEMultipart("alternative")

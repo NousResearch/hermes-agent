@@ -383,6 +383,83 @@ async def test_admin_runs_quick_command_when_gating_enabled():
     assert result == "quick-command-admin"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quick_commands", "displayed_name", "raw_name", "expected"),
+    [
+        (
+            {"my-note": {"type": "exec", "command": "printf sanitized"}},
+            "my_note",
+            "my-note",
+            "sanitized",
+        ),
+        (
+            {"x" * 40: {"type": "exec", "command": "printf clamped"}},
+            "x" * 32,
+            "x" * 40,
+            "clamped",
+        ),
+        (
+            {
+                "my-note": {"type": "exec", "command": "printf first"},
+                "my_note": {"type": "exec", "command": "printf second"},
+            },
+            "my_note",
+            "my-note",
+            "first",
+        ),
+    ],
+)
+async def test_telegram_quick_command_menu_name_executes_configured_raw_command(
+    quick_commands, displayed_name, raw_name, expected,
+):
+    """Telegram's sanitized/clamped menu name resolves to its raw exec key.
+
+    The access allowlist intentionally contains only the raw name: this proves
+    dispatch both executes the right configured command and authorizes that
+    underlying command rather than the displayed Telegram spelling.
+    """
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [raw_name],
+        },
+    )
+    runner.config.quick_commands = quick_commands
+
+    result = await runner._handle_message(
+        _make_event(
+            f"/{displayed_name}",
+            _make_source(platform=Platform.TELEGRAM, user_id="999"),
+        )
+    )
+
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_non_telegram_quick_command_skips_telegram_name_resolution(monkeypatch):
+    """Discord keeps exact quick-command semantics and never applies Telegram aliases."""
+    def _unexpected_resolution(*_args, **_kwargs):
+        raise AssertionError("Telegram quick-command resolver called for Discord")
+
+    monkeypatch.setattr(
+        "hermes_cli.commands.resolve_telegram_quick_command",
+        _unexpected_resolution,
+    )
+    runner = _make_runner()
+    runner.config.quick_commands = {
+        "limits": {"type": "exec", "command": "printf discord-exact"}
+    }
+
+    result = await runner._handle_message(
+        _make_event("/limits", _make_source(platform=Platform.DISCORD))
+    )
+
+    assert result == "discord-exact"
+
+
 # ---------------------------------------------------------------------------
 # Running-agent fast-path gating — admin/user split must hold even when an
 # agent is already running. The fast-path block in _handle_message dispatches

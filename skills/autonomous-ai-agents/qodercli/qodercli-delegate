@@ -1,0 +1,96 @@
+#!/bin/bash
+# qodercli-delegate: Print-mode delegation wrapper for Hermes.
+# Eliminates interactive monitoring entirely — one terminal call, structured result.
+#
+# Usage:
+#   qodercli-delegate "Implement auth across src/routes/ and src/middleware/" [workdir] [timeout]
+#   qodercli-delegate "Migrate src/db/ to SQLAlchemy" ~/project 600
+#
+# Output: JSON on stdout with exit_code, files_changed, diff_stat, error_class, output_tail.
+# Exit: 0 on qodercli success, 1 on qodercli failure, 2 on preflight failure.
+
+set -o pipefail
+
+PROMPT="${1:?Usage: qodercli-delegate \"<prompt>\" [workdir] [timeout]}"
+WORKDIR="${2:-.}"
+TIMEOUT="${3:-600}"
+
+# --- Preflight ---
+
+QODERCLI_BIN="${HERMES_QODERCLI_BIN:-$(which qodercli 2>/dev/null)}"
+if [ -z "$QODERCLI_BIN" ] || [ ! -x "$QODERCLI_BIN" ]; then
+  echo '{"error_class":"binary_not_found","exit_code":127,"message":"qodercli not in PATH. Set HERMES_QODERCLI_BIN or install: npm install -g @qoder-ai/qodercli"}'
+  exit 2
+fi
+
+if [ ! -d "$WORKDIR" ]; then
+  echo "{\"error_class\":\"workdir_not_found\",\"exit_code\":126,\"message\":\"$WORKDIR does not exist\"}"
+  exit 2
+fi
+
+# --- Execute ---
+
+cd "$WORKDIR" || exit 2
+
+# Portable timeout: Linux has `timeout`, macOS has `gtimeout` (coreutils)
+TIMEOUT_CMD=""
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="timeout $TIMEOUT"
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="gtimeout $TIMEOUT"
+fi
+
+# Capture git state before
+GIT_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
+
+# Run qodercli in print mode with timeout
+OUTPUT_FILE=$(mktemp /tmp/qodercli-delegate.XXXXXX)
+$TIMEOUT_CMD "$QODERCLI_BIN" -p "$PROMPT" \
+  --permission-mode bypass_permissions \
+  > "$OUTPUT_FILE" 2>&1
+EXIT_CODE=$?
+
+# --- Classify result ---
+
+ERROR_CLASS="none"
+if [ $EXIT_CODE -eq 124 ]; then
+  ERROR_CLASS="timeout"
+elif [ $EXIT_CODE -ne 0 ]; then
+  if grep -qi "not logged in\|please run /login\|401\|403" "$OUTPUT_FILE" 2>/dev/null; then
+    ERROR_CLASS="auth_failure"
+  elif grep -qi "402\|credit\|quota" "$OUTPUT_FILE" 2>/dev/null; then
+    ERROR_CLASS="credit_exhausted"
+  elif grep -qi "permission.*required\|confirmation required" "$OUTPUT_FILE" 2>/dev/null; then
+    ERROR_CLASS="permission_blocked"
+  elif grep -qi "ECONNREFUSED\|ETIMEDOUT\|ENOTFOUND\|network" "$OUTPUT_FILE" 2>/dev/null; then
+    ERROR_CLASS="network_error"
+  else
+    ERROR_CLASS="unknown_failure"
+  fi
+fi
+
+# --- Collect evidence ---
+
+GIT_AFTER=$(git rev-parse HEAD 2>/dev/null || echo "no-git")
+DIFF_STAT=$(git diff --stat 2>/dev/null | tail -1)
+FILES_CHANGED=$(git diff --name-only 2>/dev/null | wc -l | tr -d ' ')
+OUTPUT_TAIL=$(tail -3 "$OUTPUT_FILE" 2>/dev/null | tr '\n' ' ' | cut -c1-200)
+
+# --- Structured output ---
+
+cat <<EOF
+{
+  "exit_code": $EXIT_CODE,
+  "error_class": "$ERROR_CLASS",
+  "files_changed": $FILES_CHANGED,
+  "diff_stat": "$(echo "$DIFF_STAT" | sed 's/"/\\"/g')",
+  "output_tail": "$(echo "$OUTPUT_TAIL" | sed 's/"/\\"/g')",
+  "workdir": "$WORKDIR",
+  "timeout_used": $TIMEOUT,
+  "git_before": "$GIT_BEFORE",
+  "git_after": "$GIT_AFTER"
+}
+EOF
+
+rm -f "$OUTPUT_FILE"
+exit $EXIT_CODE

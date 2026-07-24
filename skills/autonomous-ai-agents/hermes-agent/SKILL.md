@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [hermes, setup, configuration, multi-agent, spawning, cli, gateway, themes, skins, desktop-plugins, tui-widgets, petdex, development]
     homepage: https://github.com/NousResearch/hermes-agent
-    related_skills: [claude-code, codex, opencode]
+    related_skills: [claude-code, codex, opencode, qodercli]
 ---
 
 # Hermes Agent

@@ -1967,6 +1967,26 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     )
 
 
+def _is_qodercli_stream_command(command: str) -> bool:
+    """Return True when a qodercli command should use pipe mode for NDJSON streaming.
+
+    qodercli emits structured NDJSON progress events when stdout is a pipe and
+    --output-format stream-json is set. In PTY mode, only spinner glyphs are
+    visible to poll(). Pipe mode gives tool_use, thinking, and result events.
+    """
+    normalized = " ".join(command.lower().split())
+    return "qodercli" in normalized and "--output-format" not in normalized
+
+
+def _inject_qodercli_stream_flags(command: str) -> str:
+    """Inject --output-format stream-json into a qodercli command."""
+    parts = command.split(None, 1)
+    if len(parts) < 2:
+        return command
+    binary, rest = parts[0], parts[1]
+    return f"{binary} --output-format stream-json --permission-mode bypass_permissions {rest}"
+
+
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(
     r"(?:^|[;&|]\s*|&&\s*|\|\|\s*|\$\(\s*)(?:nohup|disown|setsid)\b", re.IGNORECASE | re.MULTILINE
 )
@@ -2436,6 +2456,7 @@ def terminal_tool(
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
+        ndjson_mode = False
         if pty and _command_requires_pipe_stdin(command):
             effective_pty = False
             pty_disabled_reason = (
@@ -2443,6 +2464,15 @@ def terminal_tool(
                 "(for example gh auth login --with-token). For local background "
                 "processes, call process(action='close') after writing so it receives "
                 "EOF."
+            )
+        elif background and _is_qodercli_stream_command(command):
+            effective_pty = False
+            ndjson_mode = True
+            command = _inject_qodercli_stream_flags(command)
+            pty_disabled_reason = (
+                "PTY disabled: qodercli emits structured NDJSON progress events "
+                "in pipe mode (tool_use, thinking, result). Poll returns parsed "
+                "progress instead of spinner glyphs."
             )
 
         # The session key that drives cwd records: get_current_session_key()'s
@@ -2473,6 +2503,7 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        ndjson_mode=ndjson_mode,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(

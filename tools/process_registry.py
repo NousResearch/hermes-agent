@@ -87,6 +87,180 @@ def format_uptime_short(seconds: int) -> str:
     return f"{hours}h {mins}m"
 
 
+def _format_ndjson_progress(output_buffer: str) -> str:
+    """Parse NDJSON output from qodercli stream-json and produce a progress summary.
+
+    Returns a compact human-readable string showing the latest activity,
+    replacing spinner glyphs with structured tool/thinking/result events.
+    Includes environment friction detection: composite friction_index
+    from error rate, context velocity, and retry density.
+    """
+    from collections import Counter
+
+    lines = output_buffer.strip().split("\n")
+    events = []
+    for line in lines[-50:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        events.append(obj)
+
+    if not events:
+        return "[NDJSON: waiting for first event...]"
+
+    parts = []
+    tool_uses = []
+    last_thinking_len = 0
+    result_event = None
+    init_event = None
+
+    error_count = 0
+    tool_result_count = 0
+    context_ratios = []
+    tool_call_signatures = []
+
+    _ERROR_PATTERNS = (
+        "Traceback (most recent call last)",
+        "ModuleNotFoundError",
+        "ImportError",
+        "Permission denied",
+        "No such file or directory",
+        "command not found",
+        "ConnectionError",
+        "kalloc",
+    )
+
+    for i, ev in enumerate(events):
+        ev_type = ev.get("type", "")
+        if ev_type == "system" and ev.get("subtype") == "init":
+            init_event = ev
+        elif ev_type == "assistant":
+            msg = ev.get("message", {})
+
+            if msg.get("stop_reason") is not None:
+                usage = msg.get("usage", {})
+                ratio = usage.get("context_usage_ratio")
+                if ratio is not None:
+                    context_ratios.append((i, float(ratio)))
+
+            for block in msg.get("content", []):
+                bt = block.get("type", "")
+                if bt == "tool_use":
+                    name = block.get("name", "unknown")
+                    inp = block.get("input", {})
+                    detail = ""
+                    if name in ("Read", "Edit", "Write") and "file_path" in inp:
+                        detail = f" ({inp['file_path']})"
+                    elif name == "Bash" and "command" in inp:
+                        cmd = inp["command"][:60]
+                        detail = f" ({cmd})"
+                    elif name == "Grep" and "pattern" in inp:
+                        detail = f" (/{inp['pattern']}/)"
+                    elif name == "Agent" and "description" in inp:
+                        detail = f" ({inp['description']})"
+                    tool_uses.append(f"{name}{detail}")
+
+                    sig_input = (inp.get("command") or inp.get("file_path")
+                                 or inp.get("pattern") or inp.get("prompt")
+                                 or inp.get("url") or inp.get("description")
+                                 or (str(inp)[:80] if inp else ""))
+                    tool_call_signatures.append(f"{name}:{str(sig_input)[:80]}")
+
+                elif bt == "thinking":
+                    last_thinking_len = len(block.get("thinking", ""))
+                elif bt == "text":
+                    text = block.get("text", "")
+                    if text:
+                        parts.append(f"Response: {text[:120]}")
+
+        elif ev_type == "user":
+            tool_use_result = ev.get("tool_use_result", {})
+            exit_code = tool_use_result.get("exitCode")
+
+            msg = ev.get("message", {})
+            for block in msg.get("content", []):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_result_count += 1
+
+                if exit_code is not None and exit_code != 0:
+                    error_count += 1
+                    continue
+
+                content = block.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        c.get("text", "") for c in content if isinstance(c, dict)
+                    )
+                if any(pat in content for pat in _ERROR_PATTERNS):
+                    error_count += 1
+
+        elif ev_type == "result":
+            result_event = ev
+
+    if init_event and not tool_uses and not parts:
+        model = init_event.get("model", "unknown")
+        parts.append(f"Session started (model: {model})")
+
+    if tool_uses:
+        parts.append(f"Tools used: {', '.join(tool_uses[-5:])}")
+        if len(tool_uses) > 5:
+            parts[0] = f"Tools used ({len(tool_uses)} total): {', '.join(tool_uses[-5:])}"
+
+    if last_thinking_len and not result_event:
+        parts.append(f"Thinking... ({last_thinking_len} chars)")
+
+    if result_event:
+        subtype = result_event.get("subtype", "unknown")
+        turns = result_event.get("num_turns", "?")
+        duration = result_event.get("duration_ms", 0)
+        dur_str = _format_duration(duration // 1000) if duration else "?"
+        result_text = result_event.get("result", "")
+        summary = f"Completed ({subtype}, {turns} turns, {dur_str})"
+        if result_text:
+            summary += f": {result_text[:100]}"
+        parts.append(summary)
+
+    # Friction index: (error_rate + ctx_velocity_norm + retry_density) / 3
+    error_rate = error_count / max(tool_result_count, 1)
+
+    ctx_velocity = 0.0
+    if len(context_ratios) >= 3:
+        first_idx, first_ratio = context_ratios[0]
+        last_idx, last_ratio = context_ratios[-1]
+        span = last_idx - first_idx
+        if span > 0:
+            ctx_velocity = (last_ratio - first_ratio) / span
+    ctx_velocity_norm = min(ctx_velocity / 0.02, 1.0)
+
+    sig_counts = Counter(tool_call_signatures)
+    retry_density = max(sig_counts.values(), default=0) / max(len(tool_call_signatures), 1)
+
+    friction_index = (error_rate + ctx_velocity_norm + retry_density) / 3
+
+    if friction_index >= 0.40:
+        signals = []
+        if error_rate > 0.3:
+            signals.append(f"HIGH-ERROR ({error_count}/{tool_result_count})")
+        if ctx_velocity > 0.02:
+            signals.append(f"CTX-VELOCITY +{ctx_velocity:.1%}/ev")
+        if retry_density > 0.3:
+            worst = max(sig_counts.items(), key=lambda x: x[1])
+            tool_name = worst[0].split(":")[0]
+            signals.append(f"RETRY {tool_name} x{worst[1]}")
+        if context_ratios and context_ratios[-1][1] > 0.85:
+            signals.append(f"CTX-FULL {context_ratios[-1][1]:.0%}")
+        parts.append(f"\u26a0 Friction: {' | '.join(signals)}")
+    elif friction_index >= 0.15:
+        parts.append(f"errors: {error_count}/{tool_result_count}")
+
+    return " | ".join(parts) if parts else "[NDJSON: processing...]"
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -108,6 +282,7 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    ndjson_mode: bool = False                   # True when output is NDJSON (qodercli stream-json)
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -694,6 +869,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        ndjson_mode: bool = False,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -704,6 +880,8 @@ class ProcessRegistry:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
+            ndjson_mode: If True, output is NDJSON (qodercli stream-json). poll()
+                         will parse structured progress events instead of raw text.
         """
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
@@ -712,6 +890,7 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            ndjson_mode=ndjson_mode,
         )
 
         if use_pty:
@@ -1343,7 +1522,10 @@ class ProcessRegistry:
         self._reconcile_local_exit(session)
 
         with session._lock:
-            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+            if session.ndjson_mode and session.output_buffer:
+                output_preview = _format_ndjson_progress(session.output_buffer)
+            else:
+                output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
 
         result = {
             "session_id": session.id,

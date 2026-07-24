@@ -362,6 +362,43 @@ def apply_v4a_operations(operations: List[PatchOperation],
     # Import here to avoid circular imports
     from tools.file_operations import PatchResult
 
+    # ---- Phase 0: reject empty operations list ----
+    # An empty operations list reaches here when the patch body has no
+    # ``*** Update File: <path>`` / ``*** Add File: <path>`` /
+    # ``*** Delete File: <path>`` / ``*** Move File: <src> -> <dst>``
+    # markers — for example, when the caller supplied a bare unified-diff
+    # body (``@@`` hunks + ``-``/``+`` lines) and assumed the ``path``
+    # tool argument would be honored.  In V4A the file path lives inside
+    # the patch body via the ``*** Update File:`` marker, and the
+    # ``path`` argument is ignored in ``patch`` mode.
+    #
+    # Pre-fix behavior: ``parse_v4a_patch`` returned ``([], None)``
+    # (empty patch is not a parse error per the docstring), the Phase 1
+    # validator had nothing to check, the Phase 2 loop ran zero times,
+    # and we returned ``PatchResult(success=True, files_modified=[])`` —
+    # a silent success with no filesystem change.  The agent saw
+    # ``{"success": true}`` and moved on.  This was the root cause of
+    # multiple wiki-edit silent-failure incidents.
+    #
+    # Now we hard-fail with an actionable message naming the expected
+    # markers and pointing at the right tool for the common case.
+    if not operations:
+        return PatchResult(
+            success=False,
+            error=(
+                "Patch contained no operations (no files modified).\n"
+                "V4A patch bodies must include at least one file-operation marker:\n"
+                "  *** Update File: <path>\n"
+                "  *** Add File: <path>\n"
+                "  *** Delete File: <path>\n"
+                "  *** Move File: <src> -> <dst>\n"
+                "The 'path' tool argument is ignored in 'patch' mode — the path "
+                "must be inside the patch body.\n"
+                "For simple string replacement, prefer mode='replace' with "
+                "old_string + new_string + path."
+            ),
+        )
+
     # ---- Phase 1: validate ----
     validation_errors = _validate_operations(operations, file_ops)
     if validation_errors:

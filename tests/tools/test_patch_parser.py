@@ -715,3 +715,82 @@ class TestV4ALspDiagnosticsPropagation:
         assert result.lsp_diagnostics is not None
         assert per_file["a.ts"] in result.lsp_diagnostics
         assert per_file["b.ts"] in result.lsp_diagnostics
+
+
+class TestEmptyOperationsRejected:
+    """Regression: a patch body with no V4A file-operation markers must
+    return ``PatchResult(success=False, ...)`` instead of silently
+    succeeding with zero modifications.
+
+    Pre-fix, ``apply_v4a_operations([])`` returned
+    ``PatchResult(success=True, files_modified=[])`` — the empty
+    operations list slipped past the validator and the apply loop ran
+    zero times.  The agent saw ``{"success": true}`` and moved on
+    without realizing nothing had been written.  This was the root
+    cause of multiple wiki-edit silent-failure incidents observed in
+    real agent traffic (the ``path`` tool argument is ignored in
+    ``patch`` mode, so callers who supplied a bare unified diff body
+    plus ``path=...`` got silent no-ops).
+    """
+
+    def _file_ops(self):
+        class FakeFileOps:
+            def __init__(self):
+                self.write_calls = 0
+
+            def read_file_raw(self, path):
+                return SimpleNamespace(content="anything", error=None)
+
+            def write_file(self, path, content):
+                self.write_calls += 1
+                return SimpleNamespace(error=None)
+
+        return FakeFileOps()
+
+    def test_empty_operations_returns_failure(self):
+        file_ops = self._file_ops()
+        result = apply_v4a_operations([], file_ops)
+        assert result.success is False, (
+            "empty ops must NOT report success — pre-fix this returned "
+            "success=True and silently wrote nothing"
+        )
+        assert file_ops.write_calls == 0, (
+            "empty ops must not invoke write_file"
+        )
+        assert "no operations" in result.error.lower()
+
+    def test_empty_operations_error_mentions_markers(self):
+        """Error message must teach the caller what shape the patch needs."""
+        file_ops = self._file_ops()
+        result = apply_v4a_operations([], file_ops)
+        msg = result.error
+        # Each of the four V4A file markers should be named so the agent
+        # can self-correct without re-reading the schema.
+        assert "*** Update File:" in msg
+        assert "*** Add File:" in msg
+        assert "*** Delete File:" in msg
+        assert "*** Move File:" in msg
+
+    def test_empty_operations_error_redirects_to_replace_mode(self):
+        """The most common cause is callers reaching for ``patch`` when
+        ``replace`` is the right tool; the error nudges them there."""
+        file_ops = self._file_ops()
+        result = apply_v4a_operations([], file_ops)
+        assert "replace" in result.error.lower()
+
+    def test_parse_then_apply_bare_diff_returns_failure(self):
+        """End-to-end: a unified-diff body with no V4A markers parses to
+        zero operations and then apply must hard-fail rather than
+        silently succeed.  This matches what the agent does when it
+        builds a patch as ``@@\n-old\n+new`` with no envelope."""
+        bare_diff = "@@\n-old line\n+new line\n"
+        operations, err = parse_v4a_patch(bare_diff)
+        assert operations == []
+        # parse_v4a_patch treats empty as not-an-error by design
+        assert err is None
+        # ...but apply MUST reject it loudly.
+        file_ops = self._file_ops()
+        result = apply_v4a_operations(operations, file_ops)
+        assert result.success is False
+        assert file_ops.write_calls == 0
+

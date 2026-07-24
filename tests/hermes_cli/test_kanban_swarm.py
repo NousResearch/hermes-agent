@@ -115,3 +115,145 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert kb.get_task(conn, created.synthesizer_id).status == "ready"
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# #34273 — per-swarm verifier / synthesizer body + skills overrides
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_create_swarm_uses_default_verifier_body_when_unset(tmp_path):
+    """Backward compat: with no overrides, the verifier body matches the
+    historical code-review default."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="goal",
+            workers=[SwarmWorkerSpec(profile="w", title="t", body="b")],
+            verifier_assignee="v",
+            synthesizer_assignee="s",
+            created_by="orch",
+        )
+        verifier = kb.get_task(conn, created.verifier_id)
+        assert "Review every worker handoff" in verifier.body
+        # And the historical skill is still attached.
+        assert "requesting-code-review" in (verifier.skills or [])
+    finally:
+        conn.close()
+
+
+def test_create_swarm_accepts_custom_verifier_body(tmp_path):
+    """#34273: caller can supply a custom verifier body (e.g. 'run
+    merge_scraped.py'). The swarm context suffix is still appended."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        custom = "Run merge_scraped.py to combine outputs. Validate. Gate pass/block."
+        created = create_swarm(
+            conn,
+            goal="goal",
+            workers=[SwarmWorkerSpec(profile="w", title="t", body="b")],
+            verifier_assignee="v",
+            synthesizer_assignee="s",
+            verifier_body=custom,
+            created_by="orch",
+        )
+        verifier = kb.get_task(conn, created.verifier_id)
+        # Custom body present.
+        assert "Run merge_scraped.py" in verifier.body
+        # Swarm context suffix is still appended (root_id reference).
+        assert created.root_id in verifier.body
+        # Original code-review default phrasing is NOT present.
+        assert "Review every worker handoff" not in verifier.body
+    finally:
+        conn.close()
+
+
+def test_create_swarm_accepts_custom_verifier_skills(tmp_path):
+    """#34273: caller can override verifier skills."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="goal",
+            workers=[SwarmWorkerSpec(profile="w", title="t", body="b")],
+            verifier_assignee="v",
+            synthesizer_assignee="s",
+            verifier_skills=["kanban-worker", "data-merge"],
+            created_by="orch",
+        )
+        verifier = kb.get_task(conn, created.verifier_id)
+        # Custom skills present, historical default NOT.
+        skills = set(verifier.skills or [])
+        assert "kanban-worker" in skills
+        assert "data-merge" in skills
+        assert "requesting-code-review" not in skills
+    finally:
+        conn.close()
+
+
+def test_create_swarm_accepts_custom_synthesizer_body(tmp_path):
+    """#34273: caller can supply a custom synthesizer body."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        custom = "Run process_reviews.py, then generate_report.py, then push."
+        created = create_swarm(
+            conn,
+            goal="goal",
+            workers=[SwarmWorkerSpec(profile="w", title="t", body="b")],
+            verifier_assignee="v",
+            synthesizer_assignee="s",
+            synthesizer_body=custom,
+            created_by="orch",
+        )
+        synth = kb.get_task(conn, created.synthesizer_id)
+        assert "process_reviews.py" in synth.body
+        # Original phrasing absent.
+        assert "Synthesize the verified worker outputs" not in synth.body
+    finally:
+        conn.close()
+
+
+def test_create_swarm_accepts_custom_synthesizer_skills(tmp_path):
+    """#34273: caller can override synthesizer skills."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="goal",
+            workers=[SwarmWorkerSpec(profile="w", title="t", body="b")],
+            verifier_assignee="v",
+            synthesizer_assignee="s",
+            synthesizer_skills=["kanban-worker"],
+            created_by="orch",
+        )
+        synth = kb.get_task(conn, created.synthesizer_id)
+        skills = set(synth.skills or [])
+        assert "kanban-worker" in skills
+        assert "humanizer" not in skills
+    finally:
+        conn.close()
+
+
+def test_create_swarm_independent_verifier_and_synthesizer_overrides(tmp_path):
+    """#34273: overriding only the verifier leaves the synthesizer default,
+    and vice versa."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="goal",
+            workers=[SwarmWorkerSpec(profile="w", title="t", body="b")],
+            verifier_assignee="v",
+            synthesizer_assignee="s",
+            verifier_body="Custom verifier only",
+            # synthesizer untouched — should keep historical default
+            created_by="orch",
+        )
+        verifier = kb.get_task(conn, created.verifier_id)
+        synth = kb.get_task(conn, created.synthesizer_id)
+        assert "Custom verifier only" in verifier.body
+        # Synthesizer still uses the default text.
+        assert "Synthesize the verified worker outputs" in synth.body
+    finally:
+        conn.close()

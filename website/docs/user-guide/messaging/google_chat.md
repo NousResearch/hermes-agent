@@ -208,6 +208,58 @@ disable the marker entirely.
 
 ---
 
+## Optional: Cloud Run relay envelope (Format 3)
+
+Some deployments put a small Cloud Run relay between Google Chat Pub/Sub and the
+Hermes host. This keeps GCP credentials and Pub/Sub subscriber access inside
+Google Cloud while forwarding a flat JSON envelope to the machine running
+Hermes. The Google Chat adapter calls this shape `relay_flat` (Format 3).
+
+A relay `MESSAGE` envelope should include:
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `event_type` | Yes | Use `MESSAGE`. Other event types are ignored. |
+| `sender_email` | Yes | Email used for the Hermes allowlist check. |
+| `sender_type` | Yes | Forward Chat's upstream `sender.type`: `HUMAN` or `BOT`. |
+| `text` | Yes | Message text passed to the agent. |
+| `space_name` | Yes | Google Chat space resource name, e.g. `spaces/AAAA...`. |
+| `message_name` | Yes | Message resource name used for Pub/Sub deduplication. |
+| `thread_name` | No | Include when the message belongs to a Chat thread. |
+| `sender_display_name` | No | Friendly display name; falls back to `sender_email`. |
+| `space_type` | No | Defaults to `SPACE`. |
+
+Minimal relay payload:
+
+```json
+{
+  "event_type": "MESSAGE",
+  "sender_email": "alice@example.com",
+  "sender_display_name": "Alice",
+  "sender_type": "HUMAN",
+  "text": "please summarize this thread",
+  "space_name": "spaces/AAAA...",
+  "message_name": "spaces/AAAA/messages/BBBB",
+  "thread_name": "spaces/AAAA/threads/CCCC"
+}
+```
+
+`sender_type` is part of the operator contract. The relay must copy
+`sender.type` from the upstream Chat event for every forwarded message:
+
+- `BOT` messages are acknowledged and dropped, which prevents the bot from
+  re-processing its own replies.
+- `HUMAN` messages continue into the agent loop.
+- Missing or unknown values are treated as `HUMAN` for backward compatibility,
+  so omitting `sender_type` disables the bot-loop guard.
+
+The relay is a trusted component. Anyone who can publish into the relay's
+forwarded topic can craft `sender_email`, `sender_type`, and message text, so
+keep publish rights scoped tightly and continue using
+`GOOGLE_CHAT_ALLOWED_USERS` on the Hermes side.
+
+---
+
 ## Formatting and capabilities
 
 Google Chat renders a limited markdown subset:

@@ -830,7 +830,10 @@ class TestTeamsMessageHandling:
         )
         activity.reply_to_id = "root-message-1"
         activity.channel_data = {
-            "team": {"id": "team-1"},
+            "team": {
+                "id": "19:bot-framework-team@thread.tacv2",
+                "aadGroupId": "team-1",
+            },
             "channel": {"id": "19:channel@thread.tacv2"},
         }
         await adapter._on_message(self._make_ctx(activity))

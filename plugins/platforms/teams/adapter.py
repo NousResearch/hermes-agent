@@ -1103,7 +1103,11 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> Optional[str]:
         """Fetch an uncached channel parent from Graph using its Teams message ID."""
         channel_data = getattr(activity, "channel_data", None)
-        team_id = self._nested_value(channel_data, "team", "id")
+        team_id = (
+            self._nested_value(channel_data, "team", "aadGroupId")
+            or self._nested_value(channel_data, "team", "aad_group_id")
+            or self._nested_value(channel_data, "team", "id")
+        )
         channel_id = self._nested_value(channel_data, "channel", "id")
         conversation_id = str(getattr(getattr(activity, "conversation", None), "id", "") or "")
         if not channel_id and "@thread.tacv2" in conversation_id:

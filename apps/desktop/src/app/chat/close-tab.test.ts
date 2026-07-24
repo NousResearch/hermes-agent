@@ -12,6 +12,10 @@ import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { closeActiveTab } from './close-tab'
 
+const closeActiveTerminal = vi.hoisted(() => vi.fn())
+
+vi.mock('@/app/right-sidebar/terminal/terminals', () => ({ closeActiveTerminal }))
+
 function fileTarget(path: string): PreviewTarget {
   return {
     kind: 'file',
@@ -25,7 +29,6 @@ function fileTarget(path: string): PreviewTarget {
 
 describe('closeActiveTab', () => {
   beforeEach(() => {
-    vi.stubGlobal('document', { activeElement: null })
     $activeSessionId.set('session-1')
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
@@ -38,6 +41,20 @@ describe('closeActiveTab', () => {
     $selectedStoredSessionId.set(null)
     clearSessionPreviewRegistry()
     window.localStorage.clear()
+    closeActiveTerminal.mockReset()
+    document.body.replaceChildren()
+  })
+
+  it('keeps the direct close command for a focused terminal', () => {
+    const terminal = document.createElement('div')
+    terminal.dataset.terminal = ''
+    const input = document.createElement('textarea')
+    terminal.append(input)
+    document.body.append(terminal)
+    input.focus()
+
+    expect(closeActiveTab()).toBe(true)
+    expect(closeActiveTerminal).toHaveBeenCalledOnce()
   })
 
   it('closes the active file preview tab (⌘W happy path)', () => {

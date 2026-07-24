@@ -274,10 +274,17 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      // Terminal-focused: view.closeTab (Ctrl+W / Cmd+W) is a readline
-      // delete-word-back command inside a terminal, not a close-tab shortcut.
-      // Let the keystroke pass through so xterm.js sends it to the shell.
-      if (actionId === 'view.closeTab' && isFocusWithin('[data-terminal]')) {
+      // An interactive terminal owns plain Ctrl+W as readline word erase.
+      // Agent terminals and rebound close-tab chords keep the close action.
+      if (
+        actionId === 'view.closeTab' &&
+        event.code === 'KeyW' &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        isFocusWithin('[data-interactive-terminal]')
+      ) {
         return
       }
 

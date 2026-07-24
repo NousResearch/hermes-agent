@@ -39,6 +39,7 @@ import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
+import { createClickOnlyWindowCloseItem, shouldInterceptCloseTabShortcut } from './close-tab-shortcut'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   authModeFromStatus,
@@ -4878,7 +4879,7 @@ function buildApplicationMenu() {
     label: 'Window',
     submenu: IS_MAC
       ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      : [{ role: 'minimize' }, createClickOnlyWindowCloseItem()]
   })
   template.push({
     label: 'Help',
@@ -4923,17 +4924,12 @@ function installDevToolsShortcut(window) {
 }
 
 function installPreviewShortcut(window) {
-  // Only macOS needs the main-process interception: the native menu item for
-  // Close Tab — deliberately left without an accelerator — would otherwise
-  // close the window when Cmd+W is pressed. On Windows/Linux, Ctrl+W reaches
-  // the renderer directly via the keybinding system, which lets the focused
-  // context (e.g. the terminal pane) process the keystroke as a readline
-  // word-delete command instead of always closing a tab.
-  if (!IS_MAC) return
-
   window.webContents.on('before-input-event', (event, input) => {
-    const key = String(input.key || '').toLowerCase()
-    if (key !== 'w' || !input.meta || input.alt || input.shift) return
+    // macOS needs main-process routing because its native menu owns Cmd+W.
+    // Win/Linux Ctrl+W must reach the renderer and the focused terminal.
+    if (!shouldInterceptCloseTabShortcut(input, IS_MAC)) {
+      return
+    }
 
     event.preventDefault()
     sendClosePreviewRequested()

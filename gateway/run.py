@@ -5547,6 +5547,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
+        if resolved_session_key:
+            store = getattr(self, "session_store", None)
+            if store is not None:
+                try:
+                    persisted = store.get_reasoning_override(resolved_session_key)
+                except Exception:
+                    logger.debug(
+                        "Failed to read persisted session reasoning override",
+                        exc_info=True,
+                    )
+                    persisted = None
+                if isinstance(persisted, dict):
+                    self._session_reasoning_overrides[resolved_session_key] = dict(persisted)
+                    return dict(persisted)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(
@@ -5563,6 +5577,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._session_reasoning_overrides.pop(session_key, None)
         else:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
+        store = getattr(self, "session_store", None)
+        if store is not None:
+            try:
+                store.set_reasoning_override(session_key, reasoning_config)
+            except Exception:
+                logger.debug(
+                    "Failed to persist session reasoning override", exc_info=True
+                )
 
     def _resolve_session_service_tier(
         self,

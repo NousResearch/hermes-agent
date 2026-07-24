@@ -18,6 +18,7 @@ from .episode import EpisodeDetector
 from .llm import HermesLLMClient, HierarchicalMeetingAnalyzer
 from .memory import MCPMemoryBackend, MemoryEvaluator
 from .models import (
+    AgentActivity,
     AgentPosition,
     ConceptDefinition,
     DiscussionStage,
@@ -27,11 +28,12 @@ from .models import (
     MemoryEvaluation,
     MemoryMatch,
     SourceMessage,
+    TemporalConflict,
     as_jsonable,
 )
 from .notify import TelegramReporter, load_env_value
 from .observability import RunLogger
-from .quality import audit_minutes
+from .quality import QualityGateError, audit_minutes, enforce_quality_gate
 from .state import StateStore
 
 
@@ -65,6 +67,9 @@ def minutes_from_dict(payload: dict[str, Any]) -> MeetingMinutes:
             recommendation=memory_payload.get("recommendation", "needs_professor_review"),
             candidate_memory_title=memory_payload.get("candidate_memory_title"),
             candidate_memory_summary=memory_payload.get("candidate_memory_summary"),
+            search_findings=list(memory_payload.get("search_findings", [])),
+            duplicate_targets=list(memory_payload.get("duplicate_targets", [])),
+            novelty_basis=list(memory_payload.get("novelty_basis", [])),
             reasons=list(memory_payload.get("reasons", [])),
         )
     from .models import ActionItem
@@ -95,6 +100,13 @@ def minutes_from_dict(payload: dict[str, Any]) -> MeetingMinutes:
         memory_evaluation=memory,
         confidence=float(payload.get("confidence", 0)),
         warnings=list(payload.get("warnings", [])),
+        meeting_type=payload.get("meeting_type", "research_meeting"),
+        agent_activity_log=[
+            AgentActivity(**item) for item in payload.get("agent_activity_log", [])
+        ],
+        temporal_conflicts=[
+            TemporalConflict(**item) for item in payload.get("temporal_conflicts", [])
+        ],
         recommendation=payload.get("recommendation", ""),
         metadata=dict(payload.get("metadata", {})),
     )
@@ -222,9 +234,9 @@ class HegiPipeline:
             "source_message_ids": episode.source_message_ids,
             "source_session_ids": episode.source_session_ids,
             "model": analysis.get("model", ""),
-            "prompt_version": analysis.get("prompt_version", "v2.0.0"),
+            "prompt_version": analysis.get("prompt_version", "v2.0.2"),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "hegi_version": "2.0.1",
+            "hegi_version": "2.0.2",
         }
         return minutes
 
@@ -258,10 +270,31 @@ class HegiPipeline:
                     reasons=[f"Memory Forest 검색 실패: {exc}"],
                 )
                 minutes.warnings.append("Memory Forest 검색 실패")
+        minutes.warnings.extend(audit_minutes(minutes, episode))
+        try:
+            enforce_quality_gate(minutes, episode)
+        except QualityGateError as exc:
+            minutes.warnings.append(f"최종 quality gate 차단: {exc}")
+            self.state.update_episode(
+                episode.meeting_id,
+                status="failed",
+                minutes=as_jsonable(minutes),
+                error=str(exc),
+            )
+            self.state.add_dead_letter(
+                "quality_gate",
+                {"minutes": as_jsonable(minutes)},
+                str(exc),
+                episode.meeting_id,
+            )
+            return {
+                "meeting_id": episode.meeting_id,
+                "status": "failed",
+                "warnings": minutes.warnings,
+            }
         minutes.action_items = persist_new_actions(
             self.state, episode.meeting_id, minutes.action_items
         )
-        minutes.warnings.extend(audit_minutes(minutes, episode))
         archive = ArchiveManager(self.config.local_spool, self.config.nas_root).archive(
             minutes, episode
         )

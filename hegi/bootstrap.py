@@ -378,6 +378,9 @@ def install(
             existing = loaded
     config = _deep_merge(defaults, existing)
     config["enabled"] = True
+    analysis = config.setdefault("analysis", {})
+    default_analysis = defaults.get("analysis", {})
+    analysis["prompt_version"] = default_analysis.get("prompt_version", "v2.0.2")
     config["telegram"] = {
         **config.get("telegram", {}),
         "chat_id": discovery.chat_id,

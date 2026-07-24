@@ -112,10 +112,17 @@ class MemoryEvaluator:
     def evaluate(self, minutes: MeetingMinutes) -> MemoryEvaluation:
         queries = memory_queries(minutes)
         matches: list[MemoryMatch] = []
+        search_findings: list[str] = []
         seen: set[str] = set()
         for query in queries:
             payload = self.backend.search(query)
-            for row in _extract_result_rows(payload):
+            rows = _extract_result_rows(payload)
+            search_findings.append(
+                f"{query}: {len(rows)}개 후보 검색"
+                if rows
+                else f"{query}: 관련 기억 없음"
+            )
+            for row in rows:
                 memory_id = str(
                     row.get("id") or row.get("path") or row.get("memory_id") or row.get("title")
                 )
@@ -137,12 +144,36 @@ class MemoryEvaluator:
         has_durable_content = bool(
             minutes.new_concepts or minutes.agreements or minutes.research_direction
         )
-        if not has_durable_content:
+        duplicate_targets = [
+            f"{match.title} ({match.memory_id}, {match.relation})" for match in matches
+        ]
+        novelty_basis: list[str] = []
+        if minutes.new_concepts:
+            novelty_basis.append(
+                "새 개념: " + ", ".join(item.name for item in minutes.new_concepts)
+            )
+        if minutes.agreements:
+            novelty_basis.append("새 합의: " + "; ".join(minutes.agreements[:3]))
+        if minutes.research_direction:
+            novelty_basis.append(
+                "새 연구 방향: " + "; ".join(minutes.research_direction[:3])
+            )
+        if minutes.meeting_type == "operational_incident":
+            recommendation = "no_memory"
+            reasons = [
+                "운영 장애 기록은 연구 판단과 분리하며 Memory Forest 장기 기억으로 승격하지 않음"
+            ]
+            novelty_basis = ["운영 복구 상태는 회의록·Action Item에서만 추적"]
+        elif not has_durable_content:
             recommendation = "no_memory"
             reasons = ["새 개념·합의·연구 방향이 없어 장기 기억 가치가 낮음"]
+            novelty_basis = ["지속 가능한 연구 판단이 확인되지 않음"]
         elif matches:
             recommendation = "merge_existing"
-            reasons = ["Memory Forest 검색에서 관련 기억이 발견되어 병합 검토가 필요함"]
+            reasons = [
+                "Memory Forest 검색에서 중복 후보가 발견됨: "
+                + ", ".join(match.title for match in matches[:5])
+            ]
         elif minutes.confidence < 0.6 or minutes.disagreements:
             recommendation = "needs_professor_review"
             reasons = ["의미는 있으나 이견 또는 분석 불확실성이 있어 교수 검토가 필요함"]
@@ -152,6 +183,8 @@ class MemoryEvaluator:
         return MemoryEvaluation(
             searched_queries=queries,
             matched_memories=matches,
+            duplicate_score=1.0 if matches else 0.0,
+            novelty_score=0.0 if not has_durable_content else (0.4 if matches else 1.0),
             recommendation=recommendation,  # type: ignore[arg-type]
             candidate_memory_title=minutes.title if has_durable_content else None,
             candidate_memory_summary=(
@@ -159,6 +192,9 @@ class MemoryEvaluator:
                 if has_durable_content
                 else None
             ),
+            search_findings=search_findings,
+            duplicate_targets=duplicate_targets,
+            novelty_basis=novelty_basis,
             reasons=reasons,
         )
 
@@ -220,6 +256,8 @@ class DraftGate:
     ) -> dict[str, Any]:
         if not evaluation.searched_queries:
             raise PermissionError("Draft 전에 Memory 중복 검색이 필요합니다.")
+        if evaluation.recommendation == "no_memory":
+            raise PermissionError("no_memory 판정 회의는 STM Draft를 생성하지 않습니다.")
         row = self.state.episode_by_id(minutes.meeting_id)
         if row is None:
             raise ValueError("meeting_id를 찾을 수 없습니다.")

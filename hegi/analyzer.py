@@ -3,23 +3,55 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 from .models import (
     ActionItem,
+    AgentActivity,
     AgentPosition,
     ConceptDefinition,
     DiscussionStage,
     EvidenceItem,
     MeetingEpisode,
     MeetingMinutes,
+    TemporalConflict,
 )
+
+MEETING_TYPES = {"research_meeting", "operational_incident", "mixed", "other"}
+PROFESSOR_NAMES = {"교수", "교수님", "professor", "user", "사용자"}
+UNSAFE_MEMORY_ACTION = re.compile(
+    r"(Memory\s*Forest|메모리\s*포레스트|기억\s*숲).{0,30}"
+    r"(직접\s*(쓰기|저장)|쓰기\s*활성화|자동\s*(커밋|승인)|auto[_ -]?commit)",
+    re.IGNORECASE,
+)
+INCIDENT_WORDS = (
+    "부팅 실패",
+    "장애",
+    "오류",
+    "에러",
+    "실패",
+    "복구",
+    "daemon",
+    "타임아웃",
+    "중단",
+)
+RESEARCH_WORDS = ("연구", "논문", "개념", "이론", "서지", "해석", "미학")
+
+
+def _text(value: Any) -> str:
+    """Return renderer-safe scalar text without coercing containers to repr."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return ""
 
 
 def _strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [str(item).strip() for item in value if str(item).strip()]
+    return [text for item in value if (text := _text(item))]
 
 
 def _ids(value: Any, valid_ids: set[int]) -> list[int]:
@@ -43,30 +75,85 @@ def _action_id(meeting_id: str, title: str, source_ids: list[int]) -> str:
     return f"act-{digest[:14]}"
 
 
+def classify_meeting_type(payload: dict[str, Any], episode: MeetingEpisode) -> str:
+    explicit = _text(payload.get("meeting_type"))
+    if explicit in MEETING_TYPES:
+        return explicit
+    corpus = " ".join(message.content for message in episode.messages).lower()
+    incident = sum(word.lower() in corpus for word in INCIDENT_WORDS)
+    research = sum(word.lower() in corpus for word in RESEARCH_WORDS)
+    if incident and research:
+        return "mixed"
+    if incident:
+        return "operational_incident"
+    if research:
+        return "research_meeting"
+    return "other"
+
+
 def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMinutes:
     valid_ids = {message.message_id for message in episode.messages}
     warnings = _strings(payload.get("warnings"))
+    professor_positions = _strings(payload.get("professor_positions"))
     discussion_flow: list[DiscussionStage] = []
     for item in payload.get("discussion_flow", []):
         if isinstance(item, dict):
             discussion_flow.append(
                 DiscussionStage(
-                    heading=str(item.get("heading", "")).strip() or "논의",
-                    summary=str(item.get("summary", "")).strip(),
+                    heading=_text(item.get("heading")) or "논의",
+                    summary=_text(item.get("summary")),
                     source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
                 )
             )
     agent_positions: list[AgentPosition] = []
     for item in payload.get("agent_positions", []):
         if isinstance(item, dict):
+            agent = _text(item.get("agent"))
+            position = _text(item.get("position"))
+            if agent.lower() in PROFESSOR_NAMES:
+                if position:
+                    professor_positions.append(position)
+                professor_positions.extend(_strings(item.get("contributions")))
+                continue
             agent_positions.append(
                 AgentPosition(
-                    agent=str(item.get("agent", "")).strip(),
-                    position=str(item.get("position", "")).strip(),
+                    agent=agent,
+                    position=position,
                     contributions=_strings(item.get("contributions")),
                     source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
                 )
             )
+    activity_log: list[AgentActivity] = []
+    for item in payload.get("agent_activity_log", []):
+        if not isinstance(item, dict):
+            continue
+        agent = _text(item.get("agent"))
+        if not agent or agent.lower() in PROFESSOR_NAMES:
+            continue
+        activity_log.append(
+            AgentActivity(
+                agent=agent,
+                activity=_text(item.get("activity")),
+                result=_text(item.get("result")) or "결과 미확인",
+                source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
+            )
+        )
+    temporal_conflicts: list[TemporalConflict] = []
+    for item in payload.get("temporal_conflicts", []):
+        if not isinstance(item, dict):
+            continue
+        status = _text(item.get("resolution_status")) or "uncertain"
+        if status not in {"resolved", "unresolved", "superseded", "uncertain"}:
+            status = "uncertain"
+        temporal_conflicts.append(
+            TemporalConflict(
+                subject=_text(item.get("subject")) or "상태 충돌",
+                earlier_state=_text(item.get("earlier_state")) or "이전 상태 미상",
+                current_state=_text(item.get("current_state")) or "현재 상태 미상",
+                resolution_status=status,  # type: ignore[arg-type]
+                source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
+            )
+        )
     concepts: list[ConceptDefinition] = []
     for item in payload.get("new_concepts", []):
         if not isinstance(item, dict):
@@ -76,8 +163,8 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
             status = "uncertain"
         concepts.append(
             ConceptDefinition(
-                name=str(item.get("name", "")).strip(),
-                definition=str(item.get("definition", "")).strip(),
+                name=_text(item.get("name")),
+                definition=_text(item.get("definition")),
                 status=status,  # type: ignore[arg-type]
                 source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
             )
@@ -91,8 +178,8 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
             verification = "추가 확인 필요"
         evidence.append(
             EvidenceItem(
-                claim=str(item.get("claim", "")).strip(),
-                source=str(item["source"]).strip() if item.get("source") else None,
+                claim=_text(item.get("claim")),
+                source=_text(item.get("source")) or None,
                 verification=verification,  # type: ignore[arg-type]
                 source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
             )
@@ -101,10 +188,16 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
     for item in payload.get("action_items", []):
         if not isinstance(item, dict):
             continue
-        title = str(item.get("title", "")).strip()
+        title = _text(item.get("title"))
         source_ids = _ids(item.get("source_message_ids"), valid_ids)
         if not title or not source_ids:
             warnings.append(f"근거가 없는 Action Item 제외: {title or '(제목 없음)'}")
+            continue
+        action_corpus = " ".join(
+            [title, _text(item.get("description")), _text(item.get("rationale"))]
+        )
+        if UNSAFE_MEMORY_ACTION.search(action_corpus):
+            warnings.append(f"안전정책 위반 Action Item 제외: {title}")
             continue
         priority = str(item.get("priority", "medium")).lower()
         if priority not in {"critical", "high", "medium", "low"}:
@@ -113,15 +206,15 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
             ActionItem(
                 action_id=_action_id(episode.meeting_id, title, source_ids),
                 title=title,
-                description=str(item.get("description", "")).strip(),
+                description=_text(item.get("description")),
                 source_message_ids=source_ids,
-                owner=str(item["owner"]).strip() if item.get("owner") else None,
+                owner=_text(item.get("owner")) or None,
                 priority=priority,  # type: ignore[arg-type]
-                deadline=str(item["deadline"]).strip() if item.get("deadline") else None,
+                deadline=_text(item.get("deadline")) or None,
                 project_id=(
-                    str(item["project_id"]).strip() if item.get("project_id") else None
+                    _text(item.get("project_id")) or None
                 ),
-                rationale=str(item.get("rationale", "")).strip(),
+                rationale=_text(item.get("rationale")),
             )
         )
     try:
@@ -131,12 +224,12 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
     confidence = max(0.0, min(1.0, confidence))
     return MeetingMinutes(
         meeting_id=episode.meeting_id,
-        title=str(payload.get("title", "")).strip() or f"연구회의 {episode.meeting_id}",
-        background=str(payload.get("background", "")).strip() or "원문에서 배경이 명시되지 않음",
+        title=_text(payload.get("title")) or f"회의 {episode.meeting_id}",
+        background=_text(payload.get("background")) or "원문에서 배경이 명시되지 않음",
         agenda=_strings(payload.get("agenda")),
         discussion_flow=discussion_flow,
         agent_positions=agent_positions,
-        professor_positions=_strings(payload.get("professor_positions")),
+        professor_positions=professor_positions,
         agreements=_strings(payload.get("agreements")),
         disagreements=_strings(payload.get("disagreements")),
         unresolved_questions=_strings(payload.get("unresolved_questions")),
@@ -147,7 +240,10 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
         memory_evaluation=None,
         confidence=confidence,
         warnings=warnings,
-        recommendation=str(payload.get("recommendation", "")).strip(),
+        meeting_type=classify_meeting_type(payload, episode),  # type: ignore[arg-type]
+        agent_activity_log=activity_log,
+        temporal_conflicts=temporal_conflicts,
+        recommendation=_text(payload.get("recommendation")),
     )
 
 
@@ -186,5 +282,6 @@ def minimal_minutes(episode: MeetingEpisode, error: str) -> MeetingMinutes:
         memory_evaluation=None,
         confidence=0.0,
         warnings=[f"LLM 분석 실패: {error}"],
+        meeting_type="other",
         recommendation="자동 전송 전에 재분석할 것",
     )

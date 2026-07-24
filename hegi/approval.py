@@ -77,6 +77,37 @@ def process_pending_approvals(
                 raise ValueError("승인 대상 회의록이 없습니다.")
             minutes = minutes_from_dict(json.loads(row["minutes_json"]))
             evaluation = MemoryEvaluator(memory_backend).evaluate(minutes)
+            if evaluation.recommendation == "no_memory":
+                result = {
+                    "meeting_id": meeting_id,
+                    "status": "no_memory",
+                    "project": str(job["project"]),
+                    "draft": None,
+                    "commit": "not_performed",
+                    "reasons": evaluation.reasons,
+                }
+                state.complete_approval_job(
+                    int(job["id"]), status="completed", result=result
+                )
+                results.append(result)
+                try:
+                    _send_status(
+                        config,
+                        "ℹ️ HEGI Memory 보류\n\n"
+                        f"회의: {meeting_id}\n"
+                        f"판정: no_memory\n"
+                        f"근거: {'; '.join(evaluation.reasons)}\n"
+                        "Draft와 Commit은 수행하지 않았습니다.",
+                        sender=sender,
+                    )
+                except Exception as notify_exc:
+                    state.add_dead_letter(
+                        "approval_notification",
+                        {"job_id": int(job["id"])},
+                        str(notify_exc),
+                        meeting_id,
+                    )
+                continue
             draft = gate.create_draft_after_recheck(
                 minutes,
                 evaluation,

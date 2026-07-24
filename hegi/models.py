@@ -64,6 +64,23 @@ class AgentPosition:
 
 
 @dataclass(slots=True)
+class AgentActivity:
+    agent: str
+    activity: str
+    result: str
+    source_message_ids: list[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class TemporalConflict:
+    subject: str
+    earlier_state: str
+    current_state: str
+    resolution_status: Literal["resolved", "unresolved", "superseded", "uncertain"]
+    source_message_ids: list[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ConceptDefinition:
     name: str
     definition: str
@@ -115,6 +132,9 @@ class MemoryEvaluation:
     ] = "needs_professor_review"
     candidate_memory_title: str | None = None
     candidate_memory_summary: str | None = None
+    search_findings: list[str] = field(default_factory=list)
+    duplicate_targets: list[str] = field(default_factory=list)
+    novelty_basis: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
 
 
@@ -137,6 +157,11 @@ class MeetingMinutes:
     memory_evaluation: MemoryEvaluation | None
     confidence: float
     warnings: list[str]
+    meeting_type: Literal[
+        "research_meeting", "operational_incident", "mixed", "other"
+    ] = "research_meeting"
+    agent_activity_log: list[AgentActivity] = field(default_factory=list)
+    temporal_conflicts: list[TemporalConflict] = field(default_factory=list)
     recommendation: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 

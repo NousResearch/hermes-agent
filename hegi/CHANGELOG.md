@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.2
+
+- 교수 메시지의 교차 DB 중복을 제거하고 화자를 `교수`로 정규화한다.
+- 연구회의·운영 장애·혼합·기타 meeting type 분류와 운영 장애 전용 템플릿을 추가한다.
+- 에이전트 행동 로그와 연구적 의견, 과거·현재 상태 충돌을 분리해 기록한다.
+- Memory Evaluation에 검색 결과·중복 대상·신규성 근거를 출력하고 `no_memory`에서
+  Draft 생성을 차단한다.
+- 최종 quality gate가 raw Python repr, 잘못된 화자명, Memory Forest 직접 쓰기
+  제안을 차단한다.
+
 ## 2.0.1
 
 - Memory Curator, Telegram chat/user ID와 agent DB를 자동 탐지하고 즉시 활성화한다.

@@ -113,6 +113,7 @@ def test_install_script_writes_enabled_config_and_gateway_plugin(tmp_path):
     assert config["telegram"]["enabled"] is True
     assert config["telegram"]["chat_id"] == "-10042"
     assert config["memory"]["professor_user_ids"] == ["4242"]
+    assert config["analysis"]["prompt_version"] == "v2.0.2"
     assert len(config["agents"]) == 3
     assert (curator / "plugins" / "hegi-telegram" / "__init__.py").is_file()
     hermes_config = yaml.safe_load((curator / "config.yaml").read_text())

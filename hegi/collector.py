@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -160,7 +160,7 @@ class HermesSQLiteCollector:
                 continue
             result.append(
                 SourceMessage(
-                    source_agent=source.name,
+                    source_agent="교수" if str(row["role"]).lower() == "user" else source.name,
                     source_db=str(source.db_path),
                     message_id=int(row["message_id"]),
                     session_id=str(row["session_id"]),
@@ -198,7 +198,12 @@ def deduplicate_messages(
     messages: Iterable[SourceMessage], bucket_seconds: int = 3
 ) -> list[SourceMessage]:
     unique: dict[str, SourceMessage] = {}
-    for message in messages:
+    for original in messages:
+        message = (
+            replace(original, source_agent="교수")
+            if original.role == "user" and original.source_agent != "교수"
+            else original
+        )
         key = _dedup_key(message, bucket_seconds)
         existing = unique.get(key)
         if existing is None or (message.timestamp, message.message_id) < (

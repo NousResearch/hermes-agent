@@ -54,8 +54,9 @@ def chunk_messages(episode: MeetingEpisode, max_chars: int) -> list[str]:
     chunks: list[list[str]] = [[]]
     current_size = 0
     for message in episode.messages:
+        speaker = "교수" if message.role == "user" else message.source_agent
         line = (
-            f"[message_id={message.message_id} agent={message.source_agent} "
+            f"[message_id={message.message_id} speaker={speaker} "
             f"role={message.role} timestamp={message.timestamp:.3f}]\n{message.content}"
         )
         if chunks[-1] and current_size + len(line) + 2 > max_chars:

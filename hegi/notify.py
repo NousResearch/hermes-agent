@@ -32,8 +32,17 @@ def _bullets(items: list[str], limit: int = 8) -> str:
 
 def telegram_parts(minutes: MeetingMinutes) -> list[str]:
     meeting = minutes.meeting_id
+    report_kind = (
+        "운영 장애 기록"
+        if minutes.meeting_type == "operational_incident"
+        else "회의록"
+    )
     positions = [
         f"{item.agent}: {item.position}" for item in minutes.agent_positions
+    ]
+    activities = [
+        f"{item.agent}: {item.activity} → {item.result}"
+        for item in minutes.agent_activity_log
     ]
     actions = [
         f"[{item.priority}] {item.title} · 담당 {item.owner or '미정'} · 기한 {item.deadline or '미정'}"
@@ -41,17 +50,23 @@ def telegram_parts(minutes: MeetingMinutes) -> list[str]:
     ]
     memory = minutes.memory_evaluation
     memory_text = (
-        f"추천: {memory.recommendation}\n이유: {'; '.join(memory.reasons)}"
+        f"추천: {memory.recommendation}\n"
+        f"검색 결과\n{_bullets(memory.search_findings, 6)}\n"
+        f"중복 대상\n{_bullets(memory.duplicate_targets, 6)}\n"
+        f"신규성 근거\n{_bullets(memory.novelty_basis, 6)}\n"
+        f"판정 이유\n{_bullets(memory.reasons, 6)}"
         if memory
         else "Memory Evaluation 미실행"
     )
     return [
-        f"1/4 HEGI 회의 개요 · {meeting}\n\n{minutes.title}\n\n"
+        f"1/4 HEGI {report_kind} 개요 · {meeting}\n\n{minutes.title}\n"
+        f"유형: {minutes.meeting_type}\n\n"
         f"핵심 의제\n{_bullets(minutes.agenda)}\n\n"
         f"교수 판단\n{_bullets(minutes.professor_positions)}",
-        f"2/4 논의 전개와 에이전트별 의견 · {meeting}\n\n"
+        f"2/4 논의 전개·연구적 의견·행동 로그 · {meeting}\n\n"
         f"{_bullets([stage.summary for stage in minutes.discussion_flow])}\n\n"
-        f"에이전트별 기여\n{_bullets(positions)}",
+        f"에이전트별 연구적 의견\n{_bullets(positions)}\n\n"
+        f"에이전트 행동 로그\n{_bullets(activities)}",
         f"3/4 합의·이견·Action Items · {meeting}\n\n"
         f"합의\n{_bullets(minutes.agreements)}\n\n"
         f"이견\n{_bullets(minutes.disagreements)}\n\n"

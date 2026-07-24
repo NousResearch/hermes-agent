@@ -36,7 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chunk_chars": 30000,
         "max_output_tokens": 10000,
         "timeout_seconds": 180,
-        "prompt_version": "v2.0.0",
+        "prompt_version": "v2.0.2",
     },
     "archive": {
         "local_spool": "",

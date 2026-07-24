@@ -1,8 +1,13 @@
-# HEGI v2.0.1 — AI Research Secretary
+# HEGI v2.0.2 — AI Research Secretary
 
 HEGI는 여러 Hermes 프로필의 공진방 대화를 읽기 전용으로 수집해 연구회의 Episode,
 한국어 구조화 회의록, Action Item, Memory Evaluation, Markdown/JSON 아카이브와
 Telegram 보고로 변환한다.
+
+회의록은 [작성·출력 정책](docs/minutes_policy.md)을 강제한다. 교수 발언은 교차 DB
+중복 제거 후 `교수`로 정규화하며, 연구회의와 운영 장애를 분류해 서로 다른 템플릿을
+사용한다. 출력 전 quality gate는 raw Python repr, 잘못된 화자명, Memory Forest 직접
+쓰기 제안을 차단한다.
 
 HEGI는 Hermes 핵심 agent loop나 tool schema를 수정하지 않는 독립 패키지다. LLM,
 Telegram, MCP는 Hermes의 기존 호출 경로를 재사용한다. Memory Forest 자동 쓰기와

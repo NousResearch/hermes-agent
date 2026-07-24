@@ -1,4 +1,4 @@
 name: hegi-telegram
-version: 2.0.1
+version: 2.0.2
 description: Intercept professor HEGI approval replies before normal agent dispatch.
 kind: standalone

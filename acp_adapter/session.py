@@ -630,6 +630,11 @@ class SessionManager:
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
+            "fallback_model": (
+                (model_cfg.get("fallback_providers") or model_cfg.get("fallback_model"))
+                if isinstance(model_cfg, dict)
+                else None
+            ),
         }
 
         try:

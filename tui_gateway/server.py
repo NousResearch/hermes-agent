@@ -10225,6 +10225,41 @@ def _(rid, params: dict) -> dict:
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
+            # Stale clients can attach truncate_before_user_ordinal=0 to an
+            # ordinary submit. That resolves to history[:0] == [] and
+            # replace_messages() DELETEs every durable row — silent total
+            # transcript loss. Refuse the empty-truncation edge unless the
+            # client explicitly opts in (legitimate restore/regenerate of the
+            # first user turn).
+            if (
+                not truncated
+                and history
+                and not is_truthy_value(params.get("confirm_empty_truncate"))
+            ):
+                logger.warning(
+                    "prompt.submit: REFUSED empty truncation of session %s "
+                    "(%d messages would be wiped; ordinal=%d).",
+                    sid,
+                    len(history),
+                    ordinal,
+                )
+                return _err(
+                    rid,
+                    4025,
+                    "truncation would erase the entire session transcript; "
+                    "resubmit with confirm_empty_truncate=true if this is intended",
+                )
+            # Info for routine rewind/edit cuts; warning only when the client
+            # explicitly opts into wiping the whole transcript.
+            log_fn = logger.warning if not truncated else logger.info
+            log_fn(
+                "prompt.submit: truncating session %s history %d -> %d messages "
+                "(ordinal=%d)",
+                sid,
+                len(history),
+                len(truncated),
+                ordinal,
+            )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if (db := _get_db()) is not None:

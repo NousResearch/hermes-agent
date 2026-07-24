@@ -54,7 +54,6 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     return agent

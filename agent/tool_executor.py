@@ -75,6 +75,29 @@ def _ensure_file_checkpoint(
     agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
 
 
+def _terminal_checkpoint_cwd(function_args: dict, effective_task_id: str) -> str:
+    """Resolve the same cwd the terminal tool will execute the command in.
+
+    The terminal tool resolves its cwd per task/session (explicit ``workdir``
+    arg → per-task override → live session cwd → ``TERMINAL_CWD``/process cwd
+    — see ``terminal_tool``'s resolution). Sessions created with an explicit
+    ``cwd`` (``session.create(cwd=...)``) or re-anchored via ``session.cwd.set``
+    therefore run commands in a directory that can differ from the Hermes
+    process cwd. The pre-destructive-command checkpoint must snapshot THAT
+    directory — falling back to ``TERMINAL_CWD``/``os.getcwd()`` snapshots the
+    wrong tree and the later rollback silently restores nothing.
+
+    Reuses the file-tools path pipeline (same base-dir resolution) by
+    resolving ``"."`` for the task, mirroring ``_ensure_file_checkpoint``.
+    """
+    workdir = function_args.get("workdir")
+    if workdir:
+        return str(workdir)
+    from tools.file_tools import _resolve_path_for_task
+
+    return str(_resolve_path_for_task(".", effective_task_id or "default"))
+
+
 def _budget_for_agent(agent) -> BudgetConfig:
     """Resolve a tool-result BudgetConfig scaled to the agent's context window.
 
@@ -538,7 +561,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        cwd = _terminal_checkpoint_cwd(function_args, effective_task_id)
                         agent._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -1226,7 +1249,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 cmd = function_args.get("command", "")
                 if _is_destructive_command(cmd):
-                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                    cwd = _terminal_checkpoint_cwd(function_args, effective_task_id)
                     agent._checkpoint_mgr.ensure_checkpoint(
                         cwd, f"before terminal: {cmd[:60]}"
                     )

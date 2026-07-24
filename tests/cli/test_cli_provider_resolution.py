@@ -172,6 +172,66 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_auto_fallback_is_ephemeral_retries_primary_next_turn(monkeypatch):
+    """An automatic fallback (primary AuthError → secondary) must not stick
+    across turns: the next turn re-anchors to the configured primary and
+    retries it first, so a transient primary blip self-heals instead of
+    stranding the session on the fallback until restart. User-initiated
+    /model switches are unaffected — they don't set _auto_fallback_active."""
+    cli = _import_cli()
+    calls = {"count": 0}
+
+    primary_runtime = {
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "base_url": "https://primary.example/v1",
+        "api_key": "primary-key",
+        "source": "config",
+    }
+    fallback_runtime = {
+        "provider": "openai-codex",
+        "api_mode": "chat_completions",
+        "base_url": "https://fallback.example/v1",
+        "api_key": "fallback-key",
+        "source": "config",
+    }
+
+    def _runtime_resolve(**kwargs):
+        calls["count"] += 1
+        requested = (kwargs.get("requested") or "").strip().lower()
+        if requested == "openrouter":
+            # Transient blip: fail turn 1, recover by turn 2.
+            if calls["count"] <= 1:
+                raise AuthError("primary auth failed (transient)")
+            return primary_runtime
+        if requested == "openai-codex":
+            return fallback_runtime
+        raise AuthError(f"unknown provider {requested!r}")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.requested_provider = "openrouter"
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://primary.example/v1"
+    shell.api_key = "primary-key"
+    shell._fallback_model = [{"provider": "openai-codex", "model": "gpt-5.5"}]
+
+    # Turn 1: primary fails with AuthError → fall back to openai-codex/gpt-5.5.
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.requested_provider == "openai-codex"
+    assert shell.model == "gpt-5.5"
+    assert shell._auto_fallback_active is True
+
+    # Turn 2: fallback is ephemeral — primary is retried first and now succeeds.
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.requested_provider == "openrouter"
+    assert shell.model == "gpt-5"
+    assert shell._auto_fallback_active is False
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

@@ -35,6 +35,17 @@ class CLIAgentSetupMixin:
             format_runtime_provider_error,
         )
 
+        # Re-anchor to the configured primary each turn so an automatic
+        # fallback from a previous turn doesn't stick. The fallback path
+        # below sets _auto_fallback_active when it mutates us; here we undo
+        # that mutation so the primary is retried first every turn. Only
+        # auto-fallbacks are reverted — user-initiated /model switches don't
+        # set the flag, so they remain sticky across turns.
+        if getattr(self, "_auto_fallback_active", False):
+            self.requested_provider = self._pre_fallback_provider
+            self.model = self._pre_fallback_model
+            self._auto_fallback_active = False
+
         _primary_exc = None
         runtime = None
         try:
@@ -71,8 +82,16 @@ class CLIAgentSetupMixin:
                             _primary_exc, _fb_provider, _fb_model,
                         )
                         _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                        # Capture the intended primary so the next turn can
+                        # retry it first. Only capture on the first fallback
+                        # of a streak so a re-fallback (primary still down)
+                        # preserves the original primary, not the fallback.
+                        if not getattr(self, "_auto_fallback_active", False):
+                            self._pre_fallback_provider = self.requested_provider
+                            self._pre_fallback_model = self.model
                         self.requested_provider = _fb_provider
                         self.model = _fb_model
+                        self._auto_fallback_active = True
                         _primary_exc = None
                         break
                     except Exception:

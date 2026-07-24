@@ -11,6 +11,7 @@ stack.
 
 import os
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -288,6 +289,89 @@ class TestSpeakTextGuards:
 
         # Should simply return None without raising.
         assert speak_text(text) is None
+
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("os.path.getsize", return_value=1024)
+    @patch("os.path.isfile", return_value=True)
+    @patch("os.makedirs")
+    def test_long_text_not_pretruncated_at_4000(
+        self, _mkd, _isf, _gsz, _play, mock_tts,
+    ):
+        """Voice layer must defer length caps to text_to_speech_tool (#50081)."""
+        from hermes_cli.voice import speak_text
+
+        speak_text("A" * 5000)
+        sent = mock_tts.call_args.kwargs["text"]
+        assert len(sent) == 5000
+
+
+class TestVoiceMaxTtsChars:
+    """voice.max_tts_chars — optional cap; default defers to TTS provider."""
+
+    def test_unset_returns_none(self, monkeypatch):
+        from hermes_cli.voice import voice_max_tts_chars
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": {"record_key": "ctrl+b"}},
+        )
+        assert voice_max_tts_chars() is None
+
+    def test_positive_int_returns_cap(self, monkeypatch):
+        from hermes_cli.voice import voice_max_tts_chars
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": {"max_tts_chars": 12000}},
+        )
+        assert voice_max_tts_chars() == 12000
+
+    def test_zero_and_negative_defer_to_provider(self, monkeypatch):
+        from hermes_cli.voice import voice_max_tts_chars
+
+        for bad in (0, -1, "nope", True, False):
+            monkeypatch.setattr(
+                "hermes_cli.config.load_config",
+                lambda b=bad: {"voice": {"max_tts_chars": b}},
+            )
+            assert voice_max_tts_chars() is None
+
+    def test_prepare_text_no_cap_passes_through(self, monkeypatch):
+        from hermes_cli.voice import prepare_voice_tts_text
+
+        monkeypatch.setattr(
+            "hermes_cli.voice.voice_max_tts_chars",
+            lambda: None,
+        )
+        raw = "A" * 8000
+        assert len(prepare_voice_tts_text(raw)) == 8000
+
+    def test_prepare_text_applies_config_cap(self, monkeypatch):
+        from hermes_cli.voice import prepare_voice_tts_text
+
+        monkeypatch.setattr(
+            "hermes_cli.voice.voice_max_tts_chars",
+            lambda: 3000,
+        )
+        assert len(prepare_voice_tts_text("B" * 5000)) == 3000
+
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("os.path.getsize", return_value=1024)
+    @patch("os.path.isfile", return_value=True)
+    @patch("os.makedirs")
+    def test_speak_text_honors_config_cap(
+        self, _mkd, _isf, _gsz, _play, mock_tts, monkeypatch,
+    ):
+        from hermes_cli.voice import speak_text
+
+        monkeypatch.setattr(
+            "hermes_cli.voice.voice_max_tts_chars",
+            lambda: 2500,
+        )
+        speak_text("C" * 6000)
+        assert len(mock_tts.call_args.kwargs["text"]) == 2500
 
 
 class TestContinuousAPI:

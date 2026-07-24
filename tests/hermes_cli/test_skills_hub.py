@@ -5,7 +5,16 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    _discover_github_repo_candidates,
+    _resolve_bare_github_repo_identifier,
+    do_check,
+    do_install,
+    do_list,
+    do_update,
+    handle_skills_slash,
+)
+from tools.skills_hub import SkillMeta
 
 
 class _DummyLockFile:
@@ -247,6 +256,107 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+class _DummyGitHubSource:
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def source_id(self):
+        return "github"
+
+    def _list_skills_in_repo(self, repo, path):
+        return self.mapping.get((repo, path), [])
+
+
+def _skill_meta(name: str, identifier: str, path: str) -> SkillMeta:
+    return SkillMeta(
+        name=name,
+        description="demo",
+        source="github",
+        identifier=identifier,
+        trust_level="community",
+        repo="owner/repo",
+        path=path,
+    )
+
+
+def test_discover_github_repo_candidates_scans_common_paths_and_deduplicates():
+    shared = _skill_meta("demo-skill", "owner/repo/skills/demo-skill", "skills/demo-skill")
+    source = _DummyGitHubSource({
+        ("owner/repo", ""): [shared],
+        ("owner/repo", "skills/"): [shared],
+    })
+
+    results = _discover_github_repo_candidates("owner/repo", [source])
+
+    assert [meta.identifier for meta in results] == ["owner/repo/skills/demo-skill"]
+
+
+def test_resolve_bare_github_repo_identifier_auto_resolves_single_candidate():
+    source = _DummyGitHubSource({
+        ("owner/repo", "skills/"): [
+            _skill_meta("demo-skill", "owner/repo/skills/demo-skill", "skills/demo-skill")
+        ]
+    })
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    resolved = _resolve_bare_github_repo_identifier(
+        "owner/repo",
+        [source],
+        console=console,
+        skip_confirm=False,
+    )
+
+    assert resolved == "owner/repo/skills/demo-skill"
+    assert "Resolved repo root to" in sink.getvalue()
+
+
+def test_resolve_bare_github_repo_identifier_prompts_for_multi_skill_repo(monkeypatch):
+    source = _DummyGitHubSource({
+        ("owner/repo", "skills/"): [
+            _skill_meta("alpha-skill", "owner/repo/skills/alpha-skill", "skills/alpha-skill"),
+            _skill_meta("beta-skill", "owner/repo/skills/beta-skill", "skills/beta-skill"),
+        ]
+    })
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "beta-skill")
+
+    resolved = _resolve_bare_github_repo_identifier(
+        "owner/repo",
+        [source],
+        console=console,
+        skip_confirm=False,
+    )
+
+    assert resolved == "owner/repo/skills/beta-skill"
+    output = sink.getvalue()
+    assert "Discovered 2 skill(s)" in output
+    assert "Resolved repo choice to" in output
+
+
+def test_resolve_bare_github_repo_identifier_lists_candidates_non_interactively():
+    source = _DummyGitHubSource({
+        ("owner/repo", "skills/"): [
+            _skill_meta("alpha-skill", "owner/repo/skills/alpha-skill", "skills/alpha-skill"),
+            _skill_meta("beta-skill", "owner/repo/skills/beta-skill", "skills/beta-skill"),
+        ]
+    })
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    resolved = _resolve_bare_github_repo_identifier(
+        "owner/repo",
+        [source],
+        console=console,
+        skip_confirm=True,
+    )
+
+    assert resolved == ""
+    output = sink.getvalue()
+    assert "Install one of the full identifiers shown above." in output
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
@@ -780,4 +890,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

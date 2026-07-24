@@ -26,6 +26,8 @@ from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
+_BARE_GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_GITHUB_REPO_SCAN_PATHS = ("", "skills/", ".agents/skills/", ".claude/skills/")
 
 
 def _display_source(r) -> str:
@@ -151,6 +153,110 @@ def _resolve_source_meta_and_bundle(identifier: str, sources):
             break
 
     return meta, bundle, matched_source
+
+
+def _looks_like_bare_github_repo(identifier: str) -> bool:
+    return bool(_BARE_GITHUB_REPO_RE.fullmatch(identifier or ""))
+
+
+def _discover_github_repo_candidates(identifier: str, sources) -> List[Any]:
+    """Return GitHub skill candidates for a bare ``owner/repo`` identifier."""
+    if not _looks_like_bare_github_repo(identifier):
+        return []
+
+    candidates: Dict[str, Any] = {}
+    for src in sources:
+        source_id = getattr(src, "source_id", lambda: "")()
+        if source_id != "github" or not hasattr(src, "_list_skills_in_repo"):
+            continue
+        for base_path in _GITHUB_REPO_SCAN_PATHS:
+            try:
+                for meta in src._list_skills_in_repo(identifier, base_path):
+                    if meta.identifier not in candidates:
+                        candidates[meta.identifier] = meta
+            except Exception:
+                continue
+        if candidates:
+            break
+    return sorted(candidates.values(), key=lambda meta: meta.identifier)
+
+
+def _print_github_repo_candidates(
+    c: Console,
+    repo: str,
+    candidates: List[Any],
+    *,
+    interactive: bool,
+) -> None:
+    sample = candidates[:10]
+    c.print(
+        f"[yellow]Discovered {len(candidates)} skill(s) in {repo}, but the repo root "
+        "doesn't contain a single installable SKILL.md.[/]"
+    )
+    table = Table()
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Identifier", style="dim", overflow="fold", no_wrap=False)
+    for meta in sample:
+        table.add_row(meta.name, meta.identifier)
+    c.print(table)
+    if len(candidates) > len(sample):
+        c.print(f"[dim]Showing {len(sample)} of {len(candidates)} discovered skills.[/]")
+    if interactive:
+        c.print(
+            "[bold]Enter a skill name, repo-relative path, or full identifier to install one.[/]"
+        )
+    else:
+        c.print("[bold]Install one of the full identifiers shown above.[/]\n")
+
+
+def _prompt_for_github_repo_skill(repo: str, candidates: List[Any], c: Console) -> str:
+    _print_github_repo_candidates(c, repo, candidates, interactive=True)
+    try:
+        answer = input("Skill: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return ""
+
+    normalized = answer.lower().strip("/")
+    exact = []
+    for meta in candidates:
+        variants = {
+            meta.name.lower(),
+            meta.identifier.lower(),
+            meta.path.lower().strip("/"),
+            meta.identifier.lower().split("/", 2)[-1].strip("/"),
+        }
+        if normalized in variants:
+            exact.append(meta)
+
+    if len(exact) == 1:
+        return exact[0].identifier
+
+    c.print(f"[bold red]Could not resolve a unique skill from:[/] {answer}\n")
+    return ""
+
+
+def _resolve_bare_github_repo_identifier(
+    identifier: str,
+    sources,
+    *,
+    console: Console,
+    skip_confirm: bool,
+) -> str:
+    candidates = _discover_github_repo_candidates(identifier, sources)
+    if not candidates:
+        return identifier
+    if len(candidates) == 1:
+        console.print(f"[dim]Resolved repo root to: {candidates[0].identifier}[/]")
+        return candidates[0].identifier
+    if skip_confirm:
+        _print_github_repo_candidates(console, identifier, candidates, interactive=False)
+        return ""
+    chosen = _prompt_for_github_repo_skill(identifier, candidates, console)
+    if chosen:
+        console.print(f"[dim]Resolved repo choice to: {chosen}[/]")
+    return chosen
 
 
 def _derive_category_from_install_path(install_path: str) -> str:
@@ -534,6 +640,19 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    if not bundle and _looks_like_bare_github_repo(identifier):
+        resolved_identifier = _resolve_bare_github_repo_identifier(
+            identifier,
+            sources,
+            console=c,
+            skip_confirm=skip_confirm,
+        )
+        if not resolved_identifier:
+            return
+        if resolved_identifier != identifier:
+            identifier = resolved_identifier
+            c.print(f"\n[bold]Fetching:[/] {identifier}")
+            meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not bundle:
         # Check if any source hit GitHub API rate limit

@@ -5191,10 +5191,17 @@ class SessionDB:
         if not existing:
             return base  # No conflict, use the base name as-is
 
-        # Find the highest number
+        # Find the highest number. Anchor the extraction to the resolved base
+        # rather than using a greedy ``^.* #(\d+)$`` — otherwise a title that
+        # carries a *deeper* suffix (e.g. base "foo" and a manually-renamed
+        # session "foo #2 #5", a child of "foo #2", not of "foo") would have
+        # its trailing number greedily read as part of foo's own sequence,
+        # inflating the count and skipping numbers.  Only direct children
+        # "<base> #N" should contribute.
         max_num = 1  # The unnumbered original counts as #1
+        suffix_re = re.compile(re.escape(base) + r' #(\d+)$')
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            m = suffix_re.match(t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
 

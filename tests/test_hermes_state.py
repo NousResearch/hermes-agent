@@ -4551,6 +4551,22 @@ class TestTitleLineage:
         # Even when called with "my project #2", it should return #3
         assert db.get_next_title_in_lineage("my project #2") == "my project #3"
 
+    def test_next_title_ignores_deeper_suffix(self, db):
+        """A grandchild title must not inflate the base lineage count.
+
+        "my project #2 #5" is a child of "my project #2", not of the base
+        "my project".  Its trailing "#5" must not be greedily read as part of
+        the base's own sequence — only direct "<base> #N" children count.
+        """
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "my project")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "my project #2")
+        db.create_session("s3", "cli")
+        db.set_session_title("s3", "my project #2 #5")
+        # The base lineage only reaches #2, so the next title is #3 (not #6).
+        assert db.get_next_title_in_lineage("my project") == "my project #3"
+
 
 class TestTitleSqlWildcards:
     """Titles containing SQL LIKE wildcards (%, _) must not cause false matches."""

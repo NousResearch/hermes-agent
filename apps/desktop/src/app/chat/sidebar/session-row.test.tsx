@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -157,7 +157,7 @@ describe('SidebarSessionRow', () => {
     )
   })
 
-  it('exposes the exact session time through a focusable Tip trigger', () => {
+  it('exposes the exact session time through a focusable Tip trigger', async () => {
     const startedAt = Math.floor(Date.now() / 1000) - 5 * 60
 
     render(
@@ -180,6 +180,33 @@ describe('SidebarSessionRow', () => {
     expect(age.getAttribute('tabindex')).toBe('0')
     expect(age.getAttribute('title')).toBeNull()
     expect(tipTrigger(age)).toBeTruthy()
+
+    fireEvent.pointerMove(age, { pointerType: 'mouse' })
+    expect((await screen.findByRole('tooltip')).textContent).toMatch(/^Today at /)
+  })
+
+  it('keeps the session row action when the timestamp is clicked', () => {
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        isWorking={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={onResume}
+        session={makeSession({
+          started_at: Math.floor(Date.now() / 1000) - 5 * 60,
+          title: 'Timestamped session'
+        })}
+      />
+    )
+
+    fireEvent.click(screen.getByText('5m'))
+
+    expect(onResume).toHaveBeenCalledOnce()
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {

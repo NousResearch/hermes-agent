@@ -92,6 +92,57 @@ export function SidebarSessionRow({
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
 
+  const handleSessionAuxClick = (event: React.MouseEvent<HTMLElement>) => {
+    if (event.button === 1) {
+      event.preventDefault()
+      event.stopPropagation()
+      triggerHaptic('selection')
+      openSessionTile(session.id, 'center')
+    }
+  }
+
+  const handleSessionClick = (event: React.MouseEvent<HTMLElement>) => {
+    const mod = event.metaKey || event.ctrlKey
+
+    // ⇧⌘-click → pop into its own window (needs standalone windows).
+    if (mod && event.shiftKey && canOpenSessionWindow()) {
+      event.preventDefault()
+      event.stopPropagation()
+      triggerHaptic('selection')
+      void openSessionInNewWindow(session.id)
+
+      return
+    }
+
+    // ⌘/⌃-click → open in a new tab (stack into main).
+    if (mod) {
+      event.preventDefault()
+      event.stopPropagation()
+      triggerHaptic('selection')
+      openSessionTile(session.id, 'center')
+
+      return
+    }
+
+    // ⇧-click → pin.
+    if (event.shiftKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      triggerHaptic('selection')
+      onPin()
+
+      return
+    }
+
+    onResume()
+  }
+
+  const handleSessionMouseDown = (event: React.MouseEvent<HTMLElement>) => {
+    if (event.button === 1) {
+      event.preventDefault()
+    }
+  }
+
   return (
     <SessionContextMenu
       onArchive={onArchive}
@@ -112,6 +163,9 @@ export function SidebarSessionRow({
                   aria-label={`${age}, ${absoluteAge}`}
                   className="absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
                   dateTime={timestampDate.toISOString()}
+                  onAuxClick={handleSessionAuxClick}
+                  onClick={handleSessionClick}
+                  onMouseDown={handleSessionMouseDown}
                   tabIndex={0}
                 >
                   {age}
@@ -179,50 +233,9 @@ export function SidebarSessionRow({
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory). Swallow
           // the mousedown so Chromium doesn't enter autoscroll mode.
-          onAuxClick={event => {
-            if (event.button === 1) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
-            }
-          }}
-          onClick={event => {
-            const mod = event.metaKey || event.ctrlKey
-
-            // ⇧⌘-click → pop into its own window (needs standalone windows).
-            if (mod && event.shiftKey && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
-
-              return
-            }
-
-            // ⌘/⌃-click → open in a new tab (stack into main).
-            if (mod) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
-
-              return
-            }
-
-            // ⇧-click → pin.
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              onPin()
-
-              return
-            }
-
-            onResume()
-          }}
-          onMouseDown={event => event.button === 1 && event.preventDefault()}
+          onAuxClick={handleSessionAuxClick}
+          onClick={handleSessionClick}
+          onMouseDown={handleSessionMouseDown}
         >
           {reorderable ? (
             <SidebarRowGrab

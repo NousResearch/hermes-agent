@@ -225,6 +225,33 @@ webhooks:
 
 If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform.
 
+### Discord Thread Delivery
+
+Set `create_thread: true` to create a fresh Discord thread for each webhook
+delivery. The first response becomes the thread starter, and any later messages
+from the same webhook run are routed into that thread.
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        alerts:
+          events: ["alert"]
+          prompt: "Investigate this alert: {__raw__}"
+          deliver: "discord"
+          deliver_extra:
+            chat_id: "123456789012345678"
+            create_thread: true
+            thread_name: "Alert: {alert.name}"
+```
+
+The bot needs Discord's **Create Public Threads** and **Send Messages in
+Threads** permissions in the target channel. `thread_name` supports the same
+payload templates as other `deliver_extra` values and is truncated to Discord's
+100-character thread-name limit. If `chat_id` is omitted, the Discord home
+channel is used.
+
 ---
 
 ## GitHub PR Review (Step by Step) {#github-pr-review}

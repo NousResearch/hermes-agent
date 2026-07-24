@@ -2865,7 +2865,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send a message to a Discord channel or thread.
 
         When metadata contains a thread_id, the message is sent to that
-        thread instead of the parent channel identified by chat_id.
+        thread instead of the parent channel identified by chat_id. When it
+        contains create_thread, a fresh thread is created in the parent text
+        channel and the message is posted there.
 
         Forum channels (type 15) reject direct messages — a thread post is
         created automatically.
@@ -2899,6 +2901,41 @@ class DiscordAdapter(BasePlatformAdapter):
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
+                await asyncio.to_thread(
+                    self._record_discord_response,
+                    reply_to=reply_to,
+                    result=result,
+                    content=content,
+                    final=final_delivery,
+                )
+                return result
+
+            if metadata and metadata.get("create_thread") and not thread_id:
+                thread_name = str(metadata.get("thread_name") or "").strip()
+                if not thread_name:
+                    thread_name = _derive_forum_thread_name(content)
+                # Discord thread names are capped at 100 characters.
+                thread_name = thread_name[:100]
+                formatted = self.format_message(content)
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+                starter_content = chunks[0] if chunks else thread_name
+                starter_msg = await channel.send(content=starter_content)
+                thread = await starter_msg.create_thread(name=thread_name)
+                message_ids = [str(starter_msg.id)]
+                for chunk in chunks[1:]:
+                    msg = await thread.send(content=chunk)
+                    message_ids.append(str(msg.id))
+                created_thread_id = str(thread.id)
+                if message_ids:
+                    self._last_self_message_id[created_thread_id] = message_ids[-1]
+                result = SendResult(
+                    success=True,
+                    message_id=message_ids[0] if message_ids else None,
+                    raw_response={
+                        "message_ids": message_ids,
+                        "thread_id": created_thread_id,
+                    },
+                )
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,

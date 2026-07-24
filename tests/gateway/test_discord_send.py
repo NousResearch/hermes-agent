@@ -160,6 +160,34 @@ async def test_send_does_not_retry_on_unrelated_errors():
     assert send_calls[0]["reference"] is reference_obj
 
 
+@pytest.mark.asyncio
+async def test_send_creates_new_thread_with_content_as_starter():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    thread = SimpleNamespace(id=5678, send=AsyncMock())
+    starter = SimpleNamespace(
+        id=1234,
+        create_thread=AsyncMock(return_value=thread),
+    )
+    channel = SimpleNamespace(send=AsyncMock(return_value=starter))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send(
+        "555",
+        "Investigated alert details",
+        metadata={"create_thread": True, "thread_name": "API latency alert"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "1234"
+    assert result.raw_response["thread_id"] == "5678"
+    channel.send.assert_awaited_once_with(content="Investigated alert details")
+    starter.create_thread.assert_awaited_once_with(name="API latency alert")
+    thread.send.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------

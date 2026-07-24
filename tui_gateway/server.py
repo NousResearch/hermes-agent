@@ -256,6 +256,10 @@ _LONG_HANDLERS = frozenset(
         # so a delayed status rehydrate cannot block runtime readiness, prompt
         # submission, or interrupts queued behind it on the same socket.
         "session.active_list",
+        # Account-limit probes call provider-owned HTTP endpoints. Keep the
+        # Desktop's periodic status-bar refresh off the JSON-RPC reader thread
+        # so a slow or unavailable provider cannot stall chat and interrupts.
+        "session.account_usage",
         "session.branch",
         "session.compress",
         "session.list",
@@ -7602,6 +7606,53 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+@method("session.account_usage")
+def _(rid, params: dict) -> dict:
+    """Return normalized provider limits without exposing runtime credentials.
+
+    This deliberately stays session-scoped: the live agent selects the provider,
+    endpoint, and exact credential identity.  A renderer receives only the
+    normalized quota snapshot, never the OAuth token or account headers.
+    Missing agents, unsupported providers, expired auth, and transient network
+    failures all fail closed to ``None`` so optional chrome can hide cleanly.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        return _ok(rid, {"account_usage": None})
+
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    api_key = str(getattr(agent, "api_key", "") or "").strip()
+    if provider == "openai-codex" and not api_key:
+        # The generic /usage helper may select a singleton or pool credential
+        # when no key is supplied. A session-scoped read must never substitute
+        # another account for the credential already chosen by this live agent.
+        return _ok(rid, {"account_usage": None})
+
+    try:
+        from agent.account_usage import (
+            fetch_account_usage,
+            serialize_account_usage_snapshot,
+        )
+
+        snapshot = fetch_account_usage(
+            provider,
+            base_url=getattr(agent, "base_url", None),
+            api_key=api_key,
+        )
+        payload = (
+            serialize_account_usage_snapshot(snapshot)
+            if snapshot is not None and snapshot.available
+            else None
+        )
+    except Exception:
+        logger.debug("failed to fetch session account usage", exc_info=True)
+        payload = None
+    return _ok(rid, {"account_usage": payload})
 
 
 @method("session.context_breakdown")

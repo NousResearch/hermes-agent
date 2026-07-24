@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import (
+    AuthError,
+    _decode_jwt_claims,
+    _read_codex_tokens,
+    resolve_codex_runtime_credentials,
+)
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 if TYPE_CHECKING:
@@ -118,6 +123,39 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     if snapshot.unavailable_reason:
         lines.append(f"Unavailable: {snapshot.unavailable_reason}")
     return lines
+
+
+def serialize_account_usage_snapshot(snapshot: AccountUsageSnapshot) -> dict[str, Any]:
+    """Return the secret-free JSON wire shape used by UI clients.
+
+    Datetimes are normalized to ISO-8601 strings here instead of asking each
+    surface to understand Python objects.  The snapshot never contains the
+    credential used to fetch it, so this is safe to send across the gateway to
+    an unprivileged renderer.
+    """
+    return {
+        "available": snapshot.available,
+        "provider": snapshot.provider,
+        "source": snapshot.source,
+        "fetched_at": snapshot.fetched_at.isoformat(),
+        "title": snapshot.title,
+        "plan": snapshot.plan,
+        "windows": [
+            {
+                "label": window.label,
+                "used_percent": (
+                    max(0.0, min(100.0, float(window.used_percent)))
+                    if _is_finite_num(window.used_percent)
+                    else None
+                ),
+                "reset_at": window.reset_at.isoformat() if window.reset_at else None,
+                "detail": window.detail,
+            }
+            for window in snapshot.windows
+        ],
+        "details": list(snapshot.details),
+        "unavailable_reason": snapshot.unavailable_reason,
+    }
 
 
 def _fmt_usd(d: float) -> str:
@@ -449,6 +487,27 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return _codex_backend_urls(base_url)[0]
 
 
+def codex_account_id_from_token(token: Any) -> Optional[str]:
+    """Return the ChatGPT account selected by an OAuth token, if present.
+
+    Codex logins can coexist in the credential pool.  Account-scoped requests
+    must derive this header from the same token they send, rather than pairing
+    a selected token with the legacy singleton store's account id.
+    """
+    claims = _decode_jwt_claims(token)
+    auth_claim = claims.get("https://api.openai.com/auth")
+    candidates = [
+        auth_claim.get("chatgpt_account_id") if isinstance(auth_claim, dict) else None,
+        claims.get("https://api.openai.com/auth.chatgpt_account_id"),
+        claims.get("chatgpt_account_id"),
+    ]
+    for candidate in candidates:
+        account_id = str(candidate or "").strip()
+        if account_id:
+            return account_id
+    return None
+
+
 def _resolve_codex_usage_credentials(
     base_url: Optional[str],
     api_key: Optional[str],
@@ -462,7 +521,11 @@ def _resolve_codex_usage_credentials(
     """
     explicit_key = str(api_key or "").strip()
     if explicit_key:
-        return explicit_key, str(base_url or "").strip(), None
+        return (
+            explicit_key,
+            str(base_url or "").strip(),
+            codex_account_id_from_token(explicit_key),
+        )
 
     # Tier 2: the native runtime resolver. It ALREADY falls back to the
     # credential pool when the singleton is empty (see
@@ -481,30 +544,38 @@ def _resolve_codex_usage_credentials(
     # otherwise-usable resolver credential and force a header-less pool fallback.
     try:
         creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-        account_id: Optional[str] = None
-        try:
-            token_data = _read_codex_tokens()
-            tokens = token_data.get("tokens") or {}
-            account_id = str(tokens.get("account_id", "") or "").strip() or None
-        except AuthError:
-            # Pool-only creds carry no singleton account_id; header is optional.
-            logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
-        return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
+        selected_key = creds["api_key"]
+        account_id = codex_account_id_from_token(selected_key)
+        selected_from_pool = str(creds.get("source", "") or "").strip() == "credential_pool"
+        if account_id is None and not selected_from_pool:
+            try:
+                token_data = _read_codex_tokens()
+                tokens = token_data.get("tokens") or {}
+                account_id = str(tokens.get("account_id", "") or "").strip() or None
+            except AuthError:
+                # Opaque/legacy tokens may need the singleton account id. A JWT
+                # selected from the pool carries its own identity above.
+                logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
+        return selected_key, str(creds.get("base_url", "") or "").strip(), account_id
     except AuthError:
         logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
 
     # Tier 3: direct pool select. Reached only when the resolver itself raises
     # AuthError (e.g. singleton missing AND its own pool read found nothing at
-    # resolve time, but a pool entry is usable now). Pool credentials have no
-    # account_id concept, so the ChatGPT-Account-Id header is intentionally
-    # omitted here.
+    # resolve time, but a pool entry is usable now). JWT pool credentials carry
+    # their own account claim; opaque pool tokens intentionally omit the header.
     from agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
     entry = pool.select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+    selected_key = entry.runtime_api_key
+    return (
+        selected_key,
+        str(entry.runtime_base_url or base_url or "").strip(),
+        codex_account_id_from_token(selected_key),
+    )
 
 
 def _fetch_codex_account_usage(

@@ -4,11 +4,13 @@ import { useCallback, useMemo } from 'react'
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
+import { useCodexUsageStatusbarItem } from '@/app/shell/codex-usage-statusbar-item'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
+import type { GatewayRequester } from '@/hooks/use-codex-account-usage'
 import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
@@ -22,6 +24,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentProvider,
   $currentUsage,
   $selectedStoredSessionId,
   $sessions,
@@ -66,7 +69,7 @@ interface StatusbarItemsOptions {
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   freshDraftReady: boolean
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequester
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
 }
@@ -99,6 +102,7 @@ export function useStatusbarItems({
   // the tree changes; null (no named project) falls back to the cwd leaf below.
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+  const primaryProvider = useStore($currentProvider)
   const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
@@ -128,6 +132,7 @@ export function useStatusbarItems({
   // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
   // a fresh `{...}` each render would bust the usage-label memos below.
   const currentUsage = primaryFocused ? primaryUsage : (focusedState?.usage ?? EMPTY_USAGE)
+  const provider = primaryFocused ? primaryProvider : (focusedState?.provider ?? '')
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : (focusedState?.turnStartedAt ?? null)
 
@@ -154,6 +159,15 @@ export function useStatusbarItems({
   )
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
+
+  const codexUsageItem = useCodexUsageStatusbarItem({
+    connectionScope: `${connection?.mode ?? 'unknown'}:${connection?.baseUrl ?? ''}`,
+    gatewayState,
+    profile: activeGatewayProfile,
+    provider,
+    requestGateway,
+    sessionId: activeSessionId
+  })
 
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
@@ -456,6 +470,7 @@ export function useStatusbarItems({
         title: copy.currentTurnElapsed,
         variant: 'text'
       },
+      codexUsageItem,
       {
         detail: contextBar || undefined,
         hidden: !contextUsage,
@@ -506,6 +521,7 @@ export function useStatusbarItems({
       busy,
       chatOpen,
       clientVersionItem,
+      codexUsageItem,
       contextBar,
       contextUsage,
       copy,

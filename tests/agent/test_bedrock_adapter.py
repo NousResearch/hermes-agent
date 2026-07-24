@@ -1161,6 +1161,65 @@ class TestStreamConverseWithCallbacks:
 
 
 # ---------------------------------------------------------------------------
+# Interleaved thinking signature round-trip (Bedrock analog of #35975)
+# ---------------------------------------------------------------------------
+
+class TestReasoningSignatureRoundTrip:
+    """Signed reasoning must survive normalize -> reasoning_details -> replay.
+
+    Bedrock signs each thinking block and rejects it on a multi-turn replay if
+    the text/signature are dropped or reordered relative to the tool_use it was
+    signed against.
+    """
+
+    def test_normalize_reads_nested_reasoning_text_and_signature(self):
+        from agent.bedrock_adapter import normalize_converse_response
+        # Real Converse schema: reasoningContent.reasoningText.{text,signature}.
+        raw = {
+            "output": {"message": {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": {
+                    "text": "Check the config first.", "signature": "sig-xyz"}}},
+                {"toolUse": {"toolUseId": "tu_1", "name": "read_file",
+                             "input": {"path": "config.py"}}},
+            ]}},
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15},
+        }
+        msg = normalize_converse_response(raw).choices[0].message
+        assert msg.reasoning_content == "Check the config first."
+        assert msg.reasoning_details == [
+            {"reasoningText": {"text": "Check the config first.", "signature": "sig-xyz"}}
+        ]
+
+    def test_replay_reemits_signed_reasoning_before_tool_use(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [
+                    {"reasoningText": {"text": "Check the config first.", "signature": "sig-xyz"}}
+                ],
+                "tool_calls": [{
+                    "id": "tu_1", "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path": "config.py"}'},
+                }],
+            },
+        ]
+        _system, converse = convert_messages_to_converse(messages)
+        assistant = next(m for m in converse if m["role"] == "assistant")
+        blocks = assistant["content"]
+        # Signed reasoning is replayed verbatim, in order, ahead of the tool_use.
+        assert blocks[0] == {"reasoningContent": {"reasoningText": {
+            "text": "Check the config first.", "signature": "sig-xyz"}}}
+        assert any("toolUse" in b for b in blocks)
+        reasoning_idx = next(i for i, b in enumerate(blocks) if "reasoningContent" in b)
+        tool_idx = next(i for i, b in enumerate(blocks) if "toolUse" in b)
+        assert reasoning_idx < tool_idx
+
+
+# ---------------------------------------------------------------------------
 # Guardrail config in build_converse_kwargs
 # ---------------------------------------------------------------------------
 

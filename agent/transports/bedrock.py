@@ -107,12 +107,18 @@ class BedrockTransport(ProviderTransport):
 
         reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
 
+        provider_data = {}
+        reasoning_details = getattr(msg, "reasoning_details", None)
+        if reasoning_details:
+            provider_data["reasoning_details"] = reasoning_details
+
         return NormalizedResponse(
             content=msg.content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,
             usage=usage,
+            provider_data=provider_data or None,
         )
 
     def validate_response(self, response: Any) -> bool:

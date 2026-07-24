@@ -662,6 +662,13 @@ def convert_messages_to_converse(
 
         if role == "assistant":
             content_blocks = []
+            # Replay signed reasoning first: Bedrock signs each thinking block
+            # and rejects it if the text/signature are modified or dropped on a
+            # multi-turn replay. reasoning_details carries the verbatim
+            # reasoningText payload captured in normalize_converse_response.
+            for detail in (msg.get("reasoning_details") or []):
+                if isinstance(detail, dict) and isinstance(detail.get("reasoningText"), dict):
+                    content_blocks.append({"reasoningContent": detail})
             # Convert text content
             if isinstance(content, str) and content.strip():
                 content_blocks.append({"text": content})
@@ -738,6 +745,19 @@ def _converse_stop_reason_to_openai(stop_reason: str) -> str:
     return mapping.get(stop_reason, "stop")
 
 
+def _build_reasoning_detail(text: str, signature: Optional[str]) -> Dict:
+    """Replay-ready Converse ``reasoningContent`` payload (text + signature).
+
+    Carried through ``reasoning_details`` so the signed thinking block can be
+    re-emitted unmodified on the next turn — Bedrock rejects reasoning replayed
+    without its original signature.
+    """
+    inner: Dict[str, Any] = {"text": text}
+    if signature:
+        inner["signature"] = signature
+    return {"reasoningText": inner}
+
+
 def normalize_converse_response(response: Dict) -> SimpleNamespace:
     """Convert a Bedrock Converse API response to an OpenAI-compatible object.
 
@@ -757,6 +777,7 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
 
     text_parts = []
     reasoning_parts = []
+    reasoning_details = []
     tool_calls = []
 
     for block in content_blocks:
@@ -764,10 +785,14 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
             text_parts.append(block["text"])
         elif "reasoningContent" in block:
             reasoning = block["reasoningContent"]
-            if isinstance(reasoning, dict):
-                thinking_text = reasoning.get("text", "")
+            rt = reasoning.get("reasoningText") if isinstance(reasoning, dict) else None
+            if isinstance(rt, dict):
+                thinking_text = rt.get("text", "")
+                signature = rt.get("signature")
                 if thinking_text:
                     reasoning_parts.append(str(thinking_text))
+                if thinking_text or signature:
+                    reasoning_details.append(_build_reasoning_detail(thinking_text, signature))
         elif "toolUse" in block:
             tu = block["toolUse"]
             tool_calls.append(SimpleNamespace(
@@ -785,6 +810,7 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
         reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
+        reasoning_details=reasoning_details or None,
     )
 
     # Build usage stats. Converse's inputTokens excludes cache read/write
@@ -881,6 +907,7 @@ def stream_converse_with_callbacks(
     """
     text_parts: List[str] = []
     reasoning_parts: List[str] = []
+    reasoning_signature: Optional[str] = None
     tool_calls: List[SimpleNamespace] = []
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
@@ -935,6 +962,9 @@ def stream_converse_with_callbacks(
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict):
                     thinking_text = reasoning.get("text", "")
+                    signature = reasoning.get("signature")
+                    if signature:
+                        reasoning_signature = signature
                     if thinking_text:
                         reasoning_parts.append(str(thinking_text))
                         if on_reasoning_delta:
@@ -975,11 +1005,16 @@ def stream_converse_with_callbacks(
     if current_text_buffer:
         text_parts.append("".join(current_text_buffer))
 
+    reasoning_text = "\n\n".join(reasoning_parts) if reasoning_parts else None
     msg = SimpleNamespace(
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
-        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
+        reasoning_content=reasoning_text,
+        reasoning_details=(
+            [_build_reasoning_detail(reasoning_text or "", reasoning_signature)]
+            if (reasoning_text or reasoning_signature) else None
+        ),
     )
 
     input_tokens = usage_data.get("inputTokens", 0)

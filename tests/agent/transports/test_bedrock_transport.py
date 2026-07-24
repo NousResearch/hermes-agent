@@ -147,7 +147,8 @@ class TestBedrockNormalize:
                 "message": {
                     "role": "assistant",
                     "content": [
-                        {"reasoningContent": {"text": "Let me think..."}},
+                        {"reasoningContent": {"reasoningText": {
+                            "text": "Let me think...", "signature": "sig-abc"}}},
                         {"text": "Answer."},
                     ],
                 }
@@ -158,6 +159,9 @@ class TestBedrockNormalize:
         nr = transport.normalize_response(raw)
         assert nr.reasoning == "Let me think..."
         assert nr.content == "Answer."
+        # Signature is preserved for verbatim multi-turn replay.
+        details = (nr.provider_data or {}).get("reasoning_details")
+        assert details == [{"reasoningText": {"text": "Let me think...", "signature": "sig-abc"}}]
 
     def test_already_normalized_response(self, transport):
         """Test normalize_response handles already-normalized SimpleNamespace (from dispatch site)."""

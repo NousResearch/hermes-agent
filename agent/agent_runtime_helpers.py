@@ -2751,6 +2751,39 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             dropped_empty_tool_calls,
         )
 
+    # --- Drop semantically empty assistant messages (no content, no tool_calls) ---
+    # An assistant message with empty content and no tool_calls is a no-op that
+    # confuses models and causes runaway empty-response loops (#66429).
+    # When the model returns an empty response (content="", no tool_calls),
+    # the append-each-retry cycle can accumulate 12+ empty assistant turns
+    # in the request body. Drop them from the API copy to prevent unbounded
+    # accumulation — the stored transcript keeps the "(empty)" sentinel for
+    # the user's UI, but the model never sees its own empty turns.
+    _empty_dropped = 0
+    _clean: List[Dict[str, Any]] = []
+    for msg in messages:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and not msg.get("tool_calls")
+        ):
+            content = msg.get("content")
+            if isinstance(content, str) and not content.strip():
+                _empty_dropped += 1
+                continue
+            if content is None:
+                _empty_dropped += 1
+                continue
+        _clean.append(msg)
+    if _empty_dropped:
+        messages = _clean
+        _ra().logger.warning(
+            "Pre-call sanitizer: dropped %d empty assistant message(s) "
+            "(no content, no tool_calls) to prevent runaway "
+            "empty-response loop (#66429)",
+            _empty_dropped,
+        )
+
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
     # id="call_xxx" but function.name="". Downstream Responses-API adapters

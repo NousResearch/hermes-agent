@@ -58,9 +58,9 @@ class TestEstimateTokensRough:
         assert long > short
 
     def test_unicode_multibyte(self):
-        """Unicode chars are still 1 Python char each — 4 chars/token holds."""
+        """CJK chars are token-dense: counted ~1 token each, not 4 chars/token."""
         text = "你好世界"  # 4 CJK characters
-        assert estimate_tokens_rough(text) == 1
+        assert estimate_tokens_rough(text) == 4
 
 
 class TestEstimateMessagesTokensRough:
@@ -1800,27 +1800,31 @@ class TestGrok43StaleCacheGuard:
 class TestMoAContextLength:
     """MoA virtual provider resolves context from the aggregator slot, not 256K default."""
 
-    def _write_moa_config(self, home, aggregator):
+    def _write_moa_config(
+        self, home, aggregator, custom_providers=None, providers=None
+    ):
         import os
         os.makedirs(home, exist_ok=True)
-        with open(os.path.join(home, "config.yaml"), "w") as f:
-            yaml.safe_dump(
-                {
-                    "moa": {
-                        "default_preset": "p",
-                        "presets": {
-                            "p": {
-                                "enabled": True,
-                                "reference_models": [
-                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
-                                ],
-                                "aggregator": aggregator,
-                            }
-                        },
+        payload = {
+            "moa": {
+                "default_preset": "p",
+                "presets": {
+                    "p": {
+                        "enabled": True,
+                        "reference_models": [
+                            {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                        ],
+                        "aggregator": aggregator,
                     }
                 },
-                f,
-            )
+            }
+        }
+        if custom_providers is not None:
+            payload["custom_providers"] = custom_providers
+        if providers is not None:
+            payload["providers"] = providers
+        with open(os.path.join(home, "config.yaml"), "w") as f:
+            yaml.safe_dump(payload, f)
 
     def test_moa_resolves_from_aggregator(self, tmp_path, monkeypatch):
         home = str(tmp_path / ".hermes")
@@ -1843,3 +1847,138 @@ class TestMoAContextLength:
             "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
         )
         assert ctx == 500_000
+
+    def test_moa_resolves_custom_provider_per_model_context(self, tmp_path, monkeypatch):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            custom_providers=[
+                {
+                    "name": "example",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "model": "example-model",
+                    "models": {
+                        "example-model": {"context_length": 777_777},
+                    },
+                }
+            ],
+        )
+
+        ctx = get_model_context_length(
+            "p", base_url="http://127.0.0.1/v1", provider="moa"
+        )
+
+        assert ctx == 777_777
+
+    def test_moa_resolves_canonical_provider_per_model_context(
+        self, tmp_path, monkeypatch
+    ):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            providers={
+                "example": {
+                    "api": "http://127.0.0.1:1/v1",
+                    "default_model": "example-model",
+                    "models": {
+                        "example-model": {"context_length": 888_888},
+                    },
+                }
+            },
+        )
+
+        with patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=None,
+        ) as endpoint_probe:
+            ctx = get_model_context_length(
+                "p", base_url="http://127.0.0.1/v1", provider="moa"
+            )
+
+        assert ctx == 888_888
+        endpoint_probe.assert_not_called()
+
+    def test_moa_custom_context_configures_compressor_threshold(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.context_compressor import ContextCompressor
+
+        configured_context = 600_000
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            providers={
+                "example": {
+                    "api": "http://127.0.0.1:1/v1",
+                    "default_model": "example-model",
+                    "models": {
+                        "example-model": {
+                            "context_length": configured_context,
+                        },
+                    },
+                }
+            },
+        )
+
+        with patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=None,
+        ) as endpoint_probe:
+            compressor = ContextCompressor(
+                model="p",
+                base_url="http://127.0.0.1/v1",
+                provider="moa",
+                threshold_percent=0.50,
+                quiet_mode=True,
+            )
+
+        assert compressor.context_length == configured_context
+        assert compressor.threshold_tokens == configured_context // 2
+        endpoint_probe.assert_not_called()
+
+    def test_moa_preserves_caller_supplied_custom_provider_context(
+        self, tmp_path, monkeypatch
+    ):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            providers={
+                "example": {
+                    "api": "http://127.0.0.1:1/v1",
+                    "default_model": "example-model",
+                    "models": {"example-model": {}},
+                }
+            },
+        )
+        supplied = [
+            {
+                "name": "example",
+                "base_url": "http://127.0.0.1:1/v1",
+                "model": "example-model",
+                "models": {
+                    "example-model": {"context_length": 999_999},
+                },
+            }
+        ]
+
+        with patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=None,
+        ) as endpoint_probe:
+            ctx = get_model_context_length(
+                "p",
+                base_url="http://127.0.0.1/v1",
+                provider="moa",
+                custom_providers=supplied,
+            )
+
+        assert ctx == 999_999
+        endpoint_probe.assert_not_called()

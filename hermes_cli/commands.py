@@ -967,7 +967,8 @@ def discord_skill_commands_by_category(
 
     Skills whose directory is nested at least 2 levels under a scan root
     (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
-    category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
+    category.  Root-level skills (e.g. ``some-skill/SKILL.md`` directly under a
+    scan root) are returned as
     *uncategorized*.
 
     Scan roots include the local ``SKILLS_DIR`` **and** any configured

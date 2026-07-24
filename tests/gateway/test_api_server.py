@@ -2103,6 +2103,273 @@ class TestResponsesEndpoint:
             assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):
+        """After compression, stored history is the compressed transcript, not prior + compressed."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10  # 20 messages — enough to simulate a long conversation
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            # Compressed transcript starts with summary, NOT with prior[0]
+            {"role": "user", "content": "[Compressed summary of earlier conversation]"},
+            {"role": "user", "content": "Now add 1 more"},
+            {"role": "assistant", "content": "3"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "3",
+                        "messages": list(compressed_history),
+                        "_compressed": True,
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        stored = adapter._response_store.get(data["id"])
+        stored_history = stored["conversation_history"]
+        # Must NOT contain the original prior_history messages
+        for msg in prior_history:
+            assert msg not in stored_history, (
+                f"Prior history message leaked into stored compressed transcript: {msg}"
+            )
+        # Must contain the compressed transcript
+        assert stored_history == compressed_history
+
+    @pytest.mark.asyncio
+    async def test_rotation_compression_exercises_detection_and_persists_rotated_session_id(
+        self, adapter
+    ):
+        """Fake-agent rotation: _run_agent detects session_id change, sets
+        _compressed, and the Responses handler persists the rotated session_id
+        so subsequent previous_response_id chaining loads the compressed child."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10
+
+        adapter._response_store.put(
+            "resp_prev_rot",
+            {
+                "response": {"id": "resp_prev_rot", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            {"role": "user", "content": "[Compressed summary]"},
+            {"role": "user", "content": "Now add 1 more"},
+            {"role": "assistant", "content": "3"},
+        ]
+
+        # Fake agent whose session_id was rotated by compression
+        mock_agent = MagicMock()
+        mock_agent.session_id = "rotated-child-session"
+        mock_agent._last_compaction_in_place = False
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.run_conversation.return_value = {
+            "final_response": "3",
+            "messages": list(compressed_history),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": "resp_prev_rot",
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+
+        # The detection path in _run_agent must have set _compressed
+        # _run_agent mutates the result dict in place -- verify via stored data
+        stored = adapter._response_store.get(data["id"])
+        assert stored is not None
+
+        # Stored history must be the compressed transcript, not prior + compressed
+        stored_history = stored["conversation_history"]
+        for msg in prior_history:
+            assert msg not in stored_history
+        assert stored_history == compressed_history
+
+        # Stored session_id must be the rotated child, not the original
+        assert stored["session_id"] == "rotated-child-session"
+
+        # Response header must also reflect the rotated session
+        assert resp.headers.get("X-Hermes-Session-Id") == "rotated-child-session"
+
+    @pytest.mark.asyncio
+    async def test_inplace_compression_exercises_detection_and_persists_compressed_history(
+        self, adapter
+    ):
+        """Fake-agent in-place: _run_agent detects _last_compaction_in_place,
+        sets _compressed, and the Responses handler persists compressed history
+        WITHOUT rotating the session_id."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10
+
+        adapter._response_store.put(
+            "resp_prev_inplace",
+            {
+                "response": {"id": "resp_prev_inplace", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            {"role": "user", "content": "[Compressed summary in-place]"},
+            {"role": "user", "content": "Continue"},
+            {"role": "assistant", "content": "42"},
+        ]
+
+        # Fake agent: in-place compaction, session_id unchanged
+        mock_agent = MagicMock()
+        mock_agent.session_id = "api-test-session"  # same as input -- no rotation
+        mock_agent._last_compaction_in_place = True
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.run_conversation.return_value = {
+            "final_response": "42",
+            "messages": list(compressed_history),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Continue",
+                        "previous_response_id": "resp_prev_inplace",
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+
+        stored = adapter._response_store.get(data["id"])
+        assert stored is not None
+
+        # Stored history must be the compressed transcript
+        stored_history = stored["conversation_history"]
+        for msg in prior_history:
+            assert msg not in stored_history
+        assert stored_history == compressed_history
+
+        # Session_id must NOT change for in-place compaction
+        assert stored["session_id"] == "api-test-session"
+        assert resp.headers.get("X-Hermes-Session-Id") == "api-test-session"
+
+    @pytest.mark.asyncio
+    async def test_chained_rotation_propagates_effective_session_id(self, adapter):
+        """Two-request chain: first request triggers rotation, second request
+        loads history using the rotated session_id stored by the first."""
+        # First request -- no previous_response_id, establishes the conversation
+        mock_agent_1 = MagicMock()
+        mock_agent_1.session_id = "child-session-after-rotation"
+        mock_agent_1._last_compaction_in_place = False
+        mock_agent_1.session_prompt_tokens = 0
+        mock_agent_1.session_completion_tokens = 0
+        mock_agent_1.session_total_tokens = 0
+        compressed_msg_1 = [
+            {"role": "user", "content": "[Summary of turn 1]"},
+            {"role": "assistant", "content": "Hello back"},
+        ]
+        mock_agent_1.run_conversation.return_value = {
+            "final_response": "Hello back",
+            "messages": list(compressed_msg_1),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent_1):
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hello"},
+                )
+            assert resp1.status == 200
+            data1 = await resp1.json()
+            response_id_1 = data1["id"]
+
+            # Verify the rotated session_id was persisted
+            stored_1 = adapter._response_store.get(response_id_1)
+            assert stored_1["session_id"] == "child-session-after-rotation"
+            assert stored_1["conversation_history"] == compressed_msg_1
+
+            # Second request -- chains via previous_response_id
+            # _run_agent is called with the session_id from the stored response
+            mock_agent_2 = MagicMock()
+            mock_agent_2.session_id = "child-session-after-rotation"
+            mock_agent_2._last_compaction_in_place = False
+            mock_agent_2.session_prompt_tokens = 0
+            mock_agent_2.session_completion_tokens = 0
+            mock_agent_2.session_total_tokens = 0
+            mock_agent_2.run_conversation.return_value = {
+                "final_response": "Goodbye",
+                "messages": [
+                    {"role": "user", "content": "[Summary of turn 1]"},
+                    {"role": "assistant", "content": "Hello back"},
+                    {"role": "user", "content": "Goodbye"},
+                    {"role": "assistant", "content": "See you!"},
+                ],
+                "api_calls": 1,
+            }
+
+            with patch.object(adapter, "_create_agent", return_value=mock_agent_2):
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Goodbye",
+                        "previous_response_id": response_id_1,
+                    },
+                )
+            assert resp2.status == 200
+
+            # The second _run_agent call must receive the rotated session_id
+            # (from the stored response), not the original request session_id
+            call_kwargs = mock_agent_2.run_conversation.call_args.kwargs
+            # conversation_history loaded from store should be the compressed transcript
+            assert call_kwargs["conversation_history"] == compressed_msg_1
+
+    @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
         """Response output must not replay previous tool artifacts."""
         prior_history = [
@@ -2830,20 +3097,35 @@ class TestConfigIntegration:
 
     def test_env_override_enables_api_server(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.API_SERVER in config.platforms
         assert config.platforms[Platform.API_SERVER].enabled is True
 
+    def test_env_override_enabled_without_key_does_not_load(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
+    def test_env_override_enabled_with_weak_key_does_not_load(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "abcd")
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
     def test_env_override_with_key(self, monkeypatch):
-        monkeypatch.setenv("API_SERVER_KEY", "sk-mykey")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.API_SERVER in config.platforms
-        assert config.platforms[Platform.API_SERVER].extra.get("key") == "sk-mykey"
+        assert config.platforms[Platform.API_SERVER].extra.get("key") == "opensslrandhex32strongkey"
 
     def test_env_override_port_and_host(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         monkeypatch.setenv("API_SERVER_PORT", "9999")
         monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
         from gateway.config import load_gateway_config
@@ -2853,6 +3135,7 @@ class TestConfigIntegration:
 
     def test_env_override_cors_origins(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "opensslrandhex32strongkey")
         monkeypatch.setenv(
             "API_SERVER_CORS_ORIGINS",
             "http://localhost:3000, http://127.0.0.1:3000",
@@ -2866,7 +3149,9 @@ class TestConfigIntegration:
 
     def test_api_server_in_connected_platforms(self):
         config = GatewayConfig()
-        config.platforms[Platform.API_SERVER] = PlatformConfig(enabled=True)
+        config.platforms[Platform.API_SERVER] = PlatformConfig(
+            enabled=True, extra={"key": "opensslrandhex32strongkey"}
+        )
         connected = config.get_connected_platforms()
         assert Platform.API_SERVER in connected
 
@@ -3270,6 +3555,95 @@ class TestTruncation:
         call_kwargs = mock_run.call_args.kwargs
         # History should be truncated to 100
         assert len(call_kwargs["conversation_history"]) <= 100
+        assert call_kwargs["conversation_history"][0]["content"] == "msg 50"
+
+    @pytest.mark.asyncio
+    async def test_truncation_auto_preserves_leading_compaction_summary(self, adapter):
+        """truncation=auto must not discard the compacted-history handoff."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        summary = {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nEarlier work.",
+            "_compressed_summary": True,
+        }
+        long_history = [summary] + [
+            {"role": "user", "content": f"msg {i}"}
+            for i in range(149)
+        ]
+        adapter._response_store.put("resp_summary", {
+            "response": {"id": "resp_summary", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_summary",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        history = mock_run.call_args.kwargs["conversation_history"]
+        assert len(history) == 100
+        assert history[0] == summary
+        assert history[1]["content"] == "msg 50"
+        assert history[-1]["content"] == "msg 148"
+
+    @pytest.mark.asyncio
+    async def test_truncation_auto_preserves_non_leading_compaction_summary(self, adapter):
+        """A summary sitting after a retained system head must survive too.
+
+        The gateway /compress path can force a user-leading layout that
+        leaves the compaction summary after a kept system message, so the
+        preservation predicate must not assume the summary is at index 0.
+        """
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        system_head = {"role": "system", "content": "You are a helpful agent."}
+        summary = {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nEarlier work.",
+            "_compressed_summary": True,
+        }
+        long_history = [system_head, summary] + [
+            {"role": "user", "content": f"msg {i}"}
+            for i in range(148)
+        ]
+        adapter._response_store.put("resp_summary_mid", {
+            "response": {"id": "resp_summary_mid", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_summary_mid",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        history = mock_run.call_args.kwargs["conversation_history"]
+        assert len(history) == 100
+        assert history[0] == summary
+        assert history[1]["content"] == "msg 49"
+        assert history[-1]["content"] == "msg 147"
 
     @pytest.mark.asyncio
     async def test_no_truncation_keeps_full_history(self, adapter):
@@ -4431,3 +4805,139 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+
+# ---------------------------------------------------------------------------
+# _api_key_passes_startup_guard — fail-closed on an unverifiable key
+# ---------------------------------------------------------------------------
+
+class TestApiKeyStartupGuardFailsClosed:
+    """The guard is the only thing between a guessable key and an endpoint the
+    code itself describes as ``terminal-capable agent work`` where "a guessable
+    key is remote code execution".
+
+    So "the strength check could not be run" must never resolve to "start
+    anyway" — the same posture ``tools/credential_files.py`` takes when its
+    deny-list cannot be consulted.
+    """
+
+    class _Stub:
+        name = "api_server"
+        _host = "0.0.0.0"
+
+        def __init__(self, key):
+            self._api_key = key
+
+    @staticmethod
+    def _guard(key):
+        return APIServerAdapter._api_key_passes_startup_guard(
+            TestApiKeyStartupGuardFailsClosed._Stub(key)
+        )
+
+    @staticmethod
+    def _blocking_auth_import():
+        real_import = __import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "hermes_cli.auth":
+                raise ImportError("simulated: hermes_cli.auth unavailable")
+            return real_import(name, *args, **kwargs)
+
+        return patch("builtins.__import__", _blocked)
+
+    def test_weak_key_refused_when_check_is_unavailable(self):
+        """The bug: an unimportable auth module silently dropped the check and
+        the server started on a 4-character key."""
+        with self._blocking_auth_import():
+            assert self._guard("test") is False
+
+    def test_strong_key_also_refused_when_check_is_unavailable(self):
+        """Fail-closed: we cannot verify the key, so we do not expose the
+        endpoint — the log tells the operator to repair the install."""
+        with self._blocking_auth_import():
+            assert self._guard("a" * 40) is False
+
+    def test_strong_key_still_starts_normally(self):
+        """Control: the happy path is unchanged."""
+        assert self._guard("a" * 40) is True
+
+    def test_weak_key_still_refused_normally(self):
+        """Control: the original rejection is unchanged."""
+        assert self._guard("test") is False
+
+    def test_missing_key_still_refused(self):
+        """Control: the empty-key branch is unchanged."""
+        assert self._guard("") is False
+
+
+class TestKeyRejectionSetsNonRetryableFatalError:
+    """Each startup-guard rejection must set a non-retryable fatal error so
+    the reconnect watcher drops the platform from the retry queue instead of
+    looping indefinitely.
+
+    Previously connect() returned bare ``False``, which gateway.run treated
+    as retryable — re-queueing every backoff interval forever and
+    re-instantiating the adapter (with its ResponseStore sqlite connection)
+    each retry (#38803: ~501 leaked connections / 1002 fds over 2.5 days,
+    ending in EMFILE for the whole gateway). Mirrors the port-conflict
+    precedent (test_port_conflict_sets_non_retryable_fatal_error, #65665).
+    """
+
+    @staticmethod
+    def _make_adapter(key, monkeypatch):
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
+        return APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"host": "127.0.0.1", "port": 0, "key": key},
+            )
+        )
+
+    @staticmethod
+    async def _assert_key_rejection_is_fatal(adapter):
+        try:
+            assert await adapter.connect() is False
+            assert adapter.has_fatal_error is True
+            assert adapter.fatal_error_retryable is False
+            assert adapter.fatal_error_code == "api_server_key_invalid"
+            assert "API_SERVER_KEY" in (adapter.fatal_error_message or "")
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_missing_key_sets_non_retryable_fatal_error(self, monkeypatch):
+        adapter = self._make_adapter("", monkeypatch)
+        await self._assert_key_rejection_is_fatal(adapter)
+
+    @pytest.mark.asyncio
+    async def test_weak_key_sets_non_retryable_fatal_error(self, monkeypatch):
+        """Placeholder / <16-char keys are rejected by has_usable_secret."""
+        adapter = self._make_adapter("test", monkeypatch)
+        await self._assert_key_rejection_is_fatal(adapter)
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_key_sets_non_retryable_fatal_error(self, monkeypatch):
+        """The fail-closed branch: a strong key whose strength cannot be
+        verified (hermes_cli.auth unimportable) must also be non-retryable —
+        the install won't repair itself between retries."""
+        adapter = self._make_adapter("a" * 40, monkeypatch)
+        real_import = __import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "hermes_cli.auth":
+                raise ImportError("simulated: hermes_cli.auth unavailable")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", _blocked):
+            await self._assert_key_rejection_is_fatal(adapter)
+
+    @pytest.mark.asyncio
+    async def test_strong_key_leaves_no_fatal_error(self, monkeypatch):
+        """Control: a successful connect() must not carry a fatal error."""
+        adapter = self._make_adapter("a" * 40, monkeypatch)
+        try:
+            assert await adapter.connect() is True
+            assert adapter.has_fatal_error is False
+            assert adapter.fatal_error_retryable is True
+        finally:
+            await adapter.disconnect()

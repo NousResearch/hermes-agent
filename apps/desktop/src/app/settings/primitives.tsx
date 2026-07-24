@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 
-import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { triggerHaptic } from '@/lib/haptics'
 import type { IconComponent } from '@/lib/icons'
@@ -28,13 +28,50 @@ export function Pill({ tone = 'muted', children }: { tone?: keyof typeof PILL_VA
   return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>
 }
 
-export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {
+export function SectionHeading({
+  aside,
+  icon: Icon,
+  meta,
+  title
+}: {
+  // Right-aligned trailing content on the heading row (e.g. a compact status +
+  // action), so a single-item section needn't repeat its own label as a row.
+  aside?: ReactNode
+  icon: IconComponent
+  meta?: string
+  title: string
+}) {
   return (
     <div className="mb-2.5 flex items-center gap-2 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
-      <Icon className="size-4 text-muted-foreground" />
+      <Icon className="size-4 shrink-0 text-muted-foreground" />
       <span>{title}</span>
       {meta && <Pill>{meta}</Pill>}
+      {aside && <div className="ml-auto flex min-w-0 items-center">{aside}</div>}
     </div>
+  )
+}
+
+// A titled section: heading + body with the shared vertical rhythm. Keeps the
+// heading and its content welded together so pages stop hand-rolling
+// `<div className="mb-…"><SectionHeading/>…</div>` at every call site.
+export function SettingsSection({
+  aside,
+  children,
+  icon,
+  meta,
+  title
+}: {
+  aside?: ReactNode
+  children: ReactNode
+  icon: IconComponent
+  meta?: string
+  title: string
+}) {
+  return (
+    <section className="mb-6">
+      <SectionHeading aside={aside} icon={icon} meta={meta} title={title} />
+      {children}
+    </section>
   )
 }
 
@@ -74,7 +111,8 @@ export function ListRow({
   hint,
   action,
   below,
-  wide = false
+  wide = false,
+  className
 }: {
   title: ReactNode
   description?: ReactNode
@@ -82,12 +120,13 @@ export function ListRow({
   action?: ReactNode
   below?: ReactNode
   wide?: boolean
+  className?: string
 }) {
   return (
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className="@container">
+    <div className={cn('@container', className)}>
       <div
         className={cn(
           'grid gap-3 py-3',
@@ -143,16 +182,60 @@ export function ToggleRow({
   )
 }
 
-// The settings panels render this as the sole child of the top-padded
-// OverlayMain (pt = titlebar + 1rem, no bottom pad — see settings/index.tsx).
-// Cancel that top pad so the loader centers in the whole card, not just the
-// band beneath it. Inline loaders (mid-panel) should use <PageLoader> directly.
-export function LoadingState({ label }: { label: string }) {
+// Skeleton primitives mirroring the settings layout rhythm — a loading page keeps
+// its shape (like ModelSettings) instead of collapsing to a centered spinner.
+export function SectionHeadingSkeleton() {
   return (
-    <PageLoader
-      className="-mt-[calc(var(--titlebar-height)+1rem)] h-[calc(100%+var(--titlebar-height)+1rem)]"
-      label={label}
-    />
+    <div className="mb-2.5 flex items-center gap-2 pt-2">
+      <Skeleton className="size-4" />
+      <Skeleton className="h-4 w-36 max-w-full" />
+    </div>
+  )
+}
+
+export function ListRowSkeleton({ wide = false }: { wide?: boolean }) {
+  return (
+    <div className="@container">
+      <div
+        className={cn(
+          'grid gap-3 py-3',
+          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center'
+        )}
+      >
+        <div className="min-w-0 space-y-1.5">
+          <Skeleton className="h-3.5 w-40 max-w-full" />
+          <Skeleton className="h-3 w-64 max-w-full" />
+        </div>
+        {!wide && <Skeleton className="h-8 w-full @2xl:w-72 @2xl:justify-self-end" />}
+      </div>
+    </div>
+  )
+}
+
+// A full settings page in its loading shape: an optional leading search field
+// over one or more sections, each an optional heading above a run of rows.
+// `<SettingsSkeleton search sections={[{ heading, rows }]} />`.
+export function SettingsSkeleton({
+  search = false,
+  sections = [{ rows: 4 }]
+}: {
+  search?: boolean
+  sections?: { heading?: boolean; rows: number }[]
+}) {
+  return (
+    <SettingsContent>
+      {search && <Skeleton className="mb-3 h-8 w-full" />}
+      {sections.map((section, i) => (
+        <section className={cn(i > 0 && 'mt-6')} key={i}>
+          {section.heading && <SectionHeadingSkeleton />}
+          <div className="grid gap-1">
+            {Array.from({ length: section.rows }, (_, r) => (
+              <ListRowSkeleton key={r} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </SettingsContent>
   )
 }
 

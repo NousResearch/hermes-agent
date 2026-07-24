@@ -22,12 +22,15 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
-# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) and workspace IDs
-# (W...) are NOT valid chat.postMessage channel values — posting to them fails
-# because the API requires a conversation ID. To DM a user you must first call
-# conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
-# through to channel-name resolution, which only matches by name and fails.
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
+# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) are parsed as
+# explicit user targets (``user:U...``) and are converted to D... conversations
+# via conversations.open before chat.postMessage — posting directly to a U/W
+# ID fails because the API requires a conversation ID. ``@handle`` targets are
+# resolved through users.list first (``user_name:...``).
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+_SLACK_USER_ID_RE = re.compile(r"^\s*(U[A-Z0-9]{8,})\s*$")
+_SLACK_USER_NAME_RE = re.compile(r"^\s*@([A-Za-z0-9._-]{1,80})\s*$")
+_SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
@@ -465,27 +468,22 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
-    # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
-    if platform_name == "slack" and chat_id and chat_id.startswith("U"):
-        try:
-            import aiohttp
-            async def _open_slack_dm(token, user_id):
-                url = "https://slack.com/api/conversations.open"
-                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                    async with session.post(url, headers=headers, json={"users": [user_id]}) as resp:
-                        data = await resp.json()
-                        if data.get("ok"):
-                            return data["channel"]["id"]
-                        return None
+    # Slack: resolve user targets to DM channel IDs before sending.
+    # _parse_target_ref emits internal ``user:U...`` / ``user_name:@handle``
+    # targets; a bare U... id can also arrive from session metadata or the
+    # home-channel config. All are opened via conversations.open (fixes #19236).
+    if platform_name == "slack" and chat_id:
+        _slack_dm_target = chat_id
+        if _slack_dm_target.startswith("U") and _SLACK_USER_ID_RE.fullmatch(_slack_dm_target):
+            _slack_dm_target = f"user:{_slack_dm_target}"
+        if _slack_dm_target.startswith(("user:", "user_name:")):
             from model_tools import _run_async
-            dm_channel = _run_async(_open_slack_dm(pconfig.token, chat_id))
-            if dm_channel:
-                chat_id = dm_channel
-            else:
-                return json.dumps({"error": f"Could not open DM with Slack user {chat_id}. Check bot permissions (im:write)."})
-        except Exception as e:
-            return json.dumps({"error": f"Failed to open Slack DM: {e}"})
+            _resolved, _resolve_err = _run_async(
+                _resolve_slack_user_target(pconfig.token, _slack_dm_target)
+            )
+            if _resolve_err:
+                return json.dumps(_resolve_err)
+            chat_id = _resolved
 
     try:
         from model_tools import _run_async
@@ -556,14 +554,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
-            chat_id = match.group(1)
-            # Slack user IDs (U...) and workspace IDs (W...) are NOT valid
-            # explicit send targets — chat.postMessage rejects them. A DM
-            # must be opened first via conversations.open to get a D...
-            # conversation ID. Caller still gets the chat_id so the U→D
-            # resolution path in send_message() can run.
-            is_explicit = chat_id[0] not in {"U", "W"}
-            return chat_id, None, is_explicit
+            return match.group(1), None, True
+        match = _SLACK_USER_ID_RE.fullmatch(target_ref) or _SLACK_MENTION_RE.fullmatch(target_ref)
+        if match:
+            return f"user:{match.group(1)}", None, True
+        match = _SLACK_USER_NAME_RE.fullmatch(target_ref)
+        if match:
+            return f"user_name:{match.group(1)}", None, True
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")
@@ -982,6 +979,48 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: native media via files_upload_v2 in the plugin's
+    # standalone_sender_fn (plugins/platforms/slack/adapter.py::_standalone_send).
+    # Gateway in-channel MEDIA: delivery already worked; send_message previously
+    # omitted Slack attachments and told the model media was unsupported.
+    if platform == Platform.SLACK and media_files:
+        from gateway.platform_registry import platform_registry as _pr_slack
+        from hermes_cli.plugins import discover_plugins as _dp_slack
+        _dp_slack()
+        _slack_entry = _pr_slack.get("slack")
+        if _slack_entry is None or _slack_entry.standalone_sender_fn is None:
+            return {"error": "Slack plugin not registered or missing standalone_sender_fn"}
+        _sl_caption, _ = _media_caption_split(
+            message, media_files,
+            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
+        )
+        if _sl_caption is not None:
+            result = await _slack_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                "",
+                thread_id=thread_id,
+                media_files=media_files,
+                caption=_sl_caption,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            return result
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _slack_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- WhatsApp: native media attachment support via the registry's
     # standalone_sender_fn (plugins/platforms/whatsapp/adapter.py::_standalone_send).
     # The plugin uploads each file through the local Baileys bridge /send-media
@@ -1032,11 +1071,37 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: prefer the live gateway adapter, then the plugin's
+    # standalone sender.  The live adapter is multi-workspace aware (it maps
+    # channels to the workspace client that owns them) and honors adapter-side
+    # gates like ignored_channels; the standalone Web-API path may only have a
+    # comma-separated token list.  ``_send_via_adapter`` tries the in-process
+    # adapter first and falls back to the registry standalone sender for
+    # out-of-process cron runs, preserving MEDIA delivery on the fallback
+    # (media-bearing sends were already intercepted by the branch above).
+    if platform == Platform.SLACK:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1044,24 +1109,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
         )
 
     last_result = None
     for chunk in chunks:
-        if platform == Platform.SLACK:
-            # Slack migrated to a bundled plugin (#41112); delivery flows
-            # through the registry's standalone_sender_fn, which applies
-            # mrkdwn formatting and posts via the Slack Web API.
-            from gateway.platform_registry import platform_registry
-            _slack_entry = platform_registry.get("slack")
-            if _slack_entry is None or _slack_entry.standalone_sender_fn is None:
-                result = {"error": "Slack plugin not registered or missing standalone_sender_fn"}
-            else:
-                result = await _slack_entry.standalone_sender_fn(
-                    pconfig, chat_id, chunk, thread_id=thread_id
-                )
-        elif platform == Platform.WHATSAPP:
+        if platform == Platform.WHATSAPP:
             result = await _registry_standalone_send("whatsapp", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
@@ -1456,6 +1509,84 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
 
 # _send_whatsapp moved to plugins/platforms/whatsapp/adapter.py::_standalone_send,
 # wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
+
+
+async def _resolve_slack_user_target(token, chat_id):
+    """Resolve a Slack user target to a D... DM conversation ID.
+
+    ``chat_id`` may be a Slack conversation ID (C/G/D...) — returned unchanged —
+    or an internal user target (``user:U...`` / ``user_name:<handle>``). User
+    targets are opened as DMs via conversations.open because Slack
+    chat.postMessage requires a conversation ID. ``user_name:`` targets are
+    first resolved to a user ID through users.list (stable handle match only).
+
+    Returns ``(chat_id, None)`` on success or ``(None, error_dict)`` on failure.
+    """
+    if not (chat_id.startswith("user:") or chat_id.startswith("user_name:")):
+        return chat_id, None
+    try:
+        import aiohttp
+    except ImportError:
+        return None, {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        base_url = "https://slack.com/api"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        async def post_api(session, method, payload):
+            async with session.post(f"{base_url}/{method}", headers=headers, json=payload, **_req_kw) as resp:
+                return await resp.json()
+
+        async def resolve_user_name(session, name):
+            query = name.strip().lstrip("@").lower()
+            matches = []
+            cursor = None
+            for _page in range(20):
+                payload = {"limit": 200}
+                if cursor:
+                    payload["cursor"] = cursor
+                data = await post_api(session, "users.list", payload)
+                if not data.get("ok"):
+                    return None, f"Slack users.list error: {data.get('error', 'unknown')}"
+                for member in data.get("members", []):
+                    if member.get("deleted") or member.get("is_bot"):
+                        continue
+                    # ``@name`` should match the stable Slack handle only. Display
+                    # and real names are mutable/non-unique enough that using them
+                    # could DM the wrong person with sensitive content.
+                    if str(member.get("name", "")).strip().lower() == query:
+                        matches.append(member)
+                cursor = (data.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+            if not matches:
+                return None, f"Could not resolve Slack user '@{name}'."
+            if len(matches) > 1:
+                return None, f"Slack user '@{name}' matched multiple Slack users. Use a Slack user ID instead."
+            return matches[0].get("id"), None
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            if chat_id.startswith("user_name:"):
+                user_id, error = await resolve_user_name(session, chat_id[len("user_name:"):])
+                if error:
+                    return None, _error(error)
+                chat_id = f"user:{user_id}"
+
+            user_id = chat_id[len("user:"):]
+            opened = await post_api(session, "conversations.open", {"users": user_id})
+            if not opened.get("ok"):
+                return None, _error(
+                    f"Slack conversations.open error: {opened.get('error', 'unknown')}. "
+                    "Check bot permissions (im:write)."
+                )
+            dm_id = (opened.get("channel") or {}).get("id")
+            if not dm_id:
+                return None, _error("Slack conversations.open did not return a DM channel ID")
+            return dm_id, None
+    except Exception as e:
+        return None, _error(f"Slack DM resolution failed: {e}")
 
 
 async def _send_signal(extra, chat_id, message, media_files=None):

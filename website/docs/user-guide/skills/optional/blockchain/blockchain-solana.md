@@ -1,14 +1,14 @@
 ---
-title: "Solana"
+title: "Solana — Query Solana wallets, tokens, txs, and NFTs in USD"
 sidebar_label: "Solana"
-description: "Query Solana blockchain data with USD pricing — wallet balances, token portfolios with values, transaction details, NFTs, whale detection, and live network s..."
+description: "Query Solana wallets, tokens, txs, and NFTs in USD"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Solana
 
-Query Solana blockchain data with USD pricing — wallet balances, token portfolios with values, transaction details, NFTs, whale detection, and live network stats. Uses Solana RPC + CoinGecko. No API key required.
+Query Solana wallets, tokens, txs, and NFTs in USD.
 
 ## Skill metadata
 

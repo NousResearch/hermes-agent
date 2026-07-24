@@ -11,10 +11,22 @@ export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
 export const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
 
+// The billing endpoint is the authoritative source of truth for balance / cap /
+// plan — the inference `x-nous-credits-*` headers are best-effort and can drift
+// out of sync (notably in team/org accounts where another member's spend moves
+// the shared balance without ever touching THIS client's headers). So the page
+// never trusts a cache: `staleTime: 0` + `refetchOnMount: 'always'` force a
+// fresh fetch every time it opens or regains focus, and it keeps polling every
+// 30s while mounted (react-query only ticks an active observer; it pauses when
+// the window is backgrounded — refetchIntervalInBackground defaults to false).
+// A `credits.*` notice crossing additionally invalidates ['billing','state'] to
+// pull the change in immediately rather than waiting for the next poll tick.
 const BILLING_QUERY_OPTIONS = {
+  refetchInterval: 30_000,
+  refetchOnMount: 'always',
   refetchOnWindowFocus: true,
   retry: false,
-  staleTime: 30_000
+  staleTime: 0
 } as const
 
 export interface BillingSummaryItemView {
@@ -30,6 +42,8 @@ export interface BillingNoticeView {
   }
   message: string
   title: string
+  /** `warn` = an actionable blocker (e.g. no card); `info` = neutral guidance. */
+  tone?: 'info' | 'warn'
 }
 
 export interface BillingRowActionView {
@@ -207,7 +221,7 @@ export function deriveBillingView(
   const tiers = derivePlanTiers(subscription, billing.portal_url, capable, pending)
 
   return {
-    notice: undefined,
+    notice: noCardNotice(billing),
     paymentRow: paymentMethodRow(billing),
     plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable, pending),
     refillRow: autoReloadRow(billing),
@@ -276,26 +290,6 @@ export function formatBillingDate(value?: null | string): string {
   return fmtDate.format(date)
 }
 
-export function formatUsageUpdatedAgo(updatedAt: number, now: number): string {
-  const elapsedSeconds = Math.max(0, Math.floor((now - updatedAt) / 1000))
-
-  if (elapsedSeconds < 1) {
-    return 'just now'
-  }
-
-  if (elapsedSeconds < 60) {
-    return `${elapsedSeconds}s ago`
-  }
-
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
-
-  if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m ago`
-  }
-
-  return `${Math.floor(elapsedMinutes / 60)}h ago`
-}
-
 function emptySummary(): BillingSummaryItemView[] {
   return [
     { label: 'Balance', value: EMPTY_BILLING_VALUE },
@@ -311,7 +305,24 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
   return {
     action: portalUrl ? { label: 'Open portal ↗', url: portalUrl } : undefined,
     message: resolved.message,
-    title: resolved.title
+    title: resolved.title,
+    tone: 'warn'
+  }
+}
+
+// A logged-in account with no card can't buy credits or manage auto-refill, and
+// every one of those controls disables silently — so lead the page with a single
+// warn banner that names the blocker and links straight to the fix.
+function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefined {
+  if (billing.card) {
+    return undefined
+  }
+
+  return {
+    action: { label: 'Add card ↗', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
+    message: 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
+    title: 'No payment method on file',
+    tone: 'warn'
   }
 }
 
@@ -530,17 +541,19 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
   const card = billing.card
 
   if (!card) {
+    // No card → a single "Add payment method" link, the way every other app does
+    // it. The reason (buys/auto-refill are blocked) already leads the page as a
+    // notice, so the row stays a bare call-to-action with no redundant status text.
     return {
-      action: { label: 'Update ↗', url: portalUrl },
-      description: 'Add a payment method on the portal before buying top-up credits.',
+      action: { label: 'Add payment method', url: portalUrl },
+      description: '',
       id: 'payment_method',
-      title: 'Payment method',
-      value: 'No card on file'
+      title: 'Payment method'
     }
   }
 
   return {
-    action: { label: 'Update ↗', url: portalUrl },
+    action: { label: 'Update', url: portalUrl },
     description: 'Manage the card used for top-ups and subscription renewals.',
     id: 'payment_method',
     title: 'Payment method',
@@ -550,14 +563,13 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
 
 function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
   if (!billing.card) {
+    // The no-card blocker is already spelled out by the page-level warn banner
+    // (noCardNotice); repeating it here — emoji and all — just clutters the row,
+    // so keep the plain "what buying does" line and let the controls sit disabled.
     return {
       action: { disabled: true, label: 'Buy' },
       chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
-      description: resolveRefusal({
-        kind: 'no_payment_method',
-        message: '',
-        portalUrl: billing.portal_url ?? undefined
-      }).message,
+      description: 'A single charge on your card, added to your balance today.',
       id: 'buy_credits',
       title: 'Buy credits now'
     }

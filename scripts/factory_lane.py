@@ -2310,7 +2310,7 @@ def _parse_handoff_timestamp(value):
     Toute autre forme -> `None` (traité comme périmé, jamais comme frais)."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and math.isfinite(value):
         return float(value)
     if isinstance(value, str):
         try:

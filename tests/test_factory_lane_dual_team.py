@@ -580,6 +580,14 @@ def test_team_config_rejects_non_finite_freshness_max_age(tmp_path, invalid_age)
         module.load_team_config(path)
 
 
+@pytest.mark.parametrize("invalid_timestamp", [float("nan"), float("inf"), float("-inf")])
+def test_handoff_timestamp_rejects_non_finite_numbers(invalid_timestamp):
+    """Non-finite JSON numbers must never bypass stale-handoff checks."""
+    module = load_factory_lane()
+
+    assert module._parse_handoff_timestamp(invalid_timestamp) is None
+
+
 @pytest.mark.parametrize("invalid_age", [0.5, 86_401])
 def test_team_config_rejects_non_integral_or_overlong_freshness_max_age(tmp_path, invalid_age):
     """Freshness policies are bounded whole-second windows, never eternal proofs."""

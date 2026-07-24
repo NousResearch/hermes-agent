@@ -2777,7 +2777,7 @@ def create_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     created_by: Optional[str] = None,
-    workspace_kind: str = "scratch",
+    workspace_kind: Optional[str] = "scratch",
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
     tenant: Optional[str] = None,
@@ -2843,7 +2843,7 @@ def create_task(
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
         )
-    if workspace_kind not in VALID_WORKSPACE_KINDS:
+    if workspace_kind is not None and workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
             f"got {workspace_kind!r}"
@@ -3005,6 +3005,31 @@ def create_task(
             return row["id"]
 
     now = int(time.time())
+
+    # Resolve workspace_kind from the board's default_workdir when the
+    # caller did not specify one explicitly (CLI --workspace omitted or
+    # tool workspace_kind omitted). This ensures CLI/tool-created tasks
+    # inherit the board's default_workdir the same way the dashboard does:
+    #   * default_workdir inside a git repo toplevel -> worktree
+    #   * default_workdir as a plain directory -> dir
+    #   * no default_workdir -> scratch (legacy behaviour preserved)
+    # An explicit --workspace scratch bypasses this entirely.
+    if workspace_kind is None:
+        _board_slug = board if board else get_current_board()
+        _board_meta = read_board_metadata(_board_slug)
+        _board_default = _board_meta.get("default_workdir")
+        if _board_default:
+            try:
+                _default_path = Path(str(_board_default)).expanduser().resolve()
+                if _git_toplevel(_default_path):
+                    workspace_kind = "worktree"
+                else:
+                    workspace_kind = "dir"
+                workspace_path = str(_default_path)
+            except (OSError, ValueError):
+                workspace_kind = "scratch"
+        else:
+            workspace_kind = "scratch"
 
     # Resolve workspace_path from board-level default_workdir when the
     # caller did not specify one explicitly. Board defaults represent

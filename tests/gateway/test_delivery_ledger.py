@@ -10,6 +10,7 @@ id stability, and the startup redelivery sweep's contract:
 """
 
 import time
+import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -402,3 +403,23 @@ class TestUnconnectedPlatformKeepsItsBudget:
 
         assert await runner._redeliver_pending_obligations() == 1
         assert _row("ob-1")["state"] == "delivered"
+
+
+def test_transaction_closes_connection_on_exit(tmp_path, monkeypatch):
+    """_transaction() context manager MUST actually close the underlying FD."""
+    with dl._transaction() as conn:
+        conn.execute("SELECT 1").fetchone()
+    # After exit, the connection MUST be closed.
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_transaction_closes_on_exception(tmp_path, monkeypatch):
+    """Connection closed even when the body raises."""
+    captured = []
+    with pytest.raises(RuntimeError, match="boom"):
+        with dl._transaction() as conn:
+            captured.append(conn)
+            raise RuntimeError("boom")
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured[0].execute("SELECT 1")

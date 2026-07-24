@@ -57,7 +57,14 @@ def remove_path_from_shell_configs():
     
     for config_path in configs:
         try:
-            content = config_path.read_text()
+            # Read/write with surrogateescape so a non-UTF-8 byte (legacy
+            # ISO-8859 .bashrc, a mojibake prompt) survives the round-trip
+            # byte-for-byte. A bare read_text()/write_text() uses the locale
+            # default (cp1252 on Windows): a non-ASCII byte either raises
+            # UnicodeDecodeError — silently skipping PATH cleanup — or, worse,
+            # decodes to wrong chars and write_text() re-encodes the damage
+            # back, permanently corrupting the user's shell config.
+            content = config_path.read_text(encoding="utf-8", errors="surrogateescape")
             original_content = content
             
             # Remove lines containing hermes-agent or hermes PATH entries
@@ -87,7 +94,7 @@ def remove_path_from_shell_configs():
                 new_content = new_content.replace('\n\n\n', '\n\n')
             
             if new_content != original_content:
-                config_path.write_text(new_content)
+                config_path.write_text(new_content, encoding="utf-8", errors="surrogateescape")
                 removed_from.append(config_path)
                 
         except Exception as e:

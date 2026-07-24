@@ -1607,11 +1607,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
     if fb_provider == current_provider and fb_model == current_model:
-        logger.warning(
-            "Fallback skip: chain entry %s/%s matches current provider/model",
-            fb_provider, fb_model,
-        )
-        return agent._try_activate_fallback(reason)
+        # Also compare base_url when both are set — same provider+model but
+        # different endpoint is a legitimate fallback.
+        if (fb_base_url_for_dedup and current_base_url
+                and fb_base_url_for_dedup != current_base_url):
+            # Different endpoints: not a duplicate, proceed.
+            logger.warning(
+                "Fallback accept: chain entry %s/%s has different base_url %s vs %s — proceeding",
+                fb_provider, fb_model, fb_base_url_for_dedup, current_base_url,
+            )
+        else:
+            # Same provider+model, and either base_urls match or at least
+            # one is missing (assume same backend).
+            logger.warning(
+                "Fallback skip: chain entry %s/%s at %s matches current provider/model/endpoint",
+                fb_provider, fb_model, current_base_url,
+            )
+            return agent._try_activate_fallback(reason)
     if (
         fb_base_url_for_dedup
         and current_base_url

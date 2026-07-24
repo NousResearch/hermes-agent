@@ -187,7 +187,9 @@ def cmd_fallback_add(args) -> None:
     # and there's nothing useful to add as a fallback to itself.
     primary_entry = _extract_fallback_from_model_cfg(model_before)
     if primary_entry and primary_entry["provider"] == new_entry["provider"] \
-            and primary_entry["model"] == new_entry["model"]:
+            and primary_entry["model"] == new_entry["model"] \
+            and (primary_entry.get("base_url") or "").strip().rstrip("/").lower() \
+                == (new_entry.get("base_url") or "").strip().rstrip("/").lower():
         _restore_model_cfg(model_before)
         _restore_auth_active_provider(active_provider_before)
         print()

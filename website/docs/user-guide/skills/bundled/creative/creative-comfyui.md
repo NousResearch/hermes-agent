@@ -1,14 +1,14 @@
 ---
-title: "Comfyui"
+title: "Comfyui — Generate images, video, and audio via diffusion workflows"
 sidebar_label: "Comfyui"
-description: "Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection"
+description: "Generate images, video, and audio via diffusion workflows"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Comfyui
 
-Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution.
+Generate images, video, and audio via diffusion workflows.
 
 ## Skill metadata
 

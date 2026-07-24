@@ -1363,6 +1363,67 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
             owner_subject_sha256=str(raw.get("owner_subject_sha256") or ""),
         )
         _validate_cron_continuity_authority(authority, revision=revision)
+        release_validation = authority.get(
+            "isolated_canary_goal_prerequisite"
+        )
+        direct_mvp_waiver_fields = {
+            "schema",
+            "release_revision",
+            "mode",
+            "waived_gate",
+            "rationale_code",
+            "owner_subject_sha256",
+            "owner_public_key_ed25519_hex",
+            "owner_key_id",
+            "retain_live_production_prerequisite",
+            "retain_pre_db_zero_write_observation",
+            "immutable_artifacts_required",
+            "signed_unit_inputs_required",
+            "production_database_mutation_before_apply_allowed",
+            "secret_material_recorded",
+            "secret_digest_recorded",
+            "waiver_sha256",
+        }
+        direct_mvp_waiver_valid = (
+            isinstance(release_validation, Mapping)
+            and set(release_validation) == direct_mvp_waiver_fields
+            and release_validation.get("schema")
+            == "muncho-production-owner-direct-mvp-no-canary-waiver.v1"
+            and release_validation.get("release_revision") == revision
+            and release_validation.get("mode")
+            == "owner_approved_direct_mvp_no_canary"
+            and release_validation.get("waived_gate")
+            == "release_bound_isolated_canary_goal_prerequisite"
+            and release_validation.get("rationale_code")
+            == "owner_explicit_no_repeat_canary"
+            and release_validation.get("owner_subject_sha256")
+            == raw.get("owner_subject_sha256")
+            and release_validation.get("owner_public_key_ed25519_hex")
+            == raw.get("owner_public_key_ed25519_hex")
+            and release_validation.get("owner_key_id")
+            == raw.get("owner_key_id")
+            and release_validation.get("retain_live_production_prerequisite")
+            is True
+            and release_validation.get(
+                "retain_pre_db_zero_write_observation"
+            )
+            is True
+            and release_validation.get("immutable_artifacts_required")
+            is True
+            and release_validation.get("signed_unit_inputs_required") is True
+            and release_validation.get(
+                "production_database_mutation_before_apply_allowed"
+            )
+            is False
+            and release_validation.get("secret_material_recorded") is False
+            and release_validation.get("secret_digest_recorded") is False
+            and release_validation.get("waiver_sha256")
+            == _sha_json({
+                key: item
+                for key, item in release_validation.items()
+                if key != "waiver_sha256"
+            })
+        )
         if (
             authority.get("schema") != "muncho-production-cutover-authority.v4"
             or authority.get("release_revision") != revision
@@ -1373,96 +1434,90 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
                 "database_postflight", "host_activation", "host_rollback",
             }
             or raw.get("observe_artifact") != artifacts.get("observe")
-            or not isinstance(
-                authority.get("isolated_canary_goal_prerequisite"), Mapping
-            )
-            or set(authority["isolated_canary_goal_prerequisite"]) != {
-                "schema", "fixture", "fixture_sha256", "workspace_gateway",
-                "workspace_gateway_receipt_sha256",
-                "cleanup_receipt", "cleanup_receipt_sha256",
-                "goal_continuation_terminal_schema",
-                "goal_continuation_terminal_sha256",
-                "isolation_equivalence_projection",
-                "isolation_equivalence_projection_sha256",
-                "production_diff_sha256", "production_diff",
-                "production_diff_file_sha256", "run_id", "release_revision",
-                "capability_plan_sha256", "full_canary_plan_sha256",
-                "canary_owner_approval_receipt_sha256",
-                "canary_production_mutation_observed",
-                "secret_material_recorded",
-                "secret_digest_recorded", "evidence_sha256",
-            }
-            or authority["isolated_canary_goal_prerequisite"].get("schema")
-            != "muncho-production-isolated-canary-goal-prerequisite.v2"
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "release_revision"
-            ) != revision
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "goal_continuation_terminal_schema"
-            ) != "muncho-production-capability-goal-continuation-terminal.v2"
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "canary_production_mutation_observed"
-            ) is not False
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "secret_material_recorded"
-            ) is not False
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "secret_digest_recorded"
-            ) is not False
-            or any(
-                SHA256.fullmatch(str(
-                    authority["isolated_canary_goal_prerequisite"].get(name)
-                )) is None
-                for name in (
-                    "fixture_sha256", "workspace_gateway_receipt_sha256",
-                    "cleanup_receipt_sha256",
-                    "goal_continuation_terminal_sha256",
-                    "isolation_equivalence_projection_sha256",
-                    "production_diff_sha256", "production_diff_file_sha256",
-                    "capability_plan_sha256",
-                    "full_canary_plan_sha256",
-                    "canary_owner_approval_receipt_sha256", "evidence_sha256",
+            or (
+                not direct_mvp_waiver_valid
+                and (
+                    not isinstance(release_validation, Mapping)
+                    or set(release_validation) != {
+                        "schema", "fixture", "fixture_sha256",
+                        "workspace_gateway",
+                        "workspace_gateway_receipt_sha256",
+                        "cleanup_receipt", "cleanup_receipt_sha256",
+                        "goal_continuation_terminal_schema",
+                        "goal_continuation_terminal_sha256",
+                        "isolation_equivalence_projection",
+                        "isolation_equivalence_projection_sha256",
+                        "production_diff_sha256", "production_diff",
+                        "production_diff_file_sha256", "run_id",
+                        "release_revision", "capability_plan_sha256",
+                        "full_canary_plan_sha256",
+                        "canary_owner_approval_receipt_sha256",
+                        "canary_production_mutation_observed",
+                        "secret_material_recorded",
+                        "secret_digest_recorded", "evidence_sha256",
+                    }
+                    or release_validation.get("schema")
+                    != (
+                        "muncho-production-isolated-canary-goal-"
+                        "prerequisite.v2"
+                    )
+                    or release_validation.get("release_revision") != revision
+                    or release_validation.get(
+                        "goal_continuation_terminal_schema"
+                    )
+                    != (
+                        "muncho-production-capability-goal-continuation-"
+                        "terminal.v2"
+                    )
+                    or release_validation.get(
+                        "canary_production_mutation_observed"
+                    )
+                    is not False
+                    or release_validation.get("secret_material_recorded")
+                    is not False
+                    or release_validation.get("secret_digest_recorded")
+                    is not False
+                    or any(
+                        SHA256.fullmatch(
+                            str(release_validation.get(name))
+                        )
+                        is None
+                        for name in (
+                            "fixture_sha256",
+                            "workspace_gateway_receipt_sha256",
+                            "cleanup_receipt_sha256",
+                            "goal_continuation_terminal_sha256",
+                            "isolation_equivalence_projection_sha256",
+                            "production_diff_sha256",
+                            "production_diff_file_sha256",
+                            "capability_plan_sha256",
+                            "full_canary_plan_sha256",
+                            "canary_owner_approval_receipt_sha256",
+                            "evidence_sha256",
+                        )
+                    )
+                    or not isinstance(
+                        release_validation.get("cleanup_receipt"), Mapping
+                    )
+                    or not isinstance(
+                        release_validation.get("production_diff"), Mapping
+                    )
+                    or release_validation["cleanup_receipt_sha256"]
+                    != _sha_json(release_validation["cleanup_receipt"])
+                    or release_validation["production_diff_file_sha256"]
+                    != _sha_json(release_validation["production_diff"])
+                    or release_validation["production_diff"].get(
+                        "diff_sha256"
+                    )
+                    != release_validation["production_diff_sha256"]
+                    or release_validation["evidence_sha256"]
+                    != _sha_json({
+                        key: item
+                        for key, item in release_validation.items()
+                        if key != "evidence_sha256"
+                    })
                 )
             )
-            or not isinstance(
-                authority["isolated_canary_goal_prerequisite"].get(
-                    "cleanup_receipt"
-                ), Mapping
-            )
-            or not isinstance(
-                authority["isolated_canary_goal_prerequisite"].get(
-                    "production_diff"
-                ), Mapping
-            )
-            or authority["isolated_canary_goal_prerequisite"][
-                "cleanup_receipt_sha256"
-            ] != _sha_json(
-                authority["isolated_canary_goal_prerequisite"][
-                    "cleanup_receipt"
-                ]
-            )
-            or authority["isolated_canary_goal_prerequisite"][
-                "production_diff_file_sha256"
-            ] != _sha_json(
-                authority["isolated_canary_goal_prerequisite"][
-                    "production_diff"
-                ]
-            )
-            or authority["isolated_canary_goal_prerequisite"][
-                "production_diff"
-            ].get("diff_sha256")
-            != authority["isolated_canary_goal_prerequisite"][
-                "production_diff_sha256"
-            ]
-            or authority["isolated_canary_goal_prerequisite"][
-                "evidence_sha256"
-            ] != _sha_json({
-                key: item
-                for key, item in authority[
-                    "isolated_canary_goal_prerequisite"
-                ].items()
-                if key != "evidence_sha256"
-            })
             or not isinstance(authority.get("database_recovery_receipt"), Mapping)
             or raw.get("database_recovery_receipt_sha256")
             != authority["database_recovery_receipt"].get("receipt_sha256")

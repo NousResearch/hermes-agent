@@ -602,6 +602,7 @@ def _cutover_plan(
     artifact_sha: str,
     *,
     accepted_event_receipts: list[dict[str, str]] | None = None,
+    direct_mvp_waiver: bool = False,
 ) -> dict:
     snapshot_unsigned = {
         "schema": "muncho-production-legacy-snapshot.v1",
@@ -1093,6 +1094,27 @@ def _cutover_plan(
         **isolated_canary_unsigned,
         "evidence_sha256": _sha_json(isolated_canary_unsigned),
     }
+    direct_mvp_unsigned = {
+        "schema": "muncho-production-owner-direct-mvp-no-canary-waiver.v1",
+        "release_revision": REVISION,
+        "mode": "owner_approved_direct_mvp_no_canary",
+        "waived_gate": "release_bound_isolated_canary_goal_prerequisite",
+        "rationale_code": "owner_explicit_no_repeat_canary",
+        "owner_subject_sha256": "e" * 64,
+        "owner_public_key_ed25519_hex": public,
+        "owner_key_id": hashlib.sha256(bytes.fromhex(public)).hexdigest(),
+        "retain_live_production_prerequisite": True,
+        "retain_pre_db_zero_write_observation": True,
+        "immutable_artifacts_required": True,
+        "signed_unit_inputs_required": True,
+        "production_database_mutation_before_apply_allowed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    direct_mvp = {
+        **direct_mvp_unsigned,
+        "waiver_sha256": _sha_json(direct_mvp_unsigned),
+    }
     authority_unsigned = {
         "schema": "muncho-production-cutover-authority.v4",
         "release_revision": REVISION,
@@ -1106,7 +1128,9 @@ def _cutover_plan(
         "cron_continuity_plan": cron_plan,
         "mechanical_job_host_facts": host_facts,
         "mechanical_job_package": mechanical_package,
-        "isolated_canary_goal_prerequisite": isolated_canary,
+        "isolated_canary_goal_prerequisite": (
+            direct_mvp if direct_mvp_waiver else isolated_canary
+        ),
         "database_recovery_receipt": _database_recovery_receipt(),
         "legacy_truth_decision": legacy_truth_decision,
         "final_tail_bounds": {
@@ -2218,6 +2242,44 @@ def test_legacy_truth_modes_are_exact_and_selected_continuity_is_mechanical(
     assert "observed_session,thread_id" in sql
     assert "observed_session,chat_id" in sql
     assert "observed_session,session_key_sha256" in sql
+
+
+def test_generated_runtime_accepts_only_exact_owner_bound_direct_mvp_waiver(
+    tmp_path,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    runtime = _load_artifact(
+        Path(manifest["artifacts"]["production-database-apply"]["path"]),
+        "production_database_direct_mvp_artifact",
+    )
+    plan = _cutover_plan("f" * 64, direct_mvp_waiver=True)
+    runtime._plan_digest(plan)
+
+    tampered = copy.deepcopy(plan)
+    freeze = tampered["freeze_plan"]
+    authority = freeze["cutover_authority"]
+    waiver = authority["isolated_canary_goal_prerequisite"]
+    waiver["retain_pre_db_zero_write_observation"] = False
+    waiver["waiver_sha256"] = _sha_json({
+        key: item for key, item in waiver.items() if key != "waiver_sha256"
+    })
+    authority["authority_sha256"] = _sha_json({
+        key: item
+        for key, item in authority.items()
+        if key != "authority_sha256"
+    })
+    freeze["plan_sha256"] = _sha_json({
+        key: item for key, item in freeze.items() if key != "plan_sha256"
+    })
+    tampered["freeze_plan_sha256"] = freeze["plan_sha256"]
+    tampered["plan_sha256"] = _sha_json({
+        key: item for key, item in tampered.items() if key != "plan_sha256"
+    })
+    with pytest.raises(runtime.ArtifactError, match="artifact_plan_invalid"):
+        runtime._plan_digest(tampered)
 
 
 def test_legacy_truth_decision_rejects_absence_tamper_and_cross_plan_replay(

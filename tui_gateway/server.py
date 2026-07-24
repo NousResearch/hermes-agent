@@ -10804,6 +10804,70 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+# Captured at import time. Several _run_prompt_submit tests monkeypatch
+# threading.Thread with a stub that runs the target synchronously to keep the
+# turn deterministic. This ticker's loop only exits once the caller sets `stop`
+# *after* run_conversation returns, so running it inline would spin forever.
+# It's a non-critical, fire-and-forget background poller, so it always uses a
+# real daemon thread regardless of any such patch.
+_RealThread = threading.Thread
+
+
+def _start_usage_ticker(
+    sid: str, agent, interval: float = 1.0
+) -> tuple[threading.Event, threading.Thread]:
+    """Push live usage snapshots while a turn runs.
+
+    The desktop/TUI status-bar context-window figure is otherwise refreshed
+    only at ``message.complete``, so it stays frozen for the whole (often
+    multi-minute, multi-tool) turn. On the standard chat-completions path the
+    agent's token counters grow after every internal API call, so this daemon
+    emits a lightweight ``session.usage`` event every ``interval`` seconds and
+    the bar tracks context growth live. (The codex app-server runtime folds
+    usage into the counters only at turn end — codex_runtime.
+    _record_codex_app_server_usage — so it gets no mid-turn ticks; its final
+    value still lands via ``message.complete``.)
+
+    The caller must set the returned Event AND join the returned thread
+    before emitting ``message.complete``: a tick that survived past it would
+    roll the client's final usage back to a stale mid-turn snapshot.
+    """
+    stop = threading.Event()
+
+    # Sample the dedup baseline BEFORE the thread starts: the client already
+    # has the turn-start values from the previous message.complete /
+    # session.info. Seeding here (not in the thread) guarantees the baseline
+    # predates the turn's first API call — a late-scheduled thread would
+    # otherwise absorb that first counter growth and never emit it.
+    try:
+        baseline: dict | None = _get_usage(agent)
+    except Exception:
+        baseline = None
+
+    def _loop() -> None:
+        last = baseline
+        while not stop.wait(interval):
+            try:
+                usage = _get_usage(agent)
+                if usage == last:
+                    # Counters frozen (e.g. one long API call in flight) —
+                    # skip the redundant frame so idle ticks don't re-render
+                    # the client status bar every second.
+                    continue
+                last = usage
+                if stop.is_set():
+                    # Turn ended while snapshotting — drop the tick;
+                    # message.complete carries the authoritative usage.
+                    break
+                _emit("session.usage", sid, {"usage": usage})
+            except Exception:
+                pass
+
+    thread = _RealThread(target=_loop, daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None,
@@ -11007,7 +11071,21 @@ def _run_prompt_submit(
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
-            result = agent.run_conversation(run_message, **run_kwargs)
+            _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+            try:
+                result = agent.run_conversation(run_message, **run_kwargs)
+            finally:
+                # Stop AND join before anything below emits: an in-flight tick
+                # surviving past message.complete would roll the client's final
+                # usage back to a stale mid-turn snapshot. The join is
+                # deliberately unbounded — once stop is set it only ever waits
+                # out one in-flight _get_usage/_emit, and the worst case there
+                # (a stalled transport write, up to _WS_WRITE_TIMEOUT_S) would
+                # stall the message.complete emit below just the same. A
+                # timed-out join would abandon the tick to land after
+                # message.complete.
+                _usage_stop.set()
+                _usage_thread.join()
             if display_kind and isinstance(text, str):
                 db = getattr(agent, "_session_db", None)
                 current_session_id = getattr(agent, "session_id", None) or session.get("session_key")

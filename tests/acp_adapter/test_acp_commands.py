@@ -111,6 +111,14 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
         ),
     )
 
+    fake_display_config = mod(
+        "gateway.display_config",
+        resolve_display_setting=lambda _config, _platform, _key, default=False: default,
+    )
+    fake_gateway = mod("gateway", display_config=fake_display_config)
+    monkeypatch.setitem(sys.modules, "gateway", fake_gateway)
+    monkeypatch.setitem(sys.modules, "gateway.display_config", fake_display_config)
+
     manager = SessionManager(db=sentinel_db)
     agent = manager._make_agent(session_id="acp-session", cwd=".")
 

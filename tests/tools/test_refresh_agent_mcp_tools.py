@@ -98,6 +98,51 @@ def test_refresh_passes_agent_toolset_filters(monkeypatch):
     assert seen["disabled_toolsets"] == ["messaging"]
 
 
+def test_refresh_augments_reinjected_memory_and_context_schemas(monkeypatch):
+    agent = _agent(["read_file"])
+    agent.tool_reasons_enabled = True
+    agent._tool_reason_tool_names = set()
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {
+                "name": "memory_search",
+                "description": "",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            }
+        ]
+    )
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [
+            {
+                "name": "lcm_grep",
+                "description": "",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            }
+        ]
+    )
+    agent._context_engine_tool_names = set()
+
+    registry_tool = {
+        "type": "function",
+        "function": {
+            "name": "mcp_new_server_tool",
+            "description": "",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+    import model_tools
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [registry_tool])
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    by_name = {tool["function"]["name"]: tool for tool in agent.tools}
+    for name in ("mcp_new_server_tool", "memory_search", "lcm_grep"):
+        params = by_name[name]["function"]["parameters"]
+        assert list(params["properties"])[0] == "activity_reason"
+        assert params["required"][0] == "activity_reason"
+        assert name in agent._tool_reason_tool_names
+
+
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
 

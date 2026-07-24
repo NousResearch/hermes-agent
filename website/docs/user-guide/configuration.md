@@ -1494,6 +1494,8 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 ```yaml
 display:
   tool_progress: all      # off | new | all | verbose
+  tool_reasons: false     # Ask the model for a short display-safe reason per tool call
+  tool_result_summaries: false  # Show a deterministic redacted one-line result summary
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
@@ -1570,7 +1572,25 @@ display:
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
-Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
+Tool progress requires a gateway adapter that can display progress updates safely. Without the activity options below, platforms that cannot edit messages suppress live tool-progress bubbles to avoid chat spam.
+
+### Tool reasons and result summaries
+
+Both options are off by default and can be enabled independently:
+
+```yaml
+display:
+  tool_progress: all
+  tool_reasons: true
+  tool_result_summaries: true
+```
+
+- `tool_reasons` shows the model's short explanation of why a tool is needed. This is display metadata, not private reasoning.
+- `tool_result_summaries` shows a deterministic, redacted one-line outcome. It does not make another model call or change the raw result available to the agent and expanded views.
+
+On platforms that can edit messages, Hermes updates the existing progress line with the result. Other platforms show one completion line when either option is enabled, even if `tool_progress` is `off`.
+
+Start a new CLI or TUI session after changing these settings. Both options support `display.platforms.<platform>` overrides and may reveal task context despite redaction, so leave them off in public or regulated channels unless that visibility is intentional.
 
 ### Runtime-metadata footer (gateway only)
 
@@ -1605,13 +1625,17 @@ display:
       tool_progress: 'off'    # Signal cannot currently display tool-progress bubbles
     telegram:
       tool_progress: verbose  # detailed progress on Telegram
+      tool_reasons: true
+      tool_result_summaries: true
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
+      tool_reasons: false
+      tool_result_summaries: false
 ```
 
-Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+Platforms without an override fall back to the global values. Valid platform keys include `cli`, `tui`, `desktop`, `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `whatsapp_cloud`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, `api_server`, and `acp`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
-Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
+Signal is listed as a valid platform key because settings can be saved per platform, but the current Signal adapter cannot edit sent messages. Ordinary live progress remains suppressed; when tool reasons or summaries are explicitly enabled, Signal receives one completion-only activity line rather than a trail of permanent updates.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 

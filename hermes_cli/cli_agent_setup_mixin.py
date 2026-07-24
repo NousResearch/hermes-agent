@@ -357,6 +357,18 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            from cli import CLI_CONFIG
+            from gateway.display_config import resolve_display_setting
+            from utils import is_truthy_value
+
+            tool_reasons_enabled = is_truthy_value(
+                resolve_display_setting(CLI_CONFIG, "cli", "tool_reasons", False),
+                default=False,
+            )
+            tool_result_summaries_enabled = is_truthy_value(
+                resolve_display_setting(CLI_CONFIG, "cli", "tool_result_summaries", False),
+                default=False,
+            )
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -388,6 +400,8 @@ class CLIAgentSetupMixin:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id,
                 platform="cli",
+                tool_reasons_enabled=tool_reasons_enabled,
+                tool_result_summaries_enabled=tool_result_summaries_enabled,
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),

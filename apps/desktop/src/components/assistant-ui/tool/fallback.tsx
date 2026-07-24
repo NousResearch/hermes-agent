@@ -75,6 +75,9 @@ const ToolEmbedContext = createContext(false)
 const TOOL_HEADER_TITLE_CLASS =
   'text-[length:var(--conversation-tool-font-size)] font-medium leading-(--conversation-line-height) text-(--ui-text-secondary)'
 
+const TOOL_HEADER_REASON_CLASS =
+  'min-w-0 truncate text-[length:var(--conversation-tool-font-size)] leading-(--conversation-line-height) text-(--ui-text-primary)'
+
 const TOOL_HEADER_DURATION_CLASS = 'shrink-0 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)'
 
 const TOOL_HEADER_SUBTITLE_CLASS =
@@ -266,6 +269,26 @@ function ToolTitle({
   )
 }
 
+export function ToolHeaderSubtitle({ subtitle }: { subtitle?: string }) {
+  return subtitle ? <FadeText className={TOOL_HEADER_SUBTITLE_CLASS}>{subtitle}</FadeText> : null
+}
+
+export function shouldHideCompletedFileEdit({
+  activity,
+  inlineDiff,
+  isFileEdit,
+  isPending,
+  status
+}: {
+  activity?: string
+  inlineDiff: string
+  isFileEdit: boolean
+  isPending: boolean
+  status: string
+}) {
+  return isFileEdit && !isPending && status !== 'error' && !inlineDiff && !activity
+}
+
 interface ToolEntryProps {
   part: ToolPart
 }
@@ -411,6 +434,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   )
 
   const showDiffStats = !isPending && Boolean(diffStats && (diffStats.added > 0 || diffStats.removed > 0))
+  const hasNarrative = Boolean(view.activityReason)
 
   // The header trailing slot only carries the live duration timer while the
   // tool is running. The copy control used to live here too, but an
@@ -451,12 +475,18 @@ function ToolEntry({ part }: ToolEntryProps) {
     return null
   }
 
-  // A completed file edit with no diff to review is a bare, unexpandable row.
-  // This is almost always a `write_file` create after a reload: only `patch`
-  // persists its diff in the tool result, so creates rehydrate diff-less and
-  // read like dead duplicates of the real diff row. Hide them — but keep
-  // in-flight writes (activity) and failures (errors) visible.
-  if (isFileEdit && !isPending && view.status !== 'error' && !view.inlineDiff) {
+  // Keep replayed activity cards useful even though raw edit results/diffs are
+  // intentionally excluded from persisted presentation history. Only hide the
+  // old diff-less duplicate when it has no safe reason/summary to display.
+  if (
+    shouldHideCompletedFileEdit({
+      activity: view.activity,
+      inlineDiff: view.inlineDiff,
+      isFileEdit,
+      isPending,
+      status: view.status
+    })
+  ) {
     return null
   }
 
@@ -479,30 +509,48 @@ function ToolEntry({ part }: ToolEntryProps) {
           open={open}
           trailing={trailing}
         >
-          <span
-            className="flex min-w-0 items-center gap-1.5"
-            title={isFileEdit && view.subtitle ? view.subtitle : undefined}
-          >
-            <ToolGlyph
-              copy={copy}
-              filePath={isFileEdit ? view.subtitle : undefined}
-              icon={view.icon}
-              status={leadingStatus(isPending, view.status)}
-            />
-            <ToolTitle isPending={isPending} status={view.status} title={view.title} titleAction={view.titleAction} />
-            {!isPending && view.countLabel && <span className={TOOL_HEADER_DURATION_CLASS}>{view.countLabel}</span>}
-            {showDiffStats && diffStats && (
-              <span className="flex shrink-0 items-center gap-1 font-mono text-[0.625rem] tabular-nums">
-                {diffStats.added > 0 && (
-                  <span className="text-emerald-600 dark:text-emerald-400">+{diffStats.added}</span>
-                )}
-                {diffStats.removed > 0 && (
-                  <span className="text-rose-600 dark:text-rose-400">−{diffStats.removed}</span>
-                )}
-              </span>
-            )}
-            {!isFileEdit && !isPending && view.durationLabel && (
-              <span className={TOOL_HEADER_DURATION_CLASS}>{view.durationLabel}</span>
+          <span className="grid min-w-0 gap-0.5">
+            <span
+              className="flex min-w-0 items-center gap-1.5"
+              title={isFileEdit && view.subtitle ? view.subtitle : undefined}
+            >
+              <ToolGlyph
+                copy={copy}
+                filePath={isFileEdit ? view.subtitle : undefined}
+                icon={view.icon}
+                status={leadingStatus(isPending, view.status)}
+              />
+              <ToolTitle
+                isPending={isPending}
+                status={view.status}
+                title={hasNarrative ? view.activityLabel || view.title : view.title}
+                titleAction={hasNarrative ? undefined : view.titleAction}
+              />
+              {view.activityReason && <FadeText className={TOOL_HEADER_REASON_CLASS}>· {view.activityReason}</FadeText>}
+              {!hasNarrative && !isPending && view.countLabel && (
+                <span className={TOOL_HEADER_DURATION_CLASS}>{view.countLabel}</span>
+              )}
+              {showDiffStats && diffStats && (
+                <span className="flex shrink-0 items-center gap-1 font-mono text-[0.625rem] tabular-nums">
+                  {diffStats.added > 0 && (
+                    <span className="text-emerald-600 dark:text-emerald-400">+{diffStats.added}</span>
+                  )}
+                  {diffStats.removed > 0 && (
+                    <span className="text-rose-600 dark:text-rose-400">−{diffStats.removed}</span>
+                  )}
+                </span>
+              )}
+              {!isFileEdit && !isPending && view.durationLabel && (
+                <span className={TOOL_HEADER_DURATION_CLASS}>{view.durationLabel}</span>
+              )}
+            </span>
+            {hasNarrative ? (
+              <ToolHeaderSubtitle subtitle={view.activityDetail} />
+            ) : (
+              <>
+                {isFileEdit && <ToolHeaderSubtitle subtitle={view.subtitle} />}
+                <ToolHeaderSubtitle subtitle={view.activity || (isFileEdit ? undefined : view.subtitle)} />
+              </>
             )}
           </span>
         </DisclosureRow>

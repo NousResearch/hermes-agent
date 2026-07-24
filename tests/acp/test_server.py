@@ -377,7 +377,7 @@ class TestSessionOps:
                         "type": "function",
                         "function": {
                             "name": "search_files",
-                            "arguments": '{"pattern":"slash commands","path":"."}',
+                            "arguments": '{"pattern":"slash commands","path":".","token":"PRIVATE_ARG_MARKER"}',
                         },
                     }
                 ],
@@ -385,7 +385,7 @@ class TestSessionOps:
             {
                 "role": "tool",
                 "tool_call_id": "call_search_1",
-                "content": '{"total_count":1,"matches":[{"path":"cli.py","line":42,"content":"slash commands"}]}',
+                "content": '{"total_count":1,"matches":[{"path":"cli.py","line":42,"content":"PRIVATE_RESULT_MARKER"}]}',
             },
         ]
 
@@ -419,8 +419,10 @@ class TestSessionOps:
         assert tool_updates[0].title == "search: slash commands"
         assert isinstance(tool_updates[1], ToolCallProgress)
         assert tool_updates[1].tool_call_id == "call_search_1"
-        assert "Search results" in tool_updates[1].content[0].content.text
-        assert "cli.py:42" in tool_updates[1].content[0].content.text
+        assert tool_updates[1].content is None
+        assert tool_updates[1].raw_output is None
+        assert "PRIVATE_ARG_MARKER" not in repr(tool_updates)
+        assert "PRIVATE_RESULT_MARKER" not in repr(tool_updates)
 
     @pytest.mark.asyncio
     async def test_load_session_flags_compaction_summary_on_replayed_user_chunk(self, agent):

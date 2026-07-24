@@ -92,6 +92,108 @@ describe('subagent store', () => {
     expect(item?.stream.find(e => e.kind === 'summary')?.text).toBe('search complete')
   })
 
+  it('records child tool activity completion without completing the subagent', () => {
+    upsertSubagent(
+      's1',
+      { goal: 'scan files', status: 'running', subagent_id: 'a1', task_index: 0 },
+      true,
+      'subagent.start'
+    )
+    upsertSubagent(
+      's1',
+      {
+        status: 'running',
+        subagent_id: 'a1',
+        task_index: 0,
+        tool_name: 'terminal',
+        tool_preview: 'pwd'
+      },
+      false,
+      'subagent.tool'
+    )
+    upsertSubagent(
+      's1',
+      {
+        status: 'completed',
+        subagent_id: 'a1',
+        task_index: 0,
+        tool_name: 'terminal',
+        reason: 'Inspect child workspace',
+        summary: 'terminal: exit 0 in 0.2s',
+        is_error: false
+      },
+      false,
+      'subagent.tool.completed'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('running')
+    expect(item?.currentTool).toBeUndefined()
+    expect(item?.summary).toBeUndefined()
+    expect(item?.stream.at(-1)).toMatchObject({
+      kind: 'summary',
+      isError: false,
+      text: 'Inspect child workspace — terminal: exit 0 in 0.2s'
+    })
+  })
+
+  it('correlates concurrent same-name child tools by stable call id', () => {
+    upsertSubagent(
+      's1',
+      { goal: 'scan files', status: 'running', subagent_id: 'a1', task_index: 0 },
+      true,
+      'subagent.start'
+    )
+
+    for (const [tool_call_id, tool_preview] of [
+      ['a', 'first'],
+      ['b', 'second']
+    ]) {
+      upsertSubagent(
+        's1',
+        { status: 'running', subagent_id: 'a1', task_index: 0, tool_call_id, tool_name: 'terminal', tool_preview },
+        false,
+        'subagent.tool'
+      )
+    }
+
+    upsertSubagent(
+      's1',
+      {
+        status: 'running',
+        subagent_id: 'a1',
+        task_index: 0,
+        tool_call_id: 'b',
+        tool_name: 'terminal',
+        summary: 'second done'
+      },
+      false,
+      'subagent.tool.completed'
+    )
+
+    let item = listFor('s1')[0]
+    expect(item?.activeTools).toEqual([{ id: 'a', name: 'terminal' }])
+    expect(item?.currentTool).toBe('terminal')
+
+    upsertSubagent(
+      's1',
+      {
+        status: 'running',
+        subagent_id: 'a1',
+        task_index: 0,
+        tool_call_id: 'a',
+        tool_name: 'terminal',
+        summary: 'first done'
+      },
+      false,
+      'subagent.tool.completed'
+    )
+
+    item = listFor('s1')[0]
+    expect(item?.activeTools).toEqual([])
+    expect(item?.currentTool).toBeUndefined()
+  })
+
   it('prunes delegate fallback rows once native events arrive', () => {
     upsertSubagent('s1', { goal: 'fallback', status: 'running', subagent_id: 'delegate-tool:abc:0', task_index: 0 })
     upsertSubagent('s1', { goal: 'native', status: 'running', subagent_id: 'sa-0-xyz', task_index: 0 })

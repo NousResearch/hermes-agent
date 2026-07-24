@@ -321,11 +321,13 @@ def _run_agent(
     run a single conversation.  Returns ``(final_response, run_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
+    from gateway.display_config import resolve_display_setting
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
+    from utils import is_truthy_value
 
     cfg = load_config()
 
@@ -406,6 +408,14 @@ def _run_agent(
         # workers honour the same merge semantics as interactive CLI and
         # gateway sessions.
         _fb = get_fallback_chain(cfg)
+        tool_reasons_enabled = is_truthy_value(
+            resolve_display_setting(cfg, "cli", "tool_reasons", False),
+            default=False,
+        )
+        tool_result_summaries_enabled = is_truthy_value(
+            resolve_display_setting(cfg, "cli", "tool_result_summaries", False),
+            default=False,
+        )
 
         agent = AIAgent(
             api_key=runtime.get("api_key"),
@@ -417,6 +427,8 @@ def _run_agent(
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",
+            tool_reasons_enabled=tool_reasons_enabled,
+            tool_result_summaries_enabled=tool_result_summaries_enabled,
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,

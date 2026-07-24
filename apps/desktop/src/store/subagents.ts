@@ -12,6 +12,11 @@ export interface SubagentStreamEntry {
   text: string
 }
 
+export interface ActiveSubagentTool {
+  id: string
+  name: string
+}
+
 export interface SubagentProgress {
   id: string
   parentId: null | string
@@ -33,7 +38,9 @@ export interface SubagentProgress {
   filesWritten: string[]
   stream: SubagentStreamEntry[]
   summary?: string
-  /** Active tool while running — cleared on terminal status. */
+  /** Active child tool calls, correlated by provider-issued ID when available. */
+  activeTools?: ActiveSubagentTool[]
+  /** Most recently started tool that has not completed. */
   currentTool?: string
 }
 
@@ -125,8 +132,16 @@ function streamFromPayload(
     }
   }
 
-  if (tool) {
+  if (tool && eventType !== 'subagent.tool.completed') {
     out.push({ at, isError: !!payload.error, kind: 'tool', text: formatTool(tool, preview) })
+  }
+
+  if (eventType === 'subagent.tool.completed') {
+    const detail = compact([str(payload.reason), str(payload.summary)].filter(Boolean).join(' — '))
+
+    if (detail) {
+      out.push({ at, isError: payload.is_error === true, kind: 'summary', text: detail })
+    }
   }
 
   if (eventType === 'subagent.progress' && text) {
@@ -146,11 +161,47 @@ function streamFromPayload(
   return out
 }
 
+function activeToolsFromPayload(
+  payload: SubagentPayload,
+  prev: SubagentProgress | undefined,
+  eventType: string,
+  status: SubagentStatus
+): ActiveSubagentTool[] {
+  if (TERMINAL.has(status)) {
+    return []
+  }
+
+  const active = prev?.activeTools ?? []
+  const name = str(payload.tool_name)
+  const stableId = str(payload.tool_call_id) || str(payload.call_id)
+
+  if (eventType === 'subagent.tool' && name) {
+    const id = stableId || `legacy:${name}:${active.length}`
+    const next = active.filter(tool => tool.id !== id)
+
+    return [...next, { id, name }]
+  }
+
+  if (eventType === 'subagent.tool.completed') {
+    if (stableId) {
+      return active.filter(tool => tool.id !== stableId)
+    }
+
+    const legacyIndex = active.findIndex(tool => tool.name === name)
+
+    return legacyIndex < 0 ? active : active.filter((_tool, index) => index !== legacyIndex)
+  }
+
+  return active
+}
+
 function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined, eventType = ''): SubagentProgress {
   const at = Date.now()
-  const status = asStatus(payload.status)
-  const tool = str(payload.tool_name)
+
+  const status = eventType === 'subagent.tool.completed' ? (prev?.status ?? 'running') : asStatus(payload.status)
+
   const stream = streamFromPayload(payload, status, eventType, at).reduce(appendStream, prev?.stream ?? [])
+  const activeTools = activeToolsFromPayload(payload, prev, eventType, status)
   const filesRead = strList(payload.files_read)
   const filesWritten = strList(payload.files_written)
 
@@ -173,8 +224,9 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     filesRead: filesRead.length ? filesRead : (prev?.filesRead ?? []),
     filesWritten: filesWritten.length ? filesWritten : (prev?.filesWritten ?? []),
     stream,
-    summary: str(payload.summary) || prev?.summary,
-    currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool
+    summary: eventType === 'subagent.tool.completed' ? prev?.summary : str(payload.summary) || prev?.summary,
+    activeTools,
+    currentTool: activeTools.at(-1)?.name
   }
 }
 

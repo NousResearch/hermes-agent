@@ -147,6 +147,45 @@ class TestToolProgressScrollback:
         cli._on_tool_progress("tool.started", "terminal", "git status", {"command": "git status"})
         assert "git status" in cli._spinner_text
 
+    def test_spinner_prefers_model_authored_reason_when_present(self):
+        cli = _make_cli(tool_progress="all")
+        cli._on_tool_progress(
+            "tool.started",
+            "terminal",
+            "git status",
+            {"command": "git status"},
+            reason="Inspect the working tree",
+        )
+        assert "Inspect the working tree" in cli._spinner_text
+        assert "git status" not in cli._spinner_text
+
+    def test_completed_activity_commits_reason_and_safe_summary_not_raw_result(self):
+        cli = _make_cli(tool_progress="all")
+        cli._on_tool_progress(
+            "tool.started",
+            "terminal",
+            "git status",
+            {"command": "git status"},
+            reason="Inspect the working tree",
+        )
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "tool.completed",
+                "terminal",
+                None,
+                None,
+                duration=0.2,
+                is_error=False,
+                reason="Inspect the working tree",
+                summary="terminal: exit 0 in 0.2s",
+                result="RAW SECRET OUTPUT",
+            )
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        assert "Inspect the working tree" in printed
+        assert "terminal: exit 0 in 0.2s" in printed
+        assert "RAW SECRET OUTPUT" not in printed
+
     def test_spinner_timer_clears_on_completed(self):
         """tool.completed still clears the tool timer."""
         cli = _make_cli(tool_progress="all")

@@ -41,9 +41,12 @@ export type GatewayEventPayload = {
   input?: unknown
   preview?: string
   result?: unknown
+  reason?: string
   summary?: string
   error?: string | boolean
+  is_error?: boolean
   inline_diff?: string
+  duration_seconds?: number
   duration_s?: number
   todos?: unknown
   model?: string
@@ -516,7 +519,7 @@ function findToolPartIndex(
     const [singlePendingIndex] = pendingIndices
 
     if (phase === 'running' && matchValues.length && !overlaps(singlePendingIndex)) {
-      return stableId ? singlePendingIndex : -1
+      return -1
     }
 
     return singlePendingIndex
@@ -530,7 +533,10 @@ function findToolPartIndex(
   }
 
   if (stableId) {
-    return pendingIndices[0]
+    // A running event with a new stable id and no target overlap is a distinct
+    // concurrent call. Reusing the oldest pending row would cross-wire its id,
+    // args, and eventual completion.
+    return -1
   }
 
   // For progress/running events with no stable id, update the most-recent
@@ -571,6 +577,7 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
     ...eventArgs,
     ...(payload?.context ? { context: payload.context } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
+    ...(payload?.reason ? { reason: payload.reason } : {}),
     ...carryTodos(payload, prevArgs)
   }
 }
@@ -586,11 +593,14 @@ function toolResult(
     ...parsedResult,
     ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
     ...(payload?.summary ? { summary: payload.summary } : {}),
+    ...(payload?.status ? { status: payload.status } : {}),
     ...(payload?.message ? { message: payload.message } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
+    ...(payload?.duration_seconds !== undefined ? { duration_seconds: payload.duration_seconds } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
-    ...(payload?.error ? { error: payload.error } : {})
+    ...(payload?.error ? { error: payload.error } : {}),
+    ...(payload?.is_error !== undefined ? { is_error: payload.is_error } : {})
   }
 }
 
@@ -689,21 +699,14 @@ function liveToolArgs(payload: GatewayEventPayload | undefined): Record<string, 
   }
 }
 
-function parseStoredToolResult(content: unknown): unknown {
-  if (content && typeof content === 'object') {
-    return content
-  }
+function storedToolResult(toolMessage: SessionMessage): unknown {
+  const activity = toolMessage._tool_activity
 
-  const textContent = textFromUnknown(content)
-
-  if (!textContent.trim()) {
-    return ''
-  }
-
-  try {
-    return JSON.parse(textContent)
-  } catch {
-    return textContent
+  return {
+    status: activity?.status ?? 'completed',
+    ...(activity?.summary ? { summary: activity.summary } : {}),
+    ...(typeof activity?.duration_seconds === 'number' ? { duration_seconds: activity.duration_seconds } : {}),
+    ...(typeof activity?.is_error === 'boolean' ? { is_error: activity.is_error } : {})
   }
 }
 
@@ -716,21 +719,18 @@ function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessa
     row.name || row.tool_name || fn?.name || (recordFromUnknown(row.input)?.name as string | undefined) || 'tool'
   )
 
-  const args = firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input)
-
   return {
     type: 'tool-call',
     toolCallId: id,
     toolName,
-    args: args as never,
-    argsText: Object.keys(args).length ? JSON.stringify(args) : ''
+    args: {} as never,
+    argsText: ''
   }
 }
 
 function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
-  const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
 
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
@@ -751,10 +751,14 @@ function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMess
 
     const parts = [...message.parts]
     const existing = parts[partIndex]
+    const activity = toolMessage._tool_activity
+    const presentationArgs = activity?.reason ? { reason: activity.reason } : {}
     parts[partIndex] = {
       ...existing,
-      result: parseStoredToolResult(content),
-      isError: false
+      args: presentationArgs,
+      argsText: Object.keys(presentationArgs).length ? JSON.stringify(presentationArgs) : '',
+      result: storedToolResult(toolMessage),
+      isError: activity?.is_error === true
     } as ChatMessagePart
     messages[i] = { ...message, parts }
 
@@ -767,7 +771,6 @@ function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMess
 function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: SessionMessage): ChatMessagePart[] | null {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
-  const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
 
   const partIndex = parts.findIndex(
     part =>
@@ -781,10 +784,14 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
 
   const next = [...parts]
   const existing = next[partIndex]
+  const activity = toolMessage._tool_activity
+  const presentationArgs = activity?.reason ? { reason: activity.reason } : {}
   next[partIndex] = {
     ...existing,
-    result: parseStoredToolResult(content),
-    isError: false
+    args: presentationArgs,
+    argsText: Object.keys(presentationArgs).length ? JSON.stringify(presentationArgs) : '',
+    result: storedToolResult(toolMessage),
+    isError: activity?.is_error === true
   } as ChatMessagePart
 
   return next
@@ -792,8 +799,11 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
 
 function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: number): ChatMessagePart {
   const name = toolMessage.tool_name || toolMessage.name || 'tool'
-  const context = textFromUnknown(toolMessage.context || toolMessage.text || toolMessage.content || '')
-  const args = context ? { context } : {}
+  const activity = toolMessage._tool_activity
+
+  const args = {
+    ...(activity?.reason ? { reason: activity.reason } : {})
+  }
 
   return {
     type: 'tool-call',
@@ -801,8 +811,8 @@ function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: numbe
     toolName: name,
     args: args as never,
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
-    result: context ? { context } : {},
-    isError: false
+    result: storedToolResult(toolMessage),
+    isError: activity?.is_error === true
   }
 }
 

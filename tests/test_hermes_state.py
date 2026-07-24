@@ -1251,6 +1251,43 @@ class TestMessageStorage:
         assert isinstance(conversation[0].get("timestamp"), float)
         assert "observed" not in conversation[1]
 
+    def test_tool_activity_round_trips_sanitized_without_changing_raw_result(self, db):
+        db.create_session(session_id="s1", source="tui")
+        raw_result = "raw model-visible output remains intact"
+        db.append_message(
+            "s1",
+            role="tool",
+            content=raw_result,
+            tool_name="terminal",
+            tool_call_id="call-1",
+            tool_activity={
+                "reason": "Check Authorization=Bearer reason-secret",
+                "summary": "terminal: done https://u:p@example.test/x?sig=summary-secret",
+                "status": "completed",
+                "is_error": False,
+                "duration_seconds": 0.25,
+                "stack_trace": "must not persist",
+            },
+        )
+
+        stored = db.get_messages("s1")[0]
+        replayed = db.get_messages_as_conversation("s1")[0]
+
+        assert stored["tool_activity"] == replayed["_tool_activity"]
+        assert replayed["content"] == raw_result
+        activity = replayed["_tool_activity"]
+        assert "reason-secret" not in activity["reason"]
+        assert "summary-secret" not in activity["summary"]
+        assert "u:p@" not in activity["summary"]
+        assert "stack_trace" not in activity
+        assert activity["status"] == "completed"
+        assert activity["duration_seconds"] == 0.25
+
+        db.replace_messages("s1", [replayed])
+        rewritten = db.get_messages_as_conversation("s1")[0]
+        assert rewritten["content"] == raw_result
+        assert rewritten["_tool_activity"] == activity
+
     def test_tool_response_does_not_increment_tool_count(self, db):
         """Tool responses (role=tool) should not increment tool_call_count.
 

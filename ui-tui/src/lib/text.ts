@@ -202,17 +202,34 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
+export const formatToolNarrative = (name: string, context: string, reason?: string) => {
+  const reasonPreview = compactPreview(reason ?? '', 64)
+
+  return reasonPreview ? `${toolTrailLabel(name)} · ${reasonPreview}` : formatToolCall(name, context)
+}
+
 export const buildToolTrailLine = (
   name: string,
   context: string,
   error?: boolean,
   note?: string,
-  duration?: number
+  duration?: number,
+  reason?: string
 ) => {
-  const detail = compactPreview(note ?? '', 72)
+  const reasonPreview = compactPreview(reason ?? '', 64)
+  const headline = formatToolNarrative(name, context, reason)
+  const rawDetail = compactPreview(note ?? '', 72)
+  const prefix = `${name}:`
+
+  const result = rawDetail.toLowerCase().startsWith(prefix.toLowerCase())
+    ? rawDetail.slice(prefix.length).trim()
+    : rawDetail
+
+  const target = reasonPreview ? compactPreview(context, 64) : ''
+  const detail = [target, result].filter(Boolean).join(' → ')
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${headline}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 const verboseToolBlock = (label: string, text?: string) => {
@@ -236,15 +253,30 @@ export const buildVerboseToolTrailLine = (
   error?: boolean,
   duration?: number,
   argsText?: string,
-  resultText?: string
+  resultText?: string,
+  reason?: string,
+  summary?: string
 ) => {
-  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
+  const summaryPreview = compactPreview(summary ?? '', 72)
+  const prefix = `${name}:`
+
+  const conciseResult = summaryPreview.toLowerCase().startsWith(prefix.toLowerCase())
+    ? summaryPreview.slice(prefix.length).trim()
+    : summaryPreview
+
+  const narrative = reason ? [compactPreview(context, 64), conciseResult].filter(Boolean).join(' → ') : ''
+
+  const detail = [
+    narrative,
+    verboseToolBlock('Args', argsText),
+    verboseToolBlock(error ? 'Error' : 'Result', resultText)
+  ]
     .filter(Boolean)
     .join('\n')
 
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${formatToolNarrative(name, context, reason)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
@@ -283,6 +315,7 @@ export const sameToolTrailGroup = (label: string, entry: string) =>
   entry === `${label} ✓` ||
   entry === `${label} ✗` ||
   entry.startsWith(`${label}(`) ||
+  entry.startsWith(`${label} ·`) ||
   entry.startsWith(`${label} ::`) ||
   entry.startsWith(`${label}:`)
 

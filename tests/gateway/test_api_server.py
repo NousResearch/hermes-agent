@@ -355,6 +355,16 @@ class TestAdapterInit:
             "gateway.run._load_gateway_config",
             lambda: {
                 "agent": {"reasoning_effort": "xhigh"},
+                "display": {
+                    "tool_reasons": False,
+                    "tool_result_summaries": False,
+                    "platforms": {
+                        "api_server": {
+                            "tool_reasons": True,
+                            "tool_result_summaries": "true",
+                        }
+                    },
+                },
                 "checkpoints": {
                     "enabled": True,
                     "max_snapshots": 7,
@@ -381,6 +391,8 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+        assert captured["tool_reasons_enabled"] is True
+        assert captured["tool_result_summaries_enabled"] is True
 
     def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
         captured = {}
@@ -1997,9 +2009,24 @@ class TestChatCompletionsEndpoint:
                 # channel now; ``tool_progress_callback`` is intentionally
                 # not wired so each tool start emits exactly one event.
                 if ts_cb:
-                    ts_cb("call_terminal_1", "terminal", {"command": "ls -la"})
+                    ts_cb(
+                        "call_terminal_1",
+                        "terminal",
+                        {"command": "ls -la"},
+                        reason="Inspect the working tree",
+                    )
                 if tc_cb:
-                    tc_cb("call_terminal_1", "terminal", {"command": "ls -la"}, "ok")
+                    tc_cb(
+                        "call_terminal_1",
+                        "terminal",
+                        {"command": "ls -la"},
+                        "ok",
+                        reason="Inspect the working tree",
+                        summary="terminal: exit 0 in 0.2s",
+                        status="success",
+                        is_error=False,
+                        duration_seconds=0.2,
+                    )
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("done.")
@@ -2025,6 +2052,7 @@ class TestChatCompletionsEndpoint:
             # an event missing ``toolCallId`` would not pass even if a
             # different event happens to carry the right id.
             pairs: list[tuple[str | None, str | None]] = []
+            activity_payloads: list[dict] = []
             lines = body.splitlines()
             for i, line in enumerate(lines):
                 if line.strip() != "event: hermes.tool.progress":
@@ -2035,6 +2063,7 @@ class TestChatCompletionsEndpoint:
                             payload = _json.loads(follow[len("data: "):])
                         except _json.JSONDecodeError:
                             break
+                        activity_payloads.append(payload)
                         pairs.append((payload.get("status"), payload.get("toolCallId")))
                         break
 
@@ -2045,6 +2074,11 @@ class TestChatCompletionsEndpoint:
             assert len(pairs) == 2, f"expected 2 events (running+completed), got {pairs}"
             assert pairs[0] == ("running", "call_terminal_1"), pairs
             assert pairs[1] == ("completed", "call_terminal_1"), pairs
+            assert activity_payloads[0]["reason"] == "Inspect the working tree"
+            assert activity_payloads[1]["reason"] == "Inspect the working tree"
+            assert activity_payloads[1]["summary"] == "terminal: exit 0 in 0.2s"
+            assert activity_payloads[1]["isError"] is False
+            assert activity_payloads[1]["durationSeconds"] == 0.2
 
     @pytest.mark.asyncio
     async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):
@@ -3208,9 +3242,21 @@ class TestResponsesStreaming:
                 complete_cb = kwargs.get("tool_complete_callback")
                 text_cb = kwargs.get("stream_delta_callback")
                 if start_cb:
-                    start_cb("call_123", "read_file", {"path": "/tmp/test.txt"})
+                    start_cb(
+                        "call_123",
+                        "read_file",
+                        {"path": "/tmp/test.txt", "authorization": "Bearer CREDENTIAL_MARKER"},
+                    )
                 if complete_cb:
-                    complete_cb("call_123", "read_file", {"path": "/tmp/test.txt"}, '{"content":"hello"}')
+                    complete_cb(
+                        "call_123",
+                        "read_file",
+                        {"path": "/tmp/test.txt", "authorization": "Bearer CREDENTIAL_MARKER"},
+                        '{"content":"PRIVATE_RESULT_MARKER"}',
+                        summary="read_file: 1 line",
+                        status="completed",
+                        is_error=False,
+                    )
                 if text_cb:
                     text_cb("Done.")
                 return (
@@ -3254,7 +3300,9 @@ class TestResponsesStreaming:
                 assert '"type": "function_call_output"' in body
                 assert '"call_id": "call_123"' in body
                 assert '"name": "read_file"' in body
-                assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
+                assert '"output": [{"type": "input_text", "text": "read_file: 1 line"}]' in body
+                assert "PRIVATE_RESULT_MARKER" not in body
+                assert "CREDENTIAL_MARKER" not in body
 
     @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):

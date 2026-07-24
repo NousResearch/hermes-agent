@@ -461,7 +461,12 @@ function ListRow({
   const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
-  const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
+
+  const line =
+    node.item.status === 'running'
+      ? (node.item.activeToolCalls?.at(-1)?.line ?? (node.item.activeToolCalls ? undefined : node.item.tools.at(-1)))
+      : undefined
+
   const paren = line ? line.indexOf('(') : -1
   const toolShort = line ? (paren > 0 ? line.slice(0, paren) : line).trim() : ''
   const trailing = toolShort ? ` · ${compactPreview(toolShort, 14)}` : ''

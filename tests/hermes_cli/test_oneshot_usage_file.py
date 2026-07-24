@@ -2,7 +2,9 @@
 
 import json
 
-from hermes_cli.oneshot import _write_usage_file
+import pytest
+
+from hermes_cli.oneshot import _run_agent, _write_usage_file
 
 
 def _result(**overrides):
@@ -25,6 +27,63 @@ def _result(**overrides):
     }
     base.update(overrides)
     return base
+
+
+@pytest.mark.parametrize(
+    ("global_value", "platform_value", "expected"),
+    [(False, True, True), (True, False, False)],
+)
+def test_oneshot_agent_honors_cli_platform_activity_override(
+    monkeypatch, global_value, platform_value, expected
+):
+    config = {
+        "model": {"default": "test-model", "provider": "test"},
+        "display": {
+            "tool_reasons": global_value,
+            "tool_result_summaries": global_value,
+            "platforms": {
+                "cli": {
+                    "tool_reasons": platform_value,
+                    "tool_result_summaries": platform_value,
+                }
+            },
+        },
+    }
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, _prompt):
+            return {"final_response": "done"}
+
+        def shutdown_memory_provider(self, *_args):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "test-key",
+            "base_url": "https://example.test/v1",
+            "provider": "test",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr("hermes_cli.oneshot._create_session_db_for_oneshot", lambda: None)
+
+    response, _result_data = _run_agent("hello", use_config_toolsets=False)
+
+    assert response == "done"
+    assert captured["tool_reasons_enabled"] is expected
+    assert captured["tool_result_summaries_enabled"] is expected
 
 
 class TestWriteUsageFile:

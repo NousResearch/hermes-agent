@@ -2,6 +2,7 @@ export interface ActiveTool {
   context?: string
   id: string
   name: string
+  reason?: string
   verboseArgs?: string
   startedAt?: number
 }
@@ -20,7 +21,14 @@ export interface ActivityItem {
 
 export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
+export interface ActiveSubagentToolCall {
+  id: string
+  line: string
+  name: string
+}
+
 export interface SubagentProgress {
+  activeToolCalls?: ActiveSubagentToolCall[]
   apiCalls?: number
   costUsd?: number
   depth: number

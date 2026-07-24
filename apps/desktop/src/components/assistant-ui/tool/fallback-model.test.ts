@@ -110,6 +110,72 @@ describe('buildToolView web-search query', () => {
   })
 })
 
+describe('buildToolView rich tool surfaces', () => {
+  it('uses explicit reason while running and explicit summary when complete', () => {
+    const running = buildToolView(
+      part({ args: { reason: 'Find the rendering component' }, result: undefined, toolName: 'search_files' }),
+      ''
+    )
+
+    const complete = buildToolView(
+      part({
+        args: { reason: 'Find the rendering component' },
+        result: {
+          duration_seconds: 1.2,
+          is_error: false,
+          output: 'src/components/assistant-ui/tool/fallback.tsx',
+          status: 'completed',
+          summary: 'Found 1 rendering component'
+        },
+        toolName: 'search_files'
+      }),
+      ''
+    )
+
+    expect(running.activity).toBe('Find the rendering component')
+    expect(complete.activity).toBe('Find the rendering component · Found 1 rendering component')
+    expect(complete.durationLabel).toBe('1.2s')
+    expect(complete.detail).toContain('src/components/assistant-ui/tool/fallback.tsx')
+  })
+
+  it('keeps file identity separate from tool activity metadata', () => {
+    const view = buildToolView(
+      part({
+        args: { path: 'src/app.ts', reason: 'Update the renderer' },
+        result: { summary: 'write_file: 12 lines, 240 bytes' },
+        toolName: 'write_file'
+      }),
+      ''
+    )
+
+    expect(view.subtitle).toContain('src/app.ts')
+    expect(view.activity).toBe('Update the renderer · write_file: 12 lines, 240 bytes')
+  })
+
+  it('separates the reason headline from the target and concise result', () => {
+    const view = buildToolView(
+      part({
+        args: { path: 'src/auth.ts', reason: 'Inspect the current auth flow' },
+        result: { content: 'line one\nline two', summary: 'read_file: 2 lines' },
+        toolName: 'read_file'
+      }),
+      ''
+    )
+
+    expect(view.activityReason).toBe('Inspect the current auth flow')
+    expect(view.activityTarget).toBe('src/auth.ts')
+    expect(view.activitySummary).toBe('2 lines')
+    expect(view.activityLabel).toBe('Read file')
+    expect(view.activityDetail).toBe('src/auth.ts → 2 lines')
+  })
+
+  it('does not render an untrusted raw reasoning tool argument as activity', () => {
+    const view = buildToolView(part({ args: { reasoning: 'Private business rationale' }, result: undefined }), '')
+
+    expect(view.activity).toBeUndefined()
+  })
+})
+
 describe('buildToolView browser_navigate title', () => {
   it('shows failed title when navigate returns success=false', () => {
     const view = buildToolView(

@@ -42,6 +42,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
+from agent.tool_activity import augment_tool_schemas
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -463,6 +464,8 @@ def init_agent(
     verbose_logging: bool = False,
     quiet_mode: bool = False,
     tool_progress_mode: str = "all",
+    tool_reasons_enabled: bool | None = None,
+    tool_result_summaries_enabled: bool | None = None,
     ephemeral_system_prompt: str = None,
     log_prefix_chars: int = 100,
     log_prefix: str = "",
@@ -1382,11 +1385,38 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
-    agent.tools = _ra().get_tool_definitions(
+    # Tool-reason schemas are a session-construction decision.  Snapshot the
+    # display setting now and keep this exact tool list for the session so a
+    # config edit cannot invalidate the cached request prefix mid-conversation.
+    try:
+        from hermes_cli.config import load_config as _load_tool_activity_config
+        _tool_activity_display = (_load_tool_activity_config().get("display") or {})
+    except Exception:
+        _tool_activity_display = {}
+    configured_tool_reasons = (
+        _tool_activity_display.get("tool_reasons", False)
+        if isinstance(_tool_activity_display, dict) else False
+    )
+    configured_result_summaries = (
+        _tool_activity_display.get("tool_result_summaries", False)
+        if isinstance(_tool_activity_display, dict) else False
+    )
+    agent.tool_reasons_enabled = (
+        is_truthy_value(configured_tool_reasons, default=False)
+        if tool_reasons_enabled is None
+        else bool(tool_reasons_enabled)
+    )
+    agent.tool_result_summaries_enabled = (
+        is_truthy_value(configured_result_summaries, default=False)
+        if tool_result_summaries_enabled is None
+        else bool(tool_result_summaries_enabled)
+    )
+    agent._tool_reason_tool_names = set()
+    agent.tools = augment_tool_schemas(_ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
-    )
+    ), enabled=agent.tool_reasons_enabled, activity_tool_names=agent._tool_reason_tool_names)
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -1693,6 +1723,12 @@ def init_agent(
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
+    if agent.tools is not None:
+        agent.tools = augment_tool_schemas(
+            agent.tools,
+            enabled=agent.tool_reasons_enabled,
+            activity_tool_names=agent._tool_reason_tool_names,
+        )
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -2488,7 +2524,11 @@ def init_agent(
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
             _wrapped = {"type": "function", "function": _schema}
-            agent.tools.append(_wrapped)
+            agent.tools.extend(augment_tool_schemas(
+                [_wrapped],
+                enabled=agent.tool_reasons_enabled,
+                activity_tool_names=agent._tool_reason_tool_names,
+            ))
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)

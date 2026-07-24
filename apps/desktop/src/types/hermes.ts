@@ -501,6 +501,13 @@ export interface SessionMessage {
   tool_call_id?: null | string
   tool_calls?: unknown
   tool_name?: string
+  _tool_activity?: {
+    duration_seconds?: number
+    is_error?: boolean
+    reason?: string
+    status?: string
+    summary?: string
+  }
 }
 
 export interface SessionMessagesResponse {

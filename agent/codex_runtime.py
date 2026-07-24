@@ -451,10 +451,26 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     not tear down the codex turn loop. Errors are logged at DEBUG so the
     notification stream keeps flowing regardless.
     """
-    # item_id -> (tool_name, args, started_wall_time). Populated on
-    # item/started and consumed on item/completed so duration is correct
-    # even when codex doesn't report durationMs.
-    started: dict[str, tuple[str, dict, float]] = {}
+    # Stable call id -> display-safe lifecycle metadata. Entries exist only
+    # while the corresponding presentation card is open.
+    started: dict[str, dict[str, Any]] = {}
+    # Keep a bounded tombstone set so replayed starts/completions cannot reopen
+    # or complete the same card twice on a long-lived Codex session.
+    finished: dict[str, None] = {}
+
+    def _mark_finished(call_id: str) -> None:
+        finished[call_id] = None
+        if len(finished) > 4096:
+            finished.pop(next(iter(finished)))
+
+    from agent.tool_activity import extract_tool_reasoning, summarize_tool_result
+    from agent.tool_executor import (
+        _activity_display_args,
+        _agent_activity_display_args,
+        _build_tool_preview,
+        _call_tool_callback,
+        _tool_reason_enabled,
+    )
 
     def _stable_call_id(item: dict, name: str) -> str:
         """Deterministic tool_call id mirroring CodexEventProjector, so a
@@ -478,67 +494,165 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         return _deterministic_call_id(name, item_id)
 
     def _fire_tool_started(item: dict) -> None:
-        item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
         args = _codex_item_to_args(item)
-        if item_id:
-            started[item_id] = (name, args, time.monotonic())
+        reason = extract_tool_reasoning(args, enabled=_tool_reason_enabled(agent, name))
+        item_type = item.get("type")
+        if item_type in {"commandExecution", "fileChange", "webSearch"}:
+            # Provider-canonical items are not necessarily present in Hermes'
+            # model-facing tool schema, but their argument shapes are owned by
+            # this adapter and intentionally projected through the same safe
+            # target-field contract.
+            display_source = args
+            if item_type == "fileChange":
+                first_path = next(
+                    (
+                        change.get("path")
+                        for change in args.get("changes", [])
+                        if isinstance(change, dict) and change.get("path")
+                    ),
+                    "",
+                )
+                if first_path:
+                    display_source = {**args, "path": first_path}
+            display_args = _activity_display_args(
+                name,
+                display_source,
+                supported_tool=True,
+            )
+        else:
+            display_args = _agent_activity_display_args(agent, name, args)
+        call_id = _stable_call_id(item, name)
+        if call_id in started or call_id in finished:
+            return
+        started[call_id] = {
+            "name": name,
+            "args": args,
+            "display_args": display_args,
+            "reason": reason,
+            "started_at": time.monotonic(),
+        }
+        metadata = {
+            "reason": reason,
+            "tool_call_id": call_id,
+            "call_id": call_id,
+            "status": "running",
+        }
         cb = getattr(agent, "tool_progress_callback", None)
         if cb is not None:
             try:
-                cb("tool.started", name, _codex_item_to_preview(item), args)
+                preview = _build_tool_preview(name, display_args)
+                _call_tool_callback(
+                    cb,
+                    ("tool.started", name, preview, display_args),
+                    **metadata,
+                )
             except Exception:
                 logger.debug(
                     "tool_progress_callback raised on tool.started for %s",
                     name, exc_info=True,
                 )
-        # Authoritative stable-ID tool card (TUI / desktop). Fires
-        # alongside tool_progress so surfaces that render structured tool
-        # cards (not just progress bubbles) stay correlated with the
-        # projected history entry after a resume.
+        # Authoritative stable-ID tool card (TUI / desktop). Fires alongside
+        # progress so every surface shares the same provider-stable identity.
         start_cb = getattr(agent, "tool_start_callback", None)
         if start_cb is not None:
             try:
-                start_cb(_stable_call_id(item, name), name, args)
+                _call_tool_callback(
+                    start_cb,
+                    (call_id, name, display_args),
+                    **metadata,
+                )
             except Exception:
                 logger.debug(
                     "tool_start_callback raised for %s", name, exc_info=True,
                 )
 
+    def _emit_tool_completed(
+        *,
+        call_id: str,
+        name: str,
+        args: dict,
+        display_args: dict,
+        reason: str | None,
+        result: Any,
+        duration: Any,
+        status: str,
+        is_error: bool,
+    ) -> None:
+        metadata = {
+            "reason": reason,
+            "tool_call_id": call_id,
+            "call_id": call_id,
+            "status": status,
+            "is_error": is_error,
+            "duration": duration,
+            "duration_seconds": duration,
+            "duration_s": duration,
+        }
+        if getattr(agent, "tool_result_summaries_enabled", False):
+            metadata["summary"] = summarize_tool_result(
+                name,
+                args,
+                result,
+                duration_s=duration,
+                status=status,
+            )
+        cb = getattr(agent, "tool_progress_callback", None)
+        if cb is not None:
+            try:
+                _call_tool_callback(
+                    cb,
+                    ("tool.completed", name, None, None),
+                    **metadata,
+                )
+            except Exception:
+                logger.debug(
+                    "tool_progress_callback raised on tool.completed for %s",
+                    name,
+                    exc_info=True,
+                )
+        complete_cb = getattr(agent, "tool_complete_callback", None)
+        if complete_cb is not None:
+            try:
+                _call_tool_callback(
+                    complete_cb,
+                    (call_id, name, display_args, metadata.get("summary")),
+                    **metadata,
+                )
+            except Exception:
+                logger.debug(
+                    "tool_complete_callback raised for %s", name, exc_info=True
+                )
+
     def _fire_tool_completed(item: dict) -> None:
-        item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
-        prior = started.pop(item_id, None)
-        # Prefer codex's own durationMs when present so the bubble shows
-        # exact tool wall-time; fall back to our started timestamp; fall
-        # back to None if we never saw an item/started (some codex
-        # versions only emit completed for fast items).
+        call_id = _stable_call_id(item, name)
+        prior = started.pop(call_id, None)
+        # Completion-only or replayed notifications must not create orphaned
+        # cards. A canonical completion consumes exactly one tracked start.
+        if prior is None or call_id in finished:
+            return
+        _mark_finished(call_id)
+        # Prefer Codex's durationMs, then the observed start timestamp.
         duration: Any = None
         codex_ms = item.get("durationMs")
         if isinstance(codex_ms, (int, float)) and codex_ms >= 0:
             duration = codex_ms / 1000.0
-        elif prior is not None:
-            duration = time.monotonic() - prior[2]
+        else:
+            duration = time.monotonic() - float(prior["started_at"])
         result, is_error = _codex_item_completion_payload(item)
-        cb = getattr(agent, "tool_progress_callback", None)
-        if cb is not None:
-            try:
-                cb("tool.completed", name, None, None,
-                   duration=duration, is_error=is_error, result=result)
-            except Exception:
-                logger.debug(
-                    "tool_progress_callback raised on tool.completed for %s",
-                    name, exc_info=True,
-                )
-        complete_cb = getattr(agent, "tool_complete_callback", None)
-        if complete_cb is not None:
-            args = prior[1] if prior is not None else _codex_item_to_args(item)
-            try:
-                complete_cb(_stable_call_id(item, name), name, args, result)
-            except Exception:
-                logger.debug(
-                    "tool_complete_callback raised for %s", name, exc_info=True,
-                )
+        status = "failed" if is_error else "completed"
+        _emit_tool_completed(
+            call_id=call_id,
+            name=prior["name"],
+            args=prior["args"],
+            display_args=prior["display_args"],
+            reason=prior.get("reason"),
+            result=result,
+            duration=duration,
+            status=status,
+            is_error=is_error,
+        )
 
     def _fire_text_delta(params: dict) -> None:
         text = params.get("delta") or params.get("text") or ""
@@ -583,6 +697,25 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                 "_emit_interim_assistant_message raised", exc_info=True,
             )
 
+    def _close_pending_tools(status: str) -> None:
+        now = time.monotonic()
+        for call_id, prior in list(started.items()):
+            started.pop(call_id, None)
+            if call_id in finished:
+                continue
+            _mark_finished(call_id)
+            _emit_tool_completed(
+                call_id=call_id,
+                name=prior["name"],
+                args=prior["args"],
+                display_args=prior["display_args"],
+                reason=prior.get("reason"),
+                result="",
+                duration=max(0.0, now - float(prior["started_at"])),
+                status=status,
+                is_error=True,
+            )
+
     def on_event(note: dict) -> None:
         if not isinstance(note, dict):
             return
@@ -590,6 +723,19 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         params = note.get("params") or {}
         if not isinstance(params, dict):
             params = {}
+        if method in {
+            "turn/completed",
+            "turn/aborted",
+            "turn/cancelled",
+            "turn/canceled",
+            "turn/failed",
+        }:
+            turn_value = params.get("turn")
+            turn = turn_value if isinstance(turn_value, dict) else {}
+            raw_status = str(turn.get("status") or method.rsplit("/", 1)[-1]).lower()
+            status = "failed" if raw_status in {"failed", "error"} else "cancelled"
+            _close_pending_tools(status)
+            return
         if method == "item/agentMessage/delta":
             _fire_text_delta(params)
             return

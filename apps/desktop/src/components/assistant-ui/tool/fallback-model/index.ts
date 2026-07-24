@@ -647,6 +647,10 @@ function extractSearchResults(result: unknown, limit = 6): SearchResultRow[] {
 function toolErrorText(part: ToolPart, result: Record<string, unknown>): string {
   const extractedError = extractToolErrorMessage(part.result)
 
+  if (result.is_error === true) {
+    return extractedError || firstStringField(result, ['error', 'message', 'detail']) || 'Tool returned an error.'
+  }
+
   if (part.isError) {
     return extractedError || (typeof part.result === 'string' && part.result.trim()) || 'Tool returned an error.'
   }
@@ -692,7 +696,7 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
 }
 
 function durationLabel(resultRecord: Record<string, unknown>): string | undefined {
-  const seconds = numberValue(resultRecord.duration_s)
+  const seconds = numberValue(resultRecord.duration_seconds) ?? numberValue(resultRecord.duration_s)
 
   if (seconds === null || seconds < 0) {
     return undefined
@@ -826,6 +830,76 @@ function fallbackDetailText(args: unknown, result: unknown): string {
   }
 
   return formatToolResultSummary(args) || minimalValueSummary(args)
+}
+
+function richSurfaceSubtitle(part: ToolPart, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  const reason = compactPreview(firstStringField(args, ['reason']), 160)
+
+  if (part.result === undefined) {
+    return reason
+  }
+
+  const summary = compactPreview(firstStringField(result, ['summary']), 160)
+
+  return [reason, summary].filter(Boolean).join(' · ')
+}
+
+function richSurfaceReason(args: Record<string, unknown>): string {
+  return compactPreview(firstStringField(args, ['reason']), 160)
+}
+
+function richSurfaceSummary(toolName: string, result: Record<string, unknown>): string {
+  const summary = compactPreview(firstStringField(result, ['summary']), 160)
+  const prefix = `${toolName}:`
+
+  return summary.toLowerCase().startsWith(prefix.toLowerCase()) ? summary.slice(prefix.length).trim() : summary
+}
+
+function richSurfaceTarget(part: ToolPart, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  if (part.toolName === 'read_file') {
+    const path = firstStringField(args, ['path', 'file', 'filepath'])
+    const lineLabel = readFileLineLabel(args, result)
+
+    return [path, lineLabel].filter(Boolean).join(' ')
+  }
+
+  if (isFileEditTool(part.toolName)) {
+    return fileEditPath(args, result)
+  }
+
+  if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
+    return shellCommand(args)
+  }
+
+  if (part.toolName === 'web_search') {
+    return firstStringField(args, ['search_term', 'query'])
+  }
+
+  if (part.toolName === 'web_extract' || part.toolName === 'browser_navigate') {
+    const url = firstStringField(args, ['url', 'target']) || findFirstUrl(args, result)
+
+    return url ? hostnameOf(url) : ''
+  }
+
+  if (part.toolName === 'search_files') {
+    const pattern = firstStringField(args, ['pattern'])
+    const path = firstStringField(args, ['path'])
+
+    return [pattern, path && `in ${path}`].filter(Boolean).join(' ')
+  }
+
+  return firstStringField(args, [
+    'path',
+    'file',
+    'filepath',
+    'query',
+    'pattern',
+    'command',
+    'code',
+    'url',
+    'target',
+    'ref'
+  ])
 }
 
 function cronScalar(value: unknown): string {
@@ -1368,6 +1442,11 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
 
   const title = titleParts.title
   const titleEnriched = title !== baseTitle
+  const activity = richSurfaceSubtitle(part, argsRecord, resultRecord)
+  const activityReason = richSurfaceReason(argsRecord)
+  const activitySummary = part.result === undefined ? '' : richSurfaceSummary(part.toolName, resultRecord)
+  const activityTarget = activityReason ? richSurfaceTarget(part, argsRecord, resultRecord) : ''
+  const activityDetail = [activityTarget, activitySummary].filter(Boolean).join(' → ')
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
 
   const keepSubtitleWithTitle =
@@ -1410,6 +1489,12 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const terminalExitCode = part.toolName === 'terminal' ? numericField(resultRecord, 'exit_code') : undefined
 
   return {
+    activity: activity || undefined,
+    activityDetail: activityDetail || undefined,
+    activityLabel: activityReason ? baseTitle : undefined,
+    activityReason: activityReason || undefined,
+    activitySummary: activitySummary || undefined,
+    activityTarget: activityTarget || undefined,
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
     detail,
     detailLabel: error ? 'Error details' : toolDetailLabel(part.toolName),

@@ -439,6 +439,8 @@ class AIAgent:
         verbose_logging: bool = False,
         quiet_mode: bool = False,
         tool_progress_mode: str = "all",
+        tool_reasons_enabled: bool | None = None,
+        tool_result_summaries_enabled: bool | None = None,
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
@@ -517,6 +519,8 @@ class AIAgent:
             verbose_logging=verbose_logging,
             quiet_mode=quiet_mode,
             tool_progress_mode=tool_progress_mode,
+            tool_reasons_enabled=tool_reasons_enabled,
+            tool_result_summaries_enabled=tool_result_summaries_enabled,
             ephemeral_system_prompt=ephemeral_system_prompt,
             log_prefix_chars=log_prefix_chars,
             log_prefix=log_prefix,
@@ -2091,6 +2095,7 @@ class AIAgent:
                         and not msg.get("_compressed_summary_has_user_turn")
                         else msg.get("display_kind")
                     ),
+                    tool_activity=msg.get("_tool_activity"),
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the

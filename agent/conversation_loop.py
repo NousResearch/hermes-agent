@@ -1051,17 +1051,23 @@ def run_conversation(
                     if _m.get("role") == "assistant" and _m.get("tool_calls"):
                         _fwd_start = len(messages) - _idx
                         _results_by_id = {}
+                        _activity_by_id = {}
                         for _tm in messages[_fwd_start:]:
                             if _tm.get("role") != "tool":
                                 break
                             _tcid = _tm.get("tool_call_id")
                             if _tcid:
                                 _results_by_id[_tcid] = _tm.get("content", "")
+                                if isinstance(_tm.get("_tool_activity"), dict):
+                                    _activity_by_id[_tcid] = _tm["_tool_activity"]
                         prev_tools = [
                             {
                                 "name": tc["function"]["name"],
                                 "result": _results_by_id.get(tc.get("id")),
                                 "arguments": tc["function"].get("arguments"),
+                                "reason": (_activity_by_id.get(tc.get("id")) or {}).get("reason"),
+                                "summary": (_activity_by_id.get(tc.get("id")) or {}).get("summary"),
+                                "status": (_activity_by_id.get(tc.get("id")) or {}).get("status"),
                             }
                             for tc in _m["tool_calls"]
                             if isinstance(tc, dict)

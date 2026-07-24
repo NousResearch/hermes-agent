@@ -603,6 +603,8 @@ class SessionManager:
         from run_agent import AIAgent
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from gateway.display_config import resolve_display_setting
+        from utils import is_truthy_value
 
         config = load_config()
         model_cfg = config.get("model")
@@ -627,6 +629,14 @@ class SessionManager:
                 mcp_server_names=configured_mcp_servers,
             ),
             "quiet_mode": True,
+            "tool_reasons_enabled": is_truthy_value(
+                resolve_display_setting(config, "acp", "tool_reasons", False),
+                default=False,
+            ),
+            "tool_result_summaries_enabled": is_truthy_value(
+                resolve_display_setting(config, "acp", "tool_result_summaries", False),
+                default=False,
+            ),
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,

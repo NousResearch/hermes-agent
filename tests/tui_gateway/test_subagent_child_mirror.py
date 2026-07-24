@@ -91,13 +91,13 @@ def test_live_child_session_gets_native_stream(server, emits):
 
     child = [(e, p) for e, s, p in emits if s == "live-1"]
 
-    # Synthetic turn: start → tool → reasoning → tool rotation → close + summary.
+    # Synthetic turn: start → tool → reasoning → concurrent tool → close both + summary.
     assert [e for e, _ in child] == [
         "message.start",
         "tool.start",
         "reasoning.delta",
-        "tool.complete",
         "tool.start",
+        "tool.complete",
         "tool.complete",
         "message.complete",
     ]
@@ -105,8 +105,8 @@ def test_live_child_session_gets_native_stream(server, emits):
     assert first_tool["name"] == "terminal"
     assert first_tool["tool_id"].startswith("submirror:child-1:")
     assert child[2][1] == {"text": "hmm"}
-    # The rotated-out tool closes with the same id it opened with.
-    assert child[3][1]["tool_id"] == first_tool["tool_id"]
+    # Terminal child completion closes every still-open tool exactly once.
+    assert child[4][1]["tool_id"] == first_tool["tool_id"]
     assert child[6][1] == {"text": "done deal"}
 
     # Parent relay is untouched alongside the mirror.
@@ -118,6 +118,44 @@ def test_live_child_session_gets_native_stream(server, emits):
     ]
     # Completion clears mirror state.
     assert server._child_mirrors == {}
+
+
+def test_legacy_same_name_tools_without_ids_pair_oldest_pending_without_crash(server, emits):
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+
+    _relay(server, "subagent.tool", tool_name="terminal", preview="first", child_session_id="child-1")
+    _relay(server, "subagent.tool", tool_name="terminal", preview="second", child_session_id="child-1")
+    _relay(
+        server,
+        "subagent.tool.completed",
+        tool_name="terminal",
+        child_session_id="child-1",
+        summary="first done",
+    )
+    _relay(
+        server,
+        "subagent.tool.completed",
+        tool_name="terminal",
+        child_session_id="child-1",
+        summary="second done",
+    )
+    # A replayed completion has no pending start and is ignored.
+    _relay(
+        server,
+        "subagent.tool.completed",
+        tool_name="terminal",
+        child_session_id="child-1",
+        summary="duplicate",
+    )
+
+    child = [(event, payload) for event, sid, payload in emits if sid == "live-1"]
+    starts = [payload for event, payload in child if event == "tool.start"]
+    completions = [payload for event, payload in child if event == "tool.complete"]
+    assert len(starts) == len(completions) == 2
+    assert [payload["tool_id"] for payload in completions] == [
+        payload["tool_id"] for payload in starts
+    ]
+    assert [payload["summary"] for payload in completions] == ["first done", "second done"]
 
 
 def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emits):

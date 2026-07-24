@@ -27,9 +27,11 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -20029,6 +20031,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        _show_tool_reasons = is_truthy_value(
+            resolve_display_setting(user_config, platform_key, "tool_reasons", False),
+            default=False,
+        )
+        _show_tool_result_summaries = is_truthy_value(
+            resolve_display_setting(user_config, platform_key, "tool_result_summaries", False),
+            default=False,
+        )
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
@@ -20115,14 +20125,235 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        activity_completion_enabled = _show_tool_reasons or _show_tool_result_summaries
+        needs_progress_queue = tool_progress_enabled or _thinking_enabled or activity_completion_enabled
 
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
-        last_tool = [None]  # Mutable container for tracking in closure
-        last_progress_msg = [None]  # Track last message for dedup
-        repeat_count = [0]  # How many times the same message repeated
+
+        class _ToolActivityLine:
+            """A renderable progress line correlated to one stable tool call."""
+
+            __slots__ = ("tool_call_id", "content", "batch_key", "terminal")
+
+            def __init__(
+                self,
+                tool_call_id: str | None,
+                content: str,
+                batch_key: tuple[str, str, str] | None = None,
+                *,
+                terminal: bool = False,
+            ):
+                self.tool_call_id = tool_call_id
+                self.content = content
+                self.batch_key = batch_key
+                self.terminal = terminal
+
+            def __str__(self) -> str:
+                return self.content
+
+        _activity_targets: dict[str, str] = {}
+        _activity_batch_keys: dict[str, tuple[str, str, str]] = {}
+
+        def _activity_batch_key(tool_name: Any, target: str, reason: Any) -> tuple[str, str, str]:
+            """Return the exact visible provenance key used for activity batching."""
+            normalized_reason = " ".join(str(reason or "").split())
+            return str(tool_name or "tool"), target, normalized_reason
+
+        def _activity_batch_target(event: Any, target: str) -> str:
+            """Return bounded identity from full sanitized args, never clipped preview."""
+            args = getattr(event, "args", None)
+            if not isinstance(args, dict) or not args:
+                return target
+            try:
+                payload = json.dumps(
+                    args,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+            except (TypeError, ValueError):
+                return target
+            return f"args:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+        def _activity_target(value: Any) -> str:
+            """Return a bounded, single-line target for the activity detail row."""
+            target = " ".join(str(value or "").split())
+            if not target:
+                return ""
+            from agent.display import get_tool_preview_max_len
+
+            preview_limit = get_tool_preview_max_len()
+            cap = preview_limit if preview_limit > 0 else 40
+            return target if len(target) <= cap else target[: cap - 3] + "..."
+
+        def _activity_display_target(tool_name: str, target: str, message: str) -> str:
+            """Reuse the existing fenced terminal preview when one was rendered."""
+            if tool_name != "terminal":
+                return target
+            fence_start = message.find("```")
+            fence_end = message.rfind("```")
+            if fence_start < 0 or fence_end <= fence_start:
+                return target
+            return message[fence_start : fence_end + 3].strip()
+
+        def _compact_activity_detail(tool_name: str, state: str, summary: Any) -> str:
+            """Collapse a sanitized activity summary into narrow-card grammar."""
+            detail = " ".join(str(summary or "").split())
+            if not detail:
+                if state == "running":
+                    return "running"
+                if state in {"error", "failed", "blocked"}:
+                    return state
+                return ""
+
+            tool_prefix = f"{tool_name}:"
+            if detail.casefold().startswith(tool_prefix.casefold()):
+                detail = detail[len(tool_prefix):].lstrip()
+
+            duration_match = re.search(r"\s+in\s+(\d+(?:\.\d+)?(?:ms|s|m|h))$", detail)
+            if duration_match:
+                detail = f"{detail[:duration_match.start()].rstrip()} · {duration_match.group(1)}"
+
+            if state not in {"error", "failed", "blocked"}:
+                detail = re.sub(r"^exit\s+0(?:\s*·\s*)?", "", detail, flags=re.IGNORECASE).strip()
+            return detail
+
+        def _activity_block(
+            tool_name: str,
+            *,
+            reason: Any,
+            target: str,
+            state: str,
+            summary: Any = None,
+            duration_seconds: float | None = None,
+        ) -> str:
+            """Render the compact two-line why-and-result activity block."""
+            from agent.display import get_tool_emoji
+
+            reason_text = " ".join(str(reason or "").split())
+            detail = _compact_activity_detail(tool_name, state, summary)
+            first = f"{get_tool_emoji(tool_name)} **{tool_name}**"
+            duration_label = None
+            if (
+                tool_name == "terminal"
+                and target.startswith("```")
+                and duration_seconds is not None
+            ):
+                duration_label = f"{duration_seconds:.1f}s"
+                detail = re.sub(
+                    rf"(?:^|\s*·\s*){re.escape(duration_label)}$",
+                    "",
+                    detail,
+                ).strip()
+            if reason_text:
+                first = f"{first} · {reason_text}"
+            if duration_label:
+                first = f"{first} · {duration_label}"
+            second_parts = [part for part in (target, detail) if part]
+            if not second_parts:
+                return first
+            if target.startswith("```"):
+                lines = [first, target]
+                if detail:
+                    lines.append(f"  {detail}")
+                return "\n".join(lines)
+            return f"{first}\n  {' · '.join(second_parts)}"
+
+        def _enqueue_tool_start(message: str, metadata: dict, event: Any = None) -> None:
+            # Activity-only mode is completion-only: enabling reasons or summaries
+            # must not silently re-enable normal running bubbles.
+            if progress_queue is None or not tool_progress_enabled:
+                return
+            raw_reason = event.reason if event is not None else metadata.get("reason")
+            reason = raw_reason if _show_tool_reasons else None
+            call_id = (
+                event.tool_call_id
+                if event is not None
+                else metadata.get("tool_call_id") or metadata.get("call_id")
+            )
+            target = _activity_target(event.preview) if event is not None else ""
+            tool_name = event.tool_name if event is not None else "tool"
+            display_target = _activity_display_target(tool_name, target, message)
+            batch_key = None
+            if call_id:
+                normalized_call_id = str(call_id)
+                if display_target:
+                    _activity_targets[normalized_call_id] = display_target
+                batch_target = _activity_batch_target(event, target)
+                batch_key = _activity_batch_key(tool_name, batch_target, raw_reason)
+                _activity_batch_keys[normalized_call_id] = batch_key
+            if (_show_tool_reasons and isinstance(reason, str) and reason.strip()) or _show_tool_result_summaries:
+                content = _activity_block(
+                    tool_name,
+                    reason=reason,
+                    target=display_target,
+                    state="running",
+                )
+            else:
+                content = message
+            progress_queue.put(
+                _ToolActivityLine(str(call_id) if call_id else None, content, batch_key)
+            )
+
+        def _completion_line(
+            tool_name: str,
+            metadata: dict,
+        ) -> tuple[str, tuple[str, str, str] | None] | None:
+            from gateway.stream_events import ToolCallFinished
+
+            raw_duration = next(
+                (
+                    metadata.get(key)
+                    for key in ("duration_seconds", "duration_s", "duration")
+                    if metadata.get(key) is not None
+                ),
+                None,
+            )
+            duration_seconds = None
+            try:
+                if raw_duration is not None:
+                    candidate_duration = float(raw_duration)
+                    if math.isfinite(candidate_duration) and candidate_duration >= 0:
+                        duration_seconds = candidate_duration
+            except (TypeError, ValueError):
+                pass
+            is_error = bool(metadata.get("is_error"))
+            status = str(metadata.get("status") or ("failed" if is_error else "completed")).lower()
+            event = ToolCallFinished(
+                tool_name=tool_name,
+                duration=duration_seconds or 0,
+                ok=not is_error and status not in {"error", "failed", "blocked", "cancelled", "timeout"},
+                tool_call_id=metadata.get("tool_call_id") or metadata.get("call_id"),
+                summary=metadata.get("summary"),
+                reason=metadata.get("reason"),
+                status=status,
+                is_error=is_error,
+            )
+            reason = event.reason if _show_tool_reasons else None
+            summary = event.summary if _show_tool_result_summaries else None
+            call_id = str(event.tool_call_id) if event.tool_call_id else None
+            target = _activity_targets.pop(call_id, "") if call_id else ""
+            batch_key = _activity_batch_keys.pop(call_id, None) if call_id else None
+            if not reason and not summary:
+                return None
+            if batch_key is None and call_id:
+                batch_key = _activity_batch_key(event.tool_name, target, event.reason)
+            content = _activity_block(
+                event.tool_name,
+                reason=reason,
+                target=target,
+                state="failed" if event.is_error or not event.ok else "completed",
+                summary=summary,
+                duration_seconds=duration_seconds,
+            )
+            return content, batch_key
+
+        last_tool: list[str | None] = [None]  # Mutable container for tracking in closure
+        last_progress_msg: list[str | None] = [None]  # Track last message for dedup
+        repeat_count: list[int] = [0]  # How many times the same message repeated
         # True when the previously enqueued progress line was a terminal
         # fenced code block — consecutive terminal calls then drop the
         # repeated "💻 terminal" header and render back-to-back blocks.
@@ -20191,8 +20422,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        def _activity_event_call_id(
+            event_type: str,
+            tool_name: str | None,
+            metadata: dict,
+        ) -> str | None:
+            """Return one collision-safe ID for parent and delegated activity."""
+            call_id = metadata.get("tool_call_id") or metadata.get("call_id")
+            if event_type in {"subagent.tool", "subagent.tool.completed"}:
+                child_id = metadata.get("subagent_id")
+                if child_id is None:
+                    child_id = metadata.get("task_index")
+                if child_id is None:
+                    child_id = "child"
+                leaf_id = call_id or tool_name or "tool"
+                return f"subagent:{child_id}:{leaf_id}"
+            return str(call_id) if call_id else None
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            normalized_start_event = None
+            if event_type in {"tool.started", "subagent.tool"} and tool_name:
+                from gateway.stream_events import ToolCallChunk
+
+                normalized_start_event = ToolCallChunk(
+                    tool_name=tool_name,
+                    args=args or {},
+                    preview=preview or "",
+                    tool_call_id=_activity_event_call_id(event_type, tool_name, kwargs),
+                    reason=kwargs.get("reason"),
+                    status=str(kwargs.get("status") or "running"),
+                )
+                if activity_completion_enabled and normalized_start_event.tool_call_id:
+                    target = _activity_target(normalized_start_event.preview)
+                    if target:
+                        _activity_targets[str(normalized_start_event.tool_call_id)] = target
+                    batch_target = _activity_batch_target(normalized_start_event, target)
+                    _activity_batch_keys[str(normalized_start_event.tool_call_id)] = _activity_batch_key(
+                        normalized_start_event.tool_name,
+                        batch_target,
+                        normalized_start_event.reason,
+                    )
             # Live status line (Slack's assistant status): stash the current
             # tool phrase on the adapter; the _keep_typing refresh renders it
             # within a couple of seconds. Handled before every other gate
@@ -20238,27 +20508,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /verbose.  We only fire when (a) the user hasn't seen the hint
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
-                try:
-                    duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
-                        from agent.onboarding import (
-                            TOOL_PROGRESS_FLAG,
-                            is_seen,
-                            mark_seen,
-                            tool_progress_hint_gateway,
+            if event_type in {"tool.completed", "subagent.tool.completed"}:
+                completion_call_id = _activity_event_call_id(event_type, tool_name, kwargs)
+                completion_metadata = kwargs
+                if completion_call_id:
+                    completion_metadata = {**kwargs, "tool_call_id": completion_call_id}
+                completion = _completion_line(tool_name or "tool", completion_metadata)
+                if completion is not None and progress_queue is not None:
+                    completed_text, completion_batch_key = completion
+                    progress_queue.put(
+                        (
+                            "__tool_complete__",
+                            completion_call_id,
+                            completed_text,
+                            completion_batch_key,
                         )
-                        _cfg = _load_gateway_config()
-                        gate_on = is_truthy_value(
-                            cfg_get(_cfg, "display", "tool_progress_command"),
-                            default=False,
-                        )
-                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                            long_tool_hint_fired[0] = True
-                            progress_queue.put(tool_progress_hint_gateway())
-                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
-                except Exception as _hint_err:
-                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+                    )
+
+                if event_type == "subagent.tool.completed":
+                    return
+
+                # First-touch onboarding is independent from completion rendering.
+                if not long_tool_hint_fired[0]:
+                    try:
+                        duration = kwargs.get("duration_seconds") or kwargs.get("duration_s") or kwargs.get("duration") or 0
+                        if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                            from agent.onboarding import (
+                                TOOL_PROGRESS_FLAG,
+                                is_seen,
+                                mark_seen,
+                                tool_progress_hint_gateway,
+                            )
+                            _cfg = _load_gateway_config()
+                            gate_on = is_truthy_value(
+                                cfg_get(_cfg, "display", "tool_progress_command"),
+                                default=False,
+                            )
+                            if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                                long_tool_hint_fired[0] = True
+                                progress_queue.put(tool_progress_hint_gateway())
+                                mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                    except Exception as _hint_err:
+                        logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
                 return
 
             # "_thinking" is assistant scratch text between tool calls.  It
@@ -20280,8 +20571,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not tool_progress_enabled:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in {"tool.started",}:
+            # Only act on tool-start events (ignore completion, reasoning, etc.).
+            if event_type not in {"tool.started", "subagent.tool"}:
                 return
 
             # Never render a progress bubble for the clarify tool.  The
@@ -20371,7 +20662,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if progress_mode == "verbose":
                 if _code_block_full is not None:
                     last_was_terminal_block[0] = True
-                    progress_queue.put(_code_block_full)
+                    _enqueue_tool_start(_code_block_full, kwargs, normalized_start_event)
                     return
                 last_was_terminal_block[0] = False
                 if args:
@@ -20388,7 +20679,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = f"{emoji} {tool_name}: \"{preview}\""
                 else:
                     msg = f"{emoji} {tool_name}..."
-                progress_queue.put(msg)
+                _enqueue_tool_start(msg, kwargs, normalized_start_event)
                 return
             
             # "all" / "new" modes: short preview, respects tool_preview_length
@@ -20428,19 +20719,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 msg = f"{emoji} {tool_name}..."
                 last_was_terminal_block[0] = False
             
-            # Dedup: collapse consecutive identical progress messages.
-            # Common with execute_code where models iterate with the same
-            # code (same boilerplate imports → identical previews).
-            if msg == last_progress_msg[0]:
+            # Legacy dedup is only valid for uncorrelated progress strings.
+            # Correlated activity rows are keyed by tool_call_id and may share the
+            # same tool/target while carrying distinct reasons and outcomes.  If
+            # we collapse those by the legacy display message, the __dedup__
+            # consumer replaces a structured row with e.g. "Editing path (×2)",
+            # discarding its reason and stable ID.
+            correlated_activity = bool(
+                normalized_start_event is not None
+                and normalized_start_event.tool_call_id
+                and (_show_tool_reasons or _show_tool_result_summaries)
+            )
+            if correlated_activity:
+                last_progress_msg[0] = None
+                repeat_count[0] = 0
+            elif msg == last_progress_msg[0]:
                 repeat_count[0] += 1
                 # Update the last line in progress_lines with a counter
                 # via a special "dedup" queue message.
                 progress_queue.put(("__dedup__", msg, repeat_count[0]))
                 return
-            last_progress_msg[0] = msg
-            repeat_count[0] = 0
-            
-            progress_queue.put(msg)
+            else:
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
+
+            _enqueue_tool_start(msg, kwargs, normalized_start_event)
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
@@ -20555,10 +20858,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # Platforms without edit support cannot show a live reason and then
+            # revise the same bubble. Activity-only mode is also deliberately
+            # completion-only, even on editable platforms, so enabling metadata
+            # does not re-enable normal progress behavior.
+            _editing_capability = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", None)
+            _supports_progress_editing = (
+                bool(_editing_capability)
+                if _editing_capability is not None
+                else type(adapter).edit_message is not BasePlatformAdapter.edit_message
+            )
+            _activity_only = (
+                not tool_progress_enabled
+                and activity_completion_enabled
+                and not _thinking_enabled
+            )
+            _completion_only = not _supports_progress_editing or _activity_only
+            if (
+                _completion_only
+                and not activity_completion_enabled
+                and not _thinking_enabled
+            ):
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -20568,9 +20888,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+            can_edit = (
+                _supports_progress_editing
+                and progress_grouping != "separate"
+                and not _activity_only
+            )
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _reset_deferred = False
+
+            def _has_running_correlated_activity() -> bool:
+                return any(
+                    isinstance(line, _ToolActivityLine)
+                    and bool(line.tool_call_id)
+                    and not line.terminal
+                    for line in progress_lines
+                )
 
             _progress_len_fn = (
                 adapter.message_len_fn
@@ -20616,8 +20949,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     kwargs["metadata"] = _progress_metadata
                 return await adapter.edit_message(**kwargs)
 
+            def _with_activity_count(content: str, count: int, tool_name: str) -> str:
+                if count <= 1:
+                    return content
+                first, separator, rest = content.partition("\n")
+                anchor = f"**{tool_name}**"
+                if anchor in first:
+                    counted = first.replace(anchor, f"{anchor} ×{count}", 1)
+                else:
+                    counted = f"{first} ×{count}"
+                return f"{counted}{separator}{rest}" if separator else counted
+
             def _progress_text(lines: list) -> str:
-                return "\n".join(str(line) for line in lines)
+                rendered: list[str] = []
+                index = 0
+                while index < len(lines):
+                    line = lines[index]
+                    if isinstance(line, _ToolActivityLine) and line.batch_key is not None:
+                        count = 1
+                        while index + count < len(lines):
+                            candidate = lines[index + count]
+                            if not (
+                                isinstance(candidate, _ToolActivityLine)
+                                and candidate.batch_key == line.batch_key
+                                and candidate.content == line.content
+                            ):
+                                break
+                            count += 1
+                        rendered.append(
+                            _with_activity_count(line.content, count, line.batch_key[0])
+                        )
+                        index += count
+                        continue
+                    rendered.append(str(line))
+                    index += 1
+                return "\n".join(rendered)
 
             def _split_progress_groups(lines: list) -> list[list]:
                 """Partition progress lines into platform-sized editable bubbles."""
@@ -20724,23 +21090,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
+                    # Completion events replace the correlated running line on
+                    # editable channels. Completion-only channels drop starts
+                    # and send just this durable final line.
+                    if isinstance(raw, tuple) and len(raw) in {3, 4} and raw[0] == "__tool_complete__":
+                        _, call_id, completed_text, *completion_metadata = raw
+                        completion_batch_key = completion_metadata[0] if completion_metadata else None
+                        replaced = False
+                        if can_edit and call_id:
+                            for index, line in enumerate(progress_lines):
+                                if isinstance(line, _ToolActivityLine) and line.tool_call_id == call_id:
+                                    progress_lines[index] = _ToolActivityLine(
+                                        call_id,
+                                        completed_text,
+                                        completion_batch_key,
+                                        terminal=True,
+                                    )
+                                    replaced = True
+                                    break
+                        if not replaced:
+                            progress_lines.append(
+                                _ToolActivityLine(
+                                    call_id,
+                                    completed_text,
+                                    completion_batch_key,
+                                    terminal=True,
+                                )
+                            )
+                        msg = completed_text
+                    elif isinstance(raw, _ToolActivityLine) and _completion_only:
+                        continue
                     # Handle dedup messages: update last line with repeat counter
-                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                        # Content bubble just landed on the platform — close off
-                        # the current tool-progress bubble so the next tool
-                        # starts a fresh bubble below the content. Without this,
-                        # tool lines keep editing the ORIGINAL progress message
-                        # above the new content, making the chat appear out of
-                        # order. Mirrors GatewayStreamConsumer.on_segment_break
-                        # on the content side. (Issue: tool + content
-                        # linearization regression after PR #7885.)
+                        # Content landed below this activity card.  Keep the
+                        # card's identity until every correlated call already
+                        # shown on it reaches a terminal state; otherwise a
+                        # delayed completion would be sent as a second card.
+                        if can_edit and progress_msg_id and _has_running_correlated_activity():
+                            _reset_deferred = True
+                            continue
+                        if can_edit and progress_lines and progress_msg_id:
+                            try:
+                                await _edit_progress_message(
+                                    progress_msg_id,
+                                    _progress_text(progress_lines),
+                                )
+                            except Exception:
+                                pass
                         progress_msg_id = None
                         progress_lines = []
+                        _reset_deferred = False
                         last_progress_msg[0] = None
                         repeat_count[0] = 0
                         continue
@@ -20762,18 +21166,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _now = time.monotonic()
                     _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
                     if _remaining > 0:
-                        # Wait out the throttle interval, then loop back to
-                        # drain any additional queued messages before sending
-                        # a single batched edit.
+                        # Wait out the throttle interval.  If newer events
+                        # arrived, coalesce them before editing; otherwise
+                        # flush the latest state instead of stranding it.
                         await asyncio.sleep(_remaining)
-                        continue
+                        if not progress_queue.empty():
+                            continue
 
                     if not _run_still_current():
                         return
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
@@ -20800,7 +21205,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 can_edit = False
                             _flood_result = await adapter.send(
                                 chat_id=source.chat_id,
-                                content=msg,
+                                content=str(msg),
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
@@ -20813,7 +21218,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            full_text = _progress_text(progress_lines)
                             result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=full_text,
@@ -20824,7 +21229,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Editing unsupported: send just this line
                             result = await adapter.send(
                                 chat_id=source.chat_id,
-                                content=msg,
+                                content=str(msg),
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
@@ -20832,6 +21237,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                            if _completion_only:
+                                progress_lines = []
+                                progress_msg_id = None
+
+                    if _reset_deferred and not _has_running_correlated_activity():
+                        progress_msg_id = None
+                        progress_lines = []
+                        _reset_deferred = False
+                        last_progress_msg[0] = None
+                        repeat_count[0] = 0
 
                     _last_edit_ts = time.monotonic()
 
@@ -20847,15 +21262,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     while not progress_queue.empty():
                         try:
                             raw = progress_queue.get_nowait()
-                            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                            if isinstance(raw, tuple) and len(raw) in {3, 4} and raw[0] == "__tool_complete__":
+                                _, call_id, completed_text, *completion_metadata = raw
+                                completion_batch_key = completion_metadata[0] if completion_metadata else None
+                                replaced = False
+                                if can_edit and call_id:
+                                    for index, line in enumerate(progress_lines):
+                                        if isinstance(line, _ToolActivityLine) and line.tool_call_id == call_id:
+                                            progress_lines[index] = _ToolActivityLine(
+                                                call_id,
+                                                completed_text,
+                                                completion_batch_key,
+                                                terminal=True,
+                                            )
+                                            replaced = True
+                                            break
+                                if not replaced:
+                                    progress_lines.append(
+                                        _ToolActivityLine(
+                                            call_id,
+                                            completed_text,
+                                            completion_batch_key,
+                                            terminal=True,
+                                        )
+                                    )
+                                if can_edit:
+                                    await _roll_progress_overflow_if_needed()
+                            elif isinstance(raw, _ToolActivityLine) and _completion_only:
+                                continue
+                            elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                     await _roll_progress_overflow_if_needed()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                                # Content-bubble marker during drain: close off
-                                # the current progress bubble and start a fresh
-                                # one for any tool lines that arrived after.
+                                # During drain, preserve a running correlated
+                                # card so any later queued completion can still
+                                # replace its row and finalize the same message.
+                                if can_edit and progress_msg_id and _has_running_correlated_activity():
+                                    _reset_deferred = True
+                                    continue
                                 await _roll_progress_overflow_if_needed()
                                 if can_edit and progress_lines and progress_msg_id:
                                     _pending_text = _progress_text(progress_lines)
@@ -20865,13 +21311,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         pass
                                 progress_msg_id = None
                                 progress_lines = []
+                                _reset_deferred = False
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
                             else:
                                 progress_lines.append(raw)
                                 await _roll_progress_overflow_if_needed()
+
+                            if _reset_deferred and not _has_running_correlated_activity():
+                                await _roll_progress_overflow_if_needed()
+                                if can_edit and progress_lines and progress_msg_id:
+                                    try:
+                                        await _edit_progress_message(
+                                            progress_msg_id,
+                                            _progress_text(progress_lines),
+                                        )
+                                    except Exception:
+                                        pass
+                                progress_msg_id = None
+                                progress_lines = []
+                                _reset_deferred = False
+                                last_progress_msg[0] = None
+                                repeat_count[0] = 0
                         except Exception:
                             break
+                    # A non-editing platform may be cancelled immediately after
+                    # completion was queued. Deliver any drained completion lines
+                    # once; starts were discarded above.
+                    if _completion_only and progress_lines:
+                        for line in progress_lines:
+                            try:
+                                await _send_progress_text(str(line))
+                            except Exception:
+                                pass
+                        progress_lines = []
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
                         await _roll_progress_overflow_if_needed()
@@ -21186,12 +21659,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            _agent_cache_keys = dict(self._extract_cache_busting_config(user_config) or {})
+            _agent_cache_keys.update({
+                "display.effective_tool_reasons": _show_tool_reasons,
+                "display.effective_tool_result_summaries": _show_tool_result_summaries,
+            })
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=_agent_cache_keys,
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
@@ -21403,6 +21881,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
+                    tool_reasons_enabled=_show_tool_reasons,
+                    tool_result_summaries_enabled=_show_tool_result_summaries,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,

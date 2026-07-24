@@ -305,6 +305,39 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('uses backend reason while a tool runs and backend summary when it completes', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        context: 'Searching files',
+        name: 'search_files',
+        reason: 'Find the rendering component',
+        status: 'running',
+        tool_id: 'tool-1'
+      },
+      type: 'tool.start'
+    } as any)
+
+    expect(getTurnState().tools).toMatchObject([{ id: 'tool-1', reason: 'Find the rendering component' }])
+
+    onEvent({
+      payload: {
+        duration_seconds: 1.2,
+        is_error: false,
+        name: 'search_files',
+        status: 'completed',
+        summary: 'Found 1 rendering component',
+        tool_id: 'tool-1'
+      },
+      type: 'tool.complete'
+    } as any)
+
+    expect(getTurnState().streamPendingTools[0]).toContain('Find the rendering component')
+    expect(getTurnState().streamPendingTools[0]).toContain('Found 1 rendering component')
+  })
+
   it('groups sequential completed tools into one trail when the turn completes', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -1103,6 +1136,87 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
 
+  it('records delegated tool activity without completing the child', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'inspect files', subagent_id: 'sa-activity', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: {
+        goal: 'inspect files',
+        status: 'completed',
+        subagent_id: 'sa-activity',
+        task_index: 0,
+        tool_name: 'terminal',
+        reason: 'Inspect child workspace',
+        summary: 'terminal: exit 0 in 0.2s'
+      },
+      type: 'subagent.tool.completed'
+    } as any)
+
+    const child = getTurnState().subagents.find(s => s.id === 'sa-activity')
+    expect(child?.status).toBe('running')
+    expect(child?.notes).toContain('Inspect child workspace — terminal: exit 0 in 0.2s')
+  })
+
+  it('correlates delegated concurrent same-name tools by call id', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+    onEvent({
+      payload: { goal: 'inspect files', subagent_id: 'sa-concurrent', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    for (const [tool_call_id, tool_preview] of [
+      ['a', 'first'],
+      ['b', 'second']
+    ]) {
+      onEvent({
+        payload: {
+          goal: 'inspect files',
+          subagent_id: 'sa-concurrent',
+          task_index: 0,
+          tool_call_id,
+          tool_name: 'terminal',
+          tool_preview
+        },
+        type: 'subagent.tool'
+      } as any)
+    }
+
+    onEvent({
+      payload: {
+        goal: 'inspect files',
+        subagent_id: 'sa-concurrent',
+        task_index: 0,
+        tool_call_id: 'b',
+        tool_name: 'terminal',
+        summary: 'second done'
+      },
+      type: 'subagent.tool.completed'
+    } as any)
+
+    let child = getTurnState().subagents.find(s => s.id === 'sa-concurrent')
+    expect(child?.activeToolCalls).toEqual([{ id: 'a', line: 'Terminal("first")', name: 'terminal' }])
+
+    onEvent({
+      payload: {
+        goal: 'inspect files',
+        subagent_id: 'sa-concurrent',
+        task_index: 0,
+        tool_call_id: 'a',
+        tool_name: 'terminal',
+        summary: 'first done'
+      },
+      type: 'subagent.tool.completed'
+    } as any)
+
+    child = getTurnState().subagents.find(s => s.id === 'sa-concurrent')
+    expect(child?.activeToolCalls).toEqual([])
+  })
+
   it('accepts timeout/error subagent terminal statuses and ignores stale live events', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -1112,11 +1226,23 @@ describe('createGatewayEventHandler', () => {
       type: 'subagent.start'
     } as any)
     onEvent({
+      payload: {
+        goal: 'timeout child',
+        subagent_id: 'sa-timeout',
+        task_index: 0,
+        tool_call_id: 'active-before-timeout',
+        tool_name: 'terminal'
+      },
+      type: 'subagent.tool'
+    } as any)
+    onEvent({
       payload: { goal: 'timeout child', status: 'timeout', subagent_id: 'sa-timeout', task_index: 0 },
       type: 'subagent.complete'
     } as any)
 
-    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+    let timedOut = getTurnState().subagents.find(s => s.id === 'sa-timeout')
+    expect(timedOut?.status).toBe('timeout')
+    expect(timedOut?.activeToolCalls).toEqual([])
 
     // Late start/spawn updates must not clobber terminal timeout/error states.
     onEvent({
@@ -1127,8 +1253,30 @@ describe('createGatewayEventHandler', () => {
       payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
       type: 'subagent.spawn_requested'
     } as any)
+    onEvent({
+      payload: {
+        goal: 'timeout child',
+        subagent_id: 'sa-timeout',
+        task_index: 0,
+        tool_call_id: 'late-tool',
+        tool_name: 'terminal'
+      },
+      type: 'subagent.tool'
+    } as any)
+    onEvent({
+      payload: {
+        goal: 'timeout child',
+        subagent_id: 'sa-timeout',
+        task_index: 0,
+        tool_call_id: 'late-tool',
+        tool_name: 'terminal'
+      },
+      type: 'subagent.tool.completed'
+    } as any)
 
-    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+    timedOut = getTurnState().subagents.find(s => s.id === 'sa-timeout')
+    expect(timedOut?.status).toBe('timeout')
+    expect(timedOut?.activeToolCalls).toEqual([])
 
     onEvent({
       payload: { goal: 'error child', subagent_id: 'sa-error', task_index: 1 },

@@ -172,6 +172,22 @@ def test_gateway_notice_routes_to_hook():
     assert seen[0].kind == "restart"
 
 
+def test_tool_events_accept_optional_activity_fields_without_breaking_legacy_callers():
+    """The normalized wire contract carries activity metadata, but old shapes stay valid."""
+    started = ToolCallChunk(
+        tool_name="terminal", preview="pytest", tool_call_id="call_123",
+        reason="Run the focused test suite", status="running",
+    )
+    finished = ToolCallFinished(
+        tool_name="terminal", tool_call_id="call_123", summary="42 tests passed",
+        status="completed", is_error=False, duration_seconds=1.25,
+    )
+    assert started.tool_call_id == finished.tool_call_id == "call_123"
+    assert started.reason == "Run the focused test suite"
+    assert finished.summary == "42 tests passed"
+    assert finished.duration == finished.duration_seconds == 1.25
+
+
 def test_dispatch_swallows_render_errors():
     """A render error must never propagate into the agent worker thread."""
     adapter = _base_adapter()

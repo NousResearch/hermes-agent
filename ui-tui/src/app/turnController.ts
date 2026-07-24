@@ -843,14 +843,17 @@ class TurnController {
             Boolean(error),
             duration ?? fallbackDuration,
             done?.verboseArgs,
-            error || resultText || summary || ''
+            error || resultText || '',
+            done?.reason,
+            error || summary || ''
           )
         : buildToolTrailLine(
             name,
             done?.context || '',
             Boolean(error),
             error || summary || '',
-            duration ?? fallbackDuration
+            duration ?? fallbackDuration,
+            done?.reason
           )
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
@@ -897,7 +900,7 @@ class TurnController {
     }, STREAM_BATCH_MS)
   }
 
-  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
+  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string, reason?: string) {
     if (this.interrupted) {
       return
     }
@@ -907,10 +910,10 @@ class TurnController {
     this.pruneTransient()
     this.endReasoningPhase()
 
-    const sample = `${name} ${context}`.trim()
+    const sample = `${name} ${reason || context}`.trim()
 
     this.toolTokenAcc += sample ? estimateTokensRough(sample) : 0
-    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now(), verboseArgs }]
+    this.activeTools = [...this.activeTools, { context, id: toolId, name, reason, startedAt: Date.now(), verboseArgs }]
 
     patchTurnState({ toolTokens: this.toolTokenAcc, tools: this.activeTools })
   }
@@ -1027,6 +1030,7 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
+        activeToolCalls: [],
         depth: p.depth ?? 0,
         goal: p.goal,
         id,

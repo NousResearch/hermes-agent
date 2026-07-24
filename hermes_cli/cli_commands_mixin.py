@@ -1658,6 +1658,13 @@ class CLICommandsMixin:
         _cprint("  You can continue chatting — results will appear when done.\n")
 
         turn_route = self._resolve_turn_agent_config(prompt)
+        parent_agent = getattr(self, "agent", None)
+        tool_reasons_enabled = bool(
+            getattr(parent_agent, "tool_reasons_enabled", False)
+        )
+        tool_result_summaries_enabled = bool(
+            getattr(parent_agent, "tool_result_summaries_enabled", False)
+        )
 
         def run_background():
             set_sudo_password_callback(self._sudo_password_callback)
@@ -1682,6 +1689,8 @@ class CLICommandsMixin:
                     verbose_logging=False,
                     session_id=task_id,
                     platform="cli",
+                    tool_reasons_enabled=tool_reasons_enabled,
+                    tool_result_summaries_enabled=tool_result_summaries_enabled,
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,

@@ -82,15 +82,23 @@ def test_command_start_and_complete_fire_both_callback_contracts():
     expected_id = "codex_exec_abc123"
     assert calls["tool_start"] == [(expected_id, "exec_command", expected_args)]
     assert calls["tool_complete"] == [
-        (expected_id, "exec_command", expected_args, "hi\n")
+        (expected_id, "exec_command", expected_args, None)
     ]
     assert calls["tool_progress"][0] == (
         ("tool.started", "exec_command", "echo hi", expected_args),
-        {},
+        {"tool_call_id": expected_id, "call_id": expected_id, "status": "running"},
     )
     assert calls["tool_progress"][1] == (
         ("tool.completed", "exec_command", None, None),
-        {"duration": 0.25, "is_error": False, "result": "hi\n"},
+        {
+            "tool_call_id": expected_id,
+            "call_id": expected_id,
+            "status": "completed",
+            "duration": 0.25,
+            "duration_seconds": 0.25,
+            "duration_s": 0.25,
+            "is_error": False,
+            },
     )
 
 
@@ -124,7 +132,56 @@ def test_stable_ids_match_history_projector():
     call_id, name, args = calls["tool_start"][0]
     assert call_id == _deterministic_call_id("apply_patch", "p1")
     assert name == "apply_patch"
-    assert args == {"changes": [{"kind": "add", "path": "a.py"}]}
+    assert args == {"path": "a.py"}
+
+
+def test_dynamic_tool_callbacks_keep_safe_target_and_omit_payload_fields():
+    sentinel = "CODEX_DYNAMIC_PRIVATE_PAYLOAD_32d7"
+    agent, calls = _recording_agent()
+    agent.valid_tool_names = {"safe_plugin"}
+    bridge = make_codex_app_server_event_bridge(agent)
+    item = {
+        "type": "dynamicToolCall",
+        "id": "safe-dynamic",
+        "tool": "safe_plugin",
+        "arguments": {
+            "path": "src/auth/session.py",
+            "content": sentinel,
+            "text": sentinel,
+        },
+    }
+
+    bridge({"method": "item/started", "params": {"item": item}})
+
+    assert calls["tool_start"] == [
+        ("codex_dyn_safe_plugin_safe-dynamic", "safe_plugin", {"path": "src/auth/session.py"})
+    ]
+    assert calls["tool_progress"][0][0][2:] == (
+        "src/auth/session.py",
+        {"path": "src/auth/session.py"},
+    )
+    assert sentinel not in repr(calls)
+
+
+def test_invalid_dynamic_tool_callbacks_fail_closed():
+    sentinel = "CODEX_INVALID_PRIVATE_PAYLOAD_841e"
+    agent, calls = _recording_agent()
+    agent.valid_tool_names = {"safe_plugin"}
+    bridge = make_codex_app_server_event_bridge(agent)
+    item = {
+        "type": "dynamicToolCall",
+        "id": "invalid-dynamic",
+        "tool": "unknown_plugin",
+        "arguments": {"path": "private.txt", "content": sentinel},
+    }
+
+    bridge({"method": "item/started", "params": {"item": item}})
+
+    assert calls["tool_start"] == [
+        ("codex_dyn_unknown_plugin_invalid-dynamic", "unknown_plugin", {})
+    ]
+    assert calls["tool_progress"][0][0][2:] == (None, {})
+    assert sentinel not in repr(calls)
 
 
 def test_failed_command_result_and_error_flag_are_preserved():
@@ -138,13 +195,15 @@ def test_failed_command_result_and_error_flag_are_preserved():
         "exitCode": 2,
     }
 
+    bridge({"method": "item/started", "params": {"item": item}})
     bridge({"method": "item/completed", "params": {"item": item}})
 
     result, is_error = _codex_item_completion_payload(item)
     assert result == "[exit 2]\nboom"
     assert is_error is True
-    assert calls["tool_progress"][0][1]["is_error"] is True
-    assert calls["tool_complete"][0][3] == "[exit 2]\nboom"
+    assert calls["tool_progress"][-1][1]["is_error"] is True
+    assert calls["tool_complete"][0][3] is None
+    assert "boom" not in repr(calls["tool_complete"])
 
 
 def test_non_tool_events_and_malformed_payloads_are_ignored():
@@ -160,6 +219,54 @@ def test_non_tool_events_and_malformed_payloads_are_ignored():
         bridge(note)
 
     assert all(not entries for entries in calls.values())
+
+
+def test_duplicate_and_orphan_tool_notifications_are_exactly_once():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+    item = {
+        "type": "commandExecution",
+        "id": "duplicate",
+        "command": "echo hi",
+        "aggregatedOutput": "hi\n",
+        "exitCode": 0,
+    }
+
+    bridge({"method": "item/completed", "params": {"item": {**item, "id": "orphan"}}})
+    bridge({"method": "item/started", "params": {"item": item}})
+    bridge({"method": "item/started", "params": {"item": item}})
+    bridge({"method": "item/completed", "params": {"item": item}})
+    bridge({"method": "item/completed", "params": {"item": item}})
+    bridge({"method": "item/started", "params": {"item": item}})
+
+    assert len(calls["tool_start"]) == 1
+    assert len(calls["tool_complete"]) == 1
+    assert [event[0][0] for event in calls["tool_progress"]] == [
+        "tool.started",
+        "tool.completed",
+    ]
+
+
+def test_turn_terminal_closes_pending_tool_once_and_ignores_late_completion():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+    item = {
+        "type": "commandExecution",
+        "id": "abandoned",
+        "command": "sleep 30",
+    }
+
+    bridge({"method": "item/started", "params": {"item": item}})
+    bridge({"method": "turn/completed", "params": {"turn": {"status": "failed"}}})
+    bridge({"method": "turn/completed", "params": {"turn": {"status": "failed"}}})
+    bridge({"method": "item/completed", "params": {"item": {**item, "exitCode": 1}}})
+
+    assert len(calls["tool_start"]) == 1
+    assert len(calls["tool_complete"]) == 1
+    assert calls["tool_complete"][0][-1] is None
+    completion_metadata = calls["tool_progress"][-1][1]
+    assert completion_metadata["status"] == "failed"
+    assert completion_metadata["is_error"] is True
 
 
 def test_one_broken_callback_does_not_hide_other_live_events():

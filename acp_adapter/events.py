@@ -14,6 +14,7 @@ from collections import deque
 from typing import Any, Callable, Deque, Dict
 
 import acp
+from agent.tool_activity import redact_activity_args
 from acp.schema import AgentPlanUpdate, PlanEntry
 
 from .tools import (
@@ -84,6 +85,16 @@ def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
     return AgentPlanUpdate(session_update="plan", entries=entries)
 
 
+def _build_plan_update_from_todo_args(args: Any) -> AgentPlanUpdate | None:
+    """Build the native ACP plan from display-safe todo call arguments."""
+    args = redact_activity_args(args)
+    if not isinstance(args, dict) or not isinstance(args.get("todos"), list):
+        return None
+    return _build_plan_update_from_todo_result(
+        json.dumps({"todos": args["todos"]}, ensure_ascii=False)
+    )
+
+
 def _send_update(
     conn: acp.Client,
     session_id: str,
@@ -132,6 +143,17 @@ def make_tool_progress_cb(
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        if event_type == "tool.completed":
+            tc_id = kwargs.get("tool_call_id") or kwargs.get("call_id")
+            if tc_id is not None and str(tc_id) in tool_call_meta:
+                meta = tool_call_meta[str(tc_id)]
+                if kwargs.get("summary") is not None:
+                    meta["summary"] = str(kwargs["summary"])
+                if kwargs.get("status") is not None:
+                    meta["status"] = str(kwargs["status"])
+                if kwargs.get("is_error") is not None:
+                    meta["is_error"] = bool(kwargs["is_error"])
+            return
         # Only emit ACP ToolCallStart for tool.started; ignore other event types
         if event_type != "tool.started":
             return
@@ -143,7 +165,7 @@ def make_tool_progress_cb(
         if not isinstance(args, dict):
             args = {}
 
-        tc_id = make_tool_call_id()
+        tc_id = str(kwargs.get("tool_call_id") or make_tool_call_id())
         queue = tool_call_ids.get(name)
         if queue is None:
             queue = deque()
@@ -176,10 +198,74 @@ def make_tool_progress_cb(
             except Exception:
                 logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
 
-        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
+        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff, reason=kwargs.get("reason"))
         _send_update(conn, session_id, loop, update)
 
     return _tool_progress
+
+
+# ------------------------------------------------------------------
+# Tool completion callback
+# ------------------------------------------------------------------
+
+
+def make_tool_complete_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+) -> Callable:
+    """Create the canonical ``tool_complete_callback`` for ACP.
+
+    Core supplies the original stable call ID and normalized completion
+    metadata here.  Completing by ID avoids FIFO mismatches for concurrent
+    same-name calls; ``make_step_cb`` remains only as a legacy fallback.
+    """
+
+    def _tool_complete(
+        call_id: str,
+        name: str,
+        function_args: Any,
+        result: Any,
+        **metadata,
+    ) -> None:
+        tc_id = str(metadata.get("tool_call_id") or metadata.get("call_id") or call_id)
+        meta = tool_call_meta.pop(tc_id, {})
+
+        raw_queue: Any = tool_call_ids.get(name)
+        if isinstance(raw_queue, str):
+            queue: Deque[str] | None = deque([raw_queue])
+            tool_call_ids[name] = queue
+        else:
+            queue = raw_queue
+        if queue:
+            try:
+                queue.remove(tc_id)
+            except ValueError:
+                pass
+            if not queue:
+                tool_call_ids.pop(name, None)
+
+        update = build_tool_complete(
+            tc_id,
+            name,
+            result=None,
+            function_args=function_args if function_args is not None else meta.get("args"),
+            snapshot=meta.get("snapshot"),
+            summary=(str(metadata["summary"]) if metadata.get("summary") else None),
+            status=(str(metadata["status"]) if metadata.get("status") else None),
+            is_error=(bool(metadata["is_error"]) if metadata.get("is_error") is not None else None),
+        )
+        _send_update(conn, session_id, loop, update)
+        if name == "todo":
+            plan_update = _build_plan_update_from_todo_args(
+                function_args if function_args is not None else meta.get("args")
+            )
+            if plan_update is not None:
+                _send_update(conn, session_id, loop, plan_update)
+
+    return _tool_complete
 
 
 # ------------------------------------------------------------------
@@ -224,13 +310,11 @@ def make_step_cb(
         if prev_tools and isinstance(prev_tools, list):
             for tool_info in prev_tools:
                 tool_name = None
-                result = None
-                function_args = None
+                summary = None
 
                 if isinstance(tool_info, dict):
                     tool_name = tool_info.get("name") or tool_info.get("function_name")
-                    result = tool_info.get("result") or tool_info.get("output")
-                    function_args = tool_info.get("arguments") or tool_info.get("args")
+                    summary = tool_info.get("summary")
                 elif isinstance(tool_info, str):
                     tool_name = tool_info
 
@@ -241,18 +325,35 @@ def make_step_cb(
                 if tool_name and queue:
                     tc_id = queue.popleft()
                     meta = tool_call_meta.pop(tc_id, {})
+                    completion_kwargs = {
+                        "result": None,
+                        # Legacy step payloads contain model-facing raw arguments.
+                        # Only arguments captured from the presentation-safe start
+                        # callback may cross into an ACP completion.
+                        "function_args": meta.get("args"),
+                        "snapshot": meta.get("snapshot"),
+                    }
+                    safe_summary = summary or meta.get("summary")
+                    if safe_summary:
+                        completion_kwargs["summary"] = str(safe_summary)
+                    safe_status = (
+                        tool_info.get("status") if isinstance(tool_info, dict) else None
+                    ) or meta.get("status")
+                    if safe_status:
+                        completion_kwargs["status"] = str(safe_status)
+                    safe_is_error = (
+                        tool_info.get("is_error") if isinstance(tool_info, dict) else None
+                    )
+                    if safe_is_error is None:
+                        safe_is_error = meta.get("is_error")
+                    if safe_is_error is not None:
+                        completion_kwargs["is_error"] = bool(safe_is_error)
                     update = build_tool_complete(
                         tc_id,
                         tool_name,
-                        result=str(result) if result is not None else None,
-                        function_args=function_args or meta.get("args"),
-                        snapshot=meta.get("snapshot"),
+                        **completion_kwargs,
                     )
                     _send_update(conn, session_id, loop, update)
-                    if tool_name == "todo":
-                        plan_update = _build_plan_update_from_todo_result(result)
-                        if plan_update is not None:
-                            _send_update(conn, session_id, loop, plan_update)
                     if not queue:
                         tool_call_ids.pop(tool_name, None)
 

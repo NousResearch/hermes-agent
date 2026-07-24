@@ -170,15 +170,15 @@ class TestMcpRegistrationE2E:
         assert isinstance(start_event, ToolCallStart)
         assert start_event.title.startswith("terminal:")
 
-        # Should have at least one ToolCallUpdate (completion) with rawOutput
+        # Completion carries lifecycle only when summaries are disabled. Raw
+        # tool output remains model-facing and never enters ACP presentation.
         assert len(completions) >= 1, f"Expected ToolCallUpdate, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
         complete_event = completions[0]
         assert isinstance(complete_event, ToolCallProgress)
         assert complete_event.status == "completed"
-        # Completion should contain human-readable output rather than forcing raw JSON panes.
-        assert complete_event.content
-        assert "hello" in complete_event.content[0].content.text
+        assert complete_event.content is None
         assert complete_event.raw_output is None
+        assert "hello" not in repr(complete_event.model_dump())
 
     def test_patch_mode_tool_start_defers_diff_to_edit_approval_prompt(self):
         update = build_tool_start(

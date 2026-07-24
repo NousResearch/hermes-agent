@@ -1401,19 +1401,65 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
-        )
+        # --- macOS: avoid fork() deadlock in multithreaded gateway ---
+        # CPython's subprocess falls back from posix_spawn() to fork()+exec()
+        # when start_new_session=True, close_fds=True (the default with pipes),
+        # or cwd is not None.  On macOS VFORK_USABLE is never defined
+        # (_posixsubprocess.c only enables it on Linux), so the fallback is
+        # always plain fork().  In a long-running, multi-threaded process
+        # (asyncio loop, logging queue, scheduler, …) fork() can deadlock:
+        # pthread_atfork prepare handlers try to acquire malloc-zone locks
+        # that are held by other threads, so fork() never returns.
+        #
+        # Fix: on macOS, drop all three posix_spawn disqualifiers.
+        #   start_new_session=False — lose session/process-group isolation
+        #     (acceptable; _kill_process still uses os.killpg on the pid).
+        #   close_fds=False — safe: every FD opened by Python ≥ 3.4 carries
+        #     O_CLOEXEC and is closed automatically on exec.
+        #   cwd=None — inject the cwd via a `cd` prepended to the bash
+        #     script, then rebuild `args` (it was built from the old
+        #     cmd_string at line 1011).
+        _darwin_spawn = sys.platform == "darwin" and not _popen_kwargs
+
+        if _darwin_spawn and _popen_cwd:
+            _spawn_cmd = (
+                'builtin cd -- "'
+                + _popen_cwd.replace('"', '\\"')
+                + '" 2>/dev/null || true\n'
+                + cmd_string
+            )
+            _spawn_args = (
+                [bash, "-l", "-c", _spawn_cmd]
+                if login
+                else [bash, "-c", _spawn_cmd]
+            )
+            proc = subprocess.Popen(
+                _spawn_args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=False,
+                close_fds=False,
+                cwd=None,
+            )
+        else:
+            proc = subprocess.Popen(
+                args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=_popen_cwd,
+                **_popen_kwargs,
+            )
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)

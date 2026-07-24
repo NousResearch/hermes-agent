@@ -9844,6 +9844,38 @@ class SessionDB:
 
         return result
 
+    def maybe_warn_auto_prune_disabled(self) -> None:
+        """Log a one-time warning when sessions.auto_prune is off.
+
+        Default is disabled (see hermes_cli/config.py DEFAULT_CONFIG), so
+        without this, operators get no signal that ended sessions and
+        state.db will grow unbounded until they opt in. Fires once per
+        HERMES_HOME (tracked via state_meta); never raises.
+
+        The claim is atomic (INSERT ... ON CONFLICT DO NOTHING inside
+        _execute_write's BEGIN IMMEDIATE transaction), so only the
+        process that actually inserts the marker logs — concurrent
+        CLI/gateway startups racing this call can't both warn.
+        """
+        try:
+            def _do(conn):
+                cur = conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO NOTHING",
+                    ("auto_prune_disabled_warned", "1"),
+                )
+                return cur.rowcount > 0
+
+            if self._execute_write(_do):
+                logger.warning(
+                    "sessions.auto_prune is disabled (the default): ended "
+                    "sessions and state.db will not be pruned or VACUUMed "
+                    "automatically. Set sessions.auto_prune=true in config.yaml, "
+                    "or run `hermes sessions prune` manually, to reclaim space."
+                )
+        except Exception:
+            pass
+
     # ── Handoff (cross-platform session transfer) ──────────────────────────
     #
     # State machine:

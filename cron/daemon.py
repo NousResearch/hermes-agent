@@ -193,9 +193,9 @@ def _daemonize():
             pass
 
     # Redirect stdio to /dev/null
-    os.open("/dev/null", os.O_RDONLY)  # stdin
-    os.open("/dev/null", os.O_WRONLY)  # stdout
-    os.open("/dev/null", os.O_WRONLY)  # stderr
+    os.open(os.devnull, os.O_RDONLY)  # stdin
+    os.open(os.devnull, os.O_WRONLY)  # stdout
+    os.open(os.devnull, os.O_WRONLY)  # stderr
 
     # Set up logging to file
     from hermes_logging import setup_logging

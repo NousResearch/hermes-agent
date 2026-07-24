@@ -4877,7 +4877,18 @@ class SessionDB:
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+        from tools.ansi_strip import strip_ansi
+        # Strip ANSI/terminal escape sequences first, while the ESC anchor (0x1b)
+        # is present: strip_ansi() (full ECMA-48) removes whole sequences.
+        cleaned = strip_ansi(title)
+        # Transports such as Telegram drop the ESC control byte in transit, leaving
+        # a bare OSC body like "]11;rgb:..." or "]0;title". strip_ansi is ESC-anchored
+        # and cannot see those, so strip the bare OSC residue too. Narrow on purpose:
+        # digits + ';' required, non-word lead, stops at whitespace, so ordinary text
+        # like "[Note]" or "array[0]" is left untouched.
+        cleaned = re.sub(r'(?<!\w)\][0-9]+;[^\s\x07\x1b]*', '', cleaned)
+        # Remove any lone C0 controls strip_ansi does not touch.
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
 
         # Remove problematic Unicode control characters:
         # - Zero-width chars (U+200B-U+200F, U+FEFF)

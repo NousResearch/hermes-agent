@@ -49,6 +49,16 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         help="Disable TLS verification for OAuth login",
     )
     auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
+    auth_add.add_argument(
+        "--auth-file",
+        help="Import Codex OAuth tokens from a specific auth.json file "
+             "(e.g. ~/.codex/auth.account-b.json). Only for openai-codex.",
+    )
+    auth_add.add_argument(
+        "--codex-dir",
+        help="Import all valid Codex OAuth tokens from a directory of "
+             "auth*.json files (e.g. ~/.codex). Only for openai-codex.",
+    )
     auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
     auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
     auth_remove = auth_subparsers.add_parser(

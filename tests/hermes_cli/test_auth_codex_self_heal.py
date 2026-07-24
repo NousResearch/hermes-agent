@@ -38,7 +38,7 @@ def test_self_heals_on_stale_refresh_token(monkeypatch):
         )
 
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
-    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: dict(fresh))
+    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda *a, **k: dict(fresh))
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
     out = _refresh_codex_auth_tokens(STALE, 20.0)
@@ -88,7 +88,7 @@ def test_reraises_when_codex_cli_token_absent(monkeypatch):
         )
 
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _reused)
-    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: None)
+    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda *a, **k: None)
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda *a, **k: None)
 
     with pytest.raises(AuthError) as ei:
@@ -136,7 +136,7 @@ def test_reraises_when_imported_token_lacks_refresh_token(monkeypatch):
         )
 
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
-    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: {"access_token": "fresh-only"})
+    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda *a, **k: {"access_token": "fresh-only"})
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
     with pytest.raises(AuthError) as ei:

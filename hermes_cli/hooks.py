@@ -184,6 +184,18 @@ _DEFAULT_PAYLOADS = {
         "assistant_content_chars": 1200,
         "assistant_tool_call_count": 0,
     },
+    "on_turn_failed": {
+        "session_id": "test-session",
+        "completed": False,
+        "failed": True,
+        "failure_reason": "rate_limit",
+        "error": "HTTP 429: rate limit exceeded",
+        "http_status": 429,
+        "provider": "openrouter",
+        "model": "test-model",
+        "max_retries": 3,
+        "api_calls": 3,
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess",
         "child_role": None,

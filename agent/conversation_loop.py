@@ -690,6 +690,57 @@ def _compression_deferred_result(
     }
 
 
+def _coerce_http_status(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _emit_turn_dead_marker(
+    agent: Any,
+    *,
+    failure_reason: str,
+    error_summary: str,
+    provider: str,
+    model: str,
+    http_status: Any,
+    max_retries: int,
+    api_call_count: int,
+) -> Dict[str, Any]:
+    """Emit a stable terminal-turn marker for external supervisors."""
+    status = _coerce_http_status(http_status)
+    payload: Dict[str, Any] = {
+        "api_calls": api_call_count,
+        "completed": False,
+        "error": error_summary,
+        "failure_reason": failure_reason,
+        "failed": True,
+        "max_retries": max_retries,
+        "model": model or "",
+        "provider": provider or "",
+        "session_id": getattr(agent, "session_id", "") or "",
+    }
+    if status is not None:
+        payload["http_status"] = status
+
+    marker = "HERMES-TURN-DEAD: " + json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    agent._vprint(f"{getattr(agent, 'log_prefix', '')}{marker}", force=True)
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook("on_turn_failed", **payload)
+    except Exception as exc:
+        logger.warning("on_turn_failed hook failed: %s", exc)
+    return payload
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -2212,13 +2263,24 @@ def run_conversation(
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Invalid API response after {max_retries} retries: {_failure_hint}"
+                        _turn_dead_payload = _emit_turn_dead_marker(
+                            agent,
+                            failure_reason="invalid_response",
+                            error_summary=_final_response,
+                            provider=str(getattr(agent, "provider", "") or ""),
+                            model=str(getattr(agent, "model", "") or ""),
+                            http_status=_resp_error_code,
+                            max_retries=max_retries,
+                            api_call_count=api_call_count,
+                        )
                         return {
                             "final_response": _final_response,
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
                             "error": _final_response,
-                            "failed": True  # Mark as failure for filtering
+                            "failed": True,  # Mark as failure for filtering
+                            "turn_dead": _turn_dead_payload,
                         }
                     
                     # Backoff before retry — jittered exponential: 5s base, 120s cap
@@ -4754,6 +4816,16 @@ def run_conversation(
                     else:
                         agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)
+                    _turn_dead_payload = _emit_turn_dead_marker(
+                        agent,
+                        failure_reason=classified.reason.value,
+                        error_summary=_final_summary,
+                        provider=_provider,
+                        model=_model,
+                        http_status=getattr(api_error, "status_code", None),
+                        max_retries=max_retries,
+                        api_call_count=api_call_count,
+                    )
 
                     # Detect SSE stream-drop pattern (e.g. "Network
                     # connection lost") and surface actionable guidance.
@@ -4903,6 +4975,7 @@ def run_conversation(
                         # Present only for billing walls: structured recovery
                         # descriptor (provider, billing_url, is_nous, message).
                         "billing_block": _billing_block,
+                        "turn_dead": _turn_dead_payload,
                     }
 
                 # For rate limits, respect the Retry-After header if present

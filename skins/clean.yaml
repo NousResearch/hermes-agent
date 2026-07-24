@@ -1,0 +1,53 @@
+# Clean skin — minimal chrome, no emoji decoration, simple borders.
+# A calm, professional look that reduces visual noise.
+
+name: clean
+description: Minimal — simple borders, muted palette, no emoji decoration
+
+colors:
+  background: "#0d1117"
+  ui_accent: "#58a6ff"
+  banner_accent: "#58a6ff"
+  banner_title: "#c9d1d9"
+  banner_text: "#c9d1d9"
+  ui_text: "#c9d1d9"
+  banner_dim: "#8b949e"
+  banner_border: "#30363d"
+  ui_border: "#30363d"
+  ui_ok: "#3fb950"
+  ui_warn: "#d29922"
+  ui_error: "#f85149"
+  prompt: "#c9d1d9"
+  input_rule: "#30363d"
+  response_border: "#30363d"
+  status_bar_bg: "#161b22"
+  status_bar_text: "#c9d1d9"
+  status_bar_good: "#3fb950"
+  status_bar_warn: "#d29922"
+  status_bar_critical: "#f85149"
+  session_label: "#58a6ff"
+  session_border: "#30363d"
+
+branding:
+  agent_name: Hermes Agent
+  prompt_symbol: ">"
+  help_header: "Commands"
+
+tool_prefix: " "
+
+spinner:
+  tool_prefix: " "
+
+  # Map all tool emojis to blank — no emoji decoration in clean mode
+  tool_emojis:
+    terminal: " "
+    web_search: " "
+    file_read: " "
+    file_write: " "
+    bash: " "
+    memory: " "
+    search: " "
+    browser: " "
+    image: " "
+    think: " "
+    cron: " "

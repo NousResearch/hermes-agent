@@ -5736,7 +5736,10 @@ class TestRunConversation:
             content="", finish_reason="stop", tool_calls=[good_tc],
         )
         with (
-            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch(
+                "run_agent.handle_function_call",
+                return_value='{"bytes_written":12,"resolved_path":"report.md"}',
+            ) as mock_hfc,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -5781,7 +5784,10 @@ class TestRunConversation:
         final_resp = _mock_response(content="Done!", finish_reason="stop")
 
         with (
-            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch(
+                "run_agent.handle_function_call",
+                return_value='{"bytes_written":12,"resolved_path":"report.md"}',
+            ) as mock_hfc,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),

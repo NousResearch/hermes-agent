@@ -221,6 +221,7 @@ class TestPatchHandler:
         result = json.loads(patch_tool(mode="patch", patch="*** Begin Patch\n..."))
         assert result["status"] == "ok"
         mock_ops.patch_v4a.assert_called_once()
+        mock_ops.patch_v4a_resolved.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_mode_missing_content_errors(self, mock_get):

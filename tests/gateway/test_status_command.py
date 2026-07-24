@@ -1,6 +1,7 @@
 from hermes_state import AsyncSessionDB
 """Tests for gateway /status behavior and token persistence."""
 
+import asyncio
 from datetime import datetime
 import time
 from types import SimpleNamespace
@@ -65,6 +66,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._agent_cache = {}
     runner._agent_cache_lock = MagicMock()
     runner._show_reasoning = False
+    runner._resolve_session_reasoning_config = lambda **_kwargs: None
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
@@ -105,6 +107,28 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
     assert "**Title:**" not in result
     running_agent.interrupt.assert_not_called()
     assert runner._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_effective_reasoning_level():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._resolve_session_reasoning_config = lambda **_kwargs: {
+        "enabled": True,
+        "effort": "high",
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Reasoning:** high" in result
 
 
 @pytest.mark.asyncio
@@ -246,6 +270,157 @@ async def test_status_command_includes_persisted_model_and_context_when_agent_no
     assert "**Model:** `openai/gpt-persisted` (openai-codex)" in result
     assert "**Context:** 24,000 / 272,000 (9%)" in result
     assert "**Cumulative API tokens (re-sent each call):** 2,500" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_resolves_context_total_from_model_metadata_when_unconfigured(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=46_737,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "model": "gpt-5.6-sol",
+        "billing_provider": "openai-codex",
+        "billing_base_url": "https://chatgpt.com/backend-api/codex",
+    }
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            }
+        },
+    )
+    resolve_context = AsyncMock(return_value=272_000)
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async",
+        resolve_context,
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Context:** 46,737 / 272,000 (17%)" in result
+    resolve_context.assert_awaited_once_with(
+        "gpt-5.6-sol",
+        base_url="https://chatgpt.com/backend-api/codex",
+        provider="openai-codex",
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_command_survives_context_metadata_error(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=46_737,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "model": "gpt-5.6-sol",
+        "billing_provider": "openai-codex",
+    }
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"model": {"default": "gpt-5.6-sol", "provider": "openai-codex"}},
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async",
+        AsyncMock(side_effect=RuntimeError("metadata unavailable")),
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Context:** ~46,737 tokens" in result
+    assert "/ 272,000" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("metadata_value", ["272000", -1])
+async def test_status_command_ignores_invalid_context_metadata(monkeypatch, metadata_value):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=46_737,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "model": "gpt-5.6-sol",
+        "billing_provider": "openai-codex",
+    }
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"model": {"default": "gpt-5.6-sol", "provider": "openai-codex"}},
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async",
+        AsyncMock(return_value=metadata_value),
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Context:** ~46,737 tokens" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_times_out_context_metadata_lookup(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=46_737,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "model": "gpt-5.6-sol",
+        "billing_provider": "openai-codex",
+    }
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"model": {"default": "gpt-5.6-sol", "provider": "openai-codex"}},
+    )
+    monkeypatch.setattr(
+        "gateway.slash_commands._STATUS_CONTEXT_METADATA_TIMEOUT_S",
+        0.01,
+        raising=False,
+    )
+
+    async def never_resolves(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async",
+        never_resolves,
+    )
+
+    result = await asyncio.wait_for(
+        runner._handle_message(_make_event("/status")),
+        timeout=0.5,
+    )
+
+    assert "**Context:** ~46,737 tokens" in result
 
 
 @pytest.mark.asyncio

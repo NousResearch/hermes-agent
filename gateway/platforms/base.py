@@ -5195,6 +5195,11 @@ class BasePlatformAdapter(ABC):
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
 
+                # A response can name an attachment for the user and also
+                # request it with MEDIA:<path>. The explicit directive owns
+                # delivery, so suppress its duplicate bare-path detection.
+                media_paths = {path for path, _ in media_files}
+                local_files = [path for path in local_files if path not in media_paths]
                 # A2 (#29346): extraction can reduce a non-empty response to
                 # empty text with no attachment, and the `if text_content` guard
                 # below then drops it silently. Recover on every platform (#33842

@@ -11631,6 +11631,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 return getattr(_blueprint_result, "text", "") or None
 
+        if canonical == "handoff":
+            _handoff_result = await self._handle_handoff_command(event)
+            _handoff_seed = getattr(_handoff_result, "agent_seed", None)
+            if _handoff_seed:
+                _ack = getattr(_handoff_result, "text", "") or ""
+                if _ack:
+                    try:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            _ack_meta = self._thread_metadata_for_source(source)
+                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+                    except Exception:
+                        logger.debug("handoff ack send failed", exc_info=True)
+                try:
+                    event.text = _handoff_seed
+                except Exception:
+                    return getattr(_handoff_result, "text", "") or None
+            else:
+                return getattr(_handoff_result, "text", "") or _handoff_result or None
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -12014,6 +12034,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        if not command and isinstance(event.text, str):
+            try:
+                from hermes_cli.handoff_doc_cmd import consume_handoff_markdown_text
+                _pasted_handoff = consume_handoff_markdown_text(
+                    event.text,
+                    source_label="<pasted handoff from gateway>",
+                )
+            except Exception:
+                _pasted_handoff = None
+            if _pasted_handoff:
+                _ack = getattr(_pasted_handoff, "text", "") or ""
+                if _ack:
+                    try:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            _ack_meta = self._thread_metadata_for_source(source)
+                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+                    except Exception:
+                        logger.debug("pasted handoff ack send failed", exc_info=True)
+                if getattr(_pasted_handoff, "agent_seed", None):
+                    event.text = _pasted_handoff.agent_seed
+                else:
+                    return None
 
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             # Debounce the lobby reminder so a user who forgets about

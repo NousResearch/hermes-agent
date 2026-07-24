@@ -170,6 +170,13 @@ Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a
 
 ## Cross-Platform Handoff
 
+Hermes now has two distinct handoff modes:
+
+1. Live session transfer: `/handoff <platform>` from the CLI
+2. Portable markdown handoff documents: `/handoff inline|save|consume` on CLI and messaging gateways
+
+### Live session transfer
+
 Use `/handoff <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
 
 ```bash
@@ -202,6 +209,41 @@ What happens:
 - No home channel configured → CLI refuses with a `/sethome` hint.
 - Platform not enabled / gateway not running → CLI times out at 60s with a clear message and your CLI session stays intact.
 - Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
+
+### Portable markdown handoffs
+
+Use these when you want a narrow, artifact-first package for a fresh session rather than moving the live session itself.
+
+CLI examples:
+
+```bash
+/handoff inline investigate apache config drift
+/handoff save investigate apache config drift
+/handoff save /root/handoffs/apache-drift.md investigate apache config drift
+/handoff consume /root/handoffs/apache-drift.md
+```
+
+Messaging gateway examples:
+
+```text
+Telegram / Discord:
+/handoff inline investigate apache config drift
+/handoff save investigate apache config drift
+/handoff consume /root/handoffs/apache-drift.md
+
+Slack:
+/hermes handoff inline investigate apache config drift
+/hermes handoff save investigate apache config drift
+/hermes handoff consume /root/handoffs/apache-drift.md
+```
+
+What these do:
+
+- `/handoff inline [mission]` prints the markdown handoff into the current chat/session.
+- `/handoff save [path] [mission]` writes the handoff to disk and returns the saved path.
+- `/handoff consume <path>` loads the markdown handoff and queues it as the next agent turn.
+
+Paste-to-consume also works: if you paste a full handoff document that starts with `# Handoff:` into the CLI or a gateway chat, Hermes detects it and treats it like a consumed handoff automatically.
 - `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
 
 **Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack — by far the common case — so most setups never hit this.

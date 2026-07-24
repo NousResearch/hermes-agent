@@ -520,18 +520,11 @@ class CLICommandsMixin:
         print()
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
-        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
+        """Handle ``/handoff``.
 
-        Flow:
-          1. Validate platform name + the gateway has a home channel for it.
-          2. Reject if the agent is currently running (the in-flight turn
-             would race with the gateway's switch_session).
-          3. Write ``handoff_state='pending'`` on this session row.
-          4. Block-poll ``state.db`` for terminal state (timeout 60s).
-          5. On ``completed`` → print resume hint and signal CLI exit by
-             returning False (the caller honors that like ``/quit``).
-          6. On ``failed`` / timeout → print error and return True so the
-             user keeps their CLI session.
+        Two modes share the command name:
+        - ``/handoff <platform>`` transfers the live CLI session to a gateway platform
+        - ``/handoff inline|save|consume ...`` creates or consumes a handoff document
 
         Returns:
             False to signal CLI exit, True to keep going.
@@ -539,11 +532,51 @@ class CLICommandsMixin:
         from cli import _cprint
         from hermes_state import format_session_db_unavailable
 
-        parts = cmd_original.split(maxsplit=1)
+        parts = cmd_original.split(maxsplit=2)
+        first_arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if first_arg in {"inline", "save", "consume"}:
+            try:
+                from hermes_cli.handoff_doc_cmd import handle_handoff_document_command
+                from hermes_constants import get_hermes_home
+                import os
+
+                result = handle_handoff_document_command(
+                    cmd=cmd_original,
+                    conversation_history=getattr(self, "conversation_history", []) or [],
+                    session_id=getattr(self, "session_id", None),
+                    workdir=os.getenv("TERMINAL_CWD", os.getcwd()),
+                    hermes_home=get_hermes_home(),
+                )
+            except Exception as exc:
+                _cprint(f"  Handoff document command failed: {exc}")
+                return True
+            self._console_print(result.text)
+            seed = getattr(result, "agent_seed", None)
+            if seed:
+                self._pending_agent_seed = seed
+            return True
+
+        # Legacy platform-transfer flow.
+        #
+        # Flow:
+        #   1. Validate platform name + the gateway has a home channel for it.
+        #   2. Reject if the agent is currently running (the in-flight turn
+        #      would race with the gateway's switch_session).
+        #   3. Write ``handoff_state='pending'`` on this session row.
+        #   4. Block-poll ``state.db`` for terminal state (timeout 60s).
+        #   5. On ``completed`` → print resume hint and signal CLI exit by
+        #      returning False (the caller honors that like ``/quit``).
+        #   6. On ``failed`` / timeout → print error and return True so the
+        #      user keeps their CLI session.
+
         if len(parts) < 2 or not parts[1].strip():
             _cprint("  Usage: /handoff <platform>")
-            _cprint("  Hands the current session off to that platform's home channel.")
-            _cprint("  The CLI session ends here; resume it later with /resume.")
+            _cprint("         /handoff inline [mission]")
+            _cprint("         /handoff save [path] [mission]")
+            _cprint("         /handoff consume <path>")
+            _cprint("  Platform mode hands the current CLI session to that platform's home channel.")
+            _cprint("  Document modes create or consume a scoped handoff artifact for a fresh session.")
             return True
 
         platform_name = parts[1].strip().lower()

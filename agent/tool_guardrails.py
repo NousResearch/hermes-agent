@@ -145,7 +145,7 @@ class ToolCallSignature:
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
-    action: str = "allow"  # allow | warn | block | halt
+    action: str = "allow"  # allow | warn | redirect | block | halt
     code: str = "allow"
     message: str = ""
     tool_name: str = ""
@@ -303,6 +303,26 @@ class ToolCallGuardrailController:
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
 
+            tool_block = _tool_reported_loop_block(tool_name, result)
+            if tool_block:
+                action = "halt" if self.config.hard_stop_enabled else "redirect"
+                decision = ToolGuardrailDecision(
+                    action=action,
+                    code="tool_reported_loop_block",
+                    message=(
+                        f"{tool_name} reported a repeated-call loop block after "
+                        f"{tool_block['count']} attempts. Use the information "
+                        "already returned, narrow the query, switch tool or file "
+                        "region, make the edit, or state the blocker with evidence."
+                    ),
+                    tool_name=tool_name,
+                    count=tool_block["count"],
+                    signature=signature,
+                )
+                if decision.should_halt:
+                    self._halt_decision = decision
+                return decision
+
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
                     action="halt",
@@ -393,9 +413,14 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
 
 def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
     """Append runtime guidance to the current tool result content."""
-    if decision.action not in {"warn", "halt"} or not decision.message:
+    if decision.action not in {"warn", "redirect", "halt"} or not decision.message:
         return result
-    label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
+    if decision.action == "halt":
+        label = "Tool loop hard stop"
+    elif decision.action == "redirect":
+        label = "Tool strategy redirect"
+    else:
+        label = "Tool loop warning"
     suffix = (
         f"\n\n[{label}: "
         f"{decision.code}; count={decision.count}; {decision.message}]"
@@ -443,6 +468,37 @@ def _result_hash(result: str | None) -> str:
     else:
         canonical = result or ""
     return _sha256(canonical)
+
+
+def _tool_reported_loop_block(tool_name: str, result: str | None) -> dict[str, int] | None:
+    """Return metadata when a tool explicitly blocked a repeated call.
+
+    File/search tools can return structured ``BLOCKED:`` errors after proving
+    that another identical read/search cannot make progress. In the default
+    soft-guardrail mode this becomes model-visible redirect guidance and the
+    same user turn continues; in hard-stop mode callers still get a controlled
+    halt.
+    """
+    parsed = safe_json_loads(result or "")
+    if not isinstance(parsed, dict):
+        return None
+
+    error = parsed.get("error")
+    if not isinstance(error, str) or not error.startswith("BLOCKED:"):
+        return None
+
+    count = parsed.get("already_searched", parsed.get("already_read"))
+    if not isinstance(count, int) or count < 1:
+        return None
+
+    if (
+        tool_name in {"search_files", "read_file", "mcp_filesystem_read_file"}
+        or "exact search" in error
+        or "exact file region" in error
+        or "exact region" in error
+    ):
+        return {"count": count}
+    return None
 
 
 def _as_bool(value: Any, default: bool) -> bool:

@@ -92,6 +92,50 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
     assert controller.halt_decision is None
 
 
+def test_tool_reported_loop_block_redirects_when_hard_stop_disabled():
+    controller = ToolCallGuardrailController()
+    args = {"pattern": "def.*drain", "path": "/repo", "target": "content"}
+    result = json.dumps(
+        {
+            "error": (
+                "BLOCKED: You have run this exact search 4 times in a row. "
+                "The results have NOT changed."
+            ),
+            "already_searched": 4,
+        }
+    )
+
+    decision = controller.after_call("search_files", args, result, failed=True)
+
+    assert decision.action == "redirect"
+    assert decision.code == "tool_reported_loop_block"
+    assert decision.count == 4
+    assert controller.halt_decision is None
+
+
+def test_tool_reported_loop_block_halts_when_hard_stop_enabled():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True)
+    )
+    args = {"path": "/repo/agent.py"}
+    result = json.dumps(
+        {
+            "error": (
+                "BLOCKED: You have read this exact file region 3 times in a row. "
+                "The contents have NOT changed."
+            ),
+            "already_read": 3,
+        }
+    )
+
+    decision = controller.after_call("read_file", args, result, failed=True)
+
+    assert decision.action == "halt"
+    assert decision.code == "tool_reported_loop_block"
+    assert decision.count == 3
+    assert controller.halt_decision == decision
+
+
 def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(

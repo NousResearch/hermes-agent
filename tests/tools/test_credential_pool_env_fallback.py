@@ -296,3 +296,50 @@ class TestAnthropicEnvAuthTypeClassification:
         _write_env_file(isolated_hermes_home, ANTHROPIC_API_KEY="sk-ant-api-fake-12345")
         entry = self._seed("ANTHROPIC_API_KEY", "sk-ant-api-fake-12345")
         assert entry.auth_type == AUTH_TYPE_API_KEY
+
+
+class TestCopilotGithubTokenSeedGuard:
+    """Issue #47708: a classic ``ghp_*`` GITHUB_TOKEN must not auto-enroll a
+    permanently-broken Copilot credential.
+
+    A ``GITHUB_TOKEN`` is commonly present for unrelated reasons (gh CLI,
+    GitHub MCP). Classic ``ghp_*`` PATs are rejected by the Copilot API on
+    every request, so ``_seed_from_env`` must not create a ``copilot`` pool
+    entry pointed at ``api.githubcopilot.com`` from one — otherwise failover
+    burns a hop and 400s every turn. Fine-grained (``github_pat_*``) and
+    device-flow (``gho_*``) tokens are still enrolled.
+    """
+
+    @pytest.fixture
+    def clean_github_env(self, isolated_hermes_home, monkeypatch):
+        for key in ("GITHUB_TOKEN", "GH_TOKEN", "COPILOT_GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+        return isolated_hermes_home
+
+    def test_classic_ghp_token_is_not_seeded(self, clean_github_env, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_FAKEclassicPAT1234567890abcdef")
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("copilot", entries)
+        assert changed is False
+        assert active_sources == set()
+        assert entries == []
+
+    def test_fine_grained_pat_is_seeded(self, clean_github_env, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "github_pat_FAKEfinegrained1234567890")
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("copilot", entries)
+        assert changed is True
+        assert "env:GITHUB_TOKEN" in active_sources
+        assert len(entries) == 1
+        assert entries[0].base_url == "https://api.githubcopilot.com"
+
+    def test_oauth_gho_token_is_seeded(self, clean_github_env, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_FAKEoauth1234567890")
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        changed, active_sources = _seed_from_env("copilot", entries)
+        assert changed is True
+        assert "env:GITHUB_TOKEN" in active_sources
+        assert len(entries) == 1

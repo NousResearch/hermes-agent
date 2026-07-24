@@ -42,7 +42,7 @@ import {
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
-import { routeSessionId } from '../routes'
+import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -285,11 +285,18 @@ export function ChatView({
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
-  // does not wipe an in-progress draft or orphan /queue entries.
-  const queueSessionKey = useMemo(
-    () => resolveComposerSessionKey(selectedSessionId, sessions),
-    [selectedSessionId, sessions]
-  )
+  // does not wipe an in-progress draft or orphan /queue entries. For the
+  // primary view, the route is authoritative over the store selection — the
+  // latter can be momentarily null/stale mid-switch, which used to leak into
+  // the composer's scope key (#59305). A tile has no route, so it always uses
+  // its own selection directly.
+  const queueSessionKey = useMemo(() => {
+    const effectiveSelectedSessionId = isPrimary
+      ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
+      : selectedSessionId
+
+    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
+  }, [isPrimary, location.pathname, selectedSessionId, sessions])
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.

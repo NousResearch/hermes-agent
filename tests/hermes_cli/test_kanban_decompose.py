@@ -8,6 +8,7 @@ and the assignee-fallback logic.
 from __future__ import annotations
 
 import json as jsonlib
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -73,6 +74,96 @@ def _patch_list_profiles(names: list[str]):
         patch("hermes_cli.profiles.profile_exists", side_effect=lambda x: x in names),
         patch("hermes_cli.profiles.get_active_profile_name", return_value=names[0] if names else "default"),
     ]
+
+
+def test_explicit_board_routes_without_environment_pin(kanban_home, monkeypatch):
+    kb.create_board("alternate")
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    with kb.connect(board="alternate") as conn:
+        tid = kb.create_task(conn, title="alternate task", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Routed alternate task",
+        "body": "Stay on the explicitly selected board.",
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            assert decomp.list_triage_ids(board="alternate") == [tid]
+            outcome = decomp.decompose_task(
+                tid,
+                author="me",
+                board="alternate",
+            )
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert "HERMES_KANBAN_BOARD" not in os.environ
+    with kb.connect(board="alternate") as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.title == "Routed alternate task"
+    with kb.connect(board="default") as conn:
+        assert kb.get_task(conn, tid) is None
+
+
+def test_explicit_board_fanout_keeps_root_and_children_isolated(
+    kanban_home, monkeypatch
+):
+    kb.create_board("alternate")
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    with kb.connect(board="alternate") as conn:
+        tid = kb.create_task(conn, title="split alternate task", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "two independent parts",
+        "tasks": [
+            {
+                "title": "First alternate child",
+                "body": "Handle the first part.",
+                "assignee": "engineer",
+                "parents": [],
+            },
+            {
+                "title": "Second alternate child",
+                "body": "Handle the second part.",
+                "assignee": "engineer",
+                "parents": [],
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(
+                tid,
+                author="me",
+                board="alternate",
+            )
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+    task_ids = [tid, *outcome.child_ids]
+    with kb.connect(board="alternate") as conn:
+        alternate_tasks = [kb.get_task(conn, task_id) for task_id in task_ids]
+    assert all(task is not None for task in alternate_tasks)
+    with kb.connect(board="default") as conn:
+        default_tasks = [kb.get_task(conn, task_id) for task_id in task_ids]
+    assert default_tasks == [None, None, None]
+    assert "HERMES_KANBAN_BOARD" not in os.environ
 
 
 def test_decompose_with_fanout_creates_children(kanban_home):

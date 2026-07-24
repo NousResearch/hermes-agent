@@ -9,9 +9,15 @@ called every tick, reading the current config.
 
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
+
 import pytest
 
-from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from gateway.kanban_watchers import (
+    _resolve_auto_decompose_settings,
+    _run_auto_decompose_tick,
+)
 
 
 def test_enabled_by_default_when_key_absent():
@@ -81,3 +87,40 @@ def test_live_toggle_takes_effect_between_calls():
     # User edits config.yaml mid-run.
     state["kanban"]["auto_decompose"] = False
     assert _resolve_auto_decompose_settings(lambda: state)[0] is False
+
+
+def test_auto_decompose_routes_boards_without_mutating_environment(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    original_env = dict(os.environ)
+
+    class FakeKanbanDb:
+        DEFAULT_BOARD = "default"
+
+        @staticmethod
+        def list_boards(*, include_archived):
+            assert include_archived is False
+            return [{"slug": "alpha"}, {"slug": "beta"}]
+
+    calls = []
+
+    class FakeDecomposer:
+        @staticmethod
+        def list_triage_ids(*, board):
+            calls.append(("list", board))
+            return [f"{board}-task"]
+
+        @staticmethod
+        def decompose_task(task_id, *, author, board):
+            calls.append(("decompose", task_id, author, board))
+            return SimpleNamespace(ok=True, fanout=False, child_ids=[], reason="")
+
+    successes = _run_auto_decompose_tick(FakeKanbanDb, FakeDecomposer, 3)
+
+    assert successes == 2
+    assert calls == [
+        ("list", "alpha"),
+        ("decompose", "alpha-task", "auto-decomposer", "alpha"),
+        ("list", "beta"),
+        ("decompose", "beta-task", "auto-decomposer", "beta"),
+    ]
+    assert dict(os.environ) == original_env

@@ -635,7 +635,7 @@ describe('createSlashHandler', () => {
       Promise.resolve({
         connected: false,
         messages: [
-          "Chromium-family browser isn't running with remote debugging — attempting to launch...",
+          'Browser CDP is not reachable at http://127.0.0.1:9222.',
           'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'
         ],
         url: 'http://127.0.0.1:9222'
@@ -651,7 +651,7 @@ describe('createSlashHandler', () => {
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        "Chromium-family browser isn't running with remote debugging — attempting to launch..."
+        'Browser CDP is not reachable at http://127.0.0.1:9222.'
       )
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
         'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'

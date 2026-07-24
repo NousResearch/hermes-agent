@@ -315,13 +315,13 @@ Instead of a cloud provider, you can attach Hermes browser tools to your own run
 In the CLI, use:
 
 ```
-/browser connect                 # Auto-launch/connect to a local Chromium-family browser at http://127.0.0.1:9222
+/browser connect                 # Connect to a local Chromium-family browser already exposing CDP at http://127.0.0.1:9222
 /browser connect ws://host:port  # Connect to a specific CDP endpoint
 /browser status                  # Check current connection
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths such as `/opt/brave-bin/brave` and `/snap/bin/brave`.
+If a browser isn't already running with remote debugging, `/browser connect` will fail closed and show you a manual launch command instead of opening a new CDP port on your behalf.
 
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:

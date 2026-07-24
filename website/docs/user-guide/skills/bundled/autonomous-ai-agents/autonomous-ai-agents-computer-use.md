@@ -23,7 +23,6 @@ whenever the `computer_use` tool is available.
 | Version | `2.0.0` |
 | Platforms | macos, windows, linux |
 | Tags | `computer-use`, `desktop`, `automation`, `gui`, `cross-platform` |
-| Related skills | `browser` |
 
 ## Reference: full SKILL.md
 

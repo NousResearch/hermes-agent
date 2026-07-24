@@ -1101,6 +1101,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -3387,13 +3388,15 @@ class SessionDB:
 
         When ``parent_session_id`` is set (compression fork, delegate/subagent
         spawn, branch continuation) and this row's own ``cwd``/``git_repo_root``/
-        ``git_branch`` are still NULL after the insert, they are backfilled from
-        the parent row. Callers of ``create_session`` for a child session
-        historically didn't propagate these fields themselves (e.g. the
+        ``git_branch``/``profile_name`` are still NULL after the insert, they are
+        backfilled from the parent row. Callers of ``create_session`` for a child
+        session historically didn't propagate these fields themselves (e.g. the
         compression-fork path), so a lineage could silently lose its working
         directory and drop out of the project sidebar every time it forked
-        (#64709). This only fills NULLs — an explicit ``cwd``/``git_repo_root``
-        on the child is never overwritten. For compression forks specifically
+        (#64709), or lose its owning profile and be aggregated as "default" every
+        time it rotated or branched (the cross-profile session-jump bug). This
+        only fills NULLs — an explicit value on the child is never overwritten.
+        For compression forks specifically
         (parent ended with ``end_reason='compression'``), the gateway origin
         columns (``user_id``/``session_key``/``chat_id``/``chat_type``/
         ``thread_id``/``display_name``/``origin_json``) are inherited too, so a
@@ -3449,7 +3452,10 @@ class SessionDB:
                                              WHERE p.id = sessions.parent_session_id)),
                            git_branch = COALESCE(sessions.git_branch,
                                         (SELECT p.git_branch FROM sessions p
-                                          WHERE p.id = sessions.parent_session_id))
+                                          WHERE p.id = sessions.parent_session_id)),
+                           profile_name = COALESCE(sessions.profile_name,
+                                          (SELECT p.profile_name FROM sessions p
+                                            WHERE p.id = sessions.parent_session_id))
                      WHERE id = ? AND parent_session_id IS NOT NULL""",
                     (session_id,),
                 )
@@ -5061,6 +5067,58 @@ class SessionDB:
                 WHERE id IN (SELECT id FROM lineage)
                 """,
                 (session_id, session_id, 1 if archived else 0),
+            )
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
+        """Pin or unpin a session (and its whole compression lineage).
+
+        ``pinned`` is a durable "keep" flag: pinned sessions are exempt from
+        the ``sessions.auto_archive`` stale sweep (see
+        :meth:`archive_stale_sessions`). Desktop is the current writer — its
+        sidebar pins mirror here so a backend/other-surface sweep honours
+        them. Like :meth:`set_session_archived` the whole compression chain is
+        flipped as a unit, so pinning the surfaced tip protects the root (and
+        vice-versa) no matter which id the caller holds. Returns True when at
+        least one row changed.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                UPDATE sessions
+                SET pinned = ?
+                WHERE id IN (SELECT id FROM lineage)
+                """,
+                (session_id, session_id, 1 if pinned else 0),
             )
             rowcount = cursor.rowcount
             if rowcount is None or rowcount < 0:
@@ -9027,6 +9085,55 @@ class SessionDB:
             self.set_session_archived(row["id"], True)
         return len(rows)
 
+    def archive_stale_sessions(
+        self, idle_days: float, *, exclude_pinned: bool = True
+    ) -> int:
+        """Archive every session untouched for at least ``idle_days`` days.
+
+        "Touched" is the latest message timestamp (falling back to
+        ``started_at``) — i.e. real recency, not creation time — so a session
+        created long ago but active yesterday is spared, while an old
+        abandoned one (even a still-open one) is swept. This differs from
+        :meth:`archive_sessions`, which ages on ``started_at`` and only ended
+        sessions.
+
+        Guards:
+          * ``pinned = 0`` when ``exclude_pinned`` (the Desktop "keep" flag).
+          * ``archived = 0`` so repeat runs are idempotent no-ops.
+          * only lineage *tips* / standalone rows are candidates
+            (``end_reason <> 'compression'``); a stale tip archives its whole
+            chain via :meth:`set_session_archived`, so we never resurrect an
+            active conversation by matching an old compressed-away root whose
+            live continuation is recent.
+
+        Returns the number of sessions archived. Never raises for an empty or
+        non-positive ``idle_days`` — it simply archives nothing.
+        """
+        if idle_days is None or idle_days < 0:
+            return 0
+        cutoff = time.time() - float(idle_days) * 86400.0
+        pin_clause = "AND s.pinned = 0" if exclude_pinned else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT s.id FROM sessions s
+                WHERE s.archived = 0
+                  AND COALESCE(s.end_reason, '') <> 'compression'
+                  {pin_clause}
+                  AND COALESCE(
+                        (SELECT MAX(m.timestamp) FROM messages m
+                         WHERE m.session_id = s.id),
+                        s.started_at
+                      ) < ?
+                ORDER BY s.started_at ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        ids = [(r["id"] if isinstance(r, sqlite3.Row) else r[0]) for r in rows]
+        for sid in ids:
+            self.set_session_archived(sid, True)
+        return len(ids)
+
     def prune_sessions(
         self,
         older_than_days: Optional[float] = 90,
@@ -9840,6 +9947,59 @@ class SessionDB:
         except Exception as exc:
             # Maintenance must never block startup. Log and return error marker.
             logger.warning("state.db auto-maintenance failed: %s", exc)
+            result["error"] = str(exc)
+
+        return result
+
+    def maybe_auto_archive(
+        self,
+        idle_days: float = 3,
+        min_interval_hours: int = 24,
+        exclude_pinned: bool = True,
+    ) -> Dict[str, Any]:
+        """Idempotent auto-archive: soft-hide sessions idle for ``idle_days``.
+
+        Sibling of :meth:`maybe_auto_prune_and_vacuum` but non-destructive —
+        it archives (hides) rather than deletes, and ages on last activity
+        (see :meth:`archive_stale_sessions`) rather than creation. Records the
+        last run in ``state_meta['last_auto_archive']`` so calls within
+        ``min_interval_hours`` no-op; safe to call opportunistically (startup
+        hooks, or when the Desktop backend lists sessions).
+
+        Never raises. Returns a dict with:
+          - ``"skipped"`` (bool) — within min_interval_hours of last run
+          - ``"archived"`` (int) — sessions archived this run
+          - ``"error"`` (str, optional) — present only on failure
+        """
+        result: Dict[str, Any] = {"skipped": False, "archived": 0}
+        try:
+            last_raw = self.get_meta("last_auto_archive")
+            now = time.time()
+            if last_raw:
+                try:
+                    if now - float(last_raw) < min_interval_hours * 3600:
+                        result["skipped"] = True
+                        return result
+                except (TypeError, ValueError):
+                    pass  # corrupt meta; treat as no prior run
+
+            archived = self.archive_stale_sessions(
+                idle_days, exclude_pinned=exclude_pinned
+            )
+            result["archived"] = archived
+
+            # Record even a zero-archive run so we don't re-sweep every call
+            # within the interval window.
+            self.set_meta("last_auto_archive", str(now))
+
+            if archived > 0:
+                logger.info(
+                    "state.db auto-archive: archived %d session(s) idle >= %s days",
+                    archived,
+                    idle_days,
+                )
+        except Exception as exc:
+            logger.warning("state.db auto-archive failed: %s", exc)
             result["error"] = str(exc)
 
         return result

@@ -19,7 +19,7 @@ HeartMuLa：基于歌词与标签的类 Suno 歌曲生成。
 | 版本 | `1.0.0` |
 | 平台 | linux, macos, windows |
 | 标签 | `music`, `audio`, `generation`, `ai`, `heartmula`, `heartcodec`, `lyrics`, `songs` |
-| 相关 skill | [`audiocraft-audio-generation`](/user-guide/skills/optional/creative/creative-audiocraft), [`songwriting-and-ai-music`](/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
+| 相关 skill | [`audiocraft-audio-generation`](/user-guide/skills/optional/creative/creative-audiocraft-audio-generation), [`songwriting-and-ai-music`](/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
 
 ## 参考：完整 SKILL.md
 

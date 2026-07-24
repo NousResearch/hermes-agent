@@ -1,33 +1,16 @@
 ---
-title: "Serving Llms Vllm — vLLM: high-throughput LLM serving, OpenAI API, quantization"
-sidebar_label: "Serving Llms Vllm"
-description: "vLLM: high-throughput LLM serving, OpenAI API, quantization"
+name: serving-llms-vllm
+description: "vLLM: high-throughput LLM serving, OpenAI API, quantization."
+version: 1.0.1
+author: Orchestra Research
+license: MIT
+dependencies: [vllm, torch, transformers]
+platforms: [linux, macos]
+metadata:
+  hermes:
+    tags: [vLLM, Inference Serving, PagedAttention, Continuous Batching, High Throughput, Production, OpenAI API, Quantization, Tensor Parallelism]
+
 ---
-
-{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
-
-# Serving Llms Vllm
-
-vLLM: high-throughput LLM serving, OpenAI API, quantization.
-
-## Skill metadata
-
-| | |
-|---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/mlops/inference/vllm` |
-| Version | `1.0.0` |
-| Author | Orchestra Research |
-| License | MIT |
-| Dependencies | `vllm`, `torch`, `transformers` |
-| Platforms | linux, macos |
-| Tags | `vLLM`, `Inference Serving`, `PagedAttention`, `Continuous Batching`, `High Throughput`, `Production`, `OpenAI API`, `Quantization`, `Tensor Parallelism` |
-
-## Reference: full SKILL.md
-
-:::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
-:::
 
 # vLLM - High-Performance LLM Serving
 
@@ -48,7 +31,7 @@ pip install vllm
 ```python
 from vllm import LLM, SamplingParams
 
-llm = LLM(model="meta-llama/Llama-3-8B-Instruct")
+llm = LLM(model="meta-llama/Meta-Llama-3-8B-Instruct")
 sampling = SamplingParams(temperature=0.7, max_tokens=256)
 
 outputs = llm.generate(["Explain quantum computing"], sampling)
@@ -57,14 +40,14 @@ print(outputs[0].outputs[0].text)
 
 **OpenAI-compatible server**:
 ```bash
-vllm serve meta-llama/Llama-3-8B-Instruct
+vllm serve meta-llama/Meta-Llama-3-8B-Instruct
 
 # Query with OpenAI SDK
 python -c "
 from openai import OpenAI
 client = OpenAI(base_url='http://localhost:8000/v1', api_key='EMPTY')
 print(client.chat.completions.create(
-    model='meta-llama/Llama-3-8B-Instruct',
+    model='meta-llama/Meta-Llama-3-8B-Instruct',
     messages=[{'role': 'user', 'content': 'Hello!'}]
 ).choices[0].message.content)
 "
@@ -91,24 +74,23 @@ Choose configuration based on your model size:
 
 ```bash
 # For 7B-13B models on single GPU
-vllm serve meta-llama/Llama-3-8B-Instruct \
+vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
   --gpu-memory-utilization 0.9 \
   --max-model-len 8192 \
   --port 8000
 
 # For 30B-70B models with tensor parallelism
-vllm serve meta-llama/Llama-2-70b-hf \
+vllm serve meta-llama/Meta-Llama-3-70B-Instruct \
   --tensor-parallel-size 4 \
   --gpu-memory-utilization 0.9 \
   --quantization awq \
   --port 8000
 
-# For production with caching and metrics
-vllm serve meta-llama/Llama-3-8B-Instruct \
+# For production with caching (Prometheus metrics are exposed
+# automatically at /metrics on the API port)
+vllm serve meta-llama/Meta-Llama-3-8B-Instruct \
   --gpu-memory-utilization 0.9 \
   --enable-prefix-caching \
-  --enable-metrics \
-  --metrics-port 9090 \
   --port 8000 \
   --host 0.0.0.0
 ```
@@ -125,14 +107,14 @@ pip install locust
 # Run: locust -f test_load.py --host http://localhost:8000
 ```
 
-Verify TTFT (time to first token) &lt; 500ms and throughput > 100 req/sec.
+Verify TTFT (time to first token) < 500ms and throughput > 100 req/sec.
 
 **Step 3: Enable monitoring**
 
-vLLM exposes Prometheus metrics on port 9090:
+vLLM exposes Prometheus metrics at `/metrics` on the API port (default 8000):
 
 ```bash
-curl http://localhost:9090/metrics | grep vllm
+curl http://localhost:8000/metrics | grep vllm
 ```
 
 Key metrics to monitor:
@@ -148,7 +130,7 @@ Use Docker for consistent deployment:
 # Run vLLM in Docker
 docker run --gpus all -p 8000:8000 \
   vllm/vllm-openai:latest \
-  --model meta-llama/Llama-3-8B-Instruct \
+  --model meta-llama/Meta-Llama-3-8B-Instruct \
   --gpu-memory-utilization 0.9 \
   --enable-prefix-caching
 ```
@@ -156,7 +138,7 @@ docker run --gpus all -p 8000:8000 \
 **Step 5: Verify performance metrics**
 
 Check that deployment meets targets:
-- TTFT &lt; 500ms (for short prompts)
+- TTFT < 500ms (for short prompts)
 - Throughput > target req/sec
 - GPU utilization > 80%
 - No OOM errors in logs
@@ -192,7 +174,7 @@ print(f"Loaded {len(prompts)} prompts")
 from vllm import LLM, SamplingParams
 
 llm = LLM(
-    model="meta-llama/Llama-3-8B-Instruct",
+    model="meta-llama/Meta-Llama-3-8B-Instruct",
     tensor_parallel_size=2,  # Use 2 GPUs
     gpu_memory_utilization=0.9,
     max_model_len=4096
@@ -339,7 +321,7 @@ Use `--trust-remote-code` for custom models:
 vllm serve MODEL --trust-remote-code
 ```
 
-**Issue: Low throughput (&lt;50 req/sec)**
+**Issue: Low throughput (<50 req/sec)**
 
 Increase concurrent sequences:
 ```bash
@@ -355,20 +337,22 @@ Verify tensor parallelism uses power of 2 GPUs:
 vllm serve MODEL --tensor-parallel-size 4  # Not 3
 ```
 
-Enable speculative decoding for faster generation:
+Enable speculative decoding for faster generation (pass config as JSON;
+`--speculative-model` was removed in favor of `--speculative-config`):
 ```bash
-vllm serve MODEL --speculative-model DRAFT_MODEL
+vllm serve MODEL \
+  --speculative-config '{"model": "DRAFT_MODEL", "num_speculative_tokens": 5, "method": "draft_model"}'
 ```
 
 ## Advanced topics
 
-**Server deployment patterns**: See [references/server-deployment.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/server-deployment.md) for Docker, Kubernetes, and load balancing configurations.
+**Server deployment patterns**: See [references/server-deployment.md](references/server-deployment.md) for Docker, Kubernetes, and load balancing configurations.
 
-**Performance optimization**: See [references/optimization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/optimization.md) for PagedAttention tuning, continuous batching details, and benchmark results.
+**Performance optimization**: See [references/optimization.md](references/optimization.md) for PagedAttention tuning, continuous batching details, and benchmark results.
 
-**Quantization guide**: See [references/quantization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/quantization.md) for AWQ/GPTQ/FP8 setup, model preparation, and accuracy comparisons.
+**Quantization guide**: See [references/quantization.md](references/quantization.md) for AWQ/GPTQ/FP8 setup, model preparation, and accuracy comparisons.
 
-**Troubleshooting**: See [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/troubleshooting.md) for detailed error messages, debugging steps, and performance diagnostics.
+**Troubleshooting**: See [references/troubleshooting.md](references/troubleshooting.md) for detailed error messages, debugging steps, and performance diagnostics.
 
 ## Hardware requirements
 
@@ -384,3 +368,6 @@ Supported platforms: NVIDIA (primary), AMD ROCm, Intel GPUs, TPUs
 - GitHub: https://github.com/vllm-project/vllm
 - Paper: "Efficient Memory Management for Large Language Model Serving with PagedAttention" (SOSP 2023)
 - Community: https://discuss.vllm.ai
+
+
+

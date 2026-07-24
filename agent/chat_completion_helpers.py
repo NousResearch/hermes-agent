@@ -1513,6 +1513,45 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     )
 
 
+def _fallback_entry_is_same_backend_by_base_url(
+    *,
+    current_provider: str,
+    fb_provider: str,
+    current_base_url: str,
+    fb_base_url: str,
+    current_model: str,
+    fb_model: str,
+) -> bool:
+    """True when base_url+model identity means the fallback is the same backend.
+
+    Issue #22548: two ``custom_providers`` aliases that point at the same shim
+    URL with the same model must be skipped, or failover loops on the dead
+    backend.  First-class providers that share a host while using different
+    auth (``xai-oauth`` vs ``xai``, ``openai-codex`` vs ``openai-api``) are
+    distinct credential surfaces — skipping them strands configured failover
+    when primary and fallback reuse the same model slug on that host.
+    """
+    if not (
+        fb_base_url
+        and current_base_url
+        and fb_base_url == current_base_url
+        and fb_model == current_model
+    ):
+        return False
+    if fb_provider == current_provider:
+        return True
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        # Both sides are registered first-class providers → different auth
+        # identities even when the inference host matches. Allow failover.
+        if current_provider in PROVIDER_REGISTRY and fb_provider in PROVIDER_REGISTRY:
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
     """Return a skip reason for fallback entries known to be unusable locally."""
     fb_provider = (fb.get("provider") or "").strip().lower()
@@ -1601,7 +1640,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
     # base_url too so two distinct custom_providers entries pointing at the
-    # same shim/proxy URL also dedup. See issue #22548.
+    # same shim/proxy URL also dedup. See issue #22548. Do NOT treat
+    # first-class providers that share a host (xai-oauth vs xai) as the same
+    # backend — they use different credentials.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     current_model = (getattr(agent, "model", "") or "").strip()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
@@ -1612,11 +1653,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_provider, fb_model,
         )
         return agent._try_activate_fallback(reason)
-    if (
-        fb_base_url_for_dedup
-        and current_base_url
-        and fb_base_url_for_dedup == current_base_url
-        and fb_model == current_model
+    if _fallback_entry_is_same_backend_by_base_url(
+        current_provider=current_provider,
+        fb_provider=fb_provider,
+        current_base_url=current_base_url,
+        fb_base_url=fb_base_url_for_dedup,
+        current_model=current_model,
+        fb_model=fb_model,
     ):
         logger.warning(
             "Fallback skip: chain entry base_url %s matches current backend",
@@ -1739,6 +1782,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_provider, fb_model, _pool_provider,
                 )
                 agent._credential_pool = None
+                agent._credential_pool_entry_id = None
         if getattr(agent, "_credential_pool", None) is None:
             try:
                 from agent.credential_pool import load_pool
@@ -1800,6 +1844,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # timeout takes effect on the very next fallback request,
                 # not only after a later credential-rotation rebuild.
                 agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+
+        from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+        sync_credential_pool_entry_id(agent)
 
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (

@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -723,6 +723,11 @@ export interface Translations {
       messages: (count: number) => string
       restored: string
       deleteConfirm: (title: string) => string
+      autoArchiveTitle: string
+      autoArchiveDesc: string
+      autoArchiveDaysLabel: string
+      autoArchiveDaysUnit: string
+      autoArchiveFailed: string
       defaultDirTitle: string
       defaultDirDesc: string
       defaultDirUpdated: string
@@ -1485,6 +1490,13 @@ export interface Translations {
       ageDay: string
       ageHour: string
       ageMin: string
+    }
+    dateDivider: {
+      today: string
+      yesterday: string
+      thisWeek: string
+      lastWeek: string
+      thisMonth: string
     }
   }
 

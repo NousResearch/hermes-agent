@@ -53,7 +53,8 @@ import {
   planEdit,
   planReload,
   planRestore,
-  runRewindSubmit
+  runRewindSubmit,
+  truncateSubmitParams
 } from './rewind'
 import { useSlashCommand } from './slash'
 import { useSubmitPrompt } from './submit'
@@ -756,7 +757,11 @@ export function usePromptActions({
       try {
         await requestGateway(
           'prompt.submit',
-          { session_id: activeSessionId, text: plan.text, truncate_before_user_ordinal: plan.truncateOrdinal },
+          {
+            session_id: activeSessionId,
+            text: plan.text,
+            ...truncateSubmitParams(plan.truncateOrdinal)
+          },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
       } catch (err) {

@@ -113,6 +113,8 @@ def _build_sha() -> str:
             ["git", "rev-parse", "HEAD"],
             cwd=str(_repo_root()),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stderr=subprocess.DEVNULL,
             timeout=2,
         ).strip()
@@ -686,7 +688,7 @@ class ComputeHost:
 
 def _rss_mb(pid: int) -> float:
     try:
-        out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], text=True, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2).strip()
+        out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2).strip()
         return int(out.splitlines()[-1].strip()) / 1024.0 if out else 0.0
     except Exception:
         return 0.0

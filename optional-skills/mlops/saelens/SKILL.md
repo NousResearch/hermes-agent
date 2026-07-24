@@ -1,7 +1,7 @@
 ---
 name: sparse-autoencoder-training
 description: Train sparse autoencoders to interpret model features.
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [sae-lens>=6.0.0, transformer-lens>=2.0.0, torch>=2.0.0]
@@ -78,11 +78,14 @@ from sae_lens import SAE
 
 # 1. Load model and pre-trained SAE
 model = HookedTransformer.from_pretrained("gpt2-small", device="cuda")
-sae, cfg_dict, sparsity = SAE.from_pretrained(
+# In sae-lens v6, SAE.from_pretrained() returns JUST the SAE (not a tuple).
+sae = SAE.from_pretrained(
     release="gpt2-small-res-jb",
     sae_id="blocks.8.hook_resid_pre",
     device="cuda"
 )
+# If you also need the cfg dict and feature sparsity, use:
+# sae, cfg_dict, sparsity = SAE.from_pretrained_with_cfg_and_sparsity(...)
 
 # 2. Get model activations
 tokens = model.to_tokens("The capital of France is Paris")
@@ -124,24 +127,33 @@ reconstruction_error = (activations - reconstructed).norm()
 ### Step-by-Step
 
 ```python
-from sae_lens import SAE, LanguageModelSAERunnerConfig, SAETrainingRunner
+from sae_lens import (
+    LanguageModelSAETrainingRunner,
+    LanguageModelSAERunnerConfig,
+    StandardTrainingSAEConfig,
+    LoggingConfig,
+)
 
-# 1. Configure training
+# 1. Configure training (v6 uses a NESTED config: SAE-specific options live in a
+#    `sae=` sub-config, and logging options live in a `logger=` sub-config).
+#    Note: `architecture`, `d_sae`, `l1_coefficient` etc. are now on the SAE sub-config,
+#    and legacy flat options like `hook_layer`, `activation_fn`, `log_to_wandb` were removed.
 cfg = LanguageModelSAERunnerConfig(
-    # Model
-    model_name="gpt2-small",
-    hook_name="blocks.8.hook_resid_pre",
-    hook_layer=8,
-    d_in=768,  # Model dimension
+    # SAE architecture + sparsity (nested)
+    sae=StandardTrainingSAEConfig(
+        d_in=768,          # Model dimension
+        d_sae=768 * 8,     # Expansion factor of 8
+        l1_coefficient=8e-5,  # Sparsity penalty
+        apply_b_dec_to_input=True,
+        normalize_activations="expected_average_only_in",
+    ),
 
-    # SAE architecture
-    architecture="standard",  # or "gated", "topk"
-    d_sae=768 * 8,  # Expansion factor of 8
-    activation_fn="relu",
+    # Data-generating function (model + hook point)
+    model_name="gpt2-small",
+    hook_name="blocks.8.hook_resid_pre",  # layer is inferred from hook_name (no hook_layer)
 
     # Training
     lr=4e-4,
-    l1_coefficient=8e-5,  # Sparsity penalty
     l1_warm_up_steps=1000,
     train_batch_size_tokens=4096,
     training_tokens=100_000_000,
@@ -150,9 +162,11 @@ cfg = LanguageModelSAERunnerConfig(
     dataset_path="monology/pile-uncopyrighted",
     context_size=128,
 
-    # Logging
-    log_to_wandb=True,
-    wandb_project="sae-training",
+    # Logging (nested)
+    logger=LoggingConfig(
+        log_to_wandb=True,
+        wandb_project="sae-training",
+    ),
 
     # Checkpointing
     checkpoint_path="checkpoints",
@@ -160,13 +174,19 @@ cfg = LanguageModelSAERunnerConfig(
 )
 
 # 2. Train
-trainer = SAETrainingRunner(cfg)
+trainer = LanguageModelSAETrainingRunner(cfg)  # SAETrainingRunner still works as an alias
 sae = trainer.run()
 
 # 3. Evaluate
 print(f"L0 (avg active features): {trainer.metrics['l0']}")
 print(f"CE Loss Recovered: {trainer.metrics['ce_loss_score']}")
 ```
+
+> **v6 migration note:** For other SAE types swap the `sae=` sub-config —
+> `GatedTrainingSAEConfig`, `TopKTrainingSAEConfig` (set `k` directly), or
+> `JumpReLUTrainingSAEConfig` (uses `l0_coefficient`). Legacy flat options
+> (`architecture`, `expansion_factor`, `hook_layer`, `activation_fn`/`activation_fn_kwargs`,
+> `use_ghost_grads`, ghost grads, b_dec/decoder init options) were removed in v6.
 
 ### Key Hyperparameters
 
@@ -205,7 +225,7 @@ from sae_lens import SAE
 import torch
 
 model = HookedTransformer.from_pretrained("gpt2-small", device="cuda")
-sae, _, _ = SAE.from_pretrained(
+sae = SAE.from_pretrained(  # v6 returns just the SAE
     release="gpt2-small-res-jb",
     sae_id="blocks.8.hook_resid_pre",
     device="cuda"
@@ -279,47 +299,57 @@ for idx, val in zip(top_features.indices, top_features.values):
 
 ## Common Issues & Solutions
 
+> All examples below use the v6 nested config: SAE-specific options go in the `sae=`
+> sub-config (`StandardTrainingSAEConfig` / `TopKTrainingSAEConfig` / etc.), training
+> knobs stay on the top-level `LanguageModelSAERunnerConfig`.
+
 ### Issue: High dead feature ratio
 ```python
-# WRONG: No warm-up, features die early
+from sae_lens import LanguageModelSAERunnerConfig, StandardTrainingSAEConfig
+
+# WRONG: no warm-up, features die early
 cfg = LanguageModelSAERunnerConfig(
-    l1_coefficient=1e-4,
+    sae=StandardTrainingSAEConfig(d_in=768, d_sae=768*8, l1_coefficient=1e-4),
     l1_warm_up_steps=0,  # Bad!
 )
 
-# RIGHT: Warm-up L1 penalty
+# RIGHT: warm up the L1 penalty (v6 removed ghost grads; warm-up is the lever now)
 cfg = LanguageModelSAERunnerConfig(
-    l1_coefficient=8e-5,
+    sae=StandardTrainingSAEConfig(d_in=768, d_sae=768*8, l1_coefficient=8e-5),
     l1_warm_up_steps=1000,  # Gradually increase
-    use_ghost_grads=True,   # Revive dead features
 )
 ```
 
 ### Issue: Poor reconstruction (low CE recovery)
 ```python
-# Reduce sparsity penalty
+# Reduce sparsity penalty and/or add capacity (both on the SAE sub-config)
 cfg = LanguageModelSAERunnerConfig(
-    l1_coefficient=5e-5,  # Lower = better reconstruction
-    d_sae=768 * 16,       # More capacity
+    sae=StandardTrainingSAEConfig(
+        d_in=768,
+        d_sae=768 * 16,       # More capacity
+        l1_coefficient=5e-5,  # Lower = better reconstruction
+    ),
 )
 ```
 
 ### Issue: Features not interpretable
 ```python
+from sae_lens import LanguageModelSAERunnerConfig, StandardTrainingSAEConfig, TopKTrainingSAEConfig
+
 # Increase sparsity (higher L1)
 cfg = LanguageModelSAERunnerConfig(
-    l1_coefficient=1e-4,  # Higher = sparser, more interpretable
+    sae=StandardTrainingSAEConfig(d_in=768, d_sae=768*8, l1_coefficient=1e-4),
 )
-# Or use TopK architecture
+# Or use a TopK SAE (k is set directly in v6, not via activation_fn_kwargs)
 cfg = LanguageModelSAERunnerConfig(
-    architecture="topk",
-    activation_fn_kwargs={"k": 50},  # Exactly 50 active features
+    sae=TopKTrainingSAEConfig(d_in=768, d_sae=768*8, k=50),  # Exactly 50 active features
 )
 ```
 
 ### Issue: Memory errors during training
 ```python
 cfg = LanguageModelSAERunnerConfig(
+    sae=StandardTrainingSAEConfig(d_in=768, d_sae=768*8, l1_coefficient=8e-5),
     train_batch_size_tokens=2048,  # Reduce batch size
     store_batch_size_prompts=4,    # Fewer prompts in buffer
     n_batches_in_buffer=8,         # Smaller activation buffer
@@ -341,8 +371,10 @@ Browse pre-trained SAE features at [neuronpedia.org](https://neuronpedia.org):
 | Class | Purpose |
 |-------|---------|
 | `SAE` | Sparse Autoencoder model |
-| `LanguageModelSAERunnerConfig` | Training configuration |
-| `SAETrainingRunner` | Training loop manager |
+| `LanguageModelSAERunnerConfig` | Top-level training configuration (nests `sae=` and `logger=`) |
+| `StandardTrainingSAEConfig` / `TopKTrainingSAEConfig` / `GatedTrainingSAEConfig` / `JumpReLUTrainingSAEConfig` | SAE-type-specific sub-configs (v6) |
+| `LoggingConfig` | Logging/W&B sub-config (v6) |
+| `LanguageModelSAETrainingRunner` | Training loop manager (alias: `SAETrainingRunner`) |
 | `ActivationsStore` | Activation collection and batching |
 | `HookedSAETransformer` | TransformerLens + SAE integration |
 
@@ -381,10 +413,10 @@ For detailed API documentation, tutorials, and advanced usage, see the `referenc
 | **TopK** | Exactly K active features | Consistent sparsity |
 
 ```python
-# TopK SAE (exactly 50 features active)
+from sae_lens import LanguageModelSAERunnerConfig, TopKTrainingSAEConfig
+
+# TopK SAE (exactly 50 features active) — `k` is set on the SAE sub-config in v6
 cfg = LanguageModelSAERunnerConfig(
-    architecture="topk",
-    activation_fn="topk",
-    activation_fn_kwargs={"k": 50},
+    sae=TopKTrainingSAEConfig(d_in=768, d_sae=768*8, k=50),
 )
 ```

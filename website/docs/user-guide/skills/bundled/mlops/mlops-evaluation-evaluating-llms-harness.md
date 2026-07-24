@@ -1,16 +1,33 @@
 ---
-name: evaluating-llms-harness
-description: "lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.)."
-version: 1.0.0
-author: Orchestra Research
-license: MIT
-dependencies: [lm-eval, transformers, vllm]
-platforms: [linux, macos]
-metadata:
-  hermes:
-    tags: [Evaluation, LM Evaluation Harness, Benchmarking, MMLU, HumanEval, GSM8K, EleutherAI, Model Quality, Academic Benchmarks, Industry Standard]
-
+title: "Evaluating Llms Harness — lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc"
+sidebar_label: "Evaluating Llms Harness"
+description: "lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Evaluating Llms Harness
+
+lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.).
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/mlops/evaluation/evaluating-llms-harness` |
+| Version | `1.0.0` |
+| Author | Orchestra Research |
+| License | MIT |
+| Dependencies | `lm-eval`, `transformers`, `vllm` |
+| Platforms | linux, macos |
+| Tags | `Evaluation`, `LM Evaluation Harness`, `Benchmarking`, `MMLU`, `HumanEval`, `GSM8K`, `EleutherAI`, `Model Quality`, `Academic Benchmarks`, `Industry Standard` |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # lm-evaluation-harness - LLM Benchmarking
 
@@ -466,13 +483,13 @@ lm_eval --model hf \
 
 ## Advanced topics
 
-**Benchmark descriptions**: See [references/benchmark-guide.md](references/benchmark-guide.md) for detailed description of all 60+ tasks, what they measure, and interpretation.
+**Benchmark descriptions**: See [references/benchmark-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/evaluation/evaluating-llms-harness/references/benchmark-guide.md) for detailed description of all 60+ tasks, what they measure, and interpretation.
 
-**Custom tasks**: See [references/custom-tasks.md](references/custom-tasks.md) for creating domain-specific evaluation tasks.
+**Custom tasks**: See [references/custom-tasks.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/evaluation/evaluating-llms-harness/references/custom-tasks.md) for creating domain-specific evaluation tasks.
 
-**API evaluation**: See [references/api-evaluation.md](references/api-evaluation.md) for evaluating OpenAI, Anthropic, and other API models.
+**API evaluation**: See [references/api-evaluation.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/evaluation/evaluating-llms-harness/references/api-evaluation.md) for evaluating OpenAI, Anthropic, and other API models.
 
-**Multi-GPU strategies**: See [references/distributed-eval.md](references/distributed-eval.md) for data parallel and tensor parallel evaluation.
+**Multi-GPU strategies**: See [references/distributed-eval.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/evaluation/evaluating-llms-harness/references/distributed-eval.md) for data parallel and tensor parallel evaluation.
 
 ## Hardware requirements
 
@@ -493,6 +510,3 @@ lm_eval --model hf \
 - Docs: https://github.com/EleutherAI/lm-evaluation-harness/tree/main/docs
 - Task library: 60+ tasks including MMLU, GSM8K, HumanEval, TruthfulQA, HellaSwag, ARC, WinoGrande, etc.
 - Leaderboard: https://huggingface.co/spaces/HuggingFaceH4/open_llm_leaderboard (uses this harness)
-
-
-

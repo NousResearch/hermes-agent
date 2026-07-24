@@ -912,6 +912,153 @@ class TestPopenLeakOnSetupFailure:
 
 
 # =========================================================================
+# Spawn rewrite regression (issue #68915)
+# =========================================================================
+
+
+class TestSpawnRewriteCompoundBackground:
+    """Verify that spawn_local rewrites `A && B &` patterns to avoid subshell deadlocks.
+
+    Issue #68915: when bash parses ``A && B &`` it forks a subshell ``(A && B) &``.
+    If B is a long-running server, the subshell never exits and holds the stdout
+    pipe open, causing a permanent deadlock. The rewriter wraps the tail to
+    ``A && { B & }`` so no subshell fork occurs.
+    """
+
+    def test_compound_and_background_gets_rewritten(self, registry):
+        """A && B & must be rewritten to A && { B & } before Popen."""
+        captured_cmd = []
+
+        def fake_popen(args, **kwargs):
+            captured_cmd.append(args)
+            proc = MagicMock()
+            proc.pid = 1111
+            proc.stdout = MagicMock()
+            return proc
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("cd /app && node server.js &>/tmp/srv.log &", cwd="/tmp")
+
+        assert len(captured_cmd) == 1
+        shell_cmd = captured_cmd[0]
+        # The command passed to Popen should be the REWRITTEN version
+        assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
+
+    def test_simple_background_preserved(self, registry):
+        """Simple cmd & (no &&) must NOT be rewritten — no subshell bug."""
+        captured_cmd = []
+
+        def fake_popen(args, **kwargs):
+            captured_cmd.append(args)
+            proc = MagicMock()
+            proc.pid = 2222
+            proc.stdout = MagicMock()
+            return proc
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("sleep 5 &", cwd="/tmp")
+
+        assert len(captured_cmd) == 1
+        shell_cmd = captured_cmd[0][2]
+        # Simple background must remain as-is
+        assert "sleep 5 &" in shell_cmd
+
+    def test_multi_line_compound_background(self, registry):
+        """Multi-line cd + server start must be rewritten."""
+        captured_cmd = []
+
+        def fake_popen(args, **kwargs):
+            captured_cmd.append(args)
+            proc = MagicMock()
+            proc.pid = 3333
+            proc.stdout = MagicMock()
+            return proc
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local(
+                "cd /app && python3 -m http.server &\nsleep 1\ncurl http://localhost:8000/",
+                cwd="/tmp",
+            )
+
+        assert len(captured_cmd) == 1
+        shell_cmd = captured_cmd[0][2]
+        # First line's compound should be rewritten; rest is preserved
+        assert "&& { python3 -m http.server & }" in shell_cmd
+        assert "sleep 1" in shell_cmd
+        assert "curl http://localhost:8000/" in shell_cmd
+
+    def test_session_stores_original_command(self, registry):
+        """Session.command must store the ORIGINAL (unrewritten) command."""
+        captured = []
+
+        def fake_popen(args, **kwargs):
+            proc = MagicMock()
+            proc.pid = 4444
+            proc.stdout = MagicMock()
+            captured.append(args)
+            return proc
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("A && B &", cwd="/tmp")
+
+        assert session.command == "A && B &"
+        assert "{ B" in captured[0][2]  # rewritten in Popen args
+
+    def test_pty_path_uses_rewritten_command(self, registry):
+        """PTY spawn path must also use the rewritten command (issue #68915)."""
+        mock_pty_proc = MagicMock()
+        mock_pty_proc.pid = 5555
+
+        mock_pty_module = MagicMock()
+        mock_pty_module.PtyProcess.spawn = MagicMock(return_value=mock_pty_proc)
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("tools.process_registry._IS_WINDOWS", False), \
+             patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local(
+                "cd /app && node server.js &",
+                cwd="/tmp",
+                use_pty=True,
+            )
+
+        assert mock_pty_module.PtyProcess.spawn.called, \
+            "PTY spawn should have been attempted"
+        pty_args = mock_pty_module.PtyProcess.spawn.call_args[0][0]
+        assert "&& { node server.js & }" in pty_args[2], \
+            f"PTY path should use rewritten command, got: {pty_args[2]}"
+        assert session.command == "cd /app && node server.js &"
+
+
+# =========================================================================
 # Checkpoint
 # =========================================================================
 

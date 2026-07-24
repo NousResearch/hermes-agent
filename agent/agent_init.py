@@ -1341,6 +1341,13 @@ def init_agent(
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+
+    # Keep a stable identity for the pool entry that supplied this runtime.
+    # OAuth refreshes can replace the runtime token before a failed request is
+    # recovered, so the mutable API-key value alone cannot reliably attribute
+    # the failure to its source entry.
+    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    sync_credential_pool_entry_id(agent)
     
     # Provider fallback chain — ordered list of backup providers tried
     # when the primary is exhausted (rate-limit, overload, connection

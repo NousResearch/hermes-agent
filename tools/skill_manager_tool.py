@@ -544,10 +544,16 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     return None
 
 
-def _validate_frontmatter(content: str) -> Optional[str]:
+def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[str]:
     """
     Validate that SKILL.md content has proper frontmatter with required fields.
     Returns error message or None if valid.
+
+    When ``new_skill`` is True (create path only), the description must also
+    fit the 60-char system-prompt budget (SKILL_PROMPT_DESC_LIMIT) so newly
+    authored skills never lose routing signal to index truncation. Edit and
+    patch paths deliberately skip this so existing over-limit skills remain
+    maintainable while their descriptions are cleaned up.
     """
     if not content.strip():
         return "Content cannot be empty."
@@ -576,8 +582,17 @@ def _validate_frontmatter(content: str) -> Optional[str]:
         return "Frontmatter must include 'name' field."
     if "description" not in parsed:
         return "Frontmatter must include 'description' field."
-    if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
+    desc = str(parsed["description"])
+    if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
+    if new_skill and len(desc.strip().strip("'\"")) > SKILL_PROMPT_DESC_LIMIT:
+        return (
+            f"Description is {len(desc.strip())} chars — new skills must fit the "
+            f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget (one sentence, "
+            f"trigger first, ends with a period). The skill index truncates "
+            f"longer descriptions to {SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', "
+            f"destroying the routing signal. Move detail into the skill body."
+        )
 
     body = content[end_match.end() + 3:].strip()
     if not body:
@@ -840,7 +855,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return {"success": False, "error": err}
 
     # Validate content
-    err = _validate_frontmatter(content)
+    err = _validate_frontmatter(content, new_skill=True)
     if err:
         return {"success": False, "error": err}
 

@@ -1,16 +1,33 @@
 ---
-name: serving-llms-vllm
-description: "vLLM: high-throughput LLM serving, OpenAI API, quantization."
-version: 1.0.0
-author: Orchestra Research
-license: MIT
-dependencies: [vllm, torch, transformers]
-platforms: [linux, macos]
-metadata:
-  hermes:
-    tags: [vLLM, Inference Serving, PagedAttention, Continuous Batching, High Throughput, Production, OpenAI API, Quantization, Tensor Parallelism]
-
+title: "Serving Llms Vllm — vLLM: high-throughput LLM serving, OpenAI API, quantization"
+sidebar_label: "Serving Llms Vllm"
+description: "vLLM: high-throughput LLM serving, OpenAI API, quantization"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Serving Llms Vllm
+
+vLLM: high-throughput LLM serving, OpenAI API, quantization.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/mlops/inference/serving-llms-vllm` |
+| Version | `1.0.0` |
+| Author | Orchestra Research |
+| License | MIT |
+| Dependencies | `vllm`, `torch`, `transformers` |
+| Platforms | linux, macos |
+| Tags | `vLLM`, `Inference Serving`, `PagedAttention`, `Continuous Batching`, `High Throughput`, `Production`, `OpenAI API`, `Quantization`, `Tensor Parallelism` |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # vLLM - High-Performance LLM Serving
 
@@ -108,7 +125,7 @@ pip install locust
 # Run: locust -f test_load.py --host http://localhost:8000
 ```
 
-Verify TTFT (time to first token) < 500ms and throughput > 100 req/sec.
+Verify TTFT (time to first token) &lt; 500ms and throughput > 100 req/sec.
 
 **Step 3: Enable monitoring**
 
@@ -139,7 +156,7 @@ docker run --gpus all -p 8000:8000 \
 **Step 5: Verify performance metrics**
 
 Check that deployment meets targets:
-- TTFT < 500ms (for short prompts)
+- TTFT &lt; 500ms (for short prompts)
 - Throughput > target req/sec
 - GPU utilization > 80%
 - No OOM errors in logs
@@ -322,7 +339,7 @@ Use `--trust-remote-code` for custom models:
 vllm serve MODEL --trust-remote-code
 ```
 
-**Issue: Low throughput (<50 req/sec)**
+**Issue: Low throughput (&lt;50 req/sec)**
 
 Increase concurrent sequences:
 ```bash
@@ -345,13 +362,13 @@ vllm serve MODEL --speculative-model DRAFT_MODEL
 
 ## Advanced topics
 
-**Server deployment patterns**: See [references/server-deployment.md](references/server-deployment.md) for Docker, Kubernetes, and load balancing configurations.
+**Server deployment patterns**: See [references/server-deployment.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/server-deployment.md) for Docker, Kubernetes, and load balancing configurations.
 
-**Performance optimization**: See [references/optimization.md](references/optimization.md) for PagedAttention tuning, continuous batching details, and benchmark results.
+**Performance optimization**: See [references/optimization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/optimization.md) for PagedAttention tuning, continuous batching details, and benchmark results.
 
-**Quantization guide**: See [references/quantization.md](references/quantization.md) for AWQ/GPTQ/FP8 setup, model preparation, and accuracy comparisons.
+**Quantization guide**: See [references/quantization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/quantization.md) for AWQ/GPTQ/FP8 setup, model preparation, and accuracy comparisons.
 
-**Troubleshooting**: See [references/troubleshooting.md](references/troubleshooting.md) for detailed error messages, debugging steps, and performance diagnostics.
+**Troubleshooting**: See [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/troubleshooting.md) for detailed error messages, debugging steps, and performance diagnostics.
 
 ## Hardware requirements
 
@@ -367,6 +384,3 @@ Supported platforms: NVIDIA (primary), AMD ROCm, Intel GPUs, TPUs
 - GitHub: https://github.com/vllm-project/vllm
 - Paper: "Efficient Memory Management for Large Language Model Serving with PagedAttention" (SOSP 2023)
 - Community: https://discuss.vllm.ai
-
-
-

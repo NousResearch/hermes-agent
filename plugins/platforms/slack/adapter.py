@@ -3635,7 +3635,15 @@ class SlackAdapter(BasePlatformAdapter):
         # 5) Protect blockquote markers before escaping
         text = re.sub(r"^(>+\s)", lambda m: _ph(m.group(0)), text, flags=re.MULTILINE)
 
-        # 6) Escape Slack control characters in remaining plain text.
+        # 6) Wrap bare URLs in <...> so Slack's auto-linker cannot absorb
+        #    emphasis markers into the href, producing broken links (#70860).
+        text = re.sub(
+            r"(https?://[^\s<>*]+)",
+            lambda m: _ph(f"<{m.group(1)}>"),
+            text,
+        )
+
+        # 7) Escape Slack control characters in remaining plain text.
         # Unescape first so already-escaped input doesn't get double-escaped.
         # Single pass: sequential str.replace would re-scan its own output, so
         # the & from "&amp;" could pair with a following "lt;" and decode twice
@@ -3647,7 +3655,7 @@ class SlackAdapter(BasePlatformAdapter):
         )
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        # 7) Convert headers (## Title) → *Title* (bold)
+        # 8) Convert headers (## Title) → *Title* (bold)
         def _convert_header(m):
             inner = m.group(1).strip()
             # Strip redundant bold markers inside a header
@@ -3656,14 +3664,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         text = re.sub(r"^#{1,6}\s+(.+)$", _convert_header, text, flags=re.MULTILINE)
 
-        # 8) Convert bold+italic: ***text*** → *_text_* (Slack bold wrapping italic)
+        # 9) Convert bold+italic: ***text*** → *_text_* (Slack bold wrapping italic)
         text = re.sub(
             r"\*\*\*(.+?)\*\*\*",
             lambda m: _ph(f"*_{m.group(1)}_*"),
             text,
         )
 
-        # 9) Convert bold: **text** → *text* (Slack bold)
+        # 10) Convert bold: **text** → *text* (Slack bold)
         # Slack's mrkdwn parser fails to recognize the closing * when it is
         # immediately preceded by non-word characters (e.g. ), ], }, ., :, —).
         # This causes the parser to silently truncate the rest of the message.
@@ -3681,7 +3689,7 @@ class SlackAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 10) Convert italic: _text_ stays as _text_ (already Slack italic)
+        # 11) Convert italic: _text_ stays as _text_ (already Slack italic)
         #     Single *text* → _text_ (Slack italic), but only when the
         #     emphasized text touches non-whitespace on both sides so literal
         #     delimiters like "a * b * c" are preserved.
@@ -3691,16 +3699,16 @@ class SlackAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 11) Convert strikethrough: ~~text~~ → ~text~
+        # 12) Convert strikethrough: ~~text~~ → ~text~
         text = re.sub(
             r"~~(.+?)~~",
             lambda m: _ph(f"~{m.group(1)}~"),
             text,
         )
 
-        # 12) Blockquotes: > prefix is already protected by step 5 above.
+        # 13) Blockquotes: > prefix is already protected by step 5 above.
 
-        # 13) Restore placeholders in reverse order
+        # 14) Restore placeholders in reverse order
         for key in reversed(placeholders):
             text = text.replace(key, placeholders[key])
 

@@ -148,6 +148,7 @@ export const en: Translations = {
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
       microphonePermissionDenied: 'Microphone permission was denied.',
+      microphoneSecureContextRequired: 'Microphone recording requires HTTPS, localhost, or the native desktop app.',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',
       noMicrophone: 'No microphone was found.',

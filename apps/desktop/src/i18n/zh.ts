@@ -144,6 +144,7 @@ export const zh: Translations = {
       microphoneFailed: '麦克风出错',
       microphoneInUse: '麦克风正被其他应用占用。',
       microphonePermissionDenied: '麦克风权限被拒绝。',
+      microphoneSecureContextRequired: '麦克风录音需要 HTTPS、localhost 或原生桌面应用。',
       microphoneStartFailed: '无法开始麦克风录音。',
       microphoneUnsupported: '当前运行环境不支持麦克风录音。',
       noMicrophone: '未找到麦克风。',

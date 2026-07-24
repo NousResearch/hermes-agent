@@ -217,6 +217,7 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        MessageReactionHandler as TelegramMessageReactionHandler,
         ContextTypes,
         filters,
     )
@@ -235,6 +236,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    TelegramMessageReactionHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -1004,13 +1006,25 @@ class TelegramAdapter(BasePlatformAdapter):
         context-aware decision the runner would make. Unknown DMs with no
         allowlist still pass through so the normal pairing flow can run.
         """
-        source = self._source_from_message_for_auth(message)
+        return self._is_source_user_authorized(
+            self._source_from_message_for_auth(message)
+        )
+
+    def _is_source_user_authorized(self, source) -> bool:
+        """Shared authorization core for Telegram intake prefilters.
+
+        Extracted from :meth:`_is_user_authorized_from_message` (behavior
+        unchanged) so every inbound interaction that resolves to a gateway
+        source — regular messages and inbound reactions — runs the exact same
+        decision sequence rather than a parallel copy that could drift:
+        adapter ``allow_from`` when set is the sole authority, else the
+        runner's context-aware check, else the env allowlist.
+        """
         user_id = source.user_id
         # No identity at all → genuine group service message (pin, delete,
-        # new_chat_members, etc.). Defer to the cold path. Channel posts
-        # without sender_chat already resolved to None above and fall here;
-        # they carry no authorizable identity, so let the normal
-        # _should_process_message gating handle them.
+        # new_chat_members, etc.) or an anonymous reaction with no resolvable
+        # actor. Defer to the cold path / chat-level gating; there is no
+        # authorizable identity to reject here.
         if not user_id:
             return True
 
@@ -1066,6 +1080,52 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
+
+    def _source_from_reaction_for_auth(self, mr):
+        """Build the auth source for a ``MessageReactionUpdated`` update.
+
+        Reaction updates carry no ``Message`` object, so this mirrors
+        :meth:`_source_from_message_for_auth` field-for-field from the fields
+        a reaction update does have: the reactor comes from ``user``, falling
+        back to ``actor_chat`` for anonymous reactions (the analog of
+        ``sender_chat`` on channel posts). Reactions carry no topic/thread
+        information, so supergroups resolve to ``group``.
+        """
+        from gateway.session import SessionSource
+
+        user = getattr(mr, "user", None)
+        chat = getattr(mr, "chat", None)
+        user_id = str(getattr(user, "id", "")).strip() or None
+        user_name = (
+            str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
+            or None
+        )
+        # Anonymous reactions (chat admins reacting anonymously, channel
+        # reactions) surface actor_chat instead of user.
+        if not user_id:
+            actor_chat = getattr(mr, "actor_chat", None)
+            if actor_chat is not None:
+                user_id = str(getattr(actor_chat, "id", "")).strip() or None
+                if not user_name:
+                    user_name = (
+                        str(getattr(actor_chat, "title", "") or "").strip() or None
+                    )
+
+        chat_id = str(getattr(chat, "id", "")).strip() or user_id
+        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            chat_type = "group"
+
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id or "",
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=None,
+        )
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -3617,6 +3677,13 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle inbound message reactions (user long-press → emoji → action).
+            # Inert unless platforms.telegram.extra.reaction_actions maps the
+            # emoji. message_reaction is already in allowed_updates=ALL_TYPES
+            # below, so no polling change is needed.
+            self._app.add_handler(TelegramMessageReactionHandler(self._handle_message_reaction))
+
+            # Start polling — retry initialize() for transient TLS resets
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -8260,6 +8327,130 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
+        await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Inbound message reactions (user long-press → emoji → agent action)
+    # ------------------------------------------------------------------
+
+    def _reaction_actions_map(self) -> dict:
+        """Return the configured ``emoji -> action label`` map.
+
+        Source: ``platforms.telegram.extra.reaction_actions`` (via
+        ``self.config.extra``). An empty/absent map disables inbound reaction
+        handling entirely, so this feature is backward-compatible by default.
+        """
+        try:
+            raw = self.config.extra.get("reaction_actions") if self.config and self.config.extra else None
+        except Exception:
+            raw = None
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): str(v) for k, v in raw.items() if str(k).strip() and str(v).strip()}
+
+    def _should_process_reaction(self, chat) -> bool:
+        """Gate inbound reactions. DMs always pass (mirrors message handling);
+        groups/supergroups require the ``allowed_chats`` whitelist; channels and
+        unknown chat types are ignored."""
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        if chat_type in ("private", ""):
+            return True
+        if chat_type in ("group", "supergroup"):
+            allowed = self._telegram_allowed_chats()
+            return bool(allowed) and str(getattr(chat, "id", "")) in allowed
+        return False
+
+    async def _handle_message_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Turn a recognized inbound reaction into a synthetic agent turn.
+
+        Only newly-*added* emoji (diff of new vs old reaction) are considered;
+        an emoji is recognized when it appears in the
+        ``platforms.telegram.extra.reaction_actions`` map. Removed reactions
+        and unmapped emoji are ignored. Inert when nothing is configured.
+        """
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            return
+
+        def _emojis(seq) -> list:
+            out = []
+            for r in (seq or ()):
+                emoji = getattr(r, "emoji", None)
+                if emoji:
+                    out.append(emoji)
+            return out
+
+        old = set(_emojis(getattr(mr, "old_reaction", None)))
+        added = [e for e in _emojis(getattr(mr, "new_reaction", None)) if e not in old]
+        if not added:
+            return  # reaction removed, or no genuinely new emoji
+
+        actions = self._reaction_actions_map()
+        matched = next((e for e in added if e in actions), None)
+        if matched is None:
+            return  # unrecognized emoji — ignore
+
+        chat = getattr(mr, "chat", None)
+        if chat is None or not self._should_process_reaction(chat):
+            return
+        user = getattr(mr, "user", None)
+
+        # Same intake authorization invariant as every other inbound handler:
+        # reject the reactor BEFORE event construction so an unauthorized user
+        # cannot inject prompt content via reactions (see
+        # _is_user_authorized_from_message / #40863).
+        if not self._is_source_user_authorized(self._source_from_reaction_for_auth(mr)):
+            logger.debug(
+                "[%s] reaction from unauthorized user %s ignored",
+                self.name,
+                getattr(user, "id", "?"),
+            )
+            return
+
+        chat_type_raw = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        chat_type = "group" if chat_type_raw in ("group", "supergroup") else (
+            "channel" if chat_type_raw == "channel" else "dm"
+        )
+        source = self.build_source(
+            chat_id=str(chat.id),
+            chat_name=getattr(chat, "title", None) or (getattr(chat, "full_name", None) if chat_type == "dm" else None),
+            chat_type=chat_type,
+            user_id=str(user.id) if user else str(chat.id),
+            user_name=(getattr(user, "full_name", None) if user else None),
+            message_id=str(mr.message_id),
+        )
+
+        # Recover what the bot said in the reacted-to message for context.
+        reacted_text = None
+        try:
+            from gateway import rich_sent_store
+            reacted_text = rich_sent_store.lookup(str(chat.id), str(mr.message_id))
+        except Exception:
+            reacted_text = None
+
+        action = actions.get(matched, "act on this reaction")
+        parts = [
+            f"[The user reacted {matched} to your earlier message "
+            f"(message id {mr.message_id}). In this context {matched} means: {action}.]"
+        ]
+        if reacted_text:
+            snippet = " ".join(reacted_text.split())
+            if len(snippet) > 280:
+                snippet = snippet[:280] + "…"
+            parts.append(f'The message they reacted to said: "{snippet}"')
+        parts.append(
+            "Take the appropriate action with your tools (e.g. complete/snooze/"
+            "escalate the relevant task). Reply with at most one short line, or "
+            "stay silent if nothing needs saying."
+        )
+
+        event = MessageEvent(
+            text="\n".join(parts),
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=str(mr.message_id),
+            timestamp=getattr(mr, "date", None),
+        )
         await self.handle_message(event)
 
     # ------------------------------------------------------------------

@@ -1312,6 +1312,38 @@ The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing 
 
 When a user sends a message that triggers an agent turn, the Telegram adapter pins that incoming message for the duration of the turn and unpins it when the response is finished — a lightweight visual indicator that the bot is actively working on the message rather than ignoring it. The pin uses `disable_notification=true` to avoid extra pings. No config required.
 
+## Reaction Actions (Optional)
+
+Map inbound message reactions to agent actions. When someone reacts to one of the bot's messages with a mapped emoji, Hermes synthesizes an agent turn describing the reaction — including what the reacted-to message said — and the agent takes the action with its normal tools (complete a task, snooze a reminder, escalate, etc.).
+
+Configure in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      reaction_actions:
+        "👍": "Mark the task or item in the reacted-to message as done"
+        "🔥": "Escalate the task in the reacted-to message to top priority"
+        "😴": "Snooze the reminder in the reacted-to message for an hour"
+        "👎": "Cancel or archive the item in the reacted-to message"
+```
+
+Each value is a plain-language instruction handed to the agent — write it the way you'd phrase the request in chat.
+
+How it works:
+
+- Only **newly added** emoji trigger — removing a reaction, or re-sending one that was already present, does nothing.
+- Emoji not in the map are ignored. An empty or absent `reaction_actions` map disables the feature entirely (the default — fully backward compatible).
+- Keys must come from Telegram's fixed reaction set (the emoji the Telegram client actually offers on long-press) and match exactly as Telegram sends them — e.g. `"❤"` without a variation selector. Custom (premium) emoji reactions carry an ID instead of an emoji and are ignored.
+- The reactor is authorized through the same intake prefilter as regular messages (`allow_from` / runner auth / `TELEGRAM_ALLOWED_USERS`), so an unauthorized user's reactions never reach the agent.
+- DM reactions always qualify; group/supergroup reactions additionally require the chat to be listed in `allowed_chats`; channel reactions are ignored.
+- No polling change is needed: the gateway already requests all update types, including `message_reaction`.
+
+:::info Reaction visibility in groups
+Telegram only delivers `message_reaction` updates in groups and channels when the bot is an **administrator** of the chat. DM reactions are always delivered. Reactions set by other bots are never delivered.
+:::
+
 ## Security
 
 :::warning

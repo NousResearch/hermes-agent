@@ -899,17 +899,42 @@ class TestTeamsAttachmentClassification:
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
 
 
+class _FakeAiohttpContent:
+    def __init__(self, data: str | bytes):
+        self._data = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        self._offset = 0
+        self.bytes_read = 0
+
+    async def read(self, n: int = -1):
+        if self._offset >= len(self._data):
+            return b""
+        if n is None or n < 0:
+            n = len(self._data) - self._offset
+        end = min(len(self._data), self._offset + n)
+        chunk = self._data[self._offset:end]
+        self._offset = end
+        self.bytes_read += len(chunk)
+        return chunk
+
+
 class _FakeAiohttpResponse:
     def __init__(self, status: int, payload, text_body: str = ""):
         self.status = status
         self._payload = payload
         self._text = text_body or (str(payload) if payload is not None else "")
+        self.content = _FakeAiohttpContent(self._text)
+        self.text_calls = 0
+        self.released = False
 
     async def json(self):
         return self._payload
 
     async def text(self):
+        self.text_calls += 1
         return self._text
+
+    def release(self):
+        self.released = True
 
     async def __aenter__(self):
         return self
@@ -1023,6 +1048,59 @@ class TestTeamsStandaloneSend:
         assert "error" in result
         assert "401" in result["error"]
         assert "token" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_token_failure_reads_bounded_error_body(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+
+        token_resp = _FakeAiohttpResponse(
+            401,
+            {"error": "oversized"},
+            text_body="token-error " * 2000,
+        )
+        session = _FakeAiohttpSession([token_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:abc@thread.skype",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "token-error" in result["error"]
+        assert token_resp.text_calls == 0
+        assert token_resp.content.bytes_read <= _teams_mod._TEAMS_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1
+        assert token_resp.released is True
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_activity_failure_reads_bounded_error_body(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+
+        token_resp = _FakeAiohttpResponse(200, {"access_token": "the-token"})
+        activity_resp = _FakeAiohttpResponse(
+            503,
+            {"error": "oversized"},
+            text_body="activity-error " * 2000,
+        )
+        session = _FakeAiohttpSession([token_resp, activity_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:abc@thread.skype",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "activity-error" in result["error"]
+        assert activity_resp.text_calls == 0
+        assert activity_resp.content.bytes_read <= _teams_mod._TEAMS_STANDALONE_ERROR_BODY_LIMIT_BYTES + 1
+        assert activity_resp.released is True
 
     @pytest.mark.asyncio
     async def test_standalone_send_rejects_off_allowlist_service_url(self, monkeypatch):

@@ -56,7 +56,7 @@ import {
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
-import { extractClipboardImageBlobs } from './text-utils'
+import { extractClipboardImageBlobs, shouldTryHostClipboardImage } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -378,6 +378,32 @@ export function ChatBar({
     // doesn't dump multiline padding into the composer. Internal newlines are
     // preserved — only the edges are cleaned up.
     const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
+
+    // WSLg may surface a Windows screenshot as path-shaped text while hiding the
+    // bitmap from Chromium. Probe the WSL host clipboard for the real image —
+    // wslHostOnly, so outside WSL the probe answers "no image" instead of letting
+    // an unrelated native clipboard image replace the pasted path text. If no
+    // host bitmap exists, preserve the original text exactly as before.
+    if (shouldTryHostClipboardImage(pastedText) && onPasteClipboardImage) {
+      event.preventDefault()
+      triggerHaptic('selection')
+
+      const editor = event.currentTarget
+      const insertFallbackText = () => {
+        insertPlainTextAtCaret(editor, pastedText)
+        scheduleFlushEditorToDraft(editor)
+      }
+
+      void Promise.resolve(onPasteClipboardImage({ silent: true, wslHostOnly: true }))
+        .then(attached => {
+          if (!attached) {
+            insertFallbackText()
+          }
+        })
+        .catch(insertFallbackText)
+
+      return
+    }
 
     if (!pastedText) {
       event.preventDefault()

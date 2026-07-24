@@ -487,9 +487,9 @@ export function useComposerActions({
   }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
 
   const pasteClipboardImage = useCallback(
-    async ({ silent = false }: { silent?: boolean } = {}) => {
+    async ({ silent = false, wslHostOnly = false }: { silent?: boolean; wslHostOnly?: boolean } = {}) => {
       try {
-        const path = await window.hermesDesktop?.saveClipboardImage()
+        const path = await window.hermesDesktop?.saveClipboardImage({ wslHostOnly })
 
         if (!path) {
           if (!silent) {

@@ -91,6 +91,15 @@ echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
 echo "▶ launching test runner"
+# On native Windows, CPython resolves Path.home() via USERPROFILE (or
+# HOMEDRIVE+HOMEPATH), not HOME.  SYSTEMROOT is required by ssl/sockets,
+# and TEMP/TMP by tempfile.  env -i strips them all, breaking collection
+# for any test file that touches Path.home() or imports module that do
+# (the entire tests/gateway/ directory, among others).
+# Pass them through with ${VAR:+...} so the environment is byte-identical
+# on Linux/macOS where these vars are absent.
+# PYTHONUTF8=1 prevents UnicodeEncodeError when the runner prints ✓/⚠
+# glyphs on Windows consoles defaulting to legacy codepages.
 exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
@@ -98,7 +107,14 @@ exec env -i \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
+  PYTHONUTF8=1 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
+  ${USERPROFILE:+USERPROFILE="$USERPROFILE"} \
+  ${HOMEDRIVE:+HOMEDRIVE="$HOMEDRIVE"} \
+  ${HOMEPATH:+HOMEPATH="$HOMEPATH"} \
+  ${SYSTEMROOT:+SYSTEMROOT="$SYSTEMROOT"} \
+  ${TEMP:+TEMP="$TEMP"} \
+  ${TMP:+TMP="$TMP"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

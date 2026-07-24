@@ -66,6 +66,7 @@ from agent.conversation_compression import (
 )
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from gateway.reply_context import format_reply_context_excerpt
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -12458,14 +12459,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            if getattr(event, "reply_to_is_own_message", False):
-                message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
-                )
-            else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            reply_snippet = format_reply_context_excerpt(event.reply_to_text)
+            if reply_snippet:
+                if getattr(event, "reply_to_is_own_message", False):
+                    message_text = (
+                        f"[Replying to your previous message: {reply_snippet}]\n\n"
+                        f"{message_text}"
+                    )
+                else:
+                    message_text = f"[Replying to: {reply_snippet}]\n\n{message_text}"
 
         if "@" in message_text:
             try:

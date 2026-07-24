@@ -84,6 +84,13 @@ def _sanitize_single_tool(tool: dict) -> dict:
             top["type"] = "object"
         if "properties" not in top or not isinstance(top.get("properties"), dict):
             top["properties"] = {}
+    # Inline local `$ref` pointers BEFORE nullable-union collapse so strict
+    # validators (xAI Responses) don't deep-resolve `.../anyOf/0/...` paths
+    # that are about to be folded away.  Issue #67131: post-collapse ref
+    # strings into the dropped `anyOf` segment cause xAI to 400 with
+    # "unresolvable $ref / key 'anyOf' not found under '...'" before any
+    # token is emitted.  Inlining first means the refs disappear entirely.
+    fn["parameters"] = inline_schema_refs(fn["parameters"])
     # Final pass: collapse nullable anyOf/oneOf unions that the recursive
     # sanitizer above leaves intact (it only handles the array-form
     # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime
@@ -126,6 +133,183 @@ def _strip_ref_siblings(node: Any) -> Any:
             if key in out:
                 out.pop(key, None)
     return out
+
+
+def _resolve_ref_pointer(root: Any, pointer: str) -> tuple[Any, bool]:
+    """Resolve an RFC 6901 JSON pointer ``#/path/to/target`` against ``root``.
+
+    Returns ``(target, ok)``.  ``ok=False`` means the pointer walked into a
+    missing key or an out-of-range array index — callers should treat that
+    as "the ref is dangling, replace with a safe fallback schema".
+
+    JSON pointer grammar (RFC 6901):
+
+    * ``""`` (empty) → ``root`` itself
+    * ``"/"`` → key with the empty string
+    * ``"/a/b"`` → ``root["a"]["b"]``
+    * ``"/foo~1bar"`` → ``root["foo/bar"]`` (``~1`` → ``/``, ``~0`` → ``~``)
+
+    The leading ``#`` (URI fragment marker) is stripped if present. Bare
+    pointer fragments (``"properties/a"``) are also accepted for safety.
+    """
+    raw = pointer
+    if raw.startswith("#"):
+        raw = raw[1:]
+    if raw.startswith("/"):
+        raw = raw[1:]
+    if raw == "":
+        return root, True
+    cur: Any = root
+    for segment in raw.split("/"):
+        # Unescape ~1 → / and ~0 → ~, in that order (RFC 6901 §3).
+        segment = segment.replace("~1", "/").replace("~0", "~")
+        if isinstance(cur, dict):
+            if segment not in cur:
+                return None, False
+            cur = cur[segment]
+        elif isinstance(cur, list):
+            try:
+                idx = int(segment)
+            except (TypeError, ValueError):
+                return None, False
+            if idx < 0 or idx >= len(cur):
+                return None, False
+            cur = cur[idx]
+        else:
+            return None, False
+    return cur, True
+
+
+def inline_schema_refs(
+    schema: Any,
+    *,
+    max_depth: int = 64,
+    only_through_combinators: bool = True,
+) -> Any:
+    """Inline ``$ref`` (RFC 6901 ``#/...`` pointer) nodes found in ``schema``.
+
+    Problem this solves (issue #67131):
+
+      Strict schema validators (xAI Responses) deep-resolve local ``$ref``
+      pointers **after** Hermes' ``strip_nullable_unions`` collapses
+      ``anyOf: [T, null]`` to ``T``.  A ``$ref`` string that walks through
+      the dropped ``.../anyOf/0/...`` segment then points at a path that no
+      longer exists, and xAI rejects the entire request with::
+
+          HTTP 400: unresolvable $ref '...': key 'anyOf' not found under ...
+
+      Anthropic / OpenAI / OpenRouter silently accept the same shape — only
+      xAI 400s — so the bug looks provider-specific when it's actually a
+      sanitizer tree-rewrite artifact.
+
+    What this does:
+
+      Walk the schema, replace every ``{"$ref": "#/properties/..."}`` node
+      with a deep copy of the schema fragment the pointer resolves to, then
+      recurse into the inlined fragment so transitive refs (and self-refs
+      up to ``max_depth``) are also resolved.
+
+    Bounds / contract:
+
+    * ``max_depth`` caps ref→ref chains.  A self-referential pointer
+      (``{"$ref": "#"}``) is replaced with a minimal
+      ``{"type": "object", "properties": {}}`` once the chain is exhausted,
+      so strict validators see a concrete shape instead of a dangling ref.
+    * A pointer whose target is missing in the current tree (e.g. an
+      ``.../anyOf/0/...`` pointer whose ``anyOf`` was already collapsed away
+      by an earlier sanitizer pass — defensive recovery path) is replaced
+      with the same permissive object schema, **never** left as a bare
+      ``$ref`` for a strict validator to choke on.
+    * ``only_through_combinators`` (default ``True``) restricts inlining to
+      refs whose pointer walks through an ``anyOf`` / ``oneOf`` / ``allOf``
+      array index segment — exactly the class of ref that breaks under
+      ``strip_nullable_unions`` collapse.  Other refs (``#/$defs/Foo``)
+      are left in place: they're stable across the sanitizer's tree
+      rewrites, and providers that can resolve them (Anthropic, OpenAI)
+      prefer the dedup that ``$defs`` provides.  Set ``False`` to inline
+      every local ref regardless of pointer shape — useful for the xAI
+      Responses defense-in-depth pass where any ``$ref`` may be rejected.
+    * Sibling metadata on a ``$ref`` node (``description``, ``title``)
+      is preserved on the inlined fragment when it doesn't already carry
+      that key — the refiner's prose annotation is more useful than the
+      target's own.
+
+    Args:
+        schema: A JSON-Schema fragment (dict / list / scalar).
+        max_depth: Max ref→ref chain depth before substituting a fallback.
+            Defaults to 64 — generously above any realistic schema depth.
+        only_through_combinators: If True (default), inline only refs whose
+            pointer path contains an ``anyOf`` / ``oneOf`` / ``allOf``
+            segment — the exact class that breaks under nullable-union
+            collapse.  If False, inline every local ``$ref``.
+
+    Returns:
+        A deep copy of ``schema`` with the targeted ``$ref`` nodes resolved.
+        Callers may freely mutate the result without aliasing the input.
+    """
+    _combinator_segments = ("anyOf", "oneOf", "allOf")
+
+    def _walks_through_combinator(pointer: str) -> bool:
+        # Segment check on the raw pointer string. Leading ``#``/``/`` are
+        # stripped so the first real segment is comparable.
+        raw = pointer[1:] if pointer.startswith("#") else pointer
+        raw = raw[1:] if raw.startswith("/") else raw
+        for seg in raw.split("/"):
+            seg = seg.replace("~1", "/").replace("~0", "~")
+            if seg in _combinator_segments:
+                return True
+        return False
+
+    def _walk(node: Any, chain: tuple[str, ...]) -> Any:
+        if isinstance(node, list):
+            return [_walk(item, chain) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            if only_through_combinators and not _walks_through_combinator(ref):
+                # Stable ref (e.g. ``#/$defs/Foo``) — leave in place; the
+                # combinator-walking refs are the only class that breaks
+                # under ``strip_nullable_unions`` and strict validators.
+                # ``_strip_ref_siblings`` (called separately) handles the
+                # ``default`` sibling keyword hygiene for this node.
+                return {key: _walk(value, chain) for key, value in node.items()}
+            target, ok = _resolve_ref_pointer(schema, ref)
+            if not ok or target is None:
+                # Dangling pointer (e.g. anyOf/0 path was collapsed away by
+                # a later strip_nullable_unions run on a hot path). Replace
+                # with a permissive object schema so strict validators don't
+                # see a bare $ref with no resolvable target. Preserve
+                # adjacent metadata so the model keeps the prose hint.
+                fallback: dict = {"type": "object", "properties": {}}
+                for meta in ("description", "title"):
+                    if meta in node and meta not in fallback:
+                        fallback[meta] = node[meta]
+                return fallback
+            if ref in chain or len(chain) >= max_depth:
+                # Cycle or depth cap — substitute permissive object schema.
+                fallback = {"type": "object", "properties": {}}
+                for meta in ("description", "title"):
+                    if meta in node and meta not in fallback:
+                        fallback[meta] = node[meta]
+                return fallback
+            # Recurse into the inlined target so transitive refs also resolve.
+            inlined_target = _walk(target, chain + (ref,))
+            # Preserve sibling metadata not present on the target (the ref
+            # node's description is generally more useful than the target's).
+            if isinstance(inlined_target, dict):
+                merged = copy.deepcopy(inlined_target)
+                for meta in ("description", "title"):
+                    if meta in node and meta not in merged:
+                        merged[meta] = node[meta]
+                return merged
+            return inlined_target
+
+        # No $ref at this node — recurse into values.
+        return {key: _walk(value, chain) for key, value in node.items()}
+
+    return _walk(schema, chain=())
 
 
 _TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")

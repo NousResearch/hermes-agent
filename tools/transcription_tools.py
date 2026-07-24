@@ -1298,7 +1298,12 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
 
 def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using Groq Whisper API (free tier available)."""
+    """Transcribe using Groq Whisper API (free tier available).
+
+    Honours an optional ISO-639-1 language hint resolved from
+    ``stt.groq.language`` (config.yaml) or ``HERMES_LOCAL_STT_LANGUAGE``
+    (env). When neither is set, Groq Whisper auto-detects.
+    """
     api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
@@ -1311,20 +1316,30 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
 
+    groq_cfg = _load_stt_config().get("groq") or {}
+    language = str(
+        groq_cfg.get("language") or os.getenv(LOCAL_STT_LANGUAGE_ENV) or ""
+    ).strip() or None
+
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
         try:
+            create_kwargs = {
+                "model": model_name,
+                "response_format": "text",
+            }
+            if language:
+                create_kwargs["language"] = language
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
-                    model=model_name,
                     file=audio_file,
-                    response_format="text",
+                    **create_kwargs,
                 )
 
             transcript_text = str(transcription).strip()
-            logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
+            logger.info("Transcribed %s via Groq API (%s, lang=%s, %d chars)",
+                         Path(file_path).name, model_name, language or "auto", len(transcript_text))
 
             return {"success": True, "transcript": transcript_text, "provider": "groq"}
         finally:
@@ -1494,7 +1509,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     ).strip().rstrip("/")
     language = str(
         xai_config.get("language")
-        or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
+        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
         or DEFAULT_LOCAL_STT_LANGUAGE
     ).strip()
     # .get("format", True) already defaults to True when the key is absent;

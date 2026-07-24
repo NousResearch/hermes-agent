@@ -648,6 +648,33 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_dm_pairing_hint_includes_active_profile(monkeypatch, tmp_path):
+    _clear_auth_env(monkeypatch)
+    profile_home = tmp_path / ".hermes" / "profiles" / "invest"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    config = GatewayConfig(
+        platforms={Platform.FEISHU: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.FEISHU, config)
+    runner.pairing_store.generate_code.return_value = "UXWBV4E8"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.FEISHU,
+            "ou_unknown",
+            "ou_unknown",
+        )
+    )
+
+    assert result is None
+    adapter.send.assert_awaited_once()
+    message = adapter.send.await_args.args[1]
+    assert "`invest pairing approve feishu UXWBV4E8`" in message
+    assert "`hermes pairing approve feishu UXWBV4E8`" not in message
+
+
+@pytest.mark.asyncio
 async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(

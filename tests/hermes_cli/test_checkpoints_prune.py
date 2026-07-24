@@ -206,3 +206,57 @@ def test_no_orphans_skips_prompt(monkeypatch, capsys):
 
     assert rc == 0
     assert len(prune_calls) == 1
+
+
+# ─── allowlist binding: preview set == deletion set, even when empty ───────
+
+
+def test_empty_preview_binds_empty_allowlist(monkeypatch, capsys):
+    """Zero-orphan-preview timing regression (PR #69141 review).
+
+    When the non-force preview shows zero orphans, no prompt runs — but the
+    later rescan inside prune_checkpoints() may discover a project that
+    became orphaned *after* the preview. That undisplayed, unconfirmed orphan
+    must not be deletable: the allowlist passed down must be the exact
+    (empty) displayed set, never the unrestricted None sentinel.
+    """
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _V2_ORPHAN_ONLY_STATUS, prune_calls)
+
+    rc = checkpoints_cli.cmd_prune(_ns())
+
+    assert rc == 0
+    assert len(prune_calls) == 1
+    assert prune_calls[0]["orphan_allowlist"] == set()
+
+
+def test_nonempty_preview_allowlist_matches_displayed_set(monkeypatch, capsys):
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _MIXED_STATUS, prune_calls)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    rc = checkpoints_cli.cmd_prune(_ns())
+
+    assert rc == 0
+    assert len(prune_calls) == 1
+    assert prune_calls[0]["orphan_allowlist"] == {
+        "abc123",
+        "/home/user/.hermes/checkpoints/deadbeefcafebabe",
+    }
+
+
+def test_force_leaves_allowlist_unrestricted(monkeypatch, capsys):
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _MIXED_STATUS, prune_calls)
+
+    rc = checkpoints_cli.cmd_prune(_ns(force=True))
+
+    assert rc == 0
+    assert len(prune_calls) == 1
+    assert prune_calls[0]["orphan_allowlist"] is None

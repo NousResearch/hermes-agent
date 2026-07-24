@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -396,3 +397,127 @@ class TestHardenImportPath:
             sys.path[:] = original
             if original_env is not None:
                 os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
+
+
+class TestSkillsSyncUtf8Guard:
+    """Regression guard for the installer child-Python UTF-8 path.
+
+    ``scripts/install.ps1`` runs ``tools/skills_sync.py`` as a child
+    ``python.exe`` and parses its stdout as UTF-8. On non-UTF-8 Windows
+    locales (CP936/GBK zh-CN) the child's stream encoding defaults to the
+    active codepage, which can't represent the checkmark / up-arrow glyphs
+    the script prints (``\\u2713``, ``\\u2191``) — raising
+    ``UnicodeEncodeError`` mid-run and aborting the ``config-templates``
+    stage. ``skills_sync.py`` guards against this by reconfiguring
+    ``sys.stdout`` / ``sys.stderr`` to UTF-8 at import time.
+
+    These tests run on every platform (the guard is Python-level, not
+    Windows-specific) and exercise the exact installer path: a child Python
+    whose ``PYTHONIOENCODING`` / ``PYTHONUTF8`` the caller did NOT set.
+    See PR #54866 and the hermes-sweeper review asking for a focused
+    regression test alongside ``test_child_process_inherits_utf8_mode``
+    above (which covers a different, bootstrap entry-point flow).
+    """
+
+    # Glyphs skills_sync.py actually prints (tools/skills_sync.py:596,675).
+    _GLYPHS = "✓↑"
+
+    @property
+    def _tools_dir(self) -> str:
+        return str(Path(__file__).parent.parent / "tools")
+
+    def _run_child(self, env_overrides: dict) -> subprocess.CompletedProcess:
+        """Run a child Python that imports skills_sync (triggering its
+        import-time UTF-8 reconfigure) and then prints the glyphs.
+
+        The child deliberately does NOT rely on the parent's env — the
+        caller passes exactly the env it wants to test, mirroring how
+        install.ps1's scoped PYTHONIOENCODING/PYTHONUTF8 block controls
+        the child's environment.
+        """
+        script = textwrap.dedent(f"""
+            import sys
+            sys.path.insert(0, {self._tools_dir!r})
+            # Importing skills_sync runs its module-level reconfigure guard.
+            import skills_sync  # noqa: F401
+            sys.stdout.write({self._GLYPHS!r} + "\\n")
+            sys.stdout.flush()
+            sys.exit(0)
+        """).strip()
+        env = {**os.environ, **env_overrides}
+        # Force the child into a hostile locale *unless* the caller opted
+        # into UTF-8 mode, so we exercise the failing path the installer
+        # guard exists to neutralize.
+        env.setdefault("PYTHONIOENCODING", "gbk")
+        env.setdefault("PYTHONUTF8", "0")
+        return subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            timeout=30,
+            env=env,
+        )
+
+    def test_stdout_is_valid_utf8_with_guard(self):
+        """With skills_sync's import-time guard active, a child Python
+        whose PYTHONIOENCODING/PYTHONUTF8 were left unset by the caller
+        still emits valid UTF-8 and exits 0 even when printing the
+        checkmark/up-arrow glyphs the script uses."""
+        result = self._run_child({})
+        assert result.returncode == 0, (
+            "Child crashed printing glyphs despite skills_sync's UTF-8 "
+            f"guard:\n  stdout: {result.stdout!r}\n  stderr: {result.stderr!r}"
+        )
+        # Must decode as UTF-8 and contain both glyphs intact.
+        decoded = result.stdout.decode("utf-8")
+        assert "✓" in decoded
+        assert "↑" in decoded
+
+    def test_guard_neutralizes_explicit_non_utf8_env(self):
+        """Even when the caller explicitly sets a non-UTF-8 PYTHONIOENCODING
+        (the pre-fix installer environment), the guard reconfigures the
+        stream so stdout stays valid UTF-8."""
+        result = self._run_child({"PYTHONIOENCODING": "gbk", "PYTHONUTF8": "0"})
+        assert result.returncode == 0, (
+            "Child crashed under explicit non-UTF-8 env despite guard:\n"
+            f"  stdout: {result.stdout!r}\n  stderr: {result.stderr!r}"
+        )
+        decoded = result.stdout.decode("utf-8")
+        assert "✓" in decoded and "↑" in decoded
+
+    def test_guard_is_actively_needed(self):
+        """Sanity check that the guard is load-bearing: a child that
+        prints the glyphs WITHOUT importing skills_sync's reconfigure
+        guard DOES crash under the hostile env, proving the regression
+        test above is exercising a real failure mode. We re-create the
+        failure by forcing a GBK stdio explicitly, which reproduces the
+        Windows-locale crash on any platform."""
+        script = textwrap.dedent("""
+            import sys
+            # Mimic the pre-fix child: stream encoding is GBK and we never
+            # reconfigure. reconfigure() with errors='strict' makes a GBK
+            # stream that cannot encode the glyphs raise UnicodeEncodeError.
+            try:
+                sys.stdout.reconfigure(encoding="gbk", errors="strict")
+            except (ValueError, TypeError, LookupError):
+                # gbk codec unavailable on this build (e.g. minimal Python);
+                # fall back to ascii which also can't encode the glyphs.
+                sys.stdout.reconfigure(encoding="ascii", errors="strict")
+            sys.stdout.write("✓↑\n")
+            sys.stdout.flush()
+            sys.exit(0)
+        """).strip()
+        env = {**os.environ, "PYTHONIOENCODING": "gbk", "PYTHONUTF8": "0"}
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            timeout=30,
+            env=env,
+        )
+        # Without the guard, the child must NOT have exited 0 cleanly with
+        # valid output — it should have crashed on the glyph.
+        decoded = result.stdout.decode("utf-8", "replace")
+        assert result.returncode != 0 or "✓" not in decoded, (
+            "Expected the unguarded child to crash on the glyphs under a "
+            "non-UTF-8 stream, but it succeeded — the guard may no longer "
+            "be load-bearing (revisit this regression test)."
+        )

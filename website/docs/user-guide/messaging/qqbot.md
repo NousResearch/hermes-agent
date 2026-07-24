@@ -8,6 +8,7 @@ The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/deve
 
 - Receive messages via a persistent **WebSocket** connection to the QQ Gateway
 - Send text and markdown replies via the **REST API**
+- Send native images, voice, video, and file attachments in C2C and group chats
 - Download and process images, voice messages, and file attachments
 - Transcribe voice messages using Tencent's built-in ASR or a configurable STT provider
 
@@ -93,6 +94,24 @@ Voice transcription works in two stages:
    - **Zhipu/GLM (zai)**: Default provider, uses `glm-asr` model
    - **OpenAI Whisper**: Set `QQ_STT_BASE_URL` and `QQ_STT_MODEL`
    - Any OpenAI-compatible STT endpoint
+
+## Outbound media and files
+
+QQ Bot supports native image, voice, video, and file sends for C2C and group chats. Guild channels do not use this native upload path.
+
+Hermes chooses the upload strategy from the media source:
+
+| Source | Upload path | Notes |
+|---|---|---|
+| HTTP(S) URL | Single `POST /v2/{users|groups}/{id}/files` request | QQ fetches the URL directly. This is the fastest path when the media is already hosted. |
+| Local file path | Chunked upload: `upload_prepare`, COS part `PUT`s, `upload_part_finish`, then `/files` with `upload_id` | Used for local files above the inline upload size. Handles files up to the QQ platform per-file limit, approximately 100 MB. |
+
+Two upload failures are surfaced as non-retryable send errors so Hermes can reply clearly instead of looping:
+
+| QQ condition | Hermes behavior |
+|---|---|
+| Daily cumulative upload quota exceeded (`biz_code=40093002`) | Returns an error like `QQ daily upload limit exceeded for 'file' (...)`. Retry the next day. |
+| File exceeds the QQ per-file upload limit | Returns an error naming the file size and platform limit. Send a smaller file or host it somewhere and send a link. |
 
 ## Troubleshooting
 

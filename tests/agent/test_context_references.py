@@ -331,7 +331,14 @@ def test_defaults_allowed_root_to_cwd(tmp_path: Path):
 async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatch):
     from agent.context_references import preprocess_context_references_async
 
+    # The sensitive-path guard derives the home dir from os.path.expanduser,
+    # which reads USERPROFILE (then HOMEDRIVE+HOMEPATH) on Windows and HOME on
+    # POSIX. Pin all of them to tmp_path so the ~/.ssh block is actually tested
+    # on Windows instead of falling back to the real user profile.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     hermes_env = tmp_path / ".hermes" / ".env"

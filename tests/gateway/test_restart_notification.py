@@ -666,6 +666,27 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="active-42", chat_type="group", thread_id="topic-7")
+    session_key = build_session_key(source)
+
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True

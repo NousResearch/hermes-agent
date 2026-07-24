@@ -6,12 +6,11 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
 import {
   $attentionSessionIds,
-  $sessionStates,
+  $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
   getRecentlySettledSessionIds,
-  publishSessionState,
-  setWatchdogClearFn
+  publishSessionState
 } from './session-states'
 
 const WATCHDOG_MS = 8 * 60 * 1000
@@ -24,8 +23,6 @@ describe('session status transitions', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
-    // clearAllSessionStates also disarms watchdog timers + drops settle-grace
-    // entries, so no leftover state can leak in from a previous test.
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
@@ -45,25 +42,18 @@ describe('session status transitions', () => {
     const s = state({ busy: false, storedSessionId: 's1' })
     publishSessionState('rt1', s)
 
-    // idle → working
-    const next = { ...s, busy: true }
-    publishSessionState('rt1', next)
+    publishSessionState('rt1', { ...s, busy: true })
 
     expect($workingSessionIds.get()).toContain('s1')
   })
 
   it('removes a session from $workingSessionIds when busy transitions to false', () => {
-    const s = state({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', s)
-    // Simulate the working state being set
-    const working = { ...s, busy: true }
+    const working = state({ busy: true, storedSessionId: 's1' })
     publishSessionState('rt1', working)
 
     expect($workingSessionIds.get()).toContain('s1')
 
-    // Now transition to idle
-    const idle = { ...working, busy: false }
-    publishSessionState('rt1', idle)
+    publishSessionState('rt1', { ...working, busy: false })
 
     expect($workingSessionIds.get()).not.toContain('s1')
   })
@@ -72,77 +62,63 @@ describe('session status transitions', () => {
     const s = state({ busy: true, needsInput: false, storedSessionId: 's1' })
     publishSessionState('rt1', s)
 
-    const next = { ...s, needsInput: true }
-    publishSessionState('rt1', next)
+    publishSessionState('rt1', { ...s, needsInput: true })
 
     expect($attentionSessionIds.get()).toContain('s1')
   })
 
   it('marks a background session unread when its turn finishes', () => {
     $selectedStoredSessionId.set('other-session')
-
     const working = state({ busy: true, storedSessionId: 's1' })
     publishSessionState('rt1', working)
 
-    const idle = { ...working, busy: false }
-    publishSessionState('rt1', idle)
+    publishSessionState('rt1', { ...working, busy: false })
 
     expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
   })
 
   it('does NOT mark unread when the finishing session is the active one', () => {
     $selectedStoredSessionId.set('s1')
-
     const working = state({ busy: true, storedSessionId: 's1' })
     publishSessionState('rt1', working)
 
-    const idle = { ...working, busy: false }
-    publishSessionState('rt1', idle)
+    publishSessionState('rt1', { ...working, busy: false })
 
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 
   it('does NOT mark unread on idle→idle re-asserts (no prior working state)', () => {
     $selectedStoredSessionId.set('other-session')
-
-    const idle = state({ busy: false, storedSessionId: 's1' })
-    publishSessionState('rt1', idle)
+    publishSessionState('rt1', state({ busy: false, storedSessionId: 's1' }))
 
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 
   it('grants settle grace when a working session goes idle', () => {
     $selectedStoredSessionId.set('other')
-
     const working = state({ busy: true, storedSessionId: 's1' })
     publishSessionState('rt1', working)
 
-    const idle = { ...working, busy: false }
-    publishSessionState('rt1', idle)
+    publishSessionState('rt1', { ...working, busy: false })
 
     expect(getRecentlySettledSessionIds()).toEqual(['s1'])
   })
 
   it('does not grant grace on idle→idle re-asserts', () => {
-    const idle = state({ busy: false, storedSessionId: 's1' })
-    publishSessionState('rt1', idle)
+    publishSessionState('rt1', state({ busy: false, storedSessionId: 's1' }))
     expect(getRecentlySettledSessionIds()).toEqual([])
   })
 
   it('clears settle grace when the session goes busy again', () => {
     $selectedStoredSessionId.set('other')
-
     const working = state({ busy: true, storedSessionId: 's2' })
     publishSessionState('rt1', working)
-
     const idle = { ...working, busy: false }
     publishSessionState('rt1', idle)
 
     expect(getRecentlySettledSessionIds()).toEqual(['s2'])
 
-    // New turn for the same session
-    const workingAgain = { ...idle, busy: true }
-    publishSessionState('rt1', workingAgain)
+    publishSessionState('rt1', { ...idle, busy: true })
 
     expect(getRecentlySettledSessionIds()).toEqual([])
   })
@@ -166,67 +142,61 @@ describe('session watchdog', () => {
     $activeSessionId.set(null)
   })
 
-  it('drops a stuck session from $workingSessionIds once the silence window elapses', () => {
-    // Wire a clear fn like use-session-state-cache does in the real app: the
-    // watchdog hands us the runtime id, we publish the busy:false state.
-    const clearedRuntimeIds: string[] = []
-    setWatchdogClearFn(runtimeId => {
-      clearedRuntimeIds.push(runtimeId)
-      const current = $sessionStates.get()[runtimeId]
+  it('marks a silent session stalled without pretending it finished', () => {
+    publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
 
-      if (current) {
-        publishSessionState(runtimeId, { ...current, busy: false, needsInput: false })
-      }
-    })
-
-    const working = state({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', working)
+    vi.advanceTimersByTime(WATCHDOG_MS)
 
     expect($workingSessionIds.get()).toContain('s1')
-
-    // Watchdog fires after 8 min of silence → the wired clear fn runs and the
-    // computed working set drops the session. This asserts the timer→callback
-    // wiring, not just the projection.
-    vi.advanceTimersByTime(WATCHDOG_MS)
-
-    expect(clearedRuntimeIds).toEqual(['rt1'])
-    expect($workingSessionIds.get()).not.toContain('s1')
-
-    setWatchdogClearFn(null)
+    expect($stalledSessionIds.get()).toContain('s1')
   })
 
-  it('never fires for a session that settles before the window', () => {
-    const clearedRuntimeIds: string[] = []
-    setWatchdogClearFn(runtimeId => clearedRuntimeIds.push(runtimeId))
-
+  it('clears stalled on new activity and rearms the watchdog', () => {
     const working = state({ busy: true, storedSessionId: 's2' })
     publishSessionState('rt2', working)
-
-    // Session settles before the watchdog window
-    const idle = { ...working, busy: false }
-    publishSessionState('rt2', idle)
-
     vi.advanceTimersByTime(WATCHDOG_MS)
+    expect($stalledSessionIds.get()).toContain('s2')
 
-    // The watchdog was disarmed — the clear fn never ran.
-    expect(clearedRuntimeIds).toEqual([])
-    expect($workingSessionIds.get()).not.toContain('s2')
+    publishSessionState('rt2', { ...working, awaitingResponse: true })
+    expect($stalledSessionIds.get()).not.toContain('s2')
 
-    setWatchdogClearFn(null)
+    vi.advanceTimersByTime(WATCHDOG_MS - 1)
+    expect($stalledSessionIds.get()).not.toContain('s2')
+    expect($workingSessionIds.get()).toContain('s2')
   })
 
-  it('does not fire after clearAllSessionStates disarms every timer', () => {
-    const clearedRuntimeIds: string[] = []
-    setWatchdogClearFn(runtimeId => clearedRuntimeIds.push(runtimeId))
+  it('clears both running and stalled on an authoritative terminal transition', () => {
+    const working = state({ busy: true, storedSessionId: 's3' })
+    publishSessionState('rt3', working)
+    vi.advanceTimersByTime(WATCHDOG_MS)
+    expect($stalledSessionIds.get()).toContain('s3')
 
-    publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
-    clearAllSessionStates()
+    publishSessionState('rt3', { ...working, busy: false })
 
+    expect($workingSessionIds.get()).not.toContain('s3')
+    expect($stalledSessionIds.get()).not.toContain('s3')
+  })
+
+  it('never marks a session stalled when it settles before the window', () => {
+    const working = state({ busy: true, storedSessionId: 's4' })
+    publishSessionState('rt4', working)
+    publishSessionState('rt4', { ...working, busy: false })
     vi.advanceTimersByTime(WATCHDOG_MS)
 
-    expect(clearedRuntimeIds).toEqual([])
+    expect($workingSessionIds.get()).not.toContain('s4')
+    expect($stalledSessionIds.get()).not.toContain('s4')
+  })
 
-    setWatchdogClearFn(null)
+  it('clears stalled state and disarms timers on a gateway wipe', () => {
+    publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
+    vi.advanceTimersByTime(WATCHDOG_MS)
+    expect($stalledSessionIds.get()).toEqual(['s1'])
+
+    clearAllSessionStates()
+    vi.advanceTimersByTime(WATCHDOG_MS)
+
+    expect($workingSessionIds.get()).toEqual([])
+    expect($stalledSessionIds.get()).toEqual([])
   })
 })
 

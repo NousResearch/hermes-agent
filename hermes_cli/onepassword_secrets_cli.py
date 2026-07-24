@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,7 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
 )
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 _DOCS_URL = "https://developer.1password.com/docs/cli/get-started/"
@@ -70,6 +72,21 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
 
     status = sub.add_parser("status", help="Show config + op binary + references")
     status.set_defaults(func=cmd_status)
+
+    token = sub.add_parser(
+        "token",
+        help="Rotate the service-account token: validate and store it in .env",
+    )
+    token.add_argument(
+        "--token",
+        help="Provide the new token non-interactively (default: masked prompt)",
+    )
+    token.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Store without probing 1Password first (not recommended)",
+    )
+    token.set_defaults(func=cmd_token)
 
     set_p = sub.add_parser("set", help="Map an env var to an op:// reference")
     set_p.add_argument("env_var", help="Environment variable name, e.g. OPENAI_API_KEY")
@@ -282,6 +299,68 @@ def cmd_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_token(args: argparse.Namespace) -> int:
+    """Rotate the 1Password service-account token without the full setup flow.
+
+    Prompts for (or accepts via ``--token``) a new service-account token,
+    verifies it with ``op whoami`` (unless ``--no-verify``), and only then
+    persists it to .env — so a bad paste never bricks the working token.
+    """
+    console = Console()
+    cfg = load_config()
+    op_cfg = (cfg.get("secrets") or {}).get("onepassword") or {}
+    token_env = op_cfg.get("service_account_token_env", _DEFAULT_TOKEN_ENV)
+    account = str(op_cfg.get("account", "") or "").strip()
+    binary_path = str(op_cfg.get("binary_path", "") or "").strip()
+
+    token = (args.token or "").strip()
+    if not token:
+        if not sys.stdin.isatty():
+            console.print("[red]No TTY — pass the token with --token.[/red]")
+            return 1
+        console.print(
+            "Create a new service-account token at "
+            "https://my.1password.com → Developer → Service Accounts.\n"
+        )
+        token = masked_secret_prompt(f"Paste new token ({token_env}): ").strip()
+    if not token:
+        console.print("[red]Empty token, aborting.[/red]")
+        return 1
+
+    if not args.no_verify:
+        binary = op_src.find_op(binary_path)
+        if binary is None:
+            console.print(
+                f"[red]op CLI not found — install it ({_DOCS_URL}) or "
+                "re-run with --no-verify to store anyway.[/red]"
+            )
+            return 1
+        console.print("Verifying with `op whoami`…")
+        who = _op_whoami(binary, account, token_value=token)
+        if who is None:
+            console.print(
+                "[red]✗ New token was rejected by op — nothing was changed.[/red]"
+            )
+            return 1
+        console.print(f"[green]✓ Token accepted[/green] ({who}).")
+
+    save_env_value(token_env, token)
+    os.environ[token_env] = token
+    # Cached resolutions are keyed on the previous token's fingerprint;
+    # drop them so the next startup resolves fresh with the new credential.
+    op_src.clear_caches()
+    console.print(
+        f"[green]✓[/green] stored in {get_env_path()} as {token_env}.  "
+        "Takes effect on the next Hermes invocation."
+    )
+    if not op_cfg.get("enabled"):
+        console.print(
+            "[yellow]Note: the 1Password integration is currently disabled — "
+            "run `hermes secrets onepassword setup` to turn it on.[/yellow]"
+        )
+    return 0
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     console = Console()
     cfg = load_config()
@@ -417,13 +496,26 @@ def _op_version(binary: Path) -> str:
     return "version unknown"
 
 
-def _op_whoami(binary: Path, account: str) -> Optional[str]:
-    """Return a short identity string if op is authenticated, else None."""
+def _op_whoami(
+    binary: Path, account: str, *, token_value: str = ""
+) -> Optional[str]:
+    """Return a short identity string if op is authenticated, else None.
+
+    ``token_value``, when given, is passed to the child as
+    ``OP_SERVICE_ACCOUNT_TOKEN`` so a candidate token can be probed
+    without touching the caller's environment.
+    """
     cmd = [str(binary), "whoami"]
     if account:
         cmd += ["--account", account]
+    env = os.environ.copy()
+    env.setdefault("NO_COLOR", "1")
+    if token_value:
+        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        res = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=10
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if res.returncode != 0:

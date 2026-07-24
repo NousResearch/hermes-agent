@@ -33,10 +33,10 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # Terminal + process management
     "terminal", "process",
-    # Read the desktop GUI's embedded terminal pane, and close an agent's
-    # read-only terminal tab (both gated on HERMES_DESKTOP via check_fn —
-    # hidden outside the GUI).
-    "read_terminal", "close_terminal",
+    # Desktop GUI affordances: read the embedded terminal pane, close an agent's
+    # read-only terminal tab, open a URL/file in the preview pane, and focus a
+    # pane (all gated on HERMES_DESKTOP via check_fn — hidden outside the GUI).
+    "read_terminal", "close_terminal", "open_preview", "focus_pane",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation

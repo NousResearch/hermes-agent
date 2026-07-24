@@ -7,7 +7,7 @@ description: >-
 
 inputs:
   github-token:
-    description: Token for the GitHub API (gh CLI). Pass secrets.AUTOFIX_BOT_PAT from the calling workflow.
+    description: Token for the GitHub API (gh CLI). Pass steps.app-token.outputs.token from the calling workflow.
     required: false
     default: ${{ github.token }}
 
@@ -39,6 +39,9 @@ outputs:
   ci_review:
     description: Require CI-sensitive file review label.
     value: ${{ steps.classify.outputs.ci_review }}
+  ci_review_files:
+    description: JSON list of CI-sensitive files changed by the pull request.
+    value: ${{ steps.classify.outputs.ci_review_files }}
 
 runs:
   using: composite
@@ -72,12 +75,19 @@ runs:
           # Retried: a rate-limit blip or eventual-consistency 404 on a
           # freshly-pushed HEAD would otherwise silently fall open (all lanes
           # run — safe, but wasteful and it masks the API failure).
+          #
+          # `.files[]?` (null-safe): with --paginate, a PR more than 100
+          # commits ahead of its merge-base paginates the compare, and pages
+          # after the first carry `files: null` — bare `.files[]` makes jq
+          # die with "cannot iterate over: null", which fails every retry
+          # and forces the fail-open path (seen on stacked PRs). The full
+          # file list (up to the API's 300-file cap) is on page one.
           CHANGED=""
           for i in 1 2 3; do
             if CHANGED="$(gh api \
               --paginate \
               "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
-              --jq '.files[].filename')"; then
+              --jq '.files[]?.filename')"; then
               break
             fi
             if [ "$i" = 3 ]; then

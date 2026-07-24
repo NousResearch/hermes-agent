@@ -21,7 +21,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem
 } from '@/components/ui/sidebar'
-import { TipKeybindLabel } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -716,7 +716,7 @@ export function ChatSidebar({
   // session settles (its turn finished) or the window refocuses (an external
   // terminal may have changed things) — only while a project is entered, and
   // only the cheap per-repo `git worktree list`, never the heavy tree scan.
-  const prevWorkingIdsRef = useRef<string[]>(workingSessionIds)
+  const prevWorkingIdsRef = useRef<readonly string[]>(workingSessionIds)
 
   useEffect(() => {
     const prev = prevWorkingIdsRef.current
@@ -1315,59 +1315,65 @@ export function ChatSidebar({
                         scoped
                       />
                       <div className="grid size-6 place-items-center">
-                        <Button
-                          aria-label={s.showProjects}
-                          className={HEADER_NAV_BTN}
-                          onClick={event => {
-                            event.stopPropagation()
-                            exitProjectScope()
-                          }}
-                          size="icon-xs"
-                          variant="ghost"
-                        >
-                          <Codicon name="list-unordered" size="0.75rem" />
-                        </Button>
+                        <Tip label={s.showProjects}>
+                          <Button
+                            aria-label={s.showProjects}
+                            className={HEADER_NAV_BTN}
+                            onClick={event => {
+                              event.stopPropagation()
+                              exitProjectScope()
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name="list-unordered" size="0.75rem" />
+                          </Button>
+                        </Tip>
                       </div>
                     </div>
                   ) : (
                     <div className="flex shrink-0 items-center gap-0.5">
                       {!showAllProfiles ? (
-                        <Button
-                          aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                          className={HEADER_ACTION_BTN}
-                          onClick={event => {
-                            event.stopPropagation()
-
-                            if (agentsGrouped) {
-                              openProjectCreate()
-                            } else {
-                              onNewSessionInWorkspace(null)
-                            }
-                          }}
-                          size="icon-xs"
-                          variant="ghost"
-                        >
-                          <Codicon name="add" size="0.75rem" />
-                        </Button>
-                      ) : null}
-                      <div className="grid size-6 place-items-center">
-                        {!showAllProfiles && agentSessions.length > 0 ? (
+                        <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
                           <Button
-                            aria-label={agentsGrouped ? s.showSessions : s.showProjects}
-                            className={cn(
-                              HEADER_NAV_BTN,
-                              agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                            )}
+                            aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                            className={HEADER_ACTION_BTN}
                             onClick={event => {
                               event.stopPropagation()
-                              setSidebarRecentsOpen(true)
-                              setSidebarAgentsGrouped(!agentsGrouped)
+
+                              if (agentsGrouped) {
+                                openProjectCreate()
+                              } else {
+                                onNewSessionInWorkspace(null)
+                              }
                             }}
                             size="icon-xs"
                             variant="ghost"
                           >
-                            <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                            <Codicon name="add" size="0.75rem" />
                           </Button>
+                        </Tip>
+                      ) : null}
+                      <div className="grid size-6 place-items-center">
+                        {!showAllProfiles && agentSessions.length > 0 ? (
+                          <Tip label={agentsGrouped ? s.showSessions : s.showProjects}>
+                            <Button
+                              aria-label={agentsGrouped ? s.showSessions : s.showProjects}
+                              className={cn(
+                                HEADER_NAV_BTN,
+                                agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                              )}
+                              onClick={event => {
+                                event.stopPropagation()
+                                setSidebarRecentsOpen(true)
+                                setSidebarAgentsGrouped(!agentsGrouped)
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                            </Button>
+                          </Tip>
                         ) : null}
                       </div>
                     </div>

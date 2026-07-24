@@ -10,10 +10,7 @@ interface WindowsSystemCaResult {
   error?: string
 }
 
-function installWindowsSystemCaTrust(
-  tlsApi: NodeTlsCaApi,
-  platform = process.platform
-): WindowsSystemCaResult {
+function installWindowsSystemCaTrust(tlsApi: NodeTlsCaApi, platform = process.platform): WindowsSystemCaResult {
   if (platform !== 'win32') {
     return {
       applied: false,

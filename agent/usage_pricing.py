@@ -179,6 +179,23 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
         pricing_version="anthropic-pricing-2026-05",
     ),
+    # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
+    # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
+    # through 2026-08-31, after which it reverts to $3/$15 (matching
+    # Sonnet 4.6). Update this entry when the intro window closes.
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        cache_write_cost_per_million=Decimal("2.50"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-06-intro",
+    ),
     # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
     # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
     # tokens for the same text).
@@ -528,17 +545,59 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # Bedrock charges the same per-token rates as the model provider but
     # through AWS billing.  These are the on-demand prices (no commitment).
     # Source: https://aws.amazon.com/bedrock/pricing/
+    # Current-gen Claude Opus on Bedrock. Commercial Bedrock on-demand
+    # mirrors Anthropic's published list price for the Claude line
+    # ($5/$25 for Opus 4.6/4.7/4.8; cache write = 1.25x input at the
+    # 5-minute TTL, cache read = 0.1x input). NOTE: the AWS Price List API
+    # had not published these SKUs machine-readably as of 2026-07 — these
+    # are commercial-list snapshots pending an authoritative machine source.
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-8",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="anthropic-list-2026-07",
+    ),
     (
         "bedrock",
         "anthropic.claude-opus-4-6",
     ): PricingEntry(
-        input_cost_per_million=Decimal("15.00"),
-        output_cost_per_million=Decimal("75.00"),
-        cache_read_cost_per_million=Decimal("1.50"),
-        cache_write_cost_per_million=Decimal("18.75"),
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
-        pricing_version="bedrock-pricing-2026-04",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-06",
     ),
     (
         "bedrock",
@@ -884,19 +943,40 @@ def _normalize_bedrock_model_name(model: str) -> str:
     """Normalize a Bedrock model id to its bare foundation-model form.
 
     Bedrock cross-region inference profiles prefix the foundation model id
-    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``ap.`` / ``jp.``),
-    e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
-    bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
-    lookup or every cross-region session prices as unknown.  Mirrors the
-    prefix list in ``bedrock_adapter.is_anthropic_bedrock_model``.  Also
-    normalizes dot-notation version numbers (``4.7`` → ``4-7``).
+    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``apac.`` / ``au.``
+    / ...), e.g. ``us.anthropic.claude-opus-4-7`` or
+    ``au.anthropic.claude-sonnet-4-5-20250929-v1:0``.  The pricing table is
+    keyed on the bare ``anthropic.claude-*`` id, so the prefix must be
+    stripped before the lookup or every cross-region session prices as
+    unknown.  Note Asia-Pacific uses ``apac.`` (a bare ``ap.`` never matches
+    an ``apac.*`` id) and Australia/New Zealand use ``au.``.  Also normalizes
+    dot-notation version numbers (``4.7`` → ``4-7``) and the documented
+    trailing date, revision, and profile components (``-20250514-v1:0``).
     """
     name = model.lower().strip()
-    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+    for prefix in (
+        "global.",
+        "us.",
+        "eu.",
+        "apac.",
+        "ap.",
+        "au.",
+        "jp.",
+        "ca.",
+        "sa.",
+        "me.",
+        "af.",
+    ):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
     name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    # Bedrock inference profile IDs append these documented components to the
+    # foundation model ID. Strip only the trailing forms, not arbitrary model
+    # name continuations that could be a distinct SKU.
+    name = re.sub(r":\d+$", "", name)
+    name = re.sub(r"-v\d+$", "", name)
+    name = re.sub(r"-\d{8}$", "", name)
     return name
 
 

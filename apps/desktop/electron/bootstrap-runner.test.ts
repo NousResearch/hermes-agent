@@ -11,11 +11,15 @@ import {
   cachedScriptPath,
   hasExistingGitCheckout,
   installedAgentInstallScript,
+  installRefForStamp,
+  isPinnedCommit,
   resolveInstallScript,
+  resolveMarkerPinnedCommit,
   runBootstrap
 } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
+const ZERO_COMMIT = '0000000000000000000000000000000000000000'
 
 function mkTmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-test-'))
@@ -104,6 +108,84 @@ test('existing-checkout bootstrap args keep branch but skip the packaged commit 
     }),
     ['--dir', '/tmp/hermes-agent', '--hermes-home', '/tmp/hermes', '--branch', 'main']
   )
+})
+
+test('fallback install stamps use an unpinned branch ref', () => {
+  const stamp = { commit: ZERO_COMMIT, branch: 'main' }
+
+  assert.equal(isPinnedCommit(ZERO_COMMIT), false)
+  assert.deepEqual(installRefForStamp(stamp), {
+    ref: 'main',
+    cacheKey: 'fallback-main',
+    pinned: false
+  })
+  // Must NOT pass -Commit / --commit for the all-zero placeholder.
+  assert.deepEqual(buildPinArgs(stamp), ['-Branch', 'main'])
+  assert.deepEqual(
+    buildPosixPinArgs({
+      installStamp: stamp,
+      activeRoot: '/tmp/hermes',
+      hermesHome: '/tmp/home'
+    }),
+    ['--dir', '/tmp/hermes', '--hermes-home', '/tmp/home', '--branch', 'main']
+  )
+})
+
+test('resolveMarkerPinnedCommit prefers real HEAD over fallback stamp zeros', () => {
+  const realHead = 'c'.repeat(40)
+  assert.equal(
+    resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/checkout', {
+      resolveHead: () => realHead
+    }),
+    realHead
+  )
+  assert.equal(
+    resolveMarkerPinnedCommit({ commit: 'd'.repeat(40), branch: 'main' }, '/tmp/checkout', {
+      resolveHead: () => realHead
+    }),
+    'd'.repeat(40),
+    'packaged real pin wins over checkout HEAD'
+  )
+  assert.equal(
+    resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/missing', {
+      resolveHead: () => null
+    }),
+    null
+  )
+})
+
+test('resolveInstallScript downloads fallback stamps by branch instead of zero commit', async () => {
+  const home = mkTmpHome()
+
+  try {
+    const logs = []
+    const refs = []
+
+    const result = await resolveInstallScript({
+      installStamp: { commit: ZERO_COMMIT, branch: 'main' },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: ev => logs.push(ev),
+      _download: async (ref, destPath) => {
+        refs.push(ref)
+        fs.mkdirSync(path.dirname(destPath), { recursive: true })
+        fs.writeFileSync(destPath, '#!/bin/sh\necho fallback branch\n')
+
+        return destPath
+      }
+    })
+
+    assert.deepEqual(refs, ['main'])
+    assert.equal(result.source, 'download')
+    assert.equal(result.commit, null)
+    assert.equal(result.path, cachedScriptPath(home, 'fallback-main'))
+    assert.ok(
+      logs.some(ev => /fallback, unpinned/.test(ev.line || '')),
+      'emits an unpinned fallback log line'
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('resolveInstallScript prefers a cached script without touching the network', async () => {

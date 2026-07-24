@@ -350,7 +350,7 @@ def test_console_registry_covers_non_admin_cli_surface():
         "oneshot hello",
         "model",
         "setup",
-        "postinstall",
+
         "fallback add",
         "moa configure",
         "claw migrate",
@@ -404,18 +404,21 @@ def test_help_lists_supported_commands_and_not_full_cli():
 def test_config_set_requires_confirmation_then_writes(_isolate_hermes_home):
     engine = HermesConsoleEngine()
 
-    pending = engine.execute("config set console.test true")
+    # Use a schema-known key path. Since #34067, `config set` refuses unknown
+    # top-level keys, so this flow test must target a valid path (telegram is a
+    # PlatformConfig-shaped dict that accepts arbitrary child keys).
+    pending = engine.execute("config set telegram.test true")
     assert pending.status == "confirm_required"
 
     from hermes_cli.config import read_raw_config
 
     assert read_raw_config() == {}
 
-    result = engine.execute("config set console.test true", confirmed=True)
+    result = engine.execute("config set telegram.test true", confirmed=True)
 
     assert result.status == "ok"
-    assert "console.test" in result.output
-    assert read_raw_config()["console"]["test"] is True
+    assert "telegram.test" in result.output
+    assert read_raw_config()["telegram"]["test"] is True
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):

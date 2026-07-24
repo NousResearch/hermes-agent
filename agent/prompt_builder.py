@@ -58,6 +58,14 @@ def _scan_context_content(content: str, filename: str) -> str:
     BLOCKED at this layer because the file would otherwise enter the
     system prompt verbatim and the user has no chance to intervene.
     """
+    # Editors (Windows Notepad, PowerShell Out-File without -Encoding
+    # utf8NoBOM, some VS Code profiles) prefix a UTF-8 BOM as an encoding
+    # artifact, not a prompt injection. Strip a leading U+FEFF silently so a
+    # context file (SOUL.md, AGENTS.md, ...) is not blocked wholesale; BOMs
+    # elsewhere in the content remain subject to the threat scan below.
+    if content.startswith("\ufeff"):
+        content = content[1:]
+
     findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
@@ -184,7 +192,13 @@ SKILLS_GUIDANCE = (
     "skill with skill_manage so you can reuse it next time.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "Skills that aren't maintained become liabilities.\n"
+    "\n"
+    "## Skill Safety Rule\n"
+    "1. **UNAVAILABLE** — If a skill placeholder contains `[SKILL_PRUNED]`, the skill content was lost in compression and is inaccessible.\n"
+    "2. **RELOAD** — Before performing any action that depends on a skill, re-check its content with `skill_view(name='...')` if it shows `[SKILL_PRUNED]`.\n"
+    "3. **WAIT** — If a skill is loading or was just pruned, wait for the reload confirmation before proceeding.\n"
+    "4. **DEDUP** — After reloading a pruned skill, **ignore any remaining `[SKILL_PRUNED]` markers for that same skill** — they are historical artifacts from previous compactions and do not need further action."
 )
 
 KANBAN_GUIDANCE = (
@@ -549,6 +563,29 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         "4. After any state-changing action, re-capture to verify. You can "
         "pass `capture_after=true` to get the follow-up screenshot in one "
         "round-trip.\n\n"
+        "## Verify → escalate ladder (background-first, NOT background-only)\n"
+        "Background delivery is the DEFAULT and the co-work path, but it is "
+        "the first rung, not the only one. Read each action's structured "
+        "result and climb only when the driver tells you to:\n"
+        "- `effect: 'confirmed'` + `verified: true` — the driver read the "
+        "result back. Done.\n"
+        "- `effect: 'unverifiable'` — the input was delivered but the driver "
+        "can't confirm it. Re-capture and check the screenshot/tree yourself "
+        "before deciding it worked.\n"
+        "- `effect: 'suspected_noop'`, `code: 'background_unavailable'`, or an "
+        "`escalation.recommended` field — the action did NOT land. Follow "
+        "`escalation.recommended`:\n"
+        "  - `'px'` → re-issue addressing the target by `coordinate=[x,y]` "
+        "read off the screenshot instead of `element`.\n"
+        "  - `'foreground'` (or a pixel click still didn't land) → re-issue "
+        "the SAME action with `delivery_mode='foreground'`. This briefly "
+        "raises the window; it needs its own approval and is only appropriate "
+        "when the user isn't actively working. Common for Electron/Chromium "
+        "consent dialogs, DirectInput games, and raw-input canvases.\n"
+        "- Escalate to foreground as a REACTION to a returned signal, never "
+        "as a prediction from the app being Electron/Chromium/GTK. Do not "
+        "silently retry the same rung expecting a different result, and do "
+        "not conclude 'cua-driver can't drive this app' — climb the ladder.\n\n"
         "## Background mode rules\n"
         "- Do NOT use `raise_window=true` on `focus_app` unless the user "
         "explicitly asked you to bring a window to front. Input routing to "
@@ -774,8 +811,19 @@ PLATFORM_HINTS = {
     ),
     "matrix": (
         "You are in a Matrix room communicating with your user. "
-        "Matrix renders Markdown — bold, italic, code blocks, and links work; "
-        "the adapter converts your Markdown to HTML for rich display. "
+        "The adapter converts your Markdown to HTML for rich display — bold, "
+        "italic, inline code, fenced code blocks, headings, bullet and "
+        "numbered lists, blockquotes, and links all render.\n\n"
+        "Do NOT use Markdown tables: many popular Matrix clients (Element X, "
+        "Beeper, most mobile apps) do not render HTML tables, so the cells "
+        "collapse into one continuous run of text. Present tabular data as "
+        "labeled '**Label:** value' lines or bullet lists instead.\n\n"
+        "Avoid ||spoiler|| tags, ~~strikethrough~~, and checkboxes "
+        "(- [ ] / - [x]) — they are not converted and appear as literal "
+        "characters.\n\n"
+        "LINKS: prefer [descriptive link text](url) over bare URLs. When "
+        "referencing something with an associated URL (events, sources, "
+        "people), make the name a clickable link.\n\n"
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.jpg, .png, .webp) are sent as inline photos, "
         "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "
@@ -842,7 +890,14 @@ PLATFORM_HINTS = {
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
         "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural."
+        "brief and natural. "
+        "File/media delivery: images referenced as MEDIA:/absolute/path tags "
+        "(.png/.jpg/.jpeg/.gif/.webp/.bmp, up to 5MB) are inlined as base64 data "
+        "URLs in responses on the chat, completions, and responses endpoints. "
+        "Non-image files are NOT intercepted anywhere, and the runs endpoint "
+        "intercepts nothing — a MEDIA: tag there renders as literal text exposing "
+        "a raw host filesystem path. For those cases, state the plain file path "
+        "in your response text instead of a MEDIA: tag."
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "

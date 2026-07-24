@@ -998,7 +998,8 @@ Two shapes:
 Roles:
 
 - `role="leaf"` (default) — focused worker. Cannot call `delegate_task`,
-  `clarify`, `memory`, `send_message`, `execute_code`.
+  `clarify`, `memory`, `send_message`, `cronjob`. Retains `execute_code`
+  (programmatic tool calling).
 - `role="orchestrator"` — retains `delegate_task` so it can spawn its
   own workers. Gated by `delegation.orchestrator_enabled` (default true)
   and bounded by `delegation.max_spawn_depth` (default 2).

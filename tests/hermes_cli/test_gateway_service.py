@@ -421,7 +421,7 @@ class TestRequireServiceInstalled:
 
 class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:
-        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
+        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 30))
         return f"TimeoutStopSec={timeout}"
 
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
@@ -437,9 +437,8 @@ class TestGeneratedSystemdUnits:
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
-        # TimeoutStopSec must exceed the default drain_timeout (60s) so
-        # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
-        # (tool subprocess kill, adapter disconnect) runs — issue #8202.
+        # The default drain is immediate, so keep a bounded 60-second stop
+        # budget without forcing every restart to wait 90 seconds.
         assert self._expected_timeout_stop_sec() in unit
         # ExecStopPost reaps any process the gateway didn't clean up itself,
         # so long-lived helpers (e.g. adb) can't be left orphaned in the
@@ -449,6 +448,13 @@ class TestGeneratedSystemdUnits:
         # KillMode=mixed is preserved so the gateway still reaps its own
         # tool-call children before systemd SIGKILLs the cgroup — #8202.
         assert "KillMode=mixed" in unit
+
+    def test_user_unit_adds_cleanup_headroom_to_positive_drain_timeout(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 45)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "TimeoutStopSec=75" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -549,9 +555,8 @@ class TestGeneratedSystemdUnits:
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
-        # TimeoutStopSec must exceed the default drain_timeout (60s) so
-        # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
-        # (tool subprocess kill, adapter disconnect) runs — issue #8202.
+        # The default drain is immediate, so keep a bounded 60-second stop
+        # budget without forcing every restart to wait 90 seconds.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
         # ExecStopPost reaps any process the gateway didn't clean up itself,

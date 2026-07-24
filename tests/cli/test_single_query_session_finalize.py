@@ -174,7 +174,9 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
             calls.append("advisories")
 
         def chat(self, query, images=None):
-            calls.append(("chat", query, images))
+            calls.append(
+                ("chat", query, images, self._skip_memory_prefetch_after_turn)
+            )
             return "done"
 
         def _print_exit_summary(self, clear_screen=True):
@@ -194,7 +196,7 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         ("claim", "cli", False),
         "query-label",
         "advisories",
-        ("chat", "hello", None),
+        ("chat", "hello", None, True),
         "summary",
         ("finalize", "single-query-session"),
     ]
@@ -202,10 +204,12 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
 
 def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
     calls = []
+    agents = []
 
     import cli as cli_mod
 
     def run_conversation(*, user_message, conversation_history):
+        calls.append(("prefetch-skip", agents[0]._skip_memory_prefetch_after_turn))
         calls.append(("run", user_message, conversation_history))
         return {
             "final_response": "",
@@ -229,6 +233,7 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
                 tool_gen_callback=object(),
                 run_conversation=run_conversation,
             )
+            agents.append(self.agent)
 
         def _claim_active_session(self, surface, *, stderr=False):
             calls.append(("claim", surface, stderr))
@@ -266,5 +271,6 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
 
     assert exc_info.value.code == 1
     assert ("claim", "cli", True) in calls
+    assert ("prefetch-skip", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")

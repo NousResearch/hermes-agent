@@ -91,6 +91,24 @@ class TestSyncExternalMemoryForTurn:
             session_id="test_session_001",
         )
 
+    def test_completed_turn_can_skip_prefetch_for_one_shot_sessions(self):
+        """One-shot CLI sessions persist the turn without warming a next turn."""
+        agent = _bare_agent()
+        agent._skip_memory_prefetch_after_turn = True
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="What's the weather in Paris?",
+            final_response="It's sunny and 22°C.",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "What's the weather in Paris?",
+            "It's sunny and 22°C.",
+            session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
     def test_completed_turn_syncs_messages_when_present(self):
         agent = _bare_agent()
         messages = [

@@ -2105,6 +2105,13 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
 
 
 def _worker_run_id_for(task_id: str) -> Optional[int]:
+    # Use ContextVar to verify ownership (#70809).
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+        if not is_kanban_worker_owner():
+            return None
+    except Exception:
+        pass
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")

@@ -103,7 +103,19 @@ def apply_anthropic_cache_control(
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+        sys_content = messages[0].get("content")
+        # Skip if the system message already carries cache_control markers
+        # (e.g. from build_system_prompt_as_content_blocks which places a
+        # breakpoint on the stable block for cross-session caching).
+        _already_marked = (
+            isinstance(sys_content, list)
+            and any(
+                isinstance(b, dict) and b.get("cache_control")
+                for b in sys_content
+            )
+        )
+        if not _already_marked:
+            _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
     remaining = 4 - breakpoints_used

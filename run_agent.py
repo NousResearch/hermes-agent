@@ -3432,7 +3432,15 @@ class AIAgent:
         """
         self._last_activity_ts = time.time()
         self._last_activity_desc = desc
-        if os.environ.get("HERMES_KANBAN_TASK"):
+        # Use the verified ContextVar instead of raw env so a nested
+        # ``hermes chat`` subprocess that inherited HERMES_KANBAN_* env
+        # vars never heartbeats as the parent owner (#70809).
+        try:
+            from agent.delegation_context import is_kanban_worker_owner as _is_owner
+            _should_heartbeat = _is_owner()
+        except Exception:
+            _should_heartbeat = bool(os.environ.get("HERMES_KANBAN_TASK"))
+        if _should_heartbeat:
             try:
                 from tools.kanban_tools import heartbeat_current_worker_from_env
                 heartbeat_current_worker_from_env()

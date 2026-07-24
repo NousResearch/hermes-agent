@@ -1974,9 +1974,19 @@ def _check_send_message():
     summary), which is the canonical pattern for any worker that needs to
     reply with more than the ~200-char first-line truncation the kanban
     notifier applies.
+
+    Uses the ContextVar instead of raw env so a nested ``hermes chat``
+    subprocess that inherited ``HERMES_KANBAN_*`` env vars does not
+    bypass the gateway-running check (#70809).
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return True
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+
+        if is_kanban_worker_owner():
+            return True
+    except Exception:
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            return True
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":

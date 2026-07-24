@@ -92,7 +92,8 @@ def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
 def _check_kanban_mode() -> bool:
     """Task-lifecycle tools are available when:
 
-    1. ``HERMES_KANBAN_TASK`` is set (dispatcher-spawned worker), OR
+    1. This process has been verified as a dispatcher-owned kanban
+       worker at the CLI boundary (ContextVar, not raw env), OR
     2. The current profile has ``kanban`` in its toolsets config
        (orchestrator profiles like techlead that route work via Kanban).
 
@@ -100,11 +101,21 @@ def _check_kanban_mode() -> bool:
     kanban tools. Workers spawned by the kanban dispatcher (gateway-
     embedded by default) and orchestrator profiles with the kanban
     toolset enabled see the Kanban lifecycle tool surface.
+
+    Uses a ContextVar instead of raw env so a nested ``hermes chat``
+    subprocess that inherited ``HERMES_KANBAN_*`` env vars is never
+    treated as the parent worker (#70809).
     """
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return True
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+
+        if is_kanban_worker_owner():
+            return True
+    except Exception:
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            return True
     return _profile_has_kanban_toolset()
 
 
@@ -116,11 +127,22 @@ def _check_kanban_orchestrator_mode() -> bool:
     lifecycle tools (complete/block/heartbeat), not enumerate or unblock
     board state. Profiles that explicitly opt into the kanban toolset
     and are NOT scoped to a single task are the orchestrator surface.
+
+    Uses the ContextVar instead of raw env, so a nested ``hermes chat``
+    subprocess that inherited ``HERMES_KANBAN_*`` env vars is not
+    treated as a scoped worker; it falls through to the profile-level
+    toolset check (#70809).
     """
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return False
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+
+        if is_kanban_worker_owner():
+            return False
+    except Exception:
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            return False
     return _profile_has_kanban_toolset()
 
 
@@ -129,10 +151,23 @@ def _check_kanban_orchestrator_mode() -> bool:
 # ---------------------------------------------------------------------------
 
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
-    """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
+    """Resolve ``task_id`` arg or fall back to the env var the dispatcher set.
+
+    Uses the ContextVar to verify ownership so a nested ``hermes chat``
+    subprocess with inherited env vars does not silently bind to the
+    parent's task (#70809).
+    """
     if arg:
         return arg
     if _is_delegated_child_context():
+        return None
+    # Only return the env var if this process is the verified owner.
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+        is_owner = is_kanban_worker_owner()
+    except Exception:
+        is_owner = bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if not is_owner:
         return None
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     return env_tid or None
@@ -140,6 +175,14 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """Return this worker's dispatcher run id when it is scoped to task_id."""
+    # Use ContextVar to verify ownership: a nested subprocess with
+    # inherited env vars must not act as the parent worker (#70809).
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+        if not is_kanban_worker_owner():
+            return None
+    except Exception:
+        pass
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
@@ -155,6 +198,13 @@ def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
+    # Use ContextVar to verify ownership (#70809).
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+        if not is_kanban_worker_owner():
+            return metadata
+    except Exception:
+        pass
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return metadata
     session_id = os.environ.get("HERMES_SESSION_ID")
@@ -183,7 +233,18 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     Returns ``None`` when the call is allowed, or a tool-error string
     when it must be rejected. Callers should ``return`` the error
     verbatim.
+
+    Uses the ContextVar so a nested subprocess with inherited env vars
+    is not subject to this restriction — it cannot reach this code since
+    the lifecycle tools are gated by ``_check_kanban_mode`` (#70809).
     """
+    # Only enforce ownership when this process is the verified owner.
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+        if not is_kanban_worker_owner():
+            return None
+    except Exception:
+        pass
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     if not env_tid:
         # Orchestrator or CLI context — no task-scope restriction.

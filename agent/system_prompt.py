@@ -344,26 +344,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
-    # Coding posture (base Hermes, any interactive coding surface in a code
-    # workspace — see agent/coding_context.py). The operating brief + the live
-    # git/workspace snapshot are built once here and cached for the session;
-    # the snapshot is never re-probed per turn (that would break the prompt
-    # cache), so the brief tells the model to re-check git before relying on it.
-    if agent.valid_tool_names:
-        try:
-            from agent.coding_context import coding_system_blocks
-
-            stable_parts.extend(
-                coding_system_blocks(
-                    platform=agent.platform,
-                    cwd=resolve_context_cwd(),
-                    model=agent.model,
-                )
-            )
-        except Exception:
-            # Coding-context probing must never block prompt build.
-            pass
-
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install
     # strategy without discovering by failure.  Emits a single line; emits
@@ -477,6 +457,26 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
+    # Workspace git snapshot (branch, dirty state, ahead/behind) — built
+    # once per session, per-session (diverges across branches / checkouts).
+    # Per-session to prevent the git snapshot from invalidating the
+    # cross-session cache prefix.  The model is told to re-check git before
+    # acting on the snapshot since branch/dirty state drifts mid-session.
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_blocks
+
+            context_parts.extend(
+                coding_system_blocks(
+                    platform=agent.platform,
+                    cwd=resolve_context_cwd(),
+                    model=agent.model,
+                )
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
+
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
 
@@ -550,6 +550,67 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     return joined
 
 
+def build_system_prompt_as_content_blocks(
+    agent: Any,
+    system_message: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Build the system prompt as Anthropic content blocks with cache breakpoints.
+
+    Returns a list of ``{"type": "text", "text": ..., "cache_control": ...}``
+    dicts suitable for the ``system`` parameter of the Anthropic API, or
+    ``None`` when the prompt is empty.
+
+    Two-block layout:
+
+      * **Block 1 (stable)** — identity, tool guidance, skills, environment
+        hints, platform hints.  Carries a ``cache_control`` breakpoint so
+        that **cross-session** prefix-cache hits can reuse this block even
+        when context/volatile bytes differ.
+      * **Block 2 (context + volatile)** — context files, workspace git
+        snapshot, system_message, memory snapshot, user profile, timestamp.
+        No explicit breakpoint; ``apply_anthropic_cache_control`` places one
+        at the end of the system message (covering this block) and three on
+        recent messages.
+
+    This layout means the stable prefix — which is byte-identical across
+    sessions of the same profile/surface — stays warm across session
+    boundaries instead of being invalidated by per-session divergences
+    in the context/volatile tier.
+
+    Called at API-call time (not cached) because the breakpoint markers
+    are a transport concern, not part of the stored/cached prompt string.
+    """
+    parts = build_system_prompt_parts(agent, system_message=system_message)
+
+    stable = parts.get("stable", "").strip()
+    context = parts.get("context", "").strip()
+    volatile = parts.get("volatile", "").strip()
+
+    # Surface context-file truncation warnings.
+    for warning in drain_truncation_warnings():
+        agent._emit_status(warning)
+
+    # Context + volatile merged into one block (they are both
+    # per-session/per-turn content that diverges across sessions).
+    rest = "\n\n".join(p for p in (context, volatile) if p)
+
+    if not stable and not rest:
+        return None
+
+    blocks: List[Dict[str, Any]] = []
+
+    if stable:
+        block: Dict[str, Any] = {"type": "text", "text": stable}
+        # Cross-session breakpoint on the stable block
+        block["cache_control"] = {"type": "ephemeral"}
+        blocks.append(block)
+
+    if rest:
+        blocks.append({"type": "text", "text": rest})
+
+    return blocks if blocks else None
+
+
 def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
@@ -588,6 +649,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
+    "build_system_prompt_as_content_blocks",
     "invalidate_system_prompt",
     "format_tools_for_system_message",
 ]

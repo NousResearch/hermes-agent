@@ -1609,6 +1609,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             and loop is not None
             and getattr(loop, "is_running", lambda: False)()
         )
+        # A running adapter retains the PlatformConfig it was constructed with.
+        # Prefer that same config for the standalone fallback: credentials may
+        # have been injected only at gateway startup and subsequently scrubbed
+        # from the process environment, so a fresh config load can be missing
+        # secrets that the live adapter still holds.  True standalone delivery
+        # (no runtime adapter/config) continues to use the freshly loaded config.
+        runtime_pconfig = getattr(runtime_adapter, "__dict__", {}).get("config")
+        fallback_pconfig = runtime_pconfig if runtime_pconfig is not None else pconfig
         delivered = False
         target_errors = []
 
@@ -1997,7 +2005,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(platform, fallback_pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -2026,7 +2034,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(asyncio.run, _send_to_platform(platform, fallback_pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)

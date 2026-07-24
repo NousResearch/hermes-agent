@@ -30,7 +30,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { classifyInboundAccessBeforeMedia, matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -103,7 +103,25 @@ const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
-const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const ALLOWED_USERS_RAW = process.env.WHATSAPP_ALLOWED_USERS || '';
+const ALLOWED_USERS = parseAllowedUsers(ALLOWED_USERS_RAW);
+const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
+const GROUP_ALLOWED_USERS_RAW = process.env.WHATSAPP_GROUP_ALLOWED_USERS || '';
+const GROUP_ALLOWED_USERS = parseAllowedUsers(GROUP_ALLOWED_USERS_RAW);
+// Fingerprint settings that affect which chats reach extraction. The Python
+// adapter compares this value before reusing a long-lived bridge, preventing a
+// policy change from leaving stale media-download authorization in memory.
+const POLICY_HASH = createHash('sha256')
+  .update([
+    WHATSAPP_MODE,
+    WHATSAPP_DM_POLICY,
+    ALLOWED_USERS_RAW,
+    WHATSAPP_GROUP_POLICY,
+    GROUP_ALLOWED_USERS_RAW,
+    String(FORWARD_OWNER_MESSAGES),
+  ].join('\0'))
+  .digest('hex')
+  .slice(0, 16);
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -622,29 +640,43 @@ async function startSocket() {
       // themselves — stranger DMs / group pings must never reach the
       // Python gateway, otherwise a pairing-code reply fires in response
       // to arbitrary incoming messages (#8389).
-      if (!msg.key.fromMe) {
-        if (WHATSAPP_MODE === 'self-chat') {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
-        }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'allowlist_mismatch',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
-        }
+      if (!msg.key.fromMe && WHATSAPP_MODE === 'self-chat') {
+        try {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'self_chat_mode_rejects_non_self',
+            chatId,
+            senderId,
+          }));
+        } catch {}
+        continue;
+      }
+
+      // Apply group policy before extractBridgeEvent() for every message that
+      // can reach extraction, including forwarded owner messages (fromMe).
+      // Python repeats this gate as defense in depth, but that later check is
+      // too late to prevent blocked-group media from touching the local cache.
+      const inboundAccess = classifyInboundAccessBeforeMedia({
+        isGroup,
+        fromMe: !!msg.key.fromMe,
+        chatId,
+        senderId,
+        dmPolicy: WHATSAPP_DM_POLICY,
+        allowedUsers: ALLOWED_USERS,
+        groupPolicy: WHATSAPP_GROUP_POLICY,
+        groupAllowedUsers: GROUP_ALLOWED_USERS,
+        sessionDir: SESSION_DIR,
+      });
+      if (!inboundAccess.allowed) {
+        try {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: inboundAccess.reason,
+            chatId,
+            senderId,
+          }));
+        } catch {}
+        continue;
       }
 
       const messageContent = getMessageContent(msg);
@@ -1074,6 +1106,7 @@ app.get('/health', (req, res) => {
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
+    policyHash: POLICY_HASH,
   });
 });
 

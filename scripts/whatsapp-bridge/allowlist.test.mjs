@@ -5,7 +5,9 @@ import path from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
+  classifyInboundAccessBeforeMedia,
   expandWhatsAppIdentifiers,
+  isGroupChatAllowed,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
@@ -56,6 +58,104 @@ test('matchesAllowedUser treats * as allow-all wildcard', () => {
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }
+});
+
+test('allowlist group policy rejects a group missing from the group allowlist', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-group-allowlist-'));
+  try {
+    const allowedGroups = parseAllowedUsers('120363001234567890@g.us');
+    assert.equal(
+      isGroupChatAllowed(
+        '120363009999999999@g.us',
+        'allowlist',
+        allowedGroups,
+        sessionDir,
+      ),
+      false,
+    );
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('allowlist group policy allows a listed group', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-group-allowlist-'));
+  try {
+    const allowedGroups = parseAllowedUsers('120363001234567890@g.us');
+    assert.equal(
+      isGroupChatAllowed(
+        '120363001234567890@g.us',
+        'allowlist',
+        allowedGroups,
+        sessionDir,
+      ),
+      true,
+    );
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('open group policy allows a group without an allowlist', () => {
+  assert.equal(
+    isGroupChatAllowed(
+      '120363009999999999@g.us',
+      'open',
+      new Set(),
+      '',
+    ),
+    true,
+  );
+});
+
+test('non-open group policies reject groups unless explicitly allowlisted', () => {
+  for (const policy of ['disabled', 'pairing', '']) {
+    assert.equal(
+      isGroupChatAllowed(
+        '120363001234567890@g.us',
+        policy,
+        parseAllowedUsers('*'),
+        '',
+      ),
+      false,
+      `policy ${policy || '<empty>'}`,
+    );
+  }
+});
+
+test('blocked group rejects forwarded owner message before media handling', () => {
+  const result = classifyInboundAccessBeforeMedia({
+    isGroup: true,
+    fromMe: true,
+    chatId: '120363009999999999@g.us',
+    senderId: '15551230000@s.whatsapp.net',
+    dmPolicy: 'allowlist',
+    allowedUsers: parseAllowedUsers('*'),
+    groupPolicy: 'allowlist',
+    groupAllowedUsers: parseAllowedUsers('120363001234567890@g.us'),
+    sessionDir: '',
+  });
+
+  assert.deepEqual(result, {
+    allowed: false,
+    reason: 'group_policy_rejected_before_media',
+  });
+});
+
+test('allowed group accepts forwarded owner message before media handling', () => {
+  const result = classifyInboundAccessBeforeMedia({
+    isGroup: true,
+    fromMe: true,
+    chatId: '120363001234567890@g.us',
+    senderId: '15551230000@s.whatsapp.net',
+    dmPolicy: 'allowlist',
+    allowedUsers: new Set(),
+    groupPolicy: 'allowlist',
+    groupAllowedUsers: parseAllowedUsers('120363001234567890@g.us'),
+    sessionDir: '',
+  });
+
+  assert.deepEqual(result, { allowed: true });
 });
 
 test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () => {

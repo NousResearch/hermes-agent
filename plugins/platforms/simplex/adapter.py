@@ -575,11 +575,12 @@ class SimplexAdapter(BasePlatformAdapter):
             if not ext and file_name:
                 ext = Path(file_name).suffix.lower()
 
-            # Voice notes typically arrive before the file finishes
-            # downloading. Defer the message until rcvFileComplete fires.
-            if not file_path and _is_audio_ext(ext) and file_id is not None:
+            # File not yet downloaded — defer the message until
+            # rcvFileComplete fires.  Applies to all file types (images,
+            # documents, audio) transferred via XFTP, not just voice notes.
+            if not file_path and file_id is not None:
                 logger.info(
-                    "SimpleX: voice file %d not yet received, accepting transfer",
+                    "SimpleX: file %d not yet received, accepting transfer",
                     file_id,
                 )
                 self._pending_file_transfers[file_id] = chat_item

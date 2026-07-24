@@ -1976,10 +1976,40 @@ def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
                 target.mkdir(parents=True, exist_ok=True)
                 continue
 
+            if member.issym():
+                # Recreate relative symlinks; skip absolute ones (stale on other machines)
+                link_target = member.linkname
+                if os.path.isabs(link_target):
+                    print(
+                        f"⚠ Skipping absolute symlink: {member.name} -> {link_target}",
+                        file=sys.stderr,
+                    )
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.symlink_to(link_target)
+                continue
+
+            if member.islnk():
+                # Hard link — recreate if the linked member has been extracted
+                link_target_parts = _normalize_profile_archive_parts(member.linkname)
+                link_dst = destination.joinpath(*link_target_parts)
+                if link_dst.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.link(str(link_dst), str(target))
+                else:
+                    print(
+                        f"⚠ Skipping hard link with missing target: "
+                        f"{member.name} -> {member.linkname}",
+                        file=sys.stderr,
+                    )
+                continue
+
             if not member.isfile():
-                raise ValueError(
-                    f"Unsupported archive member type: {member.name}"
+                print(
+                    f"⚠ Skipping unsupported archive member: {member.name}",
+                    file=sys.stderr,
                 )
+                continue
 
             target.parent.mkdir(parents=True, exist_ok=True)
             extracted = tf.extractfile(member)

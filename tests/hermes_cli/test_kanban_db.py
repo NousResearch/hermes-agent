@@ -3795,6 +3795,35 @@ def test_create_task_with_explicit_workspace_ignores_board_default(kanban_home):
     assert t.workspace_path != "/board/default"
 
 
+def test_recommended_workspace_kind_git_repo(kanban_home, tmp_path):
+    """Board default_workdir inside a git toplevel → worktree kind (#69787)."""
+    import subprocess
+    repo = tmp_path / "coding-board-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    kb.create_board("coding", default_workdir=str(repo))
+    kind, path = kb.recommended_workspace_kind_for_board("coding")
+    assert kind == "worktree"
+    assert path == str(repo.resolve())
+
+
+def test_recommended_workspace_kind_plain_dir(kanban_home, tmp_path):
+    plain = tmp_path / "notes"
+    plain.mkdir()
+    kb.create_board("notes-board", default_workdir=str(plain))
+    kind, path = kb.recommended_workspace_kind_for_board("notes-board")
+    assert kind == "dir"
+    assert path == str(plain.resolve())
+
+
+def test_recommended_workspace_kind_no_default(kanban_home):
+    kb.create_board("empty-default")
+    kind, path = kb.recommended_workspace_kind_for_board("empty-default")
+    assert kind == "scratch"
+    assert path is None
+
+
+
 # ---------------------------------------------------------------------------
 # dispatch_once — max_in_progress
 # ---------------------------------------------------------------------------

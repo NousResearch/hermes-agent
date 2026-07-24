@@ -312,9 +312,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
-    p_create.add_argument("--workspace", default="scratch",
-                          help="scratch | worktree | worktree:<path> | dir:<path> "
-                               "(default: scratch)")
+    p_create.add_argument("--workspace", default=None,
+                          help="scratch | worktree | worktree:<path> | dir:<path>. "
+                               "Default: inherit board default_workdir kind "
+                               "(git→worktree, plain dir→dir), else scratch.")
     p_create.add_argument("--branch", default=None,
                           help="Branch name for worktree tasks, e.g. wt/t6-wire")
     p_create.add_argument("--project", default=None,
@@ -1452,7 +1453,13 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
-        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        if getattr(args, "workspace", None) in (None, ""):
+            # Board-level default: kind only from default_workdir (#69787).
+            # Explicit --workspace scratch keeps disposable scratch (no path).
+            board_for_ws = getattr(args, "board", None) or kb.get_current_board()
+            ws_kind, ws_path = kb.recommended_workspace_kind_for_board(board_for_ws)
+        else:
+            ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)

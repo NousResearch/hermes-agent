@@ -67,3 +67,27 @@ class TestCamofoxCommandTimeout:
 
         with patch("tools.browser_camofox.read_raw_config", side_effect=Exception("no config")):
             assert _get_command_timeout() == 30
+
+    def test_never_returns_none_under_concurrent_race_state(self):
+        """A concurrent reader must never observe resolved=True with a None cache.
+
+        The tail of ``_get_command_timeout`` used to flip ``_cmd_timeout_resolved``
+        to True *before* assigning ``_cached_cmd_timeout``, with a GIL-releasing
+        ``read_raw_config()`` file read in between. A second thread hitting the
+        early-return guard in that window saw ``resolved=True`` and returned the
+        still-``None`` cache, which flows straight into
+        ``requests(..., timeout=None)`` — an indefinite hang. Reproduce the
+        corrupted intermediate state directly: the guard must re-derive a real
+        value instead of returning ``None``.
+        """
+        import tools.browser_camofox as mod
+
+        mod._cmd_timeout_resolved = True
+        mod._cached_cmd_timeout = None
+
+        with patch("tools.browser_camofox.read_raw_config", return_value={}):
+            result = mod._get_command_timeout()
+
+        assert result == 30
+        assert isinstance(result, int)
+        assert mod._get_command_timeout() is not None

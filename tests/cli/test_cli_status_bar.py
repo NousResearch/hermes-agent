@@ -10,6 +10,9 @@ from cli import HermesCLI
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
+    cli_obj.provider = None
+    cli_obj.requested_provider = None
+    cli_obj._provider_source = None
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
@@ -76,11 +79,75 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=120)
 
-        assert "claude-sonnet-4-20250514" in text
+        assert "anthropic/claude-sonnet" in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_status_bar_snapshot_shows_openai_codex_provider_alias(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "openai-codex"
+        cli_obj.requested_provider = "openai-codex"
+        cli_obj.agent = SimpleNamespace(model="gpt-5.5", provider="openai-codex")
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["provider_short"] == "codex"
+        assert snapshot["model_short"] == "codex/gpt-5.5"
+
+    def test_status_bar_snapshot_preserves_named_custom_provider(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "custom"
+        cli_obj.requested_provider = "example-provider"
+        cli_obj.agent = SimpleNamespace(model="gpt-5.5", provider="custom")
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["provider_short"] == "example-provider"
+        assert snapshot["model_short"] == "example-provider/gpt-5.5"
+
+    def test_status_bar_snapshot_unwraps_custom_provider_slug(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "custom"
+        cli_obj.requested_provider = "custom:example-provider"
+        cli_obj.agent = SimpleNamespace(model="gpt-5.5", provider="custom")
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["provider_short"] == "example-provider"
+        assert snapshot["model_short"] == "example-provider/gpt-5.5"
+
+    def test_status_bar_snapshot_uses_custom_provider_source_fallback(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "custom"
+        cli_obj.requested_provider = "auto"
+        cli_obj._provider_source = "custom_provider:Example-Provider"
+        cli_obj.agent = SimpleNamespace(model="gpt-5.5", provider="custom")
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["provider_short"] == "example-provider"
+        assert snapshot["model_short"] == "example-provider/gpt-5.5"
+
+    def test_status_bar_snapshot_falls_back_to_model_without_provider(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["provider_short"] == ""
+        assert snapshot["model_short"] == "gpt-5.5"
+
+    def test_status_bar_snapshot_does_not_render_generic_provider(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.provider = "custom"
+        cli_obj.requested_provider = "auto"
+        cli_obj.agent = SimpleNamespace(model="gpt-5.5", provider="custom")
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["provider_short"] == ""
+        assert snapshot["model_short"] == "gpt-5.5"
 
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1

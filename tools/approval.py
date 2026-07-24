@@ -1149,24 +1149,102 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     return False
 
 
+def _command_region_end(segment: str, start: int) -> int:
+    """Return the end offset of the command region beginning at *start*.
+
+    Walks forward from *start* in a quote- and ``$(...)``-aware way.
+    Stops at the first unmatched ``)`` that closes the outer ``$(...)``
+    substitution the command lives inside, or at the end of *segment* if no
+    such boundary exists (i.e. a top-level command).
+
+    This prevents lexers that read from *start* from crossing into the
+    enclosing double-quoted text that owns the ``$(...)`` — which produces
+    unbalanced quotes and a false malformed-executable reject.
+    """
+    # Count how many $(...) levels deep *start* is.
+    depth = 0
+    quote = None
+    i = 0
+    while i < start:
+        ch = segment[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(segment):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(segment):
+            i += 2
+            continue
+        if segment.startswith("$(", i):
+            depth += 1
+            i += 2
+            continue
+        i += 1
+
+    # Walk forward — stop at the `)` that brings depth back to 0.
+    quote = None
+    i = start
+    while i < len(segment):
+        ch = segment[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(segment):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(segment):
+            i += 2
+            continue
+        if segment.startswith("$(", i):
+            depth += 1
+            i += 2
+            continue
+        if ch == ")":
+            if depth == 0:
+                return i
+            depth -= 1
+            i += 1
+            continue
+        i += 1
+    return len(segment)
+
+
 def _shell_tokens_with_spans(segment: str, start: int):
     """Return shell words as ``(value, start, end, quoted)`` or ``None``.
 
     This deliberately small lexer never expands shell syntax.  It exists to
     preserve source spans, which ``shlex`` does not expose, while deciding
     which *quoted* grep operand is data rather than another command.
+
+    When the tokenizer starts inside a ``$(...)`` substitution, the region
+    is bounded by the matching ``)`` so it does not read into the enclosing
+    double-quoted argument that owns the substitution.
     """
+    region_end = _command_region_end(segment, start)
     tokens = []
     i = start
-    while i < len(segment):
-        while i < len(segment) and segment[i].isspace():
+    while i < region_end:
+        while i < region_end and segment[i].isspace():
             i += 1
-        if i >= len(segment):
+        if i >= region_end:
             break
         token_start = i
         value = []
         quote = None
-        while i < len(segment) and (quote or not segment[i].isspace()):
+        while i < region_end and (quote or not segment[i].isspace()):
             char = segment[i]
             if quote:
                 if char == quote:
@@ -1334,9 +1412,14 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
 
     ``None`` distinguishes malformed quoting from an empty segment so callers
     can fail closed for a program-bearing option rather than silently skip it.
+
+    When the tokenizer starts inside a ``$(...)`` substitution, the region
+    is bounded by the matching ``)`` so it does not read into the enclosing
+    double-quoted argument that owns the substitution.
     """
+    region_end = _command_region_end(segment, start)
     try:
-        lexer = shlex.shlex(segment[start:], posix=True, punctuation_chars="<>")
+        lexer = shlex.shlex(segment[start:region_end], posix=True, punctuation_chars="<>")
         lexer.whitespace_split = True
         lexer.commenters = ""
         return list(lexer)

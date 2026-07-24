@@ -107,7 +107,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
 })
 
 # Providers whose APIs require lowercase model IDs.  Xiaomi's
-# ``api.xiaomimimo.com`` rejects mixed-case names like ``MiMo-V2.5-Pro``
+# ``token-plan-cn.xiaomimimo.com`` rejects mixed-case names like ``MiMo-V2.5-Pro``
 # that users might copy from marketing docs — it only accepts
 # ``mimo-v2.5-pro``.  After stripping a matching provider prefix, these
 # providers also get ``.lower()`` applied.

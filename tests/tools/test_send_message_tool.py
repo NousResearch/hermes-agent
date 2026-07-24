@@ -36,6 +36,7 @@ from tools.send_message_tool import (
     _send_to_platform,
     send_message_tool,
 )
+from tools.registry import registry
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
@@ -47,6 +48,16 @@ from plugins.platforms.discord.adapter import (
     _remember_channel_is_forum,
     _standalone_send,
 )
+
+
+def test_send_message_is_registered_in_the_opt_in_messaging_toolset(monkeypatch):
+    entry = registry.get_entry("send_message")
+
+    assert entry is not None
+    assert entry.toolset == "messaging"
+    monkeypatch.setattr(entry, "check_fn", lambda: True)
+    definitions = registry.get_definitions({"send_message"}, quiet=True)
+    assert [definition["function"]["name"] for definition in definitions] == ["send_message"]
 
 
 async def _send_discord(

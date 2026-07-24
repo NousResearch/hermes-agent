@@ -27,7 +27,7 @@ High-level categories:
 | **Media** | `vision_analyze`, `image_generate`, `text_to_speech` | Multimodal analysis and generation. |
 | **Agent orchestration** | `todo`, `clarify`, `execute_code`, `delegate_task` | Planning, clarification, code execution, and subagent delegation. |
 | **Memory & recall** | `memory`, `session_search` | Persistent memory and session search. |
-| **Automation** | `cronjob` | Scheduled tasks with create/list/update/pause/resume/run/remove actions. Outbound delivery is handled by cron's own delivery, the `hermes send` CLI, and the gateway notifier — not by an agent-callable tool. |
+| **Automation & delivery** | `cronjob`, `send_message` | Scheduled tasks plus optional outbound cross-platform delivery. `send_message` is default-off and has side effects; enable it explicitly per platform before an agent can use it. |
 | **Integrations** | `ha_*`, MCP server tools | Home Assistant, MCP, and other integrations. |
 
 For the authoritative code-derived registry, see [Built-in Tools Reference](/reference/tools-reference) and [Toolsets Reference](/reference/toolsets-reference).
@@ -50,6 +50,24 @@ hermes tools
 ```
 
 Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, and `safe`.
+
+### Enable outbound messaging deliberately
+
+`messaging` contains `send_message`, which can send messages or reactions to
+connected platforms. It is **off by default for every platform**. Use the
+interactive `hermes tools` configurator to select **Outbound Messaging** for
+the platform that should have it, or add it alongside that platform's bundle:
+
+```yaml
+platform_toolsets:
+  telegram:
+    - hermes-telegram
+    - messaging
+```
+
+The gateway must be running (or the session must already be a messaging
+session) before the schema is exposed. Cron delivery, `hermes send`, and the
+gateway notifier remain separate operator-controlled delivery paths.
 
 See [Toolsets Reference](/reference/toolsets-reference) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 

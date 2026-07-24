@@ -189,6 +189,12 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
+
+    "messaging": {
+        "description": "Outbound cross-platform messaging (explicit opt-in; sends messages or reactions)",
+        "tools": ["send_message"],
+        "includes": []
+    },
     
 
     "file": {
@@ -373,10 +379,10 @@ TOOLSETS = {
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools. Note: agents do NOT get an
-    # agent-callable send_message tool — outbound platform messaging is handled
-    # outside the agent loop (cron delivery, the gateway kanban notifier, and
-    # the `hermes send` CLI), not by the model deciding to send on its own.
+    # All platforms share the same core tools. The agent-callable
+    # ``send_message`` tool is deliberately outside that set: it is an
+    # explicit, per-platform ``messaging`` opt-in because it has outbound
+    # cross-platform side effects.
     # ==========================================================================
 
     "hermes-acp": {

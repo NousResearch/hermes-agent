@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageType, _thread_metadata_for_source
+from gateway.platforms.base import MessageType, _thread_metadata_for_source, utf16_len
+from gateway.run import GatewayRunner
 from plugins.platforms.telegram.adapter import ParseMode, TelegramAdapter
 
 
@@ -150,7 +151,7 @@ async def test_final_guest_send_uses_answer_guest_query_once(monkeypatch):
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
     adapter._bot.answer_guest_query = AsyncMock(
-        return_value=SimpleNamespace(message_id=777)
+        return_value=SimpleNamespace(inline_message_id="guest-inline-777")
     )
 
     result = await adapter.send(
@@ -163,7 +164,7 @@ async def test_final_guest_send_uses_answer_guest_query_once(monkeypatch):
     )
 
     assert result.success is True
-    assert result.message_id == "777"
+    assert result.message_id is None
     adapter._bot.answer_guest_query.assert_awaited_once()
     query_id, article = adapter._bot.answer_guest_query.await_args.args
     assert query_id == "5323706597129951744"
@@ -183,7 +184,7 @@ async def test_final_guest_send_formats_markdown_as_telegram_markdown_v2(monkeyp
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
     adapter._bot.answer_guest_query = AsyncMock(
-        return_value=SimpleNamespace(message_id=778)
+        return_value=SimpleNamespace(inline_message_id="guest-inline-778")
     )
 
     result = await adapter.send(
@@ -206,6 +207,38 @@ async def test_final_guest_send_formats_markdown_as_telegram_markdown_v2(monkeyp
     assert "*7\\.97%*" in rendered.message_text
     assert "*9am*" in rendered.message_text
     assert "• Turnout: *7\\.97%*" in rendered.message_text
+
+
+@pytest.mark.asyncio
+async def test_final_guest_send_truncates_to_one_telegram_message(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.InputTextMessageContent",
+        lambda text, **kwargs: SimpleNamespace(message_text=text, **kwargs),
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.InlineQueryResultArticle",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    adapter._bot.answer_guest_query = AsyncMock(
+        return_value=SimpleNamespace(inline_message_id="guest-inline-779")
+    )
+
+    result = await adapter.send(
+        "1482299073",
+        "## Long answer\n\n" + ("answer with punctuation. " * 500),
+        metadata={
+            "telegram_guest_query_id": "5323706597129951744",
+            "notify": True,
+        },
+    )
+
+    assert result.success is True
+    adapter._bot.answer_guest_query.assert_awaited_once()
+    _, article = adapter._bot.answer_guest_query.await_args.args
+    rendered = article.input_message_content.message_text
+    assert utf16_len(rendered) <= adapter.MAX_MESSAGE_LENGTH
+    assert "truncated for Telegram Guest Mode" in rendered
 
 
 @pytest.mark.asyncio
@@ -393,3 +426,22 @@ async def test_group_dispatch_routes_ordinary_and_guest_updates(monkeypatch):
     # Ordinary update reaches the normal text handler and is not swallowed by
     # the guest catch-all; the guest update routes to the guest handler.
     assert fired == ["text", "guest"]
+
+
+def test_guest_query_never_uses_runner_auto_voice_reply():
+    runner = object.__new__(GatewayRunner)
+    event = SimpleNamespace(
+        source=SimpleNamespace(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            thread_id="guest:query-123",
+        ),
+        message_type=MessageType.TEXT,
+    )
+
+    assert runner._should_send_voice_reply(
+        event,
+        "Guest response",
+        agent_messages=[],
+        already_sent=False,
+    ) is False

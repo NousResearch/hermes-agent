@@ -1302,13 +1302,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _numeric_message_thread_id(thread_id: Optional[str]) -> Optional[int]:
-        """Return a Bot API topic id, omitting Hermes-only synthetic lanes."""
+        """Return a Bot API topic id, omitting only Guest synthetic lanes."""
         if not thread_id:
             return None
-        try:
-            return int(thread_id)
-        except (TypeError, ValueError):
+        if str(thread_id).startswith("guest:"):
             return None
+        # Preserve the pre-Guest fail-closed behavior for malformed ordinary
+        # topic IDs. Silently returning None would reroute them to General.
+        return int(thread_id)
 
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -4527,6 +4528,28 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _format_guest_answer(self, content: str) -> str:
+        """Format one Guest Mode answer within Telegram's message limit."""
+        raw = content.strip()
+        formatted = self.format_message(raw)
+        if utf16_len(formatted) <= self.MAX_MESSAGE_LENGTH:
+            return formatted
+
+        suffix = "\n\n[Response truncated for Telegram Guest Mode]"
+        low = 0
+        high = len(raw)
+        best = self.format_message(suffix.strip())
+        while low <= high:
+            midpoint = (low + high) // 2
+            candidate = raw[:midpoint].rstrip() + suffix
+            candidate_formatted = self.format_message(candidate)
+            if utf16_len(candidate_formatted) <= self.MAX_MESSAGE_LENGTH:
+                best = candidate_formatted
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        return best
+
     async def send(
         self,
         chat_id: str,
@@ -4545,7 +4568,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not (metadata or {}).get("notify"):
                 return SendResult(success=True, message_id=None)
             try:
-                formatted = self.format_message(content.strip())
+                formatted = self._format_guest_answer(content)
                 result = InlineQueryResultArticle(
                     id=str(guest_query_id),
                     title="Response",
@@ -4554,10 +4577,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         parse_mode=ParseMode.MARKDOWN_V2,
                     ),
                 )
-                sent = await self._bot.answer_guest_query(str(guest_query_id), result)
+                # SentGuestMessage exposes inline_message_id, not a normal chat
+                # message_id. Guest replies are one-shot and not editable via
+                # this adapter's chat_id/message_id edit path, so do not expose
+                # the inline identifier as an ordinary delivery message ID.
+                await self._bot.answer_guest_query(str(guest_query_id), result)
                 return SendResult(
                     success=True,
-                    message_id=str(getattr(sent, "message_id", "")) or None,
+                    message_id=None,
                 )
             except Exception as exc:
                 logger.exception("[%s] Failed to answer Telegram guest query", self.name)

@@ -960,6 +960,31 @@ async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_telegram_guest_query_disables_streaming_and_interim_commentary(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-guest-one-shot",
+        config_data={
+            "streaming": {"enabled": True, "transport": "edit"},
+            "display": {"interim_assistant_messages": True},
+        },
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="guest:query-123",
+    )
+
+    assert result["final_response"] == "done"
+    assert result.get("already_sent") is not True
+    assert adapter.sent == []
+    assert adapter.edits == []
+    assert adapter.typing == []
+
+
+@pytest.mark.asyncio
 async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

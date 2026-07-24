@@ -22,7 +22,10 @@ def _make_agent_stub(agent_cls):
     agent.provider = "openai"
     agent.session_id = "sess-123"
     agent.quiet_mode = True
-    agent._memory_store = None
+    # A live store object: with the store None the memory arm is gated off
+    # entirely (see _builtin_memory_available) and this file's review_memory
+    # spawns would skip before reaching the fork under test.
+    agent._memory_store = object()
     agent._memory_enabled = True
     agent._user_profile_enabled = False
     agent._memory_nudge_interval = 5

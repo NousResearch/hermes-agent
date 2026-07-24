@@ -326,7 +326,15 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     """
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
-        return None
+        # For custom OpenAI-compatible endpoints serving a known model family,
+        # fall back to the canonical provider lookup so users get accurate
+        # context windows instead of the 200k default (e.g. Claude Opus 1M,
+        # Sonnet 200k) when running through LiteLLM or similar proxies.
+        model_lower = model.lower()
+        if "claude" in model_lower:
+            mdev_provider_id = "anthropic"
+        else:
+            return None
 
     data = fetch_models_dev()
     provider_data = data.get(mdev_provider_id)

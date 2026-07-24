@@ -261,6 +261,7 @@ class TestSteerInjection:
         assert "ls output B" in messages[3]["content"]
         assert STEER_MARKER_OPEN in messages[3]["content"]
         assert "please also check auth.log" in messages[3]["content"]
+        assert messages[3]["_steer_applied"] == ["please also check auth.log"]
         # And pending_steer is consumed.
         assert agent._pending_steer is None
 
@@ -312,6 +313,107 @@ class TestSteerInjection:
         assert new_content[0] == {"type": "text", "text": "existing output"}
         assert new_content[1]["type"] == "text"
         assert "extra note" in new_content[1]["text"]
+        assert messages[-1]["_steer_applied"] == ["extra note"]
+
+    def test_persists_already_flushed_tool_result_update(self):
+        class _FakeSessionDB:
+            def __init__(self):
+                self.calls = []
+
+            def update_message_steer(
+                self, session_id, tool_call_id, content, steer_applied
+            ):
+                self.calls.append((session_id, tool_call_id, content, steer_applied))
+                return True
+
+        agent = _bare_agent()
+        agent.session_id = "session-1"
+        agent._session_db = _FakeSessionDB()
+        agent.steer("use the JSON summary")
+        messages = [
+            {
+                "role": "tool",
+                "content": "raw output",
+                "tool_call_id": "call-1",
+            }
+        ]
+
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+
+        assert agent._session_db.calls == [
+            (
+                "session-1",
+                "call-1",
+                messages[0]["content"],
+                ["use the JSON summary"],
+            )
+        ]
+
+    def test_multimodal_flush_steer_reload_stays_text_only(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db_path = tmp_path / "state.db"
+        session_db = SessionDB(db_path)
+        session_db.create_session("session-1", "cli")
+
+        agent = _bare_agent()
+        agent.session_id = "session-1"
+        agent._session_db = session_db
+        agent._session_db_created = True
+        agent._last_flushed_db_idx = 0
+        agent._flushed_db_message_ids = set()
+        messages = [
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": [
+                    {"type": "text", "text": "visible tool summary"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,not-persisted"},
+                    },
+                ],
+            }
+        ]
+
+        agent._flush_messages_to_session_db(messages)
+        initially_stored = session_db.get_messages("session-1")[0]
+        assert initially_stored["content"] == "visible tool summary\n[screenshot]"
+
+        agent.steer("inspect the text summary only")
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert isinstance(messages[0]["content"], list)
+        assert messages[0]["content"][1]["type"] == "image_url"
+
+        session_db.close()
+        reloaded_db = SessionDB(db_path)
+        try:
+            reloaded = reloaded_db.get_messages("session-1")[0]
+        finally:
+            reloaded_db.close()
+
+        assert isinstance(reloaded["content"], str)
+        assert "visible tool summary" in reloaded["content"]
+        assert "[screenshot]" in reloaded["content"]
+        assert "inspect the text summary only" in reloaded["content"]
+        assert "data:image" not in reloaded["content"]
+        assert reloaded["_steer_applied"] == ["inspect the text summary only"]
+
+    def test_multiple_applied_steers_merge_metadata(self):
+        agent = _bare_agent()
+        messages = [
+            {
+                "role": "tool",
+                "content": "raw output",
+                "tool_call_id": "call-1",
+                "_steer_applied": "first",
+            }
+        ]
+
+        agent.steer("second")
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+
+        assert messages[0]["_steer_applied"] == ["first", "second"]
 
     def test_restashed_when_no_tool_result_in_batch(self):
         """If the 'batch' contains no tool-role messages (e.g. all skipped
@@ -454,6 +556,22 @@ class TestPreApiCallSteerDrain:
 
 
 class TestSteerMarkerContract:
+    def test_steer_metadata_is_stripped_from_api_copy(self):
+        from agent.conversation_loop import strip_ephemeral_api_fields
+
+        api_msg = {
+            "role": "tool",
+            "content": "tool output",
+            "_steer_applied": ["hi"],
+            "reasoning": "internal",
+            "finish_reason": "tool_calls",
+            "_thinking_prefill": True,
+        }
+
+        strip_ephemeral_api_fields(api_msg)
+
+        assert api_msg == {"role": "tool", "content": "tool output"}
+
     def test_system_prompt_note_describes_the_real_marker(self):
         """The system-prompt note tells the model which marker to trust; it
         must reference the exact open/close the injector emits, or the model

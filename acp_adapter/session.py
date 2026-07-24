@@ -126,13 +126,40 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
+def _acp_base_toolsets() -> List[str]:
+    """Return the base toolsets for ACP sessions.
+
+    An explicit ``platform_toolsets.acp`` list in config.yaml is resolved
+    through the shared ``_get_platform_tools`` resolver so ACP gets the same
+    explicit-selection semantics as other platforms — including the global
+    ``agent.disabled_toolsets`` subtraction, which a raw config lookup would
+    bypass. Missing, non-list, or empty values fall back to the built-in
+    composite ``hermes-acp`` toolset, so existing installs are unaffected.
+    Config-level MCP servers are excluded here; the per-session MCP append
+    path (``_expand_acp_enabled_toolsets``) adds them.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        config = load_config()
+        raw = (config.get("platform_toolsets") or {}).get("acp")
+        if isinstance(raw, list) and any(t for t in raw):
+            return sorted(
+                _get_platform_tools(config, "acp", include_default_mcp_servers=False)
+            )
+    except Exception:
+        logger.debug("Failed to resolve platform_toolsets.acp", exc_info=True)
+    return ["hermes-acp"]
+
+
 def _expand_acp_enabled_toolsets(
     toolsets: List[str] | None = None,
     mcp_server_names: List[str] | None = None,
 ) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     expanded: List[str] = []
-    for name in list(toolsets or ["hermes-acp"]):
+    for name in list(toolsets or _acp_base_toolsets()):
         if name and name not in expanded:
             expanded.append(name)
 
@@ -623,7 +650,7 @@ class SessionManager:
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                None,  # resolves platform_toolsets.acp or hermes-acp default
                 mcp_server_names=configured_mcp_servers,
             ),
             "quiet_mode": True,

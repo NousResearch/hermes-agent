@@ -24,11 +24,8 @@ from tests.gateway.test_canonical_writer_production_cutover import (
     _snapshot,
 )
 from tests.gateway.test_production_cron_continuity_package import (
-    EDGE_BOOT_ID_SHA256,
-    EDGE_OBSERVED_AT_UNIX,
     _collector_package,
     _collector_execution_readiness,
-    _operational_edge_receipt,
     _source_store,
 )
 from tests.scripts.canary.test_package_production_cutover_artifacts import (
@@ -149,14 +146,11 @@ def _cron_continuity_fixture(
         source_store=raw,
         collector_package=_collector_package(),
         collector_execution_readiness=_collector_execution_readiness(),
-        operational_edge_readiness=_operational_edge_receipt(),
         mechanical_job_package_manifest_sha256=(
             mechanical_package["manifest_sha256"]
         ),
         cutover_runtime_sha256="d" * 64,
         cutover_entrypoint_sha256="e" * 64,
-        expected_boot_id_sha256=EDGE_BOOT_ID_SHA256,
-        now_unix=EDGE_OBSERVED_AT_UNIX,
     )
     return inventory, cron_continuity.HostContinuityDerivation(
         build=build,

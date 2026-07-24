@@ -34,8 +34,7 @@ from gateway import production_cron_continuity_review as review
 from gateway import production_cron_migration
 from gateway.operational_edge_catalog import required_cron_operations
 from gateway.operational_edge_readiness import (
-    OperationalEdgeReadinessError,
-    validate_operational_edge_readiness,
+    operational_catalog_sha256,
 )
 from gateway.production_model_sovereignty_runtime import (
     ProductionContractError,
@@ -49,7 +48,10 @@ from ops.muncho.runtime import trusted_cron_collector_rail as collector_rail
 from ops.muncho.runtime import mechanical_job_rail
 
 
-PLAN_SCHEMA = "muncho-production-cron-packaged-continuity-plan.v4"
+PLAN_SCHEMA = "muncho-production-cron-packaged-continuity-plan.v5"
+OPERATIONAL_EDGE_REQUIREMENTS_SCHEMA = (
+    "muncho-production-operational-edge-activation-requirements.v1"
+)
 REPLACEMENT_BUNDLE_SCHEMA = "muncho-production-cron-agent-replacements.v1"
 ARTIFACT_INDEX_SCHEMA = "muncho-production-cron-continuity-artifacts.v1"
 
@@ -148,6 +150,47 @@ def _canonical(value: Any) -> bytes:
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _operational_edge_requirements(revision: str) -> dict[str, Any]:
+    required = dict(required_cron_operations())
+    rows = [
+        {
+            "source_job_id": source_job_id,
+            "operation_id": required[source_job_id],
+        }
+        for source_job_id in sorted(required)
+    ]
+    unsigned = {
+        "schema": OPERATIONAL_EDGE_REQUIREMENTS_SCHEMA,
+        "release_revision": revision,
+        "catalog_sha256": operational_catalog_sha256(),
+        "required_jobs": rows,
+        "required_job_count": len(rows),
+        "fresh_runtime_readiness_required": True,
+        "readiness_collection_stage": "transactional_cutover_preflight",
+        "readiness_receipt_embedded": False,
+        "credential_values_read": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return {
+        **unsigned,
+        "requirements_sha256": _sha256(_canonical(unsigned)),
+    }
+
+
+def _validate_operational_edge_requirements(
+    value: Mapping[str, Any],
+    *,
+    revision: str,
+) -> dict[str, Any]:
+    expected = _operational_edge_requirements(revision)
+    if not isinstance(value, Mapping) or dict(value) != expected:
+        raise ProductionCronContinuityPackageError(
+            "production_cron_operational_edge_requirements_invalid"
+        )
+    return copy.deepcopy(expected)
 
 
 def _parse_store(raw: bytes) -> dict[str, Any]:
@@ -426,42 +469,41 @@ def build_packaged_continuity_plan(
     source_store: bytes,
     collector_package: Mapping[str, Any],
     collector_execution_readiness: Mapping[str, Any],
-    operational_edge_readiness: Mapping[str, Any],
     mechanical_job_package_manifest_sha256: str,
     cutover_runtime_sha256: str,
     cutover_entrypoint_sha256: str,
-    expected_boot_id_sha256: str | None = None,
-    now_unix: int | None = None,
 ) -> ContinuityPackageBuild:
     """Build an exhaustive plan and private replacement-record bundle."""
 
     package = collector_rail.validate_package_manifest(collector_package)
     try:
-        operational_readiness = validate_operational_edge_readiness(
-            operational_edge_readiness,
-            revision=package["release_revision"],
-            required_jobs=required_cron_operations(),
-            expected_boot_id_sha256=expected_boot_id_sha256,
-            now_unix=now_unix,
-        )
         execution_readiness = collector_rail.validate_execution_readiness(
             collector_execution_readiness,
             manifest=package,
-            operational_edge_receipt=operational_readiness,
-            expected_boot_id_sha256=expected_boot_id_sha256,
-            now_unix=now_unix,
+            operational_edge_receipt=None,
         )
-    except (
-        OperationalEdgeReadinessError,
-        collector_rail.TrustedCronCollectorError,
-    ) as exc:
+    except collector_rail.TrustedCronCollectorError as exc:
         raise ProductionCronContinuityPackageError(
             "production_cron_execution_readiness_invalid"
         ) from exc
-    if execution_readiness["activation_ready"] is not True:
+    if (
+        execution_readiness["direct_dependencies_ready"] is not True
+        or execution_readiness["blocked_paths"] != []
+        or execution_readiness["scoped_execution_edge_packaged"] is not False
+        or execution_readiness["scoped_execution_edge_receipt_sha256"]
+        is not None
+        or execution_readiness[
+            "scoped_execution_edge_meaningful_packet_count"
+        ]
+        != 0
+        or execution_readiness["activation_ready"] is not False
+    ):
         raise ProductionCronContinuityPackageError(
             "production_cron_execution_readiness_incomplete"
         )
+    operational_requirements = _operational_edge_requirements(
+        package["release_revision"]
+    )
     if any(
         _SHA256.fullmatch(digest or "") is None
         for digest in (
@@ -604,7 +646,9 @@ def build_packaged_continuity_plan(
         "collector_package_manifest_sha256": package["manifest_sha256"],
         "trusted_collector_package": copy.deepcopy(package),
         "collector_execution_readiness": copy.deepcopy(execution_readiness),
-        "operational_edge_readiness": copy.deepcopy(operational_readiness),
+        "operational_edge_requirements": copy.deepcopy(
+            operational_requirements
+        ),
         "mechanical_job_package_manifest_sha256": (
             mechanical_job_package_manifest_sha256
         ),
@@ -655,7 +699,7 @@ def validate_packaged_continuity_plan(
     *,
     collector_package: Mapping[str, Any] | None = None,
     collector_execution_readiness: Mapping[str, Any] | None = None,
-    operational_edge_readiness: Mapping[str, Any] | None = None,
+    operational_edge_requirements: Mapping[str, Any] | None = None,
     replacement_bundle: Mapping[str, Any] | None = None,
     inventory: Mapping[str, Any] | None = None,
     expected_mechanical_job_package_manifest_sha256: str | None = None,
@@ -671,55 +715,56 @@ def validate_packaged_continuity_plan(
         raise ProductionCronContinuityPackageError(
             "production_cron_packaged_plan_collector_drifted"
         )
-    embedded_edge = value.get("operational_edge_readiness")
-    embedded_boot_id = (
-        embedded_edge.get("boot_id_sha256")
-        if isinstance(embedded_edge, Mapping)
-        and isinstance(embedded_edge.get("boot_id_sha256"), str)
-        else ""
-    )
-    embedded_observed_at = (
-        embedded_edge.get("observed_at_unix")
-        if isinstance(embedded_edge, Mapping)
-        and type(embedded_edge.get("observed_at_unix")) is int
-        else 0
-    )
     try:
-        embedded_operational_readiness = validate_operational_edge_readiness(
-            embedded_edge,
-            revision=package["release_revision"],
-            required_jobs=required_cron_operations(),
-            # This receipt is historical evidence inside an owner-bound,
-            # digest-addressed plan.  Current-boot freshness is re-proved by
-            # the transactional cutover preflight; it must not make the
-            # immutable plan expire after 120 seconds.
-            expected_boot_id_sha256=embedded_boot_id,
-            now_unix=embedded_observed_at,
+        embedded_operational_requirements = (
+            _validate_operational_edge_requirements(
+                value.get("operational_edge_requirements"),
+                revision=package["release_revision"],
+            )
         )
         embedded_execution_readiness = (
             collector_rail.validate_execution_readiness(
                 value.get("collector_execution_readiness"),
                 manifest=package,
-                operational_edge_receipt=embedded_operational_readiness,
-                expected_boot_id_sha256=embedded_boot_id,
-                now_unix=embedded_observed_at,
+                operational_edge_receipt=None,
             )
         )
     except (
-        OperationalEdgeReadinessError,
+        ProductionCronContinuityPackageError,
         collector_rail.TrustedCronCollectorError,
     ) as exc:
         raise ProductionCronContinuityPackageError(
             "production_cron_packaged_plan_readiness_invalid"
         ) from exc
     if (
-        embedded_execution_readiness["activation_ready"] is not True
+        embedded_execution_readiness["direct_dependencies_ready"] is not True
+        or embedded_execution_readiness["blocked_paths"] != []
+        or embedded_execution_readiness[
+            "scoped_execution_edge_required_job_ids"
+        ]
+        != [
+            row["source_job_id"]
+            for row in embedded_operational_requirements["required_jobs"]
+        ]
+        or embedded_execution_readiness[
+            "scoped_execution_edge_packaged"
+        ]
+        is not False
+        or embedded_execution_readiness[
+            "scoped_execution_edge_receipt_sha256"
+        ]
+        is not None
+        or embedded_execution_readiness[
+            "scoped_execution_edge_meaningful_packet_count"
+        ]
+        != 0
+        or embedded_execution_readiness["activation_ready"] is not False
         or collector_execution_readiness is not None
         and dict(collector_execution_readiness)
         != embedded_execution_readiness
-        or operational_edge_readiness is not None
-        and dict(operational_edge_readiness)
-        != embedded_operational_readiness
+        or operational_edge_requirements is not None
+        and dict(operational_edge_requirements)
+        != embedded_operational_requirements
     ):
         raise ProductionCronContinuityPackageError(
             "production_cron_packaged_plan_readiness_invalid"
@@ -733,7 +778,7 @@ def validate_packaged_continuity_plan(
         "collector_package_manifest_sha256",
         "trusted_collector_package",
         "collector_execution_readiness",
-        "operational_edge_readiness",
+        "operational_edge_requirements",
         "mechanical_job_package_manifest_sha256",
         "cutover_runtime_sha256",
         "cutover_entrypoint_sha256",
@@ -1243,7 +1288,6 @@ def derive_packaged_continuity_from_host(
     revision: str,
     mechanical_job_package: Mapping[str, Any],
     source_jobs_path: Path,
-    operational_edge_receipt: Mapping[str, Any] | None = None,
 ) -> HostContinuityDerivation:
     """Derive the complete package in memory without any filesystem write.
 
@@ -1285,23 +1329,12 @@ def derive_packaged_continuity_from_host(
         dependency_facts=dependency_facts,
     )
     try:
-        if operational_edge_receipt is None:
-            from gateway import operational_edge_readiness as edge_readiness
-
-            operational_edge_receipt = (
-                edge_readiness.load_operational_edge_readiness(
-                    path=edge_readiness.OPERATIONAL_EDGE_READINESS_PATH,
-                    revision=revision,
-                    required_jobs=required_cron_operations(),
-                )
-            )
         execution_readiness = collector_rail.collect_execution_readiness(
             package,
-            operational_edge_receipt=operational_edge_receipt,
+            operational_edge_receipt=None,
         )
     except (
         AttributeError,
-        OperationalEdgeReadinessError,
         collector_rail.TrustedCronCollectorError,
     ) as exc:
         raise ProductionCronContinuityPackageError(
@@ -1311,7 +1344,6 @@ def derive_packaged_continuity_from_host(
         source_store=source_store,
         collector_package=package,
         collector_execution_readiness=execution_readiness,
-        operational_edge_readiness=operational_edge_receipt,
         mechanical_job_package_manifest_sha256=mechanical["manifest_sha256"],
         cutover_runtime_sha256=_sha256(
             _artifact_bytes(runtime_path, maximum=4 * 1024 * 1024)
@@ -1539,6 +1571,7 @@ __all__ = [
     "CUTOVER_RUNTIME_RELATIVE_PATH",
     "OWNER_JOB_ID",
     "OWNER_FOLLOWUP_CODE",
+    "OPERATIONAL_EDGE_REQUIREMENTS_SCHEMA",
     "PLAN_RELATIVE_PATH",
     "PLAN_SCHEMA",
     "ProductionCronContinuityPackageError",

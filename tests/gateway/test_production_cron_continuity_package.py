@@ -13,14 +13,6 @@ from gateway import production_cron_continuity_package as package
 from gateway import production_cron_continuity_review as review
 from gateway import production_cron_cutover_runtime as cutover_runtime
 from gateway import production_cron_migration
-from gateway.operational_edge_catalog import (
-    operation_catalog,
-    required_cron_operations,
-)
-from gateway.operational_edge_readiness import (
-    PROBE_PACKET_SCHEMA,
-    build_operational_edge_readiness,
-)
 from gateway.production_capability_prerequisites import FIRST_WAVE_TOOLSETS
 from gateway.production_model_sovereignty_runtime import (
     resolve_production_cron_enabled_toolsets,
@@ -31,11 +23,6 @@ from toolsets import resolve_toolset
 
 LEGACY_LOCKED_CHANNEL = "1504852355588423801"
 LEGACY_LOCKED_THREAD = "1524321461714681976"
-EDGE_BOOT_ID_SHA256 = "f" * 64
-EDGE_OBSERVED_AT_UNIX = 1_800_000_000
-EDGE_COLLECTOR_NONCE = "12345678-1234-4123-8123-123456789abc"
-
-
 def _agent_job(entry: review.ReviewDisposition, index: int) -> dict:
     origin = {
         "platform": "discord",
@@ -150,56 +137,10 @@ def _collector_package() -> dict:
     )
 
 
-def _operational_edge_receipt() -> dict:
-    required = dict(required_cron_operations())
-    catalog = operation_catalog()
-    rows = []
-    for index, (job_id, operation_id) in enumerate(required.items(), start=1):
-        operation = catalog[operation_id]
-        rows.append(
-            {
-                "source_job_id": job_id,
-                "operation_id": operation_id,
-                "domain": operation.domain,
-                "service_unit": (
-                    f"muncho-operational-edge-{operation.domain}.service"
-                ),
-                "service_uid": 3000 + index,
-                "service_gid": 4000 + index,
-                "socket_path": (
-                    f"/run/muncho-operational-edge/{operation.domain}/edge.sock"
-                ),
-                "socket_uid": 3000 + index,
-                "socket_gid": 4000 + index,
-                "socket_mode": "0660",
-                "main_pid": 5000 + index,
-                "peer_round_trip": True,
-                "probe_operation_id": (
-                    operation.probe_operation_id or operation.operation_id
-                ),
-                "probe_return_code": 0,
-                "probe_packet_schema": PROBE_PACKET_SCHEMA,
-                "probe_packet_sha256": f"{index:064x}",
-                "meaningful_packet": True,
-                "error_only_packet": False,
-            }
-        )
-    return build_operational_edge_readiness(
-        revision="a" * 40,
-        required_jobs=required,
-        jobs=rows,
-        boot_id_sha256=EDGE_BOOT_ID_SHA256,
-        observed_at_unix=EDGE_OBSERVED_AT_UNIX,
-        collector_nonce=EDGE_COLLECTOR_NONCE,
-    )
-
-
 def _collector_execution_readiness() -> dict:
     return rail.collect_execution_readiness(
         _collector_package(),
-        operational_edge_receipt=_operational_edge_receipt(),
-        expected_boot_id_sha256=EDGE_BOOT_ID_SHA256,
-        now_unix=EDGE_OBSERVED_AT_UNIX,
+        operational_edge_receipt=None,
         account_lookup=lambda _name: SimpleNamespace(pw_uid=2003),
         group_lookup=lambda _name: SimpleNamespace(gr_gid=2004),
         stat_reader=lambda _path: SimpleNamespace(
@@ -216,12 +157,9 @@ def _build(monkeypatch: pytest.MonkeyPatch) -> tuple[bytes, package.ContinuityPa
         source_store=raw,
         collector_package=_collector_package(),
         collector_execution_readiness=_collector_execution_readiness(),
-        operational_edge_readiness=_operational_edge_receipt(),
         mechanical_job_package_manifest_sha256="c" * 64,
         cutover_runtime_sha256="d" * 64,
         cutover_entrypoint_sha256="e" * 64,
-        expected_boot_id_sha256=EDGE_BOOT_ID_SHA256,
-        now_unix=EDGE_OBSERVED_AT_UNIX,
     )
     return raw, build
 
@@ -252,6 +190,19 @@ def test_plan_is_exhaustive_primary_model_authored_and_owner_complete(
     assert plan["blanket_inert_migration_allowed"] is False
     assert plan["byte_exact_source_archive_required"] is True
     assert plan["execute_job_during_packaging"] is False
+    assert plan["collector_execution_readiness"]["activation_ready"] is False
+    assert (
+        plan["collector_execution_readiness"][
+            "scoped_execution_edge_packaged"
+        ]
+        is False
+    )
+    assert plan["operational_edge_requirements"][
+        "readiness_collection_stage"
+    ] == "transactional_cutover_preflight"
+    assert plan["operational_edge_requirements"][
+        "readiness_receipt_embedded"
+    ] is False
     assert plan["post_cutover_owner_followups"] == [
         {
             "job_id": package.OWNER_JOB_ID,
@@ -326,6 +277,29 @@ def test_plan_is_exhaustive_primary_model_authored_and_owner_complete(
             job_id
         ]
         assert target["historical_source_delivery_eligible"] is False
+
+
+def test_plan_bootstraps_from_static_edge_requirements_without_live_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbid_live_readiness(*_args, **_kwargs):
+        raise AssertionError("live readiness cannot be collected during packaging")
+
+    monkeypatch.setattr(
+        package,
+        "validate_operational_edge_readiness",
+        forbid_live_readiness,
+        raising=False,
+    )
+    _raw, build = _build(monkeypatch)
+
+    requirements = build.plan["operational_edge_requirements"]
+    assert requirements == package._operational_edge_requirements("a" * 40)
+    assert requirements["fresh_runtime_readiness_required"] is True
+    assert requirements["readiness_receipt_embedded"] is False
+    assert build.plan["collector_execution_readiness"][
+        "scoped_execution_edge_receipt_sha256"
+    ] is None
 
 
 def test_build_carries_one_exact_inventory_across_clock_boundaries(
@@ -512,6 +486,33 @@ def test_plan_or_bundle_tamper_fails_closed(
     ):
         package.validate_packaged_continuity_plan(
             drifted_plan,
+            inventory=inventory,
+            require_executable=True,
+        )
+
+    drifted_requirements = copy.deepcopy(build.plan)
+    requirements = drifted_requirements["operational_edge_requirements"]
+    requirements["required_jobs"][0]["operation_id"] = "tampered.operation"
+    requirements["requirements_sha256"] = package._sha256(
+        package._canonical({
+            key: value
+            for key, value in requirements.items()
+            if key != "requirements_sha256"
+        })
+    )
+    drifted_requirements["plan_sha256"] = package._sha256(
+        package._canonical({
+            key: value
+            for key, value in drifted_requirements.items()
+            if key != "plan_sha256"
+        })
+    )
+    with pytest.raises(
+        package.ProductionCronContinuityPackageError,
+        match="packaged_plan_readiness_invalid",
+    ):
+        package.validate_packaged_continuity_plan(
+            drifted_requirements,
             inventory=inventory,
             require_executable=True,
         )

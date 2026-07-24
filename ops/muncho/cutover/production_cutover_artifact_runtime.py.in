@@ -747,7 +747,7 @@ def _validate_cron_continuity_authority(
     )
     collector_package = None
     collector_execution_readiness = None
-    operational_edge_readiness = None
+    operational_edge_requirements = None
     if packaged_plan:
         plan = _hashed(
             plan_value,
@@ -757,7 +757,7 @@ def _validate_cron_continuity_authority(
                 "collector_package_manifest_sha256",
                 "trusted_collector_package",
                 "collector_execution_readiness",
-                "operational_edge_readiness",
+                "operational_edge_requirements",
                 "mechanical_job_package_manifest_sha256",
                 "cutover_runtime_sha256", "cutover_entrypoint_sha256",
                 "replacement_bundle_sha256", "replacement_record_count",
@@ -808,18 +808,18 @@ def _validate_cron_continuity_authority(
             "readiness_sha256",
             "artifact_plan_invalid",
         )
-        operational_edge_readiness = _hashed(
-            plan.get("operational_edge_readiness"),
+        operational_edge_requirements = _hashed(
+            plan.get("operational_edge_requirements"),
             {
-                "schema", "release_revision", "boot_id_sha256",
-                "observed_at_unix", "maximum_age_seconds",
-                "collector_nonce", "catalog_sha256",
-                "required_jobs", "required_job_count", "jobs", "job_count",
-                "all_required_jobs_ready", "credential_values_read",
-                "permissions_widened", "secret_material_recorded",
-                "secret_digest_recorded", "receipt_sha256",
+                "schema", "release_revision", "catalog_sha256",
+                "required_jobs", "required_job_count",
+                "fresh_runtime_readiness_required",
+                "readiness_collection_stage",
+                "readiness_receipt_embedded", "credential_values_read",
+                "secret_material_recorded", "secret_digest_recorded",
+                "requirements_sha256",
             },
-            "receipt_sha256",
+            "requirements_sha256",
             "artifact_plan_invalid",
         )
     else:
@@ -855,27 +855,14 @@ def _validate_cron_continuity_authority(
             if isinstance(row, Mapping)
             and row.get("disposition") == "migrate_trusted_collector"
         ] if isinstance(records, list) else []
-        required_edges = operational_edge_readiness.get(
+        required_edges = operational_edge_requirements.get(
             "required_jobs"
-        ) if operational_edge_readiness is not None else None
-        edge_jobs = operational_edge_readiness.get(
-            "jobs"
-        ) if operational_edge_readiness is not None else None
+        ) if operational_edge_requirements is not None else None
         required_edge_ids = [
             row.get("source_job_id")
             for row in required_edges
             if isinstance(row, Mapping)
         ] if isinstance(required_edges, list) else []
-        required_edge_pairs = [
-            (row.get("source_job_id"), row.get("operation_id"))
-            for row in required_edges
-            if isinstance(row, Mapping)
-        ] if isinstance(required_edges, list) else []
-        edge_job_pairs = [
-            (row.get("source_job_id"), row.get("operation_id"))
-            for row in edge_jobs
-            if isinstance(row, Mapping)
-        ] if isinstance(edge_jobs, list) else []
         execution_edge_ids = (
             collector_execution_readiness.get(
                 "scoped_execution_edge_required_job_ids"
@@ -886,7 +873,7 @@ def _validate_cron_continuity_authority(
         packaged_invalid = (
             collector_package is None
             or collector_execution_readiness is None
-            or operational_edge_readiness is None
+            or operational_edge_requirements is None
             or collector_package.get("schema")
             != "muncho-trusted-cron-collector-package.v1"
             or collector_package.get("rail_schema")
@@ -914,78 +901,61 @@ def _validate_cron_continuity_authority(
             ) != 14
             or collector_execution_readiness.get(
                 "scoped_execution_edge_packaged"
-            ) is not True
+            ) is not False
             or collector_execution_readiness.get(
                 "scoped_execution_edge_receipt_sha256"
-            ) != operational_edge_readiness.get("receipt_sha256")
+            ) is not None
             or collector_execution_readiness.get(
                 "scoped_execution_edge_meaningful_packet_count"
-            ) != 14
-            or collector_execution_readiness.get("activation_ready") is not True
+            ) != 0
+            or collector_execution_readiness.get("activation_ready") is not False
             or collector_execution_readiness.get("permissions_widened")
             is not False
             or collector_execution_readiness.get("credential_content_read")
             is not False
             or collector_execution_readiness.get("secret_material_recorded")
             is not False
-            or operational_edge_readiness.get("schema")
-            != "muncho-operational-edge-readiness.v2"
-            or operational_edge_readiness.get("release_revision") != revision
+            or operational_edge_requirements.get("schema")
+            != (
+                "muncho-production-operational-edge-"
+                "activation-requirements.v1"
+            )
+            or operational_edge_requirements.get("release_revision") != revision
             or SHA256.fullmatch(str(
-                operational_edge_readiness.get("boot_id_sha256") or ""
-            )) is None
-            or type(operational_edge_readiness.get("observed_at_unix")) is not int
-            or operational_edge_readiness.get("observed_at_unix", 0) < 1
-            or operational_edge_readiness.get("maximum_age_seconds") != 120
-            or UUID4_TEXT.fullmatch(str(
-                operational_edge_readiness.get("collector_nonce") or ""
+                operational_edge_requirements.get("catalog_sha256") or ""
             )) is None
             or SHA256.fullmatch(str(
-                operational_edge_readiness.get("catalog_sha256") or ""
+                operational_edge_requirements.get("requirements_sha256")
+                or ""
             )) is None
-            or operational_edge_readiness.get("required_job_count") != 14
-            or operational_edge_readiness.get("job_count") != 14
-            or operational_edge_readiness.get("all_required_jobs_ready")
-            is not True
-            or operational_edge_readiness.get("credential_values_read")
+            or operational_edge_requirements.get("required_job_count") != 14
+            or operational_edge_requirements.get(
+                "fresh_runtime_readiness_required"
+            ) is not True
+            or operational_edge_requirements.get(
+                "readiness_collection_stage"
+            ) != "transactional_cutover_preflight"
+            or operational_edge_requirements.get(
+                "readiness_receipt_embedded"
+            ) is not False
+            or operational_edge_requirements.get("credential_values_read")
             is not False
-            or operational_edge_readiness.get("permissions_widened") is not False
-            or operational_edge_readiness.get("secret_material_recorded")
+            or operational_edge_requirements.get("secret_material_recorded")
             is not False
-            or operational_edge_readiness.get("secret_digest_recorded")
+            or operational_edge_requirements.get("secret_digest_recorded")
             is not False
             or len(required_edge_ids) != 14
             or len(set(required_edge_ids)) != 14
             or required_edge_ids != sorted(required_edge_ids)
-            or edge_job_pairs != required_edge_pairs
             or execution_edge_ids != required_edge_ids
-            or not isinstance(edge_jobs, list)
-            or len(edge_jobs) != 14
-            or [
-                row.get("source_job_id")
-                for row in edge_jobs
-                if isinstance(row, Mapping)
-            ] != required_edge_ids
             or any(
                 not isinstance(row, Mapping)
-                or set(row) != {
-                    "source_job_id", "operation_id", "domain",
-                    "service_unit", "service_uid", "service_gid",
-                    "socket_path", "socket_uid", "socket_gid",
-                    "socket_mode", "main_pid", "peer_round_trip",
-                    "probe_operation_id", "probe_return_code",
-                    "probe_packet_schema", "probe_packet_sha256",
-                    "meaningful_packet", "error_only_packet",
-                }
-                or row.get("peer_round_trip") is not True
-                or row.get("probe_return_code") != 0
-                or row.get("probe_packet_schema")
-                != "muncho-operational-edge-probe-packet.v1"
-                or SHA256.fullmatch(str(row.get("probe_packet_sha256") or ""))
-                is None
-                or row.get("meaningful_packet") is not True
-                or row.get("error_only_packet") is not False
-                for row in edge_jobs
+                or set(row) != {"source_job_id", "operation_id"}
+                or not isinstance(row.get("source_job_id"), str)
+                or not row.get("source_job_id")
+                or not isinstance(row.get("operation_id"), str)
+                or not row.get("operation_id")
+                for row in required_edges
             )
             or not isinstance(collector_package.get("units"), Mapping)
             or len(collector_package["units"]) != 21
@@ -7589,12 +7559,16 @@ def _operational_edge_runtime(
 
 def _operational_required_jobs(plan: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     continuity = plan.get("cron_continuity_plan")
-    prior = (
-        continuity.get("operational_edge_readiness")
+    requirements = (
+        continuity.get("operational_edge_requirements")
         if isinstance(continuity, Mapping)
         else None
     )
-    rows = prior.get("required_jobs") if isinstance(prior, Mapping) else None
+    rows = (
+        requirements.get("required_jobs")
+        if isinstance(requirements, Mapping)
+        else None
+    )
     if (
         not isinstance(rows, list)
         or len(rows) != 14

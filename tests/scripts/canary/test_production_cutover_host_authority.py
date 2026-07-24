@@ -40,11 +40,8 @@ from tests.gateway.test_canonical_writer_production_cutover import (
     _snapshot,
 )
 from tests.gateway.test_production_cron_continuity_package import (
-    EDGE_BOOT_ID_SHA256,
-    EDGE_OBSERVED_AT_UNIX,
     _collector_package,
     _collector_execution_readiness,
-    _operational_edge_receipt,
     _source_store,
 )
 from tests.scripts.canary.test_package_production_cutover_artifacts import (
@@ -1944,14 +1941,11 @@ def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
         source_store=source_store,
         collector_package=_collector_package(),
         collector_execution_readiness=_collector_execution_readiness(),
-        operational_edge_readiness=_operational_edge_receipt(),
         mechanical_job_package_manifest_sha256=full[
             "mechanical_job_package"
         ]["manifest_sha256"],
         cutover_runtime_sha256="d" * 64,
         cutover_entrypoint_sha256="e" * 64,
-        expected_boot_id_sha256=EDGE_BOOT_ID_SHA256,
-        now_unix=EDGE_OBSERVED_AT_UNIX,
     )
     full["cron_inventory"] = inventory
     full["cron_continuity_plan"] = build.plan
@@ -2073,14 +2067,11 @@ def test_packaged_cron_stage_receipt_binds_all_forty_five_files(
         source_store=source_store,
         collector_package=_collector_package(),
         collector_execution_readiness=_collector_execution_readiness(),
-        operational_edge_readiness=_operational_edge_receipt(),
         mechanical_job_package_manifest_sha256=old_authority[
             "mechanical_job_package"
         ]["manifest_sha256"],
         cutover_runtime_sha256="d" * 64,
         cutover_entrypoint_sha256="e" * 64,
-        expected_boot_id_sha256=EDGE_BOOT_ID_SHA256,
-        now_unix=EDGE_OBSERVED_AT_UNIX,
     )
     gateway = cutover.ServiceObservation.from_mapping(
         base.value["gateway_before"]

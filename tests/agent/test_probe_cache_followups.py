@@ -176,6 +176,30 @@ class TestDetectLocalServerTypeCache:
         with patch("httpx.Client", return_value=swap_client):
             assert detect_local_server_type("http://127.0.0.1:11434") == "lm-studio"
 
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://not-ollama.example/v1",
+            "http://127.0.0.1:11434/v1",
+        ],
+        ids=["url-containing-ollama", "non-ollama-port-11434"],
+    )
+    def test_non_ollama_name_or_port_does_not_identify_ollama(self, base_url):
+        """Ollama requires the /api/tags response shape, not URL heuristics."""
+        from agent.model_metadata import detect_local_server_type
+
+        miss = MagicMock()
+        miss.status_code = 404
+        client = MagicMock()
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+        client.get.return_value = miss
+
+        with patch("httpx.Client", return_value=client):
+            assert detect_local_server_type(base_url) is None
+
+        assert any(call.args[0].endswith("/api/tags") for call in client.get.call_args_list)
+
 
 class TestLocalhostIPv4SiblingSites:
     """#37595 widened: every probe helper rewrites localhost→127.0.0.1,

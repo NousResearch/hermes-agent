@@ -421,16 +421,21 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["options"]["num_ctx"] == 32768
 
-    def test_custom_think_false(self, transport):
+    def test_custom_verified_ollama_sends_disabled_controls(self, transport, monkeypatch):
         from providers import get_provider_profile
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type", lambda *_args, **_kwargs: "ollama"
+        )
         profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="qwen3", messages=msgs,
             provider_profile=profile,
+            base_url="http://127.0.0.1:11434/v1",
             reasoning_config={"effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
+        assert kw["reasoning_effort"] == "none"
 
     def test_gemini_native_without_explicit_reasoning_config_keeps_existing_behavior(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]

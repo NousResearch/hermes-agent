@@ -4,18 +4,28 @@ Covers any endpoint registered as provider="custom", including local
 Ollama instances and OpenAI-compatible reasoning endpoints (GLM-5.2 on
 Volcengine ARK, vLLM, llama.cpp). Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
-  - reasoning_config disabled → top-level reasoning_effort="none"
-    (Ollama /v1/chat/completions ignores think=False — ollama#14820)
-    + extra_body.think = False for /api/chat and proxies
-  - reasoning_config enabled + effort → top-level reasoning_effort
-    (the native OpenAI-compatible format GLM/ARK expect; unset omits it
-    so the endpoint's server default applies)
+  - reasoning_config disabled on a verified Ollama endpoint → top-level
+    reasoning_effort="none" + extra_body.think = False
+  - reasoning_config effort → top-level reasoning_effort on a verified
+    Ollama endpoint only (unset omits it so the server default applies)
 """
 
 from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+def _is_verified_ollama_endpoint(base_url: str | None, api_key: str = "") -> bool:
+    """Return true only when the endpoint passes the shared Ollama probe."""
+    if not base_url:
+        return False
+    try:
+        from agent.model_metadata import detect_local_server_type
+
+        return detect_local_server_type(base_url, api_key=api_key) == "ollama"
+    except Exception:
+        return False
 
 
 class CustomProfile(ProviderProfile):
@@ -37,21 +47,26 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Reasoning / thinking control for custom OpenAI-compatible endpoints
-        # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).
+        # Reasoning / thinking controls are Ollama-specific.  ``custom`` is
+        # also used for arbitrary OpenAI-compatible relays (including Groq),
+        # which can reject either control.  Do not infer Ollama from a URL
+        # substring or its default port: emit these fields only after the
+        # shared endpoint probe identifies Ollama.
         #
-        #   - disabled  → extra_body.think = False (Ollama's thinking-off flag)
-        #   - enabled + effort set → TOP-LEVEL reasoning_effort string, the
-        #     format GLM-5.2/ARK and other OpenAI-compatible reasoning APIs
-        #     expect (GLM documents "high" and "max"; "max" is its default).
-        #   - enabled + no effort  → omit both, so the endpoint applies its own
-        #     server-side default (do NOT force a level the user didn't pick).
+        #   - disabled → reasoning_effort="none" and extra_body.think=False
+        #   - enabled + effort → top-level reasoning_effort
+        #   - enabled + no effort → omit both, preserving the server default
         #
         # We deliberately do NOT emit ``think=True`` on enable: it is an
-        # Ollama-only flag and thinking is already server-default-on for these
-        # backends, so forcing it risks a 400 on GLM/vLLM endpoints that don't
-        # recognize it. Mirrors the DeepSeek/Zai profile precedent.
-        if reasoning_config and isinstance(reasoning_config, dict):
+        # Ollama-only flag and thinking is already server-default-on, so
+        # forcing it is unnecessary.
+        if (
+            reasoning_config
+            and isinstance(reasoning_config, dict)
+            and _is_verified_ollama_endpoint(
+                ctx.get("base_url"), str(ctx.get("api_key") or "")
+            )
+        ):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
@@ -59,8 +74,7 @@ class CustomProfile(ProviderProfile):
                 # extra_body.think (only /api/chat honours it — ollama#14820)
                 # but respects the top-level reasoning_effort field, so both
                 # are needed to actually stop a thinking-capable model from
-                # reasoning (#25758). Endpoints that recognize neither simply
-                # ignore them.
+                # reasoning (#25758).
                 top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
             elif _effort:

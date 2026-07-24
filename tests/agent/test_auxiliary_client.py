@@ -4639,17 +4639,45 @@ class TestAuxiliaryProviderProfileReasoning:
         }
         assert "reasoning" not in kwargs["extra_body"]
 
-    def test_custom_openai_compatible_reasoning_uses_top_level_effort(self):
+    def test_custom_groq_endpoint_omits_ollama_reasoning_controls(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type", lambda *_args, **_kwargs: None
+        )
         kwargs = _build_call_kwargs(
             "custom",
-            "glm-5.2",
+            "llama-3.3-70b-versatile",
             [{"role": "user", "content": "hi"}],
             reasoning_config={"enabled": True, "effort": "max"},
-            base_url="https://example.test/v1",
+            base_url="https://api.groq.com/openai/v1",
         )
 
-        assert kwargs["reasoning_effort"] == "max"
+        assert "reasoning_effort" not in kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
+        assert "think" not in kwargs.get("extra_body", {})
+
+    def test_custom_verified_ollama_uses_auxiliary_api_key_for_disabled_reasoning(self, monkeypatch):
+        probe_calls = []
+
+        def _is_ollama(url, *, api_key=""):
+            probe_calls.append((url, api_key))
+            return "ollama"
+
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type", _is_ollama,
+        )
+        base_url = "http://127.0.0.1:11434/v1"
+        kwargs = _build_call_kwargs(
+            "custom",
+            "qwen3",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url=base_url,
+            api_key="auxiliary-test-key",
+        )
+
+        assert probe_calls == [(base_url, "auxiliary-test-key")]
+        assert kwargs["reasoning_effort"] == "none"
+        assert kwargs["extra_body"]["think"] is False
 
     @pytest.mark.asyncio
     async def test_async_call_llm_preserves_profile_reasoning_kwargs(self):

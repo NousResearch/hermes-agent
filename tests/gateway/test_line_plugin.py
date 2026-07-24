@@ -431,6 +431,7 @@ class TestRegister:
         ctx = self._FakeCtx()
         register(ctx)
         assert ctx.kwargs["allowed_users_env"] == "LINE_ALLOWED_USERS"
+        assert ctx.kwargs["group_allowed_chats_env"] == "LINE_ALLOWED_GROUPS"
         assert ctx.kwargs["allow_all_env"] == "LINE_ALLOW_ALL_USERS"
 
     def test_register_wires_cron_home_channel(self):
@@ -674,3 +675,71 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+def test_line_group_allowlist_registry_seam_is_consumed(monkeypatch):
+    from types import SimpleNamespace
+
+    from gateway.authz_mixin import GatewayAuthorizationMixin
+    from gateway.config import Platform
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from gateway.session import SessionSource
+
+    entry = PlatformEntry(
+        "line-test",
+        "LINE test",
+        lambda cfg: None,
+        lambda: True,
+        group_allowed_chats_env="LINE_TEST_GROUPS",
+    )
+    platform_registry.register(entry)
+    try:
+        monkeypatch.setenv("LINE_TEST_GROUPS", "C-test")
+        runner = object.__new__(GatewayAuthorizationMixin)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *args: False)
+        source = SessionSource(
+            platform=Platform("line-test"),
+            chat_id="C-test",
+            chat_type="group",
+            user_id=None,
+            user_name="u",
+        )
+        assert runner._is_user_authorized(source) is True
+    finally:
+        platform_registry.unregister("line-test")
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("audio", _line.MessageType.VOICE),
+        ("video", _line.MessageType.VIDEO),
+        ("file", _line.MessageType.DOCUMENT),
+    ],
+)
+def test_line_media_types_survive_gateway_event_path(monkeypatch, tmp_path, kind, expected):
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+    monkeypatch.setenv("LINE_ALLOWED_GROUPS", "C1")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from gateway.config import PlatformConfig
+    ad = LineAdapter(PlatformConfig(enabled=True))
+    ad._client = MagicMock()
+    ad._client.fetch_content = AsyncMock(return_value=b"not-an-image")
+    ad.handle_message = AsyncMock()
+    msg = {"type": kind, "id": "m1"}
+    if kind == "file":
+        msg["fileName"] = "notes.txt"
+    asyncio.run(
+        ad._dispatch_event(
+            {
+                "type": "message",
+                "replyToken": "r",
+                "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                "message": msg,
+            }
+        )
+    )
+    event = ad.handle_message.await_args.args[0]
+    assert event.message_type is expected
+    assert event.media_urls

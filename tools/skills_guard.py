@@ -525,17 +525,31 @@ MAX_FILE_COUNT = 50       # skills shouldn't have 50+ files
 MAX_TOTAL_SIZE_KB = 1024  # 1MB total is suspicious for a skill
 MAX_SINGLE_FILE_KB = 256  # individual file > 256KB is suspicious
 
-# File extensions to scan (text files only — skip binary)
-SCANNABLE_EXTENSIONS = {
-    '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb',
-    '.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.conf',
-    '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
-}
-
 # Known binary extensions that should NOT be in a skill
 SUSPICIOUS_BINARY_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.com',
     '.msi', '.dmg', '.app', '.deb', '.rpm',
+}
+
+# Extensions we never bother content-scanning because they are binary by
+# nature. Everything NOT listed here is read as UTF-8 and pattern-scanned,
+# with the decode guard in scan_file() dropping any remaining non-text
+# payloads. We scan by default rather than allowlisting "known text"
+# extensions: a fixed allowlist silently exempted runnable scripts
+# (.ps1/.psm1/.mjs/.cjs/.zsh/.fish/.bat/.cmd/.command/.lua and extensionless
+# launchers) from the scan, so a community skill could ship a reverse shell
+# or secret-exfil script in one of them and still pass as "safe".
+NON_SCANNABLE_EXTENSIONS = SUSPICIOUS_BINARY_EXTENSIONS | {
+    # images (note: .svg is XML/text and stays scannable)
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff',
+    # audio / video
+    '.mp3', '.wav', '.flac', '.ogg', '.mp4', '.mov', '.avi', '.mkv', '.webm',
+    # archives
+    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.jar',
+    # documents / fonts
+    '.pdf', '.docx', '.xlsx', '.pptx', '.woff', '.woff2', '.ttf', '.otf', '.eot',
+    # compiled / cache artifacts
+    '.pyc', '.pyo', '.class', '.o', '.a', '.wasm',
 }
 
 # Zero-width and invisible unicode characters used for injection
@@ -578,7 +592,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     if not rel_path:
         rel_path = file_path.name
 
-    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
+    if file_path.suffix.lower() in NON_SCANNABLE_EXTENSIONS:
         return []
 
     try:

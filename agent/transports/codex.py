@@ -207,33 +207,33 @@ class ResponsesApiTransport(ProviderTransport):
         # Verified live against grok-composer-2.5-fast (2026-06).
         #
         # Fix: when the agent HAS a client-side ``web_search`` function (i.e.
-        # the user enabled the web toolset), declare xAI's native
-        # ``web_search`` built-in instead so the search actually runs to
-        # completion server-side and the model streams a real answer.  The
-        # Responses API rejects two tools sharing the name ``web_search``
-        # (HTTP 400 "Duplicate tool names"), so we drop the client-side
-        # ``web_search`` function for the xAI path and let the native tool
-        # satisfy it.  All other client-side tools (read_file, terminal,
-        # web_extract, MCP tools, …) are untouched and continue to dispatch
-        # through Hermes's agent loop.
+        # the user enabled the web toolset), declare the native
+        # ``web_search`` built-in for xAI and openai-codex providers so
+        # the search runs to completion server-side and the model streams
+        # a real answer.  The Responses API rejects two tools sharing the
+        # name ``web_search`` (HTTP 400 "Duplicate tool names"), so we
+        # drop the client-side function and let the native tool satisfy
+        # it.  All other client-side tools (read_file, terminal,
+        # web_extract, MCP tools, …) are untouched and continue to
+        # dispatch through Hermes's agent loop.
         #
         # Scope: we ONLY swap in the native built-in when the client
-        # ``web_search`` was actually present.  We do NOT force-enable Grok
-        # server-side search on turns where the user never had web enabled —
-        # that would silently route around Hermes's web-provider config and
-        # tool-trace/citation plumbing for every xai-oauth turn.  The swap is
-        # a 1:1 replacement of an already-requested capability, not an
-        # additive grant.
+        # ``web_search`` was actually present.  We do NOT force-enable
+        # server-side search on turns where the user never had web
+        # enabled — that would silently route around Hermes's
+        # web-provider config and tool-trace/citation plumbing.  The
+        # swap is a 1:1 replacement of an already-requested capability,
+        # not an additive grant.
         #
-        # NOTE: for the swapped case this routes ``web_search`` to Grok's
-        # native search engine for xAI sessions instead of Hermes's
-        # configured web provider (Tavily/etc.), and those results bypass
-        # Hermes's tool-trace / citation plumbing (they arrive baked into the
-        # model's answer rather than as a tool result the loop observes).
-        # Scoped to ``is_xai_responses`` deliberately; narrow to specific
-        # models if a future grok variant should keep the client-side
-        # function.
-        if is_xai_responses and response_tools:
+        # NOTE: for the swapped case this routes ``web_search`` to the
+        # provider's native search engine instead of Hermes's configured
+        # web provider (Tavily/etc.), and those results bypass Hermes's
+        # tool-trace / citation plumbing (they arrive baked into the
+        # model's answer rather than as a tool result the loop
+        # observes).  Scoped to ``is_xai_responses`` and
+        # ``is_codex_backend``; narrow to specific models if a future
+        # provider variant should keep the client-side function.
+        if (is_xai_responses or is_codex_backend) and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
                 for t in response_tools

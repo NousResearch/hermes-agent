@@ -3842,6 +3842,15 @@ def save_config_value(key_path: str, value: any) -> bool:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
+
+        # Model/provider changes made through /model and the TUI use this
+        # persistence path rather than ``hermes config set``. Surface the same
+        # fail-closed cron drift warning for every operator-facing model switch.
+        from hermes_cli.config import (
+            warn_unpinned_cron_jobs_after_model_config_change,
+        )
+
+        warn_unpinned_cron_jobs_after_model_config_change(key_path, value)
         
         return True
     except Exception as e:

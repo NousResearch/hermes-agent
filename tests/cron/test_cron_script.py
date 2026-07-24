@@ -655,6 +655,7 @@ class TestRunJobEnvVarCleanup:
             "HERMES_SESSION_PLATFORM",
             "HERMES_SESSION_CHAT_ID",
             "HERMES_SESSION_CHAT_NAME",
+            "HERMES_CRON_SESSION",
         ):
             monkeypatch.delenv(key, raising=False)
 
@@ -684,3 +685,4 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+        assert os.environ.get("HERMES_CRON_SESSION") is None

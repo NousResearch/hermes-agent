@@ -43,6 +43,14 @@ def test_split_strips_outer_pipes_and_trims():
     assert split_table_row("a | b | c") == ["a", "b", "c"]
 
 
+def test_split_keeps_escaped_pipes_inside_cells():
+    assert split_table_row(r"| pattern | a \| b | ok |") == [
+        "pattern",
+        r"a \| b",
+        "ok",
+    ]
+
+
 def test_is_table_divider_handles_alignment_colons():
     assert is_table_divider("|---|---|")
     assert is_table_divider("| :--- | ---: | :---: |")
@@ -132,6 +140,23 @@ def test_already_aligned_ascii_table_remains_aligned():
     out = realign_markdown_tables(src).rstrip("\n").split("\n")
     offsets = [_column_offsets(row) for row in out]
     assert all(o == offsets[0] for o in offsets)
+
+
+def test_escaped_pipes_do_not_create_extra_columns():
+    src = dedent(
+        """\
+        | Pattern | Meaning |
+        |---------|---------|
+        | `a \\| b` | literal pipe |
+        | plain | no pipe |
+        """
+    )
+
+    out = realign_markdown_tables(src)
+    body_rows = [ln for ln in out.split("\n") if ln.strip().startswith("|")]
+
+    assert r"`a \| b`" in out
+    assert all(len(split_table_row(row)) == 2 for row in body_rows)
 
 
 def test_passes_non_table_lines_through_around_a_table():

@@ -62,15 +62,34 @@ def _pad_to_width(s: str, target: int) -> str:
     return s + " " * max(0, target - _disp_width(s))
 
 
+def _is_escaped_pipe(row: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and row[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
 def split_table_row(row: str) -> List[str]:
     """Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims."""
 
     s = row.strip()
-    if s.startswith("|"):
+    if s.startswith("|") and not _is_escaped_pipe(s, 0):
         s = s[1:]
-    if s.endswith("|"):
+    if s.endswith("|") and not _is_escaped_pipe(s, len(s) - 1):
         s = s[:-1]
-    return [c.strip() for c in s.split("|")]
+
+    cells: List[str] = []
+    current: List[str] = []
+    for index, char in enumerate(s):
+        if char == "|" and not _is_escaped_pipe(s, index):
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    cells.append("".join(current).strip())
+    return cells
 
 
 def is_table_divider(row: str) -> bool:

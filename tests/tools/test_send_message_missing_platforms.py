@@ -1,6 +1,7 @@
 """Tests for _send_mattermost, _send_matrix, _send_homeassistant, _send_dingtalk."""
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -67,12 +68,31 @@ async def _send_homeassistant(token, extra, chat_id, message):
 # ---------------------------------------------------------------------------
 
 
-def _make_aiohttp_resp(status, json_data=None, text_data=None):
+class _AiohttpContent:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def iter_chunked(self, _size):
+        async def _iter():
+            for chunk in self._chunks:
+                yield chunk
+
+        return _iter()
+
+
+def _make_aiohttp_resp(status, json_data=None, text_data=None, *, headers=None, body_bytes=None):
     """Build a minimal async-context-manager mock for an aiohttp response."""
     resp = AsyncMock()
     resp.status = status
     resp.json = AsyncMock(return_value=json_data or {})
     resp.text = AsyncMock(return_value=text_data or "")
+    resp.headers = dict(headers or {})
+    if body_bytes is None:
+        if json_data is not None:
+            body_bytes = json.dumps(json_data).encode("utf-8")
+        else:
+            body_bytes = (text_data or "").encode("utf-8")
+    resp.content = _AiohttpContent([body_bytes])
     return resp
 
 
@@ -191,6 +211,38 @@ class TestSendMatrix:
         assert "error" in result
         assert "403" in result["error"]
         assert "Forbidden" in result["error"]
+
+    def test_http_error_response_body_is_capped(self, monkeypatch):
+        from plugins.platforms.matrix import adapter as matrix_adapter
+
+        monkeypatch.setattr(matrix_adapter, "_MATRIX_API_RESPONSE_MAX_BYTES", 8)
+        resp = _make_aiohttp_resp(403, body_bytes=b"x" * 9)
+        session_ctx, _ = _make_aiohttp_session(resp)
+
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            result = asyncio.run(_send_matrix(
+                "tok", {"homeserver": "https://matrix.example.com"},
+                "!room:example.com", "hi"
+            ))
+
+        assert "error" in result
+        assert "Matrix API response exceeds 8 bytes" in result["error"]
+
+    def test_success_response_body_is_capped(self, monkeypatch):
+        from plugins.platforms.matrix import adapter as matrix_adapter
+
+        monkeypatch.setattr(matrix_adapter, "_MATRIX_API_RESPONSE_MAX_BYTES", 8)
+        resp = _make_aiohttp_resp(200, body_bytes=b"x" * 9)
+        session_ctx, _ = _make_aiohttp_session(resp)
+
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            result = asyncio.run(_send_matrix(
+                "tok", {"homeserver": "https://matrix.example.com"},
+                "!room:example.com", "hi"
+            ))
+
+        assert "error" in result
+        assert "Matrix API response exceeds 8 bytes" in result["error"]
 
     def test_missing_config(self):
         with patch.dict(os.environ, {"MATRIX_HOMESERVER": "", "MATRIX_ACCESS_TOKEN": ""}, clear=False):

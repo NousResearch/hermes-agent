@@ -46,7 +46,23 @@ class TestProviderEnvDetection:
         content = "KIMI_CN_API_KEY=sk-test\n"
         assert _has_provider_env_config(content)
 
-    def test_returns_false_when_no_provider_settings(self):
+    def test_detects_provider_setting_from_process_environment(self, monkeypatch):
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+        assert _has_provider_env_config("")
+
+    def test_ignores_empty_provider_setting_in_process_environment(self, monkeypatch):
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+
+        assert not _has_provider_env_config("")
+
+    def test_returns_false_when_no_provider_settings(self, monkeypatch):
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
 
@@ -346,6 +362,61 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+
+class TestDoctorProviderConfigurationReporting:
+    @staticmethod
+    def _isolate_provider_probes(monkeypatch):
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
+
+        monkeypatch.setattr(doctor_mod, "_APIKEY_PROVIDERS_CACHE", [])
+
+        from hermes_cli import auth as auth_mod
+        from hermes_cli import config as config_mod
+
+        monkeypatch.setattr(auth_mod, "get_anthropic_key", lambda: "")
+        monkeypatch.setattr(config_mod, "load_config", lambda: {})
+
+        bedrock_mod = types.SimpleNamespace(
+            has_aws_credentials=lambda: False,
+            resolve_aws_auth_env_var=lambda: "AWS_PROFILE",
+            resolve_bedrock_region=lambda: "us-east-1",
+        )
+        monkeypatch.setitem(sys.modules, "agent.bedrock_adapter", bedrock_mod)
+
+    def test_env_only_config_is_detected_without_home_env_file(
+        self, monkeypatch, tmp_path
+    ):
+        self._isolate_provider_probes(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+        helper = TestDoctorMemoryProviderSection()
+        out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+
+        assert "API key or custom endpoint configured" in out
+        assert ".env file missing" not in out
+        assert "Run 'hermes setup' to create one" not in out
+
+    def test_unconfigured_connectivity_rows_are_visible(self, monkeypatch, tmp_path):
+        self._isolate_provider_probes(monkeypatch)
+
+        helper = TestDoctorMemoryProviderSection()
+        out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+        lines = out.splitlines()
+
+        assert any(
+            "Anthropic API" in line and "(not configured)" in line
+            for line in lines
+        )
+        assert any(
+            "AWS Bedrock" in line and "(not configured)" in line
+            for line in lines
+        )
+        assert any(
+            "Azure Foundry (Entra ID)" in line and "(not configured)" in line
+            for line in lines
+        )
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):

@@ -1,7 +1,7 @@
 ---
 name: arxiv
 description: "Search arXiv papers by keyword, author, category, or ID."
-version: 1.0.0
+version: 1.0.1
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -26,21 +26,24 @@ Search and retrieve academic papers from arXiv via their free REST API. No API k
 
 ## Searching Papers
 
-The API returns Atom XML. Parse with `grep`/`sed` or pipe through `python3` for clean output.
+The API returns Atom XML. Save the response to a file first, then parse it with `grep`/`sed` or `python3` — don't pipe network output straight into an interpreter.
 
 ### Basic search
 
 ```bash
-curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5"
+curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5" -o /tmp/arxiv_search.xml
+cat /tmp/arxiv_search.xml
 ```
 
 ### Clean output (parse XML to readable format)
 
 ```bash
-curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" | python3 -c "
-import sys, xml.etree.ElementTree as ET
+curl -s "https://export.arxiv.org/api/query?search_query=all:GRPO+reinforcement+learning&max_results=5&sortBy=submittedDate&sortOrder=descending" -o /tmp/arxiv_search.xml
+
+python3 -c "
+import xml.etree.ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom'}
-root = ET.parse(sys.stdin).getroot()
+root = ET.parse('/tmp/arxiv_search.xml').getroot()
 for i, entry in enumerate(root.findall('a:entry', ns)):
     title = entry.find('a:title', ns).text.strip().replace('\n', ' ')
     arxiv_id = entry.find('a:id', ns).text.strip().split('/abs/')[-1]
@@ -98,29 +101,32 @@ search_query=au:hinton+AND+cat:cs.LG
 
 ```bash
 # Latest 10 papers in cs.AI
-curl -s "https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=10"
+curl -s "https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=10" -o /tmp/arxiv_search.xml
+cat /tmp/arxiv_search.xml
 ```
 
 ## Fetching Specific Papers
 
 ```bash
 # By arXiv ID
-curl -s "https://export.arxiv.org/api/query?id_list=2402.03300"
+curl -s "https://export.arxiv.org/api/query?id_list=2402.03300" -o /tmp/arxiv_paper.xml
 
 # Multiple papers
-curl -s "https://export.arxiv.org/api/query?id_list=2402.03300,2401.12345,2403.00001"
+curl -s "https://export.arxiv.org/api/query?id_list=2402.03300,2401.12345,2403.00001" -o /tmp/arxiv_papers.xml
 ```
 
 ## BibTeX Generation
 
-After fetching metadata for a paper, generate a BibTeX entry:
+After fetching metadata for a paper (saved to a file), generate a BibTeX entry from that file:
 
 {% raw %}
 ```bash
-curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" | python3 -c "
+curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" -o /tmp/arxiv_bibtex_source.xml
+
+python3 -c "
 import sys, xml.etree.ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom', 'arxiv': 'http://arxiv.org/schemas/atom'}
-root = ET.parse(sys.stdin).getroot()
+root = ET.parse('/tmp/arxiv_bibtex_source.xml').getroot()
 entry = root.find('a:entry', ns)
 if entry is None: sys.exit('Paper not found')
 title = entry.find('a:title', ns).text.strip().replace('\n', ' ')
@@ -197,28 +203,33 @@ arXiv doesn't provide citation data or recommendations. Use the **Semantic Schol
 
 ```bash
 # By arXiv ID
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300?fields=title,authors,citationCount,referenceCount,influentialCitationCount,year,abstract" | python3 -m json.tool
+curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300?fields=title,authors,citationCount,referenceCount,influentialCitationCount,year,abstract" -o /tmp/s2_paper.json
+python3 -m json.tool /tmp/s2_paper.json
 
 # By Semantic Scholar paper ID or DOI
-curl -s "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1234/example?fields=title,citationCount"
+curl -s "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1234/example?fields=title,citationCount" -o /tmp/s2_paper.json
+python3 -m json.tool /tmp/s2_paper.json
 ```
 
 ### Get citations OF a paper (who cited it)
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/citations?fields=title,authors,year,citationCount&limit=10" | python3 -m json.tool
+curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/citations?fields=title,authors,year,citationCount&limit=10" -o /tmp/s2_citations.json
+python3 -m json.tool /tmp/s2_citations.json
 ```
 
 ### Get references FROM a paper (what it cites)
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/references?fields=title,authors,year,citationCount&limit=10" | python3 -m json.tool
+curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/references?fields=title,authors,year,citationCount&limit=10" -o /tmp/s2_references.json
+python3 -m json.tool /tmp/s2_references.json
 ```
 
 ### Search papers (alternative to arXiv search, returns JSON)
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=GRPO+reinforcement+learning&limit=5&fields=title,authors,year,citationCount,externalIds" | python3 -m json.tool
+curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=GRPO+reinforcement+learning&limit=5&fields=title,authors,year,citationCount,externalIds" -o /tmp/s2_search.json
+python3 -m json.tool /tmp/s2_search.json
 ```
 
 ### Get paper recommendations
@@ -226,13 +237,16 @@ curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=GRPO+reinfo
 ```bash
 curl -s -X POST "https://api.semanticscholar.org/recommendations/v1/papers/" \
   -H "Content-Type: application/json" \
-  -d '{"positivePaperIds": ["arXiv:2402.03300"], "negativePaperIds": []}' | python3 -m json.tool
+  -d '{"positivePaperIds": ["arXiv:2402.03300"], "negativePaperIds": []}' \
+  -o /tmp/s2_recommendations.json
+python3 -m json.tool /tmp/s2_recommendations.json
 ```
 
 ### Author profile
 
 ```bash
-curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun&fields=name,hIndex,citationCount,paperCount" | python3 -m json.tool
+curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun&fields=name,hIndex,citationCount,paperCount" -o /tmp/s2_author.json
+python3 -m json.tool /tmp/s2_author.json
 ```
 
 ### Useful Semantic Scholar fields
@@ -244,12 +258,12 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 ## Complete Research Workflow
 
 1. **Discover**: `python scripts/search_arxiv.py "your topic" --sort date --max 10`
-2. **Assess impact**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID?fields=citationCount,influentialCitationCount"`
+2. **Assess impact**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID?fields=citationCount,influentialCitationCount" -o /tmp/s2_impact.json && python3 -m json.tool /tmp/s2_impact.json`
 3. **Read abstract**: `web_extract(urls=["https://arxiv.org/abs/ID"])`
 4. **Read full paper**: `web_extract(urls=["https://arxiv.org/pdf/ID"])`
-5. **Find related work**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID/references?fields=title,citationCount&limit=20"`
-6. **Get recommendations**: POST to Semantic Scholar recommendations endpoint
-7. **Track authors**: `curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=NAME"`
+5. **Find related work**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID/references?fields=title,citationCount&limit=20" -o /tmp/s2_refs.json && python3 -m json.tool /tmp/s2_refs.json`
+6. **Get recommendations**: POST to Semantic Scholar recommendations endpoint (save response to a file, then inspect it)
+7. **Track authors**: `curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=NAME" -o /tmp/s2_author.json && python3 -m json.tool /tmp/s2_author.json`
 
 ## Rate Limits
 
@@ -260,8 +274,8 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 
 ## Notes
 
-- arXiv returns Atom XML — use the helper script or parsing snippet for clean output
-- Semantic Scholar returns JSON — pipe through `python3 -m json.tool` for readability
+- arXiv returns Atom XML — save it to a file, then use the helper script or a parsing snippet for clean output. Avoid piping curl output directly into an interpreter.
+- Semantic Scholar returns JSON — save it to a file and pipe through `python3 -m json.tool` for readability.
 - arXiv IDs: old format (`hep-th/0601001`) vs new (`2402.03300`)
 - PDF: `https://arxiv.org/pdf/{id}` — Abstract: `https://arxiv.org/abs/{id}`
 - HTML (when available): `https://arxiv.org/html/{id}`

@@ -1175,8 +1175,30 @@ class WeComAdapter(BasePlatformAdapter):
         else:
             local_path = Path(source).expanduser()
 
-        if not local_path.is_absolute():
-            local_path = (Path.cwd() / local_path).resolve()
+        # Outbound local media must remain strictly inside the process working
+        # directory or HERMES_HOME. Resolve every part of that boundary in one
+        # guarded block so resolution failures cannot bypass the check.
+        try:
+            cwd = Path.cwd().resolve()
+            hermes_home = (
+                Path(os.environ.get("HERMES_HOME", cwd)).expanduser().resolve()
+            )
+            if not local_path.is_absolute():
+                local_path = cwd / local_path
+            local_path = local_path.resolve()
+        except Exception as exc:
+            raise ValueError(
+                f"Refusing to serve media: unable to resolve path safely: {exc}"
+            ) from exc
+
+        allowed_roots = (cwd, hermes_home)
+        if not any(
+            local_path != root and local_path.is_relative_to(root)
+            for root in allowed_roots
+        ):
+            raise ValueError(
+                f"Media path {local_path} is outside the allowed directory"
+            )
 
         if not local_path.exists() or not local_path.is_file():
             raise FileNotFoundError(f"Media file not found: {local_path}")

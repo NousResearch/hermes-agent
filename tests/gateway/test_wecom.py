@@ -1033,3 +1033,110 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+class TestWeComOutboundMediaPathGuard:
+    """Fail-closed path-traversal guard on outbound media (#32717, #45734).
+
+    Salvage of #32717 by @ErnestHysa + @liuhao1024 hardening, re-targeted onto
+    the bundled wecom plugin (plugins/platforms/wecom/adapter.py).
+    """
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_serves_relative_file_in_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.chdir(tmp_path)
+        media = tmp_path / "hello.txt"
+        media.write_bytes(b"hello world")
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        data, _content_type, resolved_name = await adapter._load_outbound_media(
+            "hello.txt"
+        )
+
+        assert data == b"hello world"
+        assert resolved_name == "hello.txt"
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_serves_file_in_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        media = hermes_home / "hello.txt"
+        media.write_bytes(b"hello home")
+        monkeypatch.chdir(workdir)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        data, _content_type, resolved_name = await adapter._load_outbound_media(
+            str(media)
+        )
+
+        assert data == b"hello home"
+        assert resolved_name == "hello.txt"
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_rejects_traversal(self, tmp_path, monkeypatch):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        # Working dir is a subdirectory; target escapes it via ``..``.
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        secret = tmp_path / "secret.txt"
+        secret.write_bytes(b"top secret")
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with pytest.raises(ValueError, match="outside the allowed directory"):
+            await adapter._load_outbound_media("../secret.txt")
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_wraps_relative_resolver_failure(
+        self, tmp_path, monkeypatch
+    ):
+        import plugins.platforms.wecom.adapter as wecom_module
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "hello.txt"
+
+        original_resolve = Path.resolve
+
+        def exploding_resolve(self, *args, **kwargs):
+            if self == target:
+                raise OSError("simulated resolve failure")
+            return original_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(wecom_module.Path, "resolve", exploding_resolve)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with pytest.raises(ValueError, match="unable to resolve path safely"):
+            await adapter._load_outbound_media("hello.txt")
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_rejects_allowed_root_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """The allowed root directory itself is not a servable media file.
+
+        An exact match to cwd/HERMES_HOME must be rejected by the boundary,
+        not merely deferred to ``is_file()``.
+        """
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with pytest.raises(ValueError, match="outside the allowed directory"):
+            await adapter._load_outbound_media(str(tmp_path))

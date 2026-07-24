@@ -1,4 +1,15 @@
 import { buildHermesWebSocketUrl } from "@hermes/shared";
+import {
+  DashboardUnreachableError,
+  markDashboardReachable,
+  markDashboardUnreachable,
+} from "@/lib/dashboard-reachability";
+
+export {
+  DASHBOARD_UNREACHABLE_CODE,
+  DashboardUnreachableError,
+  isDashboardUnreachableError,
+} from "@/lib/dashboard-reachability";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -103,15 +114,26 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...init,
+      headers,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+    });
+  } catch (error) {
+    if (init?.signal?.aborted || isAbortError(error)) throw error;
+    markDashboardUnreachable();
+    throw new DashboardUnreachableError(getDashboardBaseUrl(), { cause: error });
+  }
+
+  // Any HTTP response proves the backend is reachable. Status/auth/body
+  // failures below retain their existing handling and are not outages.
+  markDashboardReachable();
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -189,6 +211,19 @@ export async function fetchJSON<T>(
     throw new Error(`${res.status}: ${text}`);
   }
   return res.json();
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === "AbortError"
+  );
+}
+
+function getDashboardBaseUrl(): string {
+  const origin = typeof window === "undefined" ? "" : window.location?.origin;
+  return origin ? `${origin}${BASE}` : BASE || "/";
 }
 
 /** Encode a plugin registry key for URL paths (preserves `/` segment separators). */

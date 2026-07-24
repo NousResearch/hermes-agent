@@ -70,6 +70,7 @@ import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
+import { DashboardOfflineBanner } from "@/components/DashboardOfflineBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
@@ -726,6 +727,7 @@ export default function App() {
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
+              <DashboardOfflineBanner />
               <PluginSlot name="pre-main" />
               <div
                 className={cn(

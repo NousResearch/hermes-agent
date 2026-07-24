@@ -48,6 +48,12 @@ def _expand_tilde(path: str) -> str:
     return os.path.expanduser(path)
 
 
+def _normalize_posix_path_input(filepath: str) -> str:
+    """Decode shell-escaped spaces in paths with POSIX semantics."""
+    if not filepath or "\\ " not in filepath:
+        return filepath
+    return filepath.replace("\\ ", " ")
+
 # ---------------------------------------------------------------------------
 # Read-size guard: cap the character count returned to the model.
 # We're model-agnostic so we can't count tokens; characters are a safe proxy.
@@ -373,7 +379,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     """
     container_paths = _uses_container_paths(task_id)
     if container_paths:
-        expanded = _expand_tilde(filepath)
+        expanded = _expand_tilde(_normalize_posix_path_input(filepath))
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
@@ -391,6 +397,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
         joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
         return Path(ntpath.normpath(joined))
 
+    expanded = _normalize_posix_path_input(expanded)
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
@@ -414,7 +421,19 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
+        container_paths = _uses_container_paths(task_id)
+        if container_paths:
+            expanded = _expand_tilde(_normalize_posix_path_input(filepath))
+            if posixpath.isabs(expanded):
+                return None
+        elif sys.platform == "win32":
+            import ntpath
+
+            from tools.environments.local import _msys_to_windows_path
+
+            if ntpath.isabs(_expand_tilde(_msys_to_windows_path(filepath))):
+                return None
+        elif Path(_expand_tilde(_normalize_posix_path_input(filepath))).is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:

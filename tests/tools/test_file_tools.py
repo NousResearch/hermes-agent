@@ -166,6 +166,21 @@ class TestWriteFileHandler:
         assert "error" in result
         assert "string" in result["error"].lower() or "content" in result["error"].lower()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_shell_escaped_spaces_are_normalized_before_dispatch(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("Obsidian\\ Vault/out.txt", "hello"))
+        assert result["resolved_path"].endswith("Obsidian Vault/out.txt")
+        mock_ops.write_file.assert_called_once()
+        called_path = mock_ops.write_file.call_args.args[0]
+        assert called_path.endswith("Obsidian Vault/out.txt")
+
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -227,6 +242,25 @@ class TestPatchHandler:
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="patch", patch=None))
         assert "error" in result
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_normalizes_shell_escaped_spaces_before_dispatch(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace",
+            path="Obsidian\\ Vault/f.py",
+            old_string="foo",
+            new_string="bar",
+        ))
+        assert result["resolved_path"].endswith("Obsidian Vault/f.py")
+        called_path = mock_ops.patch_replace.call_args.args[0]
+        assert called_path.endswith("Obsidian Vault/f.py")
 
     @patch("tools.file_tools._get_file_ops")
     def test_unknown_mode_errors(self, mock_get):
@@ -472,6 +506,17 @@ class TestWindowsMsysPathResolution:
         resolved = file_tools._resolve_path_for_task("src/app.py", task_id="msys")
         assert str(resolved) == r"C:\Users\Mark\project\src\app.py"
 
+    def test_native_windows_backslash_space_is_not_unescaped(self, monkeypatch):
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
+
+        resolved = file_tools._resolve_path_for_task(r"C:\dir\ file.txt")
+        assert str(resolved) == r"C:\dir\ file.txt"
+
     def test_container_paths_skip_msys_translation(self, monkeypatch):
         """WSL/docker Linux paths must not be rewritten as Windows drives."""
         import tools.environments.local as local_mod
@@ -486,8 +531,8 @@ class TestWindowsMsysPathResolution:
             lambda task_id="default": "/home/don/project",
         )
 
-        resolved = file_tools._resolve_path_for_task("/home/don/.env")
-        assert str(resolved) == "/home/don/.env"
+        resolved = file_tools._resolve_path_for_task("/home/don/My\\ Notes/.env")
+        assert str(resolved) == "/home/don/My Notes/.env"
 
 
 # ---------------------------------------------------------------------------

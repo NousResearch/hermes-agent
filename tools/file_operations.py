@@ -27,6 +27,7 @@ Usage:
 
 import os
 import re
+import sys
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -72,6 +73,19 @@ def _strip_terminal_fence_leaks(text: str) -> str:
             continue
         cleaned_lines.append(cleaned)
     return "".join(cleaned_lines)
+
+
+def _normalize_posix_shell_path_input(path: str) -> str:
+    """Decode shell-escaped spaces in plain POSIX file-tool path args.
+
+    File tools receive raw strings, not a shell command line. When callers pass
+    macOS-style shell paths such as ``~/My\\ Notes/file.md``, the ``\\ `` should
+    become a literal space in the filesystem path instead of creating a
+    backslash-named directory.
+    """
+    if not path or "\\ " not in path:
+        return path
+    return path.replace("\\ ", " ")
 
 
 def _detect_line_ending(sample: str) -> Optional[str]:
@@ -928,6 +942,13 @@ class ShellFileOperations(FileOperations):
         This must be done BEFORE shell escaping, since ~ doesn't expand
         inside single quotes.
         """
+        # Native Windows paths use backslash as a separator, so ``\\ `` is not
+        # shell escaping there (for example ``C:\\dir\\ file.txt``). Other
+        # backends execute in POSIX environments even when the host is Windows.
+        from tools.environments.local import LocalEnvironment
+
+        if sys.platform != "win32" or not isinstance(self.env, LocalEnvironment):
+            path = _normalize_posix_shell_path_input(path)
         if not path:
             return path
         

@@ -216,8 +216,14 @@ class QQAdapter(BasePlatformAdapter):
         self._group_allow_from = _coerce_list(
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )
+        # Save per-group config (e.g. requireMention, historyLimit)
+        self._group_config: Dict[str, Any] = {}
+        raw_groups = extra.get("groups") or extra.get("groupConfig") or {}
+        if isinstance(raw_groups, dict):
+            self._group_config = raw_groups
 
         # Connection state
+        self._bot_openid: str = ""
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -227,6 +233,7 @@ class QQAdapter(BasePlatformAdapter):
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        self._group_context_cache: Dict[str, List[str]] = {}
 
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
@@ -851,6 +858,7 @@ class QQAdapter(BasePlatformAdapter):
             elif t in {
                     "C2C_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
+                    "GROUP_MESSAGE_CREATE",
                     "DIRECT_MESSAGE_CREATE",
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
@@ -895,10 +903,12 @@ class QQAdapter(BasePlatformAdapter):
         logger.debug("[%s] Unknown op: %s", self._log_tag, op)
 
     def _handle_ready(self, d: Any) -> None:
-        """Handle the READY event — store session_id for resume."""
+        """Handle the READY event — store session_id and bot openid for resume."""
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
-            logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
+            user = d.get("user") if isinstance(d.get("user"), dict) else {}
+            self._bot_openid = str(user.get("id", ""))
+            logger.info("[%s] Ready, session_id=%s, bot_openid=%s", self._log_tag, self._session_id, self._bot_openid)
 
     # ------------------------------------------------------------------
     # JSON helpers
@@ -947,11 +957,20 @@ class QQAdapter(BasePlatformAdapter):
         content = str(d.get("content", "")).strip()
         author = d.get("author") if isinstance(d.get("author"), dict) else {}
 
+
+        # If group_openid is present, this is a group message regardless of event type.
+        # QQ platform may push group messages with C2C_MESSAGE_CREATE type but
+        # a group_openid chat_id — route these to group handler for requireMention filtering.
+        group_openid = d.get("group_openid")
+        if group_openid:
+            await self._handle_group_message(d, msg_id, content, author, timestamp, event_type=event_type)
+            return
+
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
-        elif event_type in {"GROUP_AT_MESSAGE_CREATE",}:
-            await self._handle_group_message(d, msg_id, content, author, timestamp)
+        elif event_type in {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}:
+            await self._handle_group_message(d, msg_id, content, author, timestamp, event_type=event_type)
         elif event_type in {"GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"}:
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
         elif event_type == "DIRECT_MESSAGE_CREATE":
@@ -1101,7 +1120,7 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in {"dm", "c2c"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:
@@ -1313,8 +1332,14 @@ class QQAdapter(BasePlatformAdapter):
             content: str,
             author: Dict[str, Any],
             timestamp: str,
+            event_type: str = "GROUP_AT_MESSAGE_CREATE",
     ) -> None:
-        """Handle a group @-message event."""
+        """Handle a group message event (both @ and non-@).
+
+        When requireMention is True and the event is GROUP_MESSAGE_CREATE
+        (non-@ background chatter), messages not mentioning the bot are
+        silently ignored.
+        """
         group_openid = str(d.get("group_openid", ""))
         if not group_openid:
             return
@@ -1322,6 +1347,71 @@ class QQAdapter(BasePlatformAdapter):
                 group_openid, str(author.get("member_openid", ""))
         ):
             return
+
+        # Prepare sender display name for history cache
+        sender_name = author.get("nickname") or author.get("username")
+        if not sender_name:
+            member_openid = str(author.get("member_openid", ""))
+            sender_name = f"user_{member_openid[-6:]}" if member_openid else "User"
+
+        # Build raw context message (without stripping @ so it records naturally)
+        msg_line = f"[{sender_name}] {content.strip()}"
+
+        # requireMention filtering for GROUP_MESSAGE_CREATE events:
+        # GROUP_AT_MESSAGE_CREATE is always @-mention → always process.
+        # GROUP_MESSAGE_CREATE may or may not @ the bot → check mentions.
+        # Also handle messages routed via group_openid (event_type may be C2C_MESSAGE_CREATE)
+        is_group_msg = event_type == "GROUP_MESSAGE_CREATE" or (group_openid and event_type == "C2C_MESSAGE_CREATE")
+
+        if is_group_msg:
+            require_mention = False
+            # Check groups config for requireMention setting
+            group_cfg = self._group_config.get(group_openid, {})
+            if isinstance(group_cfg, dict):
+                require_mention = bool(group_cfg.get("requireMention", False))
+            if require_mention:
+                mentions = d.get("mentions") or []
+                bot_id = getattr(self, "_bot_openid", None)
+                mentioned = False
+                for m in mentions:
+                    if m.get("is_you") is True:
+                        mentioned = True
+                        break
+                    mid = (
+                        m.get("member_openid")
+                        or m.get("id")
+                        or m.get("user_openid")
+                        or ""
+                    )
+                    if bot_id and str(mid) == str(bot_id):
+                        mentioned = True
+                        break
+                if not mentioned:
+                    # Not mentioned, queue context and drop response
+                    if not hasattr(self, "_group_context_cache"):
+                        self._group_context_cache = {}
+                    if group_openid not in self._group_context_cache:
+                        self._group_context_cache[group_openid] = []
+                    self._group_context_cache[group_openid].append(msg_line)
+                    history_limit = 100
+                    if isinstance(group_cfg, dict) and "historyLimit" in group_cfg:
+                        try:
+                            history_limit = int(group_cfg["historyLimit"])
+                        except (ValueError, TypeError):
+                            pass
+                    if history_limit <= 0:
+                        self._group_context_cache[group_openid] = []
+                    else:
+                        self._group_context_cache[group_openid] = self._group_context_cache[group_openid][-history_limit:]
+                    return
+
+        # Fetch and attach context for mention events
+        channel_context = None
+        if hasattr(self, "_group_context_cache") and group_openid in self._group_context_cache:
+            history_lines = self._group_context_cache[group_openid]
+            if history_lines:
+                channel_context = "[Recent channel messages]\n" + "\n".join(history_lines)
+                self._group_context_cache[group_openid] = []
 
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
@@ -1368,6 +1458,7 @@ class QQAdapter(BasePlatformAdapter):
             media_urls=image_urls,
             media_types=image_media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
+            channel_context=channel_context,
         )
         await self.handle_message(event)
 
@@ -3155,10 +3246,11 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _strip_at_mention(content: str) -> str:
         """Strip the @bot mention prefix from group message content."""
-        # QQ group @-messages may have the bot's QQ/ID as prefix
         import re
-
-        stripped = re.sub(r"^@\S+\s*", "", content.strip())
+        # Remove XML-like mention tags: <@!ID> or <@ID>
+        stripped = re.sub(r"^<@!?[A-Za-z0-9_-]+>\s*", "", content.strip())
+        # Also fall back to the generic @S+ match
+        stripped = re.sub(r"^@\S+\s*", "", stripped)
         return stripped
 
     def _open_dm_opted_in(self) -> bool:

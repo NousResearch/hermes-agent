@@ -770,3 +770,72 @@ def test_sanitize_preserves_populated_tool_calls():
     out = sanitize_api_messages(list(messages))
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
+# ── tool_call_id reuse by local servers (#66429) ────────────────────────────
+# llama.cpp emits ONE constant tool_call_id for every tool call it returns, so
+# ``tool_call_id`` is not globally unique in practice. The #58327 dedup passes
+# must key off outstanding calls, not "seen at any point", or every result
+# after the first is deleted and the agent stops mid-task.
+
+
+CONSTANT_ID = "ZsSt4SkIFMRz0HtqT7MTlimNvzlKM896"
+
+
+def _call(cid, name="terminal"):
+    return {"role": "assistant", "content": None,
+            "tool_calls": [{"id": cid, "type": "function",
+                            "function": {"name": name, "arguments": "{}"}}]}
+
+
+def _result(cid, content):
+    return {"role": "tool", "tool_call_id": cid, "name": "terminal",
+            "content": content}
+
+
+def test_sanitize_keeps_results_when_server_reuses_one_tool_call_id():
+    """Every answered call survives even when all of them share one id.
+
+    Contract: a tool result is dropped for being unanswerable, never for
+    reusing an id that an earlier call already retired.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [{"role": "user", "content": "do three steps"}]
+    for i in range(3):
+        messages.append(_call(CONSTANT_ID))
+        messages.append(_result(CONSTANT_ID, f"step {i} output"))
+
+    out = sanitize_api_messages(list(messages))
+    results = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in results] == [
+        "step 0 output", "step 1 output", "step 2 output",
+    ]
+    calls = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(calls) == 3
+
+
+def test_sanitize_still_drops_replayed_result_for_retired_call():
+    """The #58327 protection holds: a second result for an already-answered
+    call answers nothing outstanding and is still dropped."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        _call(CONSTANT_ID),
+        _result(CONSTANT_ID, "real"),
+        _result(CONSTANT_ID, "replayed by a retry/resume glitch"),
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["content"] for m in out if m.get("role") == "tool"] == ["real"]
+
+
+def test_sanitize_drops_result_with_no_preceding_call():
+    """A tool result that never had a call is an orphan regardless of id."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    out = sanitize_api_messages([
+        {"role": "user", "content": "hi"},
+        _result("id_never_requested", "orphan"),
+    ])
+    assert [m for m in out if m.get("role") == "tool"] == []

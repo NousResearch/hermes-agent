@@ -111,6 +111,21 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
         elif len(valid_required) != len(required_val):
             cleaned["required"] = valid_required
 
+    # Gemini's Schema validator requires an ``items`` field on every array
+    # node — a bare ``{"type": "array"}`` (valid standard JSON Schema, where
+    # element types are simply unconstrained) fails the ENTIRE
+    # GenerateContentRequest with HTTP 400
+    # ``...parameters.properties[<name>].items: missing field`` before any model
+    # output. MCP / plugin / dynamic tool schemas routinely omit ``items``, so
+    # populate an empty schema when it is absent. An empty schema preserves the
+    # unconstrained-element meaning of the omitted keyword; a declared ``items``
+    # is left untouched. This also repairs nodes left bare after this legacy
+    # ``FunctionDeclaration.parameters`` allow-list strips ``prefixItems``
+    # (which the newer structured-output JSON Schema path supports, but the
+    # legacy path does not pass through).
+    if cleaned.get("type") == "array" and "items" not in cleaned:
+        cleaned["items"] = {}
+
     return cleaned
 
 

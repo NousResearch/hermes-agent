@@ -215,6 +215,45 @@ def test_build_native_request_strips_json_schema_only_fields_from_tool_parameter
     }
 
 
+def test_build_native_request_array_property_without_items_is_repaired():
+    """Wire regression for #69031 (Bug 2): a valid JSON Schema array property
+    that omits ``items`` must gain an empty ``items`` on the final
+    functionDeclarations payload, or Gemini rejects the whole tool catalog
+    with HTTP 400 ``...parameters.properties[decisions].items: missing field``.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "Decide."}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "propose_action",
+                    "description": "Propose candidate decisions.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "decisions": {
+                                "type": "array",
+                                "description": "Candidate decisions",
+                            }
+                        },
+                        "required": ["decisions"],
+                    },
+                },
+            }
+        ],
+        tool_choice=None,
+    )
+
+    decisions = request["tools"][0]["functionDeclarations"][0]["parameters"][
+        "properties"
+    ]["decisions"]
+    assert decisions["type"] == "array"
+    assert decisions["items"] == {}
+
+
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     from agent.gemini_native_adapter import translate_gemini_response
 

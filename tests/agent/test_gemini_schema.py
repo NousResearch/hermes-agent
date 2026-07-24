@@ -195,6 +195,92 @@ class TestRequiredPropertyPruning:
         assert "required" not in cleaned["anyOf"][1]
 
 
+class TestArrayItemsInvariant:
+    """Gemini rejects array ``FunctionDeclaration`` schemas that omit ``items``.
+
+    Standard JSON Schema permits a bare ``{"type": "array"}`` (elements are
+    unconstrained), but Google's native validator fails the ENTIRE
+    GenerateContentRequest with HTTP 400
+    ``...parameters.properties[<name>].items: missing field`` before any model
+    output. MCP / plugin / dynamic tool schemas routinely emit this shape, so
+    every array node produced by the sanitizer must carry an ``items`` key.
+    """
+
+    def test_bare_array_property_gets_empty_items(self):
+        """Exact #69031 (Bug 2) shape: a required array property without items."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "decisions": {"type": "array", "description": "Candidate decisions"}
+            },
+            "required": ["decisions"],
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        decisions = cleaned["properties"]["decisions"]
+        assert decisions["type"] == "array"
+        assert decisions["items"] == {}
+
+    def test_bare_array_input_is_not_mutated(self):
+        """The sanitizer builds a cleaned copy; the input schema is untouched."""
+        schema = {"type": "array", "description": "Unconstrained list."}
+        sanitize_gemini_schema(schema)
+        assert "items" not in schema
+        assert schema == {"type": "array", "description": "Unconstrained list."}
+
+    def test_declared_items_schema_is_preserved(self):
+        """An existing ``items`` schema must survive untouched (no overwrite)."""
+        schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["items"] == {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        }
+
+    def test_recursive_nested_arrays_all_carry_items(self):
+        """Invariant must hold on every array node reachable through the walk."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "matrix": {"type": "array", "items": {"type": "array"}},
+                "any_branch": {
+                    "anyOf": [
+                        {"type": "array"},
+                        {"type": "string"},
+                    ]
+                },
+            },
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        # Outer matrix array keeps items; the inner bare-typed array also gets items.
+        matrix_items = cleaned["properties"]["matrix"]["items"]
+        assert matrix_items["type"] == "array"
+        assert matrix_items["items"] == {}
+        # The array branch inside anyOf is repaired too.
+        assert cleaned["properties"]["any_branch"]["anyOf"][0]["items"] == {}
+
+    def test_prefixitems_only_array_still_gets_items(self):
+        """A typed array whose only element spec is ``prefixItems`` must still
+        end up with an ``items`` key. The legacy ``FunctionDeclaration.parameters``
+        allow-list filters ``prefixItems`` out (the newer structured-output JSON
+        Schema path supports it, but the legacy path does not pass it through),
+        which leaves the node bare. Tuple semantics are intentionally NOT
+        preserved here.
+        """
+        schema = {"type": "array", "prefixItems": [{"type": "string"}]}
+        cleaned = sanitize_gemini_schema(schema)
+        assert "prefixItems" not in cleaned
+        assert cleaned["type"] == "array"
+        assert cleaned["items"] == {}
+
+
 class TestSanitizeGeminiToolParameters:
     def test_empty_parameters_return_valid_object_schema(self):
         """Gemini requires ``parameters`` to be a valid object schema."""

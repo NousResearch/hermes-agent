@@ -269,10 +269,18 @@ or each get their own private session.
 def is_shared_multi_user_session(source, *, group_sessions_per_user, thread_sessions_per_user):
     if source.chat_type == "dm":
         return False  # DMs are always private
-    if source.thread_id:
-        return not thread_sessions_per_user  # Threads: shared unless per-user
-    return not group_sessions_per_user       # Groups: isolated unless shared
+    # Mirror build_session_key()'s precedence: start from the group isolation
+    # setting, then relax it inside a thread unless thread_sessions_per_user is
+    # set. A thread is isolated only when BOTH flags are True.
+    isolate_user = group_sessions_per_user
+    if source.thread_id and not thread_sessions_per_user:
+        isolate_user = False
+    return not isolate_user
 ```
+
+This tracks `build_session_key()` exactly (`gateway/session.py`): the group
+setting is the base, and a thread only stays per-user isolated when both
+`group_sessions_per_user` and `thread_sessions_per_user` are enabled.
 
 ### Summary
 
@@ -280,7 +288,7 @@ def is_shared_multi_user_session(source, *, group_sessions_per_user, thread_sess
 |---|---|---|
 | DM | Private (never shared) | N/A |
 | Group/Channel | Per-user isolation | `group_sessions_per_user` (default: True) |
-| Thread (forum, discord) | Shared (all participants see same context) | `thread_sessions_per_user` (default: False) |
+| Thread (forum, discord) | Shared (all participants see same context) | Isolated only when `group_sessions_per_user` **and** `thread_sessions_per_user` (default: False) |
 
 ### Impact on System Prompt
 

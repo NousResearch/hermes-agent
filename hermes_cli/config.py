@@ -2991,6 +2991,24 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Headroom Phase 1 structured tool-output compression experiment.
+    # Disabled by default and also gated by the bundled standalone
+    # ``headroom`` plugin being present in plugins.enabled. Phase 1 only
+    # permits search_files and browser_snapshot; config can narrow that
+    # allowlist but cannot widen it.
+    "headroom": {
+        "enabled": False,
+        "kill_switch": False,
+        "allowlist": ["search_files", "browser_snapshot"],
+        "excluded_tools": [
+            "terminal", "read_file", "delegate_task", "patch", "write_file",
+            "memory", "send_message", "clarify", "cronjob",
+        ],
+        "max_items": 8,
+        "max_field_chars": 240,
+        "max_snapshot_chars": 2400,
+    },
+
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {

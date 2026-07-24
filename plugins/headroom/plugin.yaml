@@ -1,0 +1,6 @@
+name: headroom
+version: "0.1.0"
+description: "Opt-in Phase 1 experiment for structured compression of selected large tool results. Disabled by default; only search_files and browser_snapshot are eligible."
+author: "NousResearch"
+hooks:
+  - transform_tool_result

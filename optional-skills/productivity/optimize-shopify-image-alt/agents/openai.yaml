@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize Shopify Alt Text"
+  short_description: "Audit and improve Shopify image alt text"
+  default_prompt: "Use $optimize-shopify-alt-text to scan my Shopify product, collection, and article images, prepare an alt text optimization plan, and apply the approved changes."

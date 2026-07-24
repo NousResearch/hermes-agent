@@ -122,9 +122,10 @@ class ResponsesApiTransport(ProviderTransport):
             instructions: str — system prompt (extracted from messages[0] if not given)
             reasoning_config: dict | None — {effort, enabled}
             session_id: str | None — transcript/session id; drives the xAI
-                x-grok-conv-id header and the Codex cache-scope headers, and is
-                the fallback prompt_cache_key when there is no static prefix to
-                content-address
+                x-grok-conv-id header and remains provider-visible metadata
+            cache_scope_id: str | None — stable provider cache-routing scope;
+                drives Codex cache headers and is the fallback prompt_cache_key
+                when there is no static prefix to content-address
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in
@@ -272,13 +273,14 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
+        cache_scope_id = params.get("cache_scope_id") or session_id
         # prompt_cache_key is content-addressed from the static prefix
         # (instructions + tools), NOT session_id — recurring cron jobs carry a
         # per-fire timestamp in session_id (cron_<id>_<ts>) that made every run
-        # cache-cold. session_id is left untouched for transcript isolation and
-        # the cache-scope routing headers below. Falls back to session_id when
+        # cache-cold. session_id remains logical provider metadata; the separate
+        # cache_scope_id drives cache routing. Falls back to that scope when
         # there is no static content to hash.
-        cache_key = _content_cache_key(instructions, response_tools) or session_id
+        cache_key = _content_cache_key(instructions, response_tools) or cache_scope_id
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
@@ -358,8 +360,8 @@ class ResponsesApiTransport(ProviderTransport):
             # remain high.  Send session_id / x-client-request-id as HTTP
             # headers while keeping ``prompt_cache_key`` in the body for
             # standard OpenAI routing as a belt-and-braces fallback.
-            cache_scope_id = _bounded_prompt_cache_key(session_id)
-            if cache_scope_id:
+            normalized_cache_scope_id = _bounded_prompt_cache_key(cache_scope_id)
+            if normalized_cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
                 if isinstance(existing_extra_headers, dict):
@@ -370,8 +372,8 @@ class ResponsesApiTransport(ProviderTransport):
                             if key and value is not None
                         }
                     )
-                merged_extra_headers["session_id"] = cache_scope_id
-                merged_extra_headers["x-client-request-id"] = cache_scope_id
+                merged_extra_headers["session_id"] = normalized_cache_scope_id
+                merged_extra_headers["x-client-request-id"] = normalized_cache_scope_id
                 kwargs["extra_headers"] = merged_extra_headers
 
         max_tokens = params.get("max_tokens")

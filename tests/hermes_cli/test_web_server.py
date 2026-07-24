@@ -3307,6 +3307,28 @@ class TestWebServerEndpoints:
         assert fields["TELEGRAM_ALLOWED_USERS"]["url"] == "https://t.me/userinfobot"
         assert "DM pairing" in fields["TELEGRAM_ALLOWED_USERS"]["description"]
 
+    def test_photon_exposes_local_mode_control_metadata(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        photon = next(
+            platform
+            for platform in resp.json()["platforms"]
+            if platform["id"] == "photon"
+        )
+        fields = {field["key"]: field for field in photon["env_vars"]}
+        mode = fields["PHOTON_IMESSAGE_MODE"]
+
+        assert mode["default_value"] == "cloud"
+        assert mode["options"] == [
+            {"value": "cloud", "label": "Photon cloud"},
+            {"value": "local", "label": "Local Mac"},
+        ]
+        assert fields["PHOTON_PROJECT_ID"]["visible_when"] == {
+            "key": "PHOTON_IMESSAGE_MODE",
+            "values": ["cloud"],
+        }
+
     def test_slack_messaging_platform_exposes_user_allowlist(self):
         resp = self.client.get("/api/messaging/platforms")
 
@@ -3428,6 +3450,32 @@ class TestWebServerEndpoints:
         status = self.client.get("/api/messaging/platforms").json()["platforms"]
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
+
+    def test_update_messaging_platform_rejects_invalid_option(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/photon",
+            json={"env": {"PHOTON_IMESSAGE_MODE": "carrier-pigeon"}},
+        )
+
+        assert resp.status_code == 400
+        assert "cloud, local" in resp.json()["detail"]
+
+    def test_update_messaging_platform_saves_photon_mode_to_config(self):
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/photon",
+            json={"env": {"PHOTON_IMESSAGE_MODE": "local"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_config()["photon"]["imessage_mode"] == "local"
+        assert "PHOTON_IMESSAGE_MODE" not in load_env()
+
+        status = self.client.get("/api/messaging/platforms").json()["platforms"]
+        photon = next(platform for platform in status if platform["id"] == "photon")
+        mode = next(field for field in photon["env_vars"] if field["key"] == "PHOTON_IMESSAGE_MODE")
+        assert mode["value"] == "local"
 
     def test_update_messaging_platform_rejects_invalid_telegram_bot_token(self):
         resp = self.client.put(

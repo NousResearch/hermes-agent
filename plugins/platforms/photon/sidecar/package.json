@@ -7,13 +7,13 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20.0.0"
   },
   "dependencies": {
-    "spectrum-ts": "8.0.0"
+    "spectrum-ts": "8.2.1"
   },
   "overrides": {
     "protobufjs": "8.6.1",

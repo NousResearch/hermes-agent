@@ -9412,6 +9412,10 @@ def _inject_platform_plugin_env_vars() -> None:
                     "url": meta.get("url") or None,
                     "password": is_secret,
                     "category": meta.get("category") or "messaging",
+                    "default": meta.get("default"),
+                    "options": meta.get("options") or [],
+                    "visible_when": meta.get("visible_when"),
+                    "config_key": meta.get("config_key"),
                 }
     except Exception:
         pass

@@ -41,13 +41,51 @@ automatically.
 
 ## Prerequisites
 
-- A Photon account — sign up at [app.photon.codes][app]
-- **Node.js 18.17 or newer** on PATH (`node --version`)
-- A phone number that can receive iMessage (used to bind your account)
+- **Node.js 20 or newer** on PATH (`node --version`)
+- For managed cloud mode, a [Photon account][app] and a phone number that can
+  receive iMessage
+- For local mode, a Mac signed in to Messages with Full Disk Access granted to
+  the process that starts Hermes
 
-That's it — there is no public URL or tunnel to set up.
+There is no public URL or tunnel to set up in either mode.
 
 ## First-time setup
+
+### Open-source local mode
+
+Use local mode when Hermes is running on a Mac signed in to your own
+Apple ID and you want messages to send through that local Messages.app
+account instead of Photon's managed/shared line pool:
+
+```bash
+PHOTON_ALLOWED_USERS=+15551234567
+```
+
+```yaml
+# ~/.hermes/config.yaml
+photon:
+  imessage_mode: local
+```
+
+Local mode uses Spectrum's open-source macOS Messages path
+(`imessage.config({ local: true })`). It does not use Photon dashboard
+login, `PHOTON_PROJECT_ID`, or `PHOTON_PROJECT_SECRET`. Grant Full Disk
+Access to the process that starts Hermes so the sidecar can read the
+Messages database.
+
+Spectrum local mode can start a DM from a bare E.164 number and rehydrate an
+existing DM or group from its chat GUID. That means cold cron delivery works
+with `PHOTON_HOME_CHANNEL=+1555...` for DMs. Creating a new group from a list
+of recipients still requires managed Photon mode.
+
+Then install the sidecar dependencies and start the gateway:
+
+```bash
+hermes photon install-sidecar
+hermes gateway start
+```
+
+Cloud mode remains the default when `photon.imessage_mode` is unset.
 
 Either run the unified gateway wizard and pick **Photon iMessage**:
 
@@ -188,7 +226,7 @@ Common issues:
 - **`No iMessage line assigned yet`** — Spectrum is enabled but no line
   has been provisioned; re-run `hermes photon setup` or check the
   [dashboard][app].
-- **Sidecar won't start** — confirm `node --version` is 18.17+ and that
+- **Sidecar won't start** — confirm `node --version` is 20+ and that
   `hermes photon install-sidecar` completed without errors.
 
 ## Limits today
@@ -223,6 +261,12 @@ Common issues:
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 | `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
+
+## Config.yaml
+
+| Key                    | Default | Notes                                      |
+|------------------------|---------|--------------------------------------------|
+| `photon.imessage_mode` | `cloud` | `cloud` for managed Photon, `local` for the open-source macOS Messages path. The adapter bridges this to `PHOTON_IMESSAGE_MODE` only for the local sidecar process. |
 
 [photon]: https://photon.codes/
 [app]: https://app.photon.codes/

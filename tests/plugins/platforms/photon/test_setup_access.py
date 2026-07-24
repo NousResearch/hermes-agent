@@ -12,7 +12,12 @@ import argparse
 import pytest
 
 from hermes_cli.config import get_env_value, save_env_value
-from plugins.platforms.photon.adapter import _env_enablement
+from gateway.config import PlatformConfig
+from plugins.platforms.photon.adapter import (
+    _apply_yaml_config,
+    _env_enablement,
+    validate_config,
+)
 from plugins.platforms.photon import cli
 
 
@@ -68,6 +73,51 @@ def test_env_enablement_home_channel_defaults_name(monkeypatch: pytest.MonkeyPat
     assert seed["home_channel"] == {
         "chat_id": "+15551234567",
         "name": "Home",
+    }
+
+
+def test_local_mode_env_enablement_without_cloud_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_IMESSAGE_MODE", "local")
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+    monkeypatch.setenv("PHOTON_HOME_CHANNEL", "+15551234567")
+
+    seed = _env_enablement()
+
+    assert seed is not None
+    assert seed["imessage_mode"] == "local"
+    assert seed["home_channel"]["chat_id"] == "+15551234567"
+    assert validate_config(PlatformConfig(enabled=True, token="", extra=seed))
+
+
+def test_local_mode_yaml_config_without_cloud_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOTON_IMESSAGE_MODE", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+
+    seed = _apply_yaml_config({"photon": {"imessage_mode": "local"}}, {"imessage_mode": "local"})
+
+    assert seed == {"imessage_mode": "local"}
+    assert validate_config(PlatformConfig(enabled=True, token="", extra=seed))
+
+
+def test_local_mode_yaml_config_supports_nested_platform_extra() -> None:
+    yaml_cfg = {
+        "platforms": {
+            "photon": {
+                "extra": {
+                    "imessage_mode": "local",
+                }
+            }
+        }
+    }
+
+    assert _apply_yaml_config(yaml_cfg, yaml_cfg["platforms"]["photon"]) == {
+        "imessage_mode": "local"
     }
 
 

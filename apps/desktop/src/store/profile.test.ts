@@ -19,8 +19,15 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profiles,
+  ensureGatewayProfile,
+  prewarmProfileBackend,
+  refreshProfiles,
+  resolveNewSessionProfile
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -50,11 +57,27 @@ beforeEach(() => {
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $newChatProfile.set(null)
   $connection.set(localConn())
   $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
+})
+
+describe('resolveNewSessionProfile', () => {
+  it('uses the selected new-chat profile while the gateway is still switching', () => {
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set('work')
+
+    expect(resolveNewSessionProfile()).toBe('work')
+  })
+
+  it('falls back to the normalized active gateway profile', () => {
+    $activeGatewayProfile.set('  ')
+
+    expect(resolveNewSessionProfile()).toBe('default')
+  })
 })
 
 afterEach(() => {

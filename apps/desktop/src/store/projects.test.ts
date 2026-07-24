@@ -11,6 +11,8 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $projectTreeLoading,
+  $projectTreeProfile,
   $removedSessionIds,
   $sessionMutationsInFlight,
   $worktreeRefreshToken,
@@ -247,11 +249,25 @@ describe('projectNameForCwd', () => {
     expect(projectNameForCwd('/elsewhere/mono-feature/src')).toBe('Monorepo')
   })
 
-  it('matches Windows cwd descendants across path separators', () => {
+  it('matches Windows cwd descendants across path separators and case', () => {
     $projectTree.set([treeNode({ id: 'p_windows', label: 'Windows app', path: 'C:\\repos\\app' })])
 
     expect(projectNameForCwd('C:\\repos\\app\\src')).toBe('Windows app')
-    expect(projectNameForCwd('C:/repos/app/src')).toBe('Windows app')
+    expect(projectNameForCwd('c:/Repos/App/src')).toBe('Windows app')
+  })
+
+  it('keeps POSIX project matching case-sensitive', () => {
+    $projectTree.set([treeNode({ id: 'p_posix', label: 'POSIX app', path: '/repos/App' })])
+
+    expect(projectNameForCwd('/repos/App/src')).toBe('POSIX app')
+    expect(projectNameForCwd('/repos/app/src')).toBeNull()
+  })
+
+  it('does not treat a backslash in a POSIX filename as a path separator', () => {
+    $projectTree.set([treeNode({ id: 'p_posix', label: 'POSIX app', path: '/repos/app\\archive' })])
+
+    expect(projectNameForCwd('/repos/app\\archive/src')).toBe('POSIX app')
+    expect(projectNameForCwd('/repos/app/archive/src')).toBeNull()
   })
 
   it('ignores auto-projects and the No-project bucket (no named identity)', () => {
@@ -510,6 +526,36 @@ describe('project tree profile isolation', () => {
     await pendingA
 
     expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    expect($projectTreeProfile.get()).toBe('profile-b')
+  })
+
+  it('does not publish a response after the profile changes on the same gateway', async () => {
+    let resolveTree: ((value: unknown) => void) | undefined
+
+    const response = new Promise(resolve => {
+      resolveTree = resolve
+    })
+
+    const gateway = { connectionState: 'open', request: vi.fn(() => response) }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('profile-a')
+    $projectTree.set([])
+    $projectTreeProfile.set(null)
+
+    const pending = refreshProjectTree()
+    $activeGatewayProfile.set('profile-b')
+    resolveTree?.({
+      active_id: null,
+      projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
+    })
+    await pending
+
+    expect($projectTree.get()).toEqual([])
+    expect($projectTreeLoading.get()).toBe(false)
+    expect($projectTreeProfile.get()).toBeNull()
   })
 })
 

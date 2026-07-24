@@ -2228,6 +2228,15 @@ def _launch_tui(
     )
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
+    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get(
+        "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
+    )
+    env.setdefault("HERMES_PYTHON", sys.executable)
+    # Always capture the current working directory — never inherit a stale
+    # HERMES_CWD from a previous TUI session in the parent environment.
+    # `os.environ.copy()` picks up every env var, including one left behind
+    # by a prior TUI launch, and `setdefault` would keep the stale value.
+    env["HERMES_CWD"] = os.getcwd()
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None

@@ -230,3 +230,46 @@ def test_adc_failure_falls_back_to_service_account(monkeypatch, tmp_path):
     token, project = va.get_vertex_credentials()
     assert token == "ya29.FAKE"
     assert project == "sa-project"
+
+
+# ---------------------------------------------------------------------------
+# Forced token re-mint (auxiliary 401 recovery) — refresh_vertex_credentials.
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_vertex_credentials_drops_cache_and_remints(vertex_adapter):
+    """A wedged cached Credentials object (non-expired but rejected server-side)
+    must be evicted so the re-mint builds a genuinely new token. This is the
+    ~1h-lifetime 401 (ACCESS_TOKEN_TYPE_UNSUPPORTED) recovery path for the
+    Gemini/openapi endpoint, where the OpenAI client bakes in a frozen token."""
+    import datetime as _dt
+
+    # Prime the cache.
+    token, project = vertex_adapter.get_vertex_credentials()
+    assert token == "ya29.FAKE"
+    cached_creds, _ = vertex_adapter._creds_cache["__adc__"]
+    # Simulate a wedged credential: looks fresh locally (far-future expiry,
+    # not expired) but the server rejects its token. Without the forced cache
+    # drop, get_vertex_credentials() would happily return this same token.
+    cached_creds.token = "ya29.WEDGED"
+    cached_creds.expired = False
+    cached_creds.expiry = _dt.datetime.now() + _dt.timedelta(hours=1)
+
+    assert vertex_adapter.refresh_vertex_credentials() is True
+    new_creds, _ = vertex_adapter._creds_cache["__adc__"]
+    assert new_creds is not cached_creds  # rebuilt, not reused
+    new_token, _ = vertex_adapter.get_vertex_credentials()
+    assert new_token == "ya29.FAKE"  # freshly minted
+
+
+def test_refresh_vertex_credentials_false_when_unresolvable(monkeypatch):
+    """No credentials at all → False, and no exception."""
+    for var in ("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS",
+                "VERTEX_PROJECT_ID", "VERTEX_REGION"):
+        monkeypatch.delenv(var, raising=False)
+    _install_fake_google_auth(monkeypatch, adc_ok=False)
+    import agent.vertex_adapter as va
+    va = importlib.reload(va)
+    va._creds_cache.clear()
+    monkeypatch.setattr(va, "_vertex_config", lambda: {})
+    assert va.refresh_vertex_credentials() is False

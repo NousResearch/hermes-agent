@@ -672,9 +672,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
+        # Dispatch through the web search registry. Bundled providers
+        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl, xai,
+        # …) register at import time; the dispatcher is a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
@@ -685,10 +685,17 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
+        if provider is not None and provider.supports_search():
+            try:
+                provider_available = bool(provider.is_available())
+            except Exception:
+                provider_available = False
+        else:
+            provider_available = False
+        if provider is None or not provider.supports_search() or not provider_available:
+            # Fall back when the name from config/auto-detect does not map to
+            # a usable search provider (typo, missing plugin, capability mismatch,
+            # or no credentials — e.g. default "firecrawl" with only xAI OAuth).
             provider = get_active_search_provider()
 
         if provider is None:

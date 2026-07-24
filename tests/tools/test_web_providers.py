@@ -288,12 +288,17 @@ class TestUnconfiguredErrorEnvelopeParity:
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
             "TOOL_GATEWAY_DOMAIN",
+            "XAI_API_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
 
     def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
-        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
-        — matching main's ``tool_error()`` envelope, not a per-result shape.
+        """``web_search_tool`` with no creds returns a top-level ``error`` string.
+
+        When the default backend name is registered but unavailable and the
+        registry walk finds no provider, the dispatcher returns
+        ``{"success": false, "error": "No web search provider configured..."}``
+        instead of delegating into Firecrawl and wrapping a SDK/config exception.
         """
         from tools import web_tools
 
@@ -305,10 +310,10 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
+        assert result.get("success") is False, f"expected success=false, got {result}"
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
+        assert "No web search provider configured" in result["error"]
+        assert "hermes tools" in result["error"]
         # No per-result burying
         assert "results" not in result
 

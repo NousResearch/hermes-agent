@@ -890,6 +890,89 @@ def test_classify_worker_exit_recognizes_rate_limit_sentinel(kanban_home):
     assert _kb._classify_worker_exit(pid + 1) == ("nonzero_exit", 1)
 
 
+class _FakeProc:
+    """Minimal Popen stand-in exposing poll() with a preset returncode."""
+
+    def __init__(self, returncode):
+        self._rc = returncode
+
+    def poll(self):
+        return self._rc
+
+
+def test_classify_worker_exit_falls_back_to_retained_handle(kanban_home, monkeypatch):
+    """When the manual waitpid registry has NO record for a pid, the retained
+    Popen handle recovers the exit status — the busy-board race where CPython's
+    own subprocess finalizer reaped the child first (recording the correct
+    returncode on the handle). Regression for the false-crash misclassification
+    (2026-07-09). The handle is the FALLBACK; the registry wins when present
+    (see test_classify_worker_exit_registry_wins_over_echild_poisoned_handle)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+    monkeypatch.setattr(_kb, "_recent_worker_exits", {}, raising=False)
+
+    # Registry empty (finalizer ate the status) but handle present.
+    _kb._worker_handles[41000] = _FakeProc(0)
+    assert _kb._classify_worker_exit(41000) == ("clean_exit", 0)
+    # Handle is consumed once classified (no leak).
+    assert 41000 not in _kb._worker_handles
+
+    _kb._worker_handles[41001] = _FakeProc(7)
+    assert _kb._classify_worker_exit(41001) == ("nonzero_exit", 7)
+
+    _kb._worker_handles[41002] = _FakeProc(-9)  # Popen encodes SIGKILL as -9
+    assert _kb._classify_worker_exit(41002) == ("signaled", 9)
+
+    _kb._worker_handles[41003] = _FakeProc(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+    assert _kb._classify_worker_exit(41003)[0] == "rate_limited"
+
+
+def test_classify_worker_exit_registry_wins_over_echild_poisoned_handle(
+    kanban_home, monkeypatch
+):
+    """When the manual reaper already recorded a raw status, it is AUTHORITATIVE
+    over a retained handle whose poll() would return an ECHILD-poisoned 0.
+    Otherwise a nonzero / signaled / rate-limit exit silently becomes a false
+    clean_exit — the immediate-block-on-clean-exit path then mis-fires.
+    Review: NousResearch/hermes-agent#61836."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+    monkeypatch.setattr(_kb, "_recent_worker_exits", {}, raising=False)
+
+    # Reaper recorded a nonzero exit; the handle's poll() would (wrongly) say 0.
+    _kb._recent_worker_exits[42000] = (7 << 8, 0.0)  # WIFEXITED, WEXITSTATUS 7
+    _kb._worker_handles[42000] = _FakeProc(0)
+    assert _kb._classify_worker_exit(42000) == ("nonzero_exit", 7)
+    assert 42000 not in _kb._worker_handles  # stale ECHILD handle dropped
+
+    # Reaper recorded a signal death (SIGKILL); handle would say 0.
+    _kb._recent_worker_exits[42001] = (9, 0.0)  # WIFSIGNALED, WTERMSIG 9
+    _kb._worker_handles[42001] = _FakeProc(0)
+    assert _kb._classify_worker_exit(42001) == ("signaled", 9)
+
+    # Reaper recorded a rate-limit exit; handle would say 0.
+    _kb._recent_worker_exits[42002] = (_kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8, 0.0)
+    _kb._worker_handles[42002] = _FakeProc(0)
+    assert _kb._classify_worker_exit(42002)[0] == "rate_limited"
+
+
+def test_classify_worker_exit_handle_still_running_falls_through(
+    kanban_home,
+    monkeypatch,
+):
+    """A retained handle whose child is still running (poll()->None) must not
+    be treated as an exit; fall through to the waitpid registry / unknown."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+    _kb._worker_handles[42000] = _FakeProc(None)  # still alive
+    assert _kb._classify_worker_exit(42000) == ("unknown", None)
+    # Handle retained (child not done yet).
+    assert 42000 in _kb._worker_handles
+
+
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):

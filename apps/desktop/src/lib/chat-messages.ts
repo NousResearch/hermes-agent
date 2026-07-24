@@ -317,9 +317,14 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   }
 
   if (message.display_kind === 'async_delegation_complete') {
+    // display_metadata may arrive as a JSON string from the database
+    const meta =
+      typeof message.display_metadata === 'string'
+        ? (() => { try { return JSON.parse(message.display_metadata) } catch { return undefined } })()
+        : message.display_metadata
     const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
+      meta && typeof meta === 'object' && 'task_count' in meta
+        ? meta.task_count
         : undefined
 
     return count === undefined

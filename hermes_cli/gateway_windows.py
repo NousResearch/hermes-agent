@@ -357,15 +357,18 @@ def _legacy_startup_entry_path() -> Path:
 # ---------------------------------------------------------------------------
 
 def _stable_gateway_working_dir(project_root: Path) -> str:
-    """Return a stable cwd for detached/startup gateway runs.
+    """Return the configured runtime root or a stable cwd for Windows launches.
 
-    Mirror the POSIX service invariant: anchor at ``HERMES_HOME`` whenever it
-    exists so Scheduled Task / Startup launches do not fail at the ``cd`` step
-    after a transient checkout or worktree is moved away. Fall back to the
-    source checkout only if ``HERMES_HOME`` cannot be used yet. Preserve the
-    configured spelling instead of resolving symlinks so AppData installs backed
-    by a junction/symlink still identify themselves as AppData.
+    A declared ``runtime.code_root`` is the authoritative deployment slot and
+    must match the imported Hermes code. Without that contract, retain the
+    existing Windows behavior: anchor at ``HERMES_HOME`` when available, then
+    fall back to the source checkout. Preserve the configured home spelling so
+    AppData junctions/symlinks still identify themselves as AppData.
     """
+    configured = _require_runtime_code_root_match()
+    if configured is not None:
+        return str(configured)
+
     from hermes_cli.config import get_hermes_home
 
     try:
@@ -377,6 +380,13 @@ def _stable_gateway_working_dir(project_root: Path) -> str:
     except Exception:
         pass
     return str(project_root)
+
+
+def _require_runtime_code_root_match() -> Path | None:
+    """Validate the shared deployment contract before Windows mutations."""
+    from hermes_cli.gateway import _require_runtime_code_root_match as require_match
+
+    return require_match()
 
 
 # ---------------------------------------------------------------------------
@@ -1031,6 +1041,7 @@ def install(
     / ``systemd_install`` but isn't needed — we always reconcile.
     """
     _assert_windows()
+    _require_runtime_code_root_match()
     start_now, start_on_login = _prompt_install_choices(start_now, start_on_login)
 
     if not start_on_login:
@@ -1456,6 +1467,7 @@ def status(deep: bool = False) -> None:
 def start() -> None:
     """Start the gateway using the canonical detached Windows launch path."""
     _assert_windows()
+    _require_runtime_code_root_match()
     running_pids = _gateway_pids()
     if running_pids:
         print(f"✓ Gateway already running (PID: {', '.join(map(str, running_pids))})")
@@ -1655,6 +1667,7 @@ def restart() -> None:
     doesn't produce a running gateway.
     """
     _assert_windows()
+    _require_runtime_code_root_match()
 
     stop()
 

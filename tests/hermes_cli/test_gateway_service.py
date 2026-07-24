@@ -542,6 +542,71 @@ class TestGeneratedSystemdUnits:
 
         assert "/mnt/c/WINDOWS/system32" in unit
 
+    def test_system_unit_preserves_configured_runtime_code_root(self, tmp_path, monkeypatch):
+        runtime_root = tmp_path / "runtime" / "mission-ctrl"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", runtime_root.resolve())
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_hermes_home_for_target_user",
+            lambda home: "/home/alice/.hermes",
+        )
+        original_remap = gateway_cli._remap_path_for_user
+
+        def guarded_remap(path, home_dir):
+            if Path(path).resolve() == runtime_root.resolve():
+                raise AssertionError("configured runtime root must not be remapped")
+            return original_remap(path, home_dir)
+
+        monkeypatch.setattr(gateway_cli, "_remap_path_for_user", guarded_remap)
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert f'WorkingDirectory="{runtime_root.resolve()}"' in unit
+        assert "WorkingDirectory=/home/alice/.hermes" not in unit
+
+    def test_system_unit_escapes_configured_runtime_code_root_specifiers(
+        self, tmp_path, monkeypatch
+    ):
+        runtime_root = tmp_path / "runtime" / "slot%h"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", runtime_root.resolve())
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_hermes_home_for_target_user",
+            lambda home: "/home/alice/.hermes",
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        escaped_root = str(runtime_root.resolve()).replace("%", "%%")
+        assert f'WorkingDirectory="{escaped_root}"' in unit
+        assert f'WorkingDirectory="{runtime_root.resolve()}"' not in unit
+
     def test_system_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
         monkeypatch.setattr(
             gateway_cli,
@@ -848,6 +913,57 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    @pytest.mark.parametrize(
+        ("runtime_status", "error_type"),
+        [
+            (
+                {
+                    "configured": Path("/opt/hermes-runtime"),
+                    "imported": Path("/srv/hermes"),
+                    "matches": False,
+                },
+                RuntimeError,
+            ),
+            (ValueError("runtime.code_root does not exist: /missing"), ValueError),
+        ],
+    )
+    def test_launchd_restart_validates_runtime_before_any_mutation(
+        self, monkeypatch, runtime_status, error_type
+    ):
+        calls = []
+
+        def runtime_info():
+            calls.append("validate-runtime")
+            if isinstance(runtime_status, Exception):
+                raise runtime_status
+            return runtime_status
+
+        monkeypatch.setattr(gateway_cli, "_runtime_code_root_status", runtime_info)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_label",
+            lambda: calls.append("get-label") or "ai.hermes.gateway",
+        )
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda: calls.append("get-pid") or 321,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append("signal-pid") or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: calls.append("launchctl"),
+        )
+
+        with pytest.raises(error_type):
+            gateway_cli.launchd_restart()
+
+        assert calls == ["validate-runtime"]
+
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch, capsys):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
@@ -977,6 +1093,65 @@ class TestLaunchdServiceRecovery:
         assert str(plist_path) in output
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
+
+    @pytest.mark.parametrize(
+        ("runtime_status", "expected"),
+        [
+            (
+                {
+                    "configured": Path("/opt/hermes-runtime"),
+                    "imported": Path("/srv/hermes"),
+                    "matches": False,
+                },
+                "does not match runtime.code_root",
+            ),
+            (
+                ValueError("runtime.code_root does not exist: /missing"),
+                "Invalid runtime deployment contract",
+            ),
+        ],
+    )
+    def test_launchd_status_runtime_contract_suppresses_mutation_guidance(
+        self, tmp_path, monkeypatch, capsys, runtime_status, expected
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        def runtime_info():
+            if isinstance(runtime_status, Exception):
+                raise runtime_status
+            return runtime_status
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_runtime_code_root_status", runtime_info)
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_plist_is_current",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("mismatch must skip service generation")
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=113, stdout="", stderr="Could not find service"
+            ),
+        )
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda cleanup_stale=False: None
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_unsupported_marker_exists", lambda: False
+        )
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert expected in output
+        if not isinstance(runtime_status, Exception):
+            assert "Service definition is stale" not in output
+        assert "Run: hermes gateway start" not in output
 
     def test_launchd_domain_uses_user_domain(self, monkeypatch):
         # The user/<uid> domain (not gui/<uid>) is the one reachable from
@@ -1764,6 +1939,74 @@ class TestGatewaySystemServiceRouting:
         out = capsys.readouterr().out
         assert "Planned restart is stuck in systemd failed state" in out
 
+    @pytest.mark.parametrize(
+        ("runtime_status", "unit_props", "expected"),
+        [
+            (
+                {
+                    "configured": Path("/opt/hermes-runtime"),
+                    "imported": Path("/srv/hermes"),
+                    "matches": False,
+                },
+                {"Result": "start-limit-hit"},
+                "Running Hermes code does not match runtime.code_root",
+            ),
+            (
+                ValueError("runtime.code_root does not exist: /missing"),
+                {
+                    "ActiveState": "failed",
+                    "ExecMainStatus": str(GATEWAY_SERVICE_RESTART_EXIT_CODE),
+                },
+                "Invalid runtime deployment contract",
+            ),
+        ],
+    )
+    def test_systemd_status_reports_runtime_code_root_contract(
+        self, monkeypatch, capsys, runtime_status, unit_props, expected
+    ):
+        unit = SimpleNamespace(exists=lambda: True)
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit)
+        monkeypatch.setattr(gateway_cli, "has_conflicting_systemd_units", lambda: False)
+        monkeypatch.setattr(gateway_cli, "has_legacy_hermes_units", lambda: False)
+
+        def runtime_info():
+            if isinstance(runtime_status, Exception):
+                raise runtime_status
+            return runtime_status
+
+        monkeypatch.setattr(gateway_cli, "_runtime_code_root_status", runtime_info)
+
+        def should_not_generate_definition(system=False):
+            raise AssertionError("mismatch/invalid config must skip service generation")
+
+        monkeypatch.setattr(
+            gateway_cli, "systemd_unit_is_current", should_not_generate_definition
+        )
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False: unit_props,
+        )
+        monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (True, ""))
+
+        def fake_run_systemctl(args, **kwargs):
+            if args[0] == "status":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if args[0] == "is-active":
+                return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
+            raise AssertionError(f"Unexpected args: {args}")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_status()
+
+        output = capsys.readouterr().out
+        assert expected in output
+        assert "Run:" not in output
+        assert "reset-failed" not in output
+
     def test_gateway_status_dispatches_full_flag(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: True)
         system_unit = SimpleNamespace(exists=lambda: False)
@@ -1892,6 +2135,103 @@ class TestGatewaySystemServiceRouting:
         assert "Gateway is not running" in out
         assert "nohup hermes gateway" in out
         assert "install as user service" not in out
+
+    def test_gateway_restart_all_validates_before_host_wide_mutation(
+        self, monkeypatch
+    ):
+        calls = []
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_all_via_service_manager_if_s6",
+            lambda action: calls.append("s6-dispatch") or False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_stop",
+            lambda system=False: calls.append("stop-service"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_stop",
+            lambda: calls.append("stop-launchd"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "kill_gateway_processes",
+            lambda **kwargs: calls.append("kill-all-profiles") or 0,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda **kwargs: calls.append("wait-exit") or True,
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="restart", system=False, all=True)
+            )
+
+        assert calls == ["validate-runtime"]
+
+    def test_gateway_restart_validates_before_normal_s6_dispatch(
+        self, monkeypatch
+    ):
+        calls = []
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_via_service_manager_if_s6",
+            lambda action: calls.append("s6-dispatch") or True,
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="restart", system=False, all=False)
+            )
+
+        assert calls == ["validate-runtime"]
+
+    def test_gateway_start_validates_before_normal_s6_dispatch(
+        self, monkeypatch
+    ):
+        calls = []
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_via_service_manager_if_s6",
+            lambda action: calls.append("s6-dispatch") or True,
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="start", system=False, all=False)
+            )
+
+        assert calls == ["validate-runtime"]
 
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -3224,6 +3564,34 @@ class TestGatewayStatusParser:
 class TestSystemdInstallOffersLegacyRemoval:
     """Verify that systemd_install prompts to remove legacy units first."""
 
+    def test_systemd_install_validates_runtime_before_legacy_removal(
+        self, monkeypatch
+    ):
+        calls = []
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "has_legacy_hermes_units",
+            lambda: calls.append("inspect-legacy") or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "remove_legacy_hermes_units",
+            lambda **kwargs: calls.append("remove-legacy"),
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.systemd_install(non_interactive=True)
+
+        assert calls == ["validate-runtime"]
+
     def test_install_offers_removal_when_legacy_detected(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -3533,6 +3901,152 @@ class TestServiceWorkingDirIsStable:
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: missing)
         assert gateway_cli._stable_service_working_dir() == str(gateway_cli.PROJECT_ROOT)
 
+    def test_configured_runtime_code_root_is_service_working_dir(self, tmp_path, monkeypatch):
+        runtime_root = tmp_path / "runtime" / "mission-ctrl"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", runtime_root.resolve())
+
+        assert Path(gateway_cli._stable_service_working_dir()) == runtime_root.resolve()
+        assert gateway_cli._configured_runtime_code_root() == runtime_root.resolve()
+
+    def test_configured_runtime_code_root_rejects_relative_path(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": "relative/runtime"}},
+        )
+
+        with pytest.raises(ValueError, match="must be an absolute path"):
+            gateway_cli._configured_runtime_code_root()
+
+    @pytest.mark.parametrize(
+        "bad_char",
+        ["\x00", "\x01", "\x07", "\x0b", "\x0c", "\x1b", "\n", "\r", "\ufffe", "\uffff"],
+    )
+    def test_configured_runtime_code_root_rejects_service_control_characters(
+        self, monkeypatch, bad_char
+    ):
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {
+                "runtime": {"code_root": f"/srv/hermes{bad_char}WorkingDirectory=/tmp"}
+            },
+        )
+
+        with pytest.raises(ValueError, match="unsupported by service managers"):
+            gateway_cli._configured_runtime_code_root()
+
+    def test_configured_runtime_code_root_rejects_existing_temporary_tree(
+        self, tmp_path, monkeypatch
+    ):
+        runtime_root = tmp_path / "hermes-runtime"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+
+        with pytest.raises(ValueError, match="cannot be temporary"):
+            gateway_cli._configured_runtime_code_root()
+
+    def test_launchd_plist_escapes_configured_runtime_code_root(self, tmp_path, monkeypatch):
+        import plistlib
+
+        runtime_root = tmp_path / "runtime&slot"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", runtime_root.resolve())
+
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode("utf-8"))
+
+        assert parsed["WorkingDirectory"] == str(runtime_root.resolve())
+
+    def test_configured_runtime_code_root_requires_hermes_entrypoint(self, tmp_path, monkeypatch):
+        runtime_root = tmp_path / "runtime" / "mission-ctrl"
+        runtime_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+
+        with pytest.raises(ValueError, match="hermes_cli/main.py"):
+            gateway_cli._configured_runtime_code_root()
+
+    def test_runtime_code_root_status_compares_config_to_imported_root(self, tmp_path, monkeypatch):
+        runtime_root = tmp_path / "runtime" / "mission-ctrl"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", runtime_root.resolve())
+
+        info = gateway_cli._runtime_code_root_status()
+
+        assert info["configured"] == runtime_root.resolve()
+        assert info["imported"] == runtime_root.resolve()
+        assert info["matches"] is True
+
+    def test_service_definition_status_preserves_mismatch_without_generation(self, monkeypatch):
+        runtime_info = {
+            "configured": Path("/opt/hermes-runtime"),
+            "imported": Path("/srv/hermes"),
+            "matches": False,
+        }
+        monkeypatch.setattr(
+            gateway_cli, "_runtime_code_root_status", lambda: runtime_info
+        )
+
+        def should_not_generate():
+            raise AssertionError("mismatch must skip service definition generation")
+
+        info, current, error = gateway_cli._service_definition_runtime_status(
+            should_not_generate
+        )
+
+        assert info == runtime_info
+        assert current is None
+        assert error is None
+
+    def test_service_generation_refuses_wrong_imported_code_root(self, tmp_path, monkeypatch):
+        runtime_root = tmp_path / "runtime" / "mission-ctrl"
+        other_root = tmp_path / "runtime" / "other-copy"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        other_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", other_root.resolve())
+
+        with pytest.raises(RuntimeError, match="does not match the imported Hermes code"):
+            gateway_cli.generate_launchd_plist()
+
     def test_user_unit_workingdirectory_is_hermes_home_not_checkout(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -3556,6 +4070,40 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_currentness_honors_runtime_code_root(self, tmp_path, monkeypatch):
+        import re
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        runtime_root = tmp_path / "runtime" / "mission-ctrl"
+        (runtime_root / "hermes_cli").mkdir(parents=True)
+        (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+        plist_path = tmp_path / "ai.hermes.gateway-mission-ctrl.plist"
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_path_is_temporary", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", runtime_root.resolve())
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"runtime": {"code_root": str(runtime_root)}},
+        )
+
+        expected = gateway_cli.generate_launchd_plist()
+        assert re.search(
+            rf"<key>WorkingDirectory</key>\s*<string>{re.escape(str(runtime_root.resolve()))}</string>",
+            expected,
+        )
+        plist_path.write_text(expected, encoding="utf-8")
+        assert gateway_cli.launchd_plist_is_current() is True
+
+        plist_path.write_text(
+            expected.replace(str(runtime_root.resolve()), str(home.resolve()), 1),
+            encoding="utf-8",
+        )
+        assert gateway_cli.launchd_plist_is_current() is False
 
     def test_launchd_plist_keepalive_unconditional(self, tmp_path, monkeypatch):
         """KeepAlive must be unconditional <true/> so the gateway restarts on clean exits.

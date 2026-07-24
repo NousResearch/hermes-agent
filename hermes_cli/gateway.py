@@ -17,6 +17,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -2684,25 +2685,124 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
-def _stable_service_working_dir() -> str:
-    """Return a WorkingDirectory that will not disappear out from under systemd.
+def _path_is_temporary(path: Path) -> bool:
+    """Return whether *path* resolves under a system temporary directory."""
+    import tempfile
 
-    The gateway does NOT need its cwd to be the source checkout — ``ExecStart``
-    uses an absolute python interpreter and ``-m hermes_cli.main``, so module
-    resolution does not depend on cwd. Pinning ``WorkingDirectory`` to
-    ``PROJECT_ROOT`` (``Path(__file__).parent.parent``) is actively harmful:
-    when the unit is generated from a transient checkout — a ``.worktrees/``
-    dir, or a clone that ``hermes update`` later relocates/removes — the path
-    rots. systemd then fails the start at the CHDIR step (``status=200/CHDIR``,
-    "Changing to the requested working directory failed") *before* Python
-    loads, so the on-boot ``refresh_systemd_unit_if_needed()`` self-heal never
-    runs and ``Restart=always`` crash-loops forever on a dead directory.
+    resolved = path.resolve()
+    temp_roots = {
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp"),
+        Path("/var/tmp"),
+        Path("/private/tmp"),
+        Path("/private/var/tmp"),
+    }
+    return any(resolved == root or root in resolved.parents for root in temp_roots)
 
-    ``HERMES_HOME`` is the stable anchor: it is where config/state/logs live,
-    it never moves, and it is guaranteed to exist whenever the gateway is
-    meaningfully installed. Fall back to ``PROJECT_ROOT`` only if HERMES_HOME
-    cannot be resolved (it always can in practice).
+
+def _configured_runtime_code_root() -> Path | None:
+    """Return the declared Hermes code root for this profile, if configured.
+
+    ``runtime.code_root`` is a deployment contract, not a convenience cwd. It
+    must name an existing, absolute, non-temporary Hermes source tree. Invalid
+    declarations fail closed so service generation cannot silently point at a
+    different checkout than the operator approved.
     """
+    config = read_raw_config()
+    runtime = config.get("runtime") if isinstance(config, dict) else None
+    raw = runtime.get("code_root") if isinstance(runtime, dict) else None
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("runtime.code_root must be an absolute path string")
+    if any(
+        ord(char) != 0x09
+        and not (
+            0x20 <= ord(char) <= 0xD7FF
+            or 0xE000 <= ord(char) <= 0xFFFD
+            or 0x10000 <= ord(char) <= 0x10FFFF
+        )
+        for char in raw
+    ):
+        raise ValueError(
+            "runtime.code_root contains characters unsupported by service managers"
+        )
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError("runtime.code_root must be an absolute path")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"runtime.code_root does not exist: {path}") from exc
+    if not resolved.is_dir():
+        raise ValueError(f"runtime.code_root is not a directory: {resolved}")
+    if _path_is_temporary(resolved):
+        raise ValueError(f"runtime.code_root cannot be temporary: {resolved}")
+    if not (resolved / "hermes_cli" / "main.py").is_file():
+        raise ValueError(
+            f"runtime.code_root is not a Hermes source tree; missing hermes_cli/main.py: {resolved}"
+        )
+    return resolved
+
+
+def _runtime_code_root_status() -> dict[str, Path | bool | None]:
+    """Describe whether the configured deployment root matches imported code."""
+    configured = _configured_runtime_code_root()
+    imported = PROJECT_ROOT.resolve()
+    return {
+        "configured": configured,
+        "imported": imported,
+        "matches": None if configured is None else configured == imported,
+    }
+
+
+def _service_definition_runtime_status(currentness_check):
+    """Evaluate runtime provenance before generating a service definition.
+
+    A configured/imported mismatch is a distinct deployment state, not an
+    invalid declaration. Skip currentness generation in that state because the
+    generator deliberately fails closed on the same mismatch.
+    """
+    try:
+        runtime_info = _runtime_code_root_status()
+    except (ValueError, RuntimeError) as exc:
+        return None, False, str(exc)
+
+    if runtime_info["configured"] is not None and not runtime_info["matches"]:
+        return runtime_info, None, None
+
+    try:
+        return runtime_info, currentness_check(), None
+    except (ValueError, RuntimeError) as exc:
+        return runtime_info, False, str(exc)
+
+
+def _require_runtime_code_root_match() -> Path | None:
+    """Fail closed when service generation runs from an unapproved code tree."""
+    info = _runtime_code_root_status()
+    configured = info["configured"]
+    if configured is not None and not info["matches"]:
+        raise RuntimeError(
+            "runtime.code_root does not match the imported Hermes code: "
+            f"configured={configured}, imported={info['imported']}. "
+            "Run the profile-bound Hermes executable before installing, starting, or refreshing the service."
+        )
+    return configured if isinstance(configured, Path) else None
+
+
+def _stable_service_working_dir() -> str:
+    """Return a stable, explicitly declared service WorkingDirectory.
+
+    When ``runtime.code_root`` is configured, it is the profile's authoritative
+    deployment slot and must be used by service generation. Otherwise preserve
+    the standard Hermes behavior of anchoring at HERMES_HOME, never at a
+    transient source checkout.
+    """
+    configured = _require_runtime_code_root_match()
+    if configured is not None:
+        return str(configured)
+
     try:
         home = get_hermes_home()
         if home and Path(home).is_dir():
@@ -2750,9 +2850,23 @@ def _systemd_watchdog_service_fields(
     return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
 
 
+def _systemd_quote_unit_value(value: str) -> str:
+    """Quote a systemd unit value while preserving literal path characters."""
+    if any(char in value for char in ("\x00", "\n", "\r")):
+        raise ValueError("systemd unit values cannot contain NUL or newlines")
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("%", "%%")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
+    configured_runtime_root = _configured_runtime_code_root()
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
@@ -2797,10 +2911,19 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
         python_path = _remap_path_for_user(python_path, home_dir)
-        # Anchor cwd to the target user's HERMES_HOME (stable, always exists)
-        # rather than a remapped source-checkout path that can rot. See
-        # _stable_service_working_dir() for the full rationale.
-        working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
+        # Preserve an explicit runtime deployment contract. Without one, keep
+        # the long-standing system-service behavior of anchoring cwd at the
+        # target user's stable HERMES_HOME rather than a caller checkout.
+        if configured_runtime_root is not None:
+            # runtime.code_root is an exact deployment contract. Do not silently
+            # reinterpret a home-relative source tree for another service user.
+            working_dir = str(configured_runtime_root)
+        else:
+            working_dir = (
+                str(hermes_home)
+                if hermes_home
+                else _remap_path_for_user(working_dir, home_dir)
+            )
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
@@ -2818,7 +2941,7 @@ Type={systemd_type}
 {systemd_watchdog_directives}User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
-WorkingDirectory={working_dir}
+WorkingDirectory={_systemd_quote_unit_value(working_dir) if configured_runtime_root is not None else working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
 Environment="LOGNAME={username}"
@@ -2859,7 +2982,7 @@ StartLimitIntervalSec=0
 [Service]
 Type={systemd_type}
 {systemd_watchdog_directives}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
-WorkingDirectory={working_dir}
+WorkingDirectory={_systemd_quote_unit_value(working_dir) if configured_runtime_root is not None else working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
@@ -3204,6 +3327,11 @@ def systemd_install(
     if system:
         _require_root_for_system_service("install")
 
+    # Validate before removing legacy units, creating directories, or touching
+    # service definitions. A failed deployment contract must leave the existing
+    # service topology unchanged.
+    _require_runtime_code_root_match()
+
     # Offer to remove legacy units (hermes.service from pre-rename installs)
     # before installing the new hermes-gateway.service. If both remain, they
     # flap-fight for the Telegram bot token on every gateway startup.
@@ -3476,12 +3604,42 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print_legacy_unit_warning()
         print()
 
-    if not systemd_unit_is_current(system=system):
-        print("⚠ Installed gateway service definition is outdated")
-        print(
-            f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit"
+    runtime_info, definition_current, runtime_config_error = (
+        _service_definition_runtime_status(
+            lambda: systemd_unit_is_current(system=system)
         )
+    )
+
+    if definition_current is False:
+        print("⚠ Installed gateway service definition is outdated")
+        if runtime_config_error:
+            print(f"  Invalid runtime deployment contract: {runtime_config_error}")
+        else:
+            print(
+                f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit"
+            )
         print()
+
+    if runtime_info and runtime_info["configured"] is not None:
+        print(f"Configured runtime root: {runtime_info['configured']}")
+        print(f"Imported Hermes root: {runtime_info['imported']}")
+        if runtime_info["matches"]:
+            print("✓ Running Hermes code matches runtime.code_root")
+        else:
+            print("✗ Running Hermes code does not match runtime.code_root")
+            print(
+                "  Hold restart/promotion until the interpreter is bound to the configured runtime"
+            )
+        print()
+
+    runtime_actions_blocked = bool(
+        runtime_config_error
+        or (
+            runtime_info
+            and runtime_info["configured"] is not None
+            and not runtime_info["matches"]
+        )
+    )
 
     status_cmd = ["status", get_service_name(), "--no-pager"]
     if full:
@@ -3512,7 +3670,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(
             f"✗ {_service_scope_label(system).capitalize()} gateway service is stopped"
         )
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway start{scope_flag}")
+        if not runtime_actions_blocked:
+            print(f"  Run: {'sudo ' if system else ''}hermes gateway start{scope_flag}")
 
     configured_user = _read_systemd_user_from_unit(unit_path) if system else None
     if configured_user:
@@ -3534,19 +3693,21 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print("  ⏳ Restart pending: systemd is waiting to relaunch the gateway")
     elif _systemd_unit_is_start_limited(unit_props):
         print("  ⏳ Restart pending: systemd is temporarily rate-limiting starts")
-        print(
-            f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
-        )
-        print(
-            f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}"
-        )
+        if not runtime_actions_blocked:
+            print(
+                f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
+            )
+            print(
+                f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}"
+            )
     elif active_state == "failed" and exec_main_status == str(
         GATEWAY_SERVICE_RESTART_EXIT_CODE
     ):
         print("  ⚠ Planned restart is stuck in systemd failed state (exit 75)")
-        print(
-            f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}"
-        )
+        if not runtime_actions_blocked:
+            print(
+                f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}"
+            )
     elif active_state == "failed" and result_code:
         print(f"  ⚠ Systemd unit result: {result_code}")
 
@@ -3981,13 +4142,13 @@ def generate_launchd_plist() -> str:
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
-        f"<string>{python_path}</string>",
+        f"<string>{xml_escape(str(python_path))}</string>",
         "<string>-m</string>",
         "<string>hermes_cli.main</string>",
     ]
     if profile_arg:
         for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
+            prog_args.append(f"<string>{xml_escape(part)}</string>")
     prog_args.extend(
         [
             "<string>gateway</string>",
@@ -4002,7 +4163,7 @@ def generate_launchd_plist() -> str:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label}</string>
+    <string>{xml_escape(label)}</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -4010,16 +4171,16 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    <string>{xml_escape(working_dir)}</string>
     
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path}</string>
+        <string>{xml_escape(sane_path)}</string>
         <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
+        <string>{xml_escape(venv_dir)}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{xml_escape(str(hermes_home))}</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -4045,10 +4206,10 @@ def generate_launchd_plist() -> str:
     <integer>25</integer>
 
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{xml_escape(str(log_dir / 'gateway.log'))}</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{xml_escape(str(log_dir / 'gateway.error.log'))}</string>
 </dict>
 </plist>
 """
@@ -4399,6 +4560,11 @@ def _wait_for_gateway_exit(
 
 
 def launchd_restart():
+    # A restart signals or terminates the current gateway before asking launchd
+    # to relaunch it. Validate first so an invalid/mismatched deployment
+    # contract cannot disrupt a working process.
+    _require_runtime_code_root_match()
+
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
@@ -4512,11 +4678,36 @@ def launchd_status(deep: bool = False):
 
     # ── Report ──
     print(f"Launchd plist: {plist_path}")
-    if launchd_plist_is_current():
+    runtime_info, definition_current, runtime_config_error = (
+        _service_definition_runtime_status(launchd_plist_is_current)
+    )
+
+    if definition_current is True:
         print("✓ Service definition matches the current Hermes install")
-    else:
+    elif definition_current is False:
         print("⚠ Service definition is stale relative to the current Hermes install")
-        print("  Run: hermes gateway start")
+        if runtime_config_error:
+            print(f"  Invalid runtime deployment contract: {runtime_config_error}")
+        else:
+            print("  Run: hermes gateway start")
+
+    if runtime_info and runtime_info["configured"] is not None:
+        print(f"Configured runtime root: {runtime_info['configured']}")
+        print(f"Imported Hermes root: {runtime_info['imported']}")
+        if runtime_info["matches"]:
+            print("✓ Running Hermes code matches runtime.code_root")
+        else:
+            print("✗ Running Hermes code does not match runtime.code_root")
+            print("  Hold restart/promotion until the interpreter is bound to the configured runtime")
+
+    runtime_actions_blocked = bool(
+        runtime_config_error
+        or (
+            runtime_info
+            and runtime_info["configured"] is not None
+            and not runtime_info["matches"]
+        )
+    )
 
     if service_listed:
         if launchd_pid is not None:
@@ -4532,7 +4723,8 @@ def launchd_status(deep: bool = False):
                 print("  Cron jobs will fire. Stop with: hermes gateway stop")
             else:
                 print("✗ No fallback process is running")
-                print("  Run: hermes gateway start")
+                if not runtime_actions_blocked:
+                    print("  Run: hermes gateway start")
             print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
         else:
             print("✓ Gateway service is registered with launchd")
@@ -4542,7 +4734,8 @@ def launchd_status(deep: bool = False):
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
-        print("  Run: hermes gateway start")
+        if not runtime_actions_blocked:
+            print("  Run: hermes gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")
 
@@ -6493,6 +6686,11 @@ def _dispatch_via_service_manager_if_s6(
 
     if detect_service_manager() != "s6":
         return False
+    if action in ("start", "restart"):
+        # s6 lifecycle calls mutate supervised service state. Keep the guard at
+        # the dispatcher boundary so every caller, including `gateway run`'s
+        # transparent supervision redirect, fails closed before mutation.
+        _require_runtime_code_root_match()
     if profile is None:
         # _profile_suffix() returns the bare profile name for
         # HERMES_HOME=<root>/profiles/<name>, "" for the default root,
@@ -6881,6 +7079,11 @@ def _gateway_command_inner(args):
         system = getattr(args, "system", False)
         start_all = getattr(args, "all", False)
 
+        # Starting mutates the active deployment through s6, a platform service
+        # manager, or stale-process cleanup. Validate the configured runtime root
+        # before any of those paths so mismatches fail closed without mutation.
+        _require_runtime_code_root_match()
+
         # Phase 4: inside a container with s6, dispatch via the service
         # manager instead of falling through to systemd/launchd/windows.
         # `--all` isn't meaningful here (each profile has its own service
@@ -7057,6 +7260,12 @@ def _gateway_command_inner(args):
         system = getattr(args, "system", False)
         restart_all = getattr(args, "all", False)
         service_configured = False
+
+        # Every restart path mutates a running deployment: normal s6 dispatch
+        # and Windows restart can stop a supervised gateway just as ``--all``
+        # can. Validate before dispatching to any manager so a configured root
+        # mismatch always fails closed without service or process mutation.
+        _require_runtime_code_root_match()
 
         # Phase 4: inside a container with s6, dispatch via the service
         # manager (s6-svc -t restarts the supervised process). ``--all``

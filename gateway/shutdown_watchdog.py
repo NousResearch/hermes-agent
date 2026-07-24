@@ -243,6 +243,136 @@ def arm_shutdown_watchdog(
     return done
 
 
+def arm_event_loop_health_watchdog(
+    *,
+    interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
+    start_time: Optional[float] = None,
+    home: Optional[Path] = None,
+    stale_factor: float = 3.0,
+    exit_code: int = 1,
+    name: str = "gateway-loop-health-watchdog",
+) -> None:
+    """Arm a daemon-thread event-loop health watchdog.
+
+    Runs as an OS thread (NOT an asyncio task) so it can detect when
+    the event loop has frozen — the async ``loop_heartbeat_forever``
+    cannot run on a stuck loop.
+
+    The thread checks ``<HERMES_HOME>/state/gateway.heartbeat`` on a
+    cadence of ``interval_s / 2``. If the file's ``monotonic`` value
+    has not advanced within ``interval_s * stale_factor`` seconds, the
+    event loop is presumed frozen and the watchdog hard-exits the
+    process so the service manager can restart it.
+
+    Also registers a self-rescheduling ``loop.call_soon`` before
+    returning, guaranteeing the loop always has at least one pending
+    callback — preventing the ``select(forever)`` deadlock described
+    in #69089.
+
+    Best-effort — never raises.
+    """
+    try:
+        interval = max(float(interval_s), 1.0)
+    except (TypeError, ValueError):
+        interval = DEFAULT_HEARTBEAT_INTERVAL_S
+
+    try:
+        stale_limit = interval * max(float(stale_factor), 2.0)
+    except (TypeError, ValueError):
+        stale_limit = interval * 3.0
+
+    heartbeat_path = get_loop_heartbeat_path(home)
+    _pid = os.getpid()
+
+    # Helper: read the monotonic timestamp from the heartbeat file.
+    def _read_heartbeat_monotonic() -> float:
+        try:
+            raw = heartbeat_path.read_text(encoding="utf-8")
+            payload = json.loads(raw)
+            val = payload.get("monotonic", 0.0)
+            return float(val)
+        except Exception:
+            return 0.0
+
+    def _watchdog_loop() -> None:
+        # Ensure the heartbeat path's parent dir exists.
+        try:
+            heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        # Write an initial heartbeat so we have a baseline.
+        write_loop_heartbeat(start_time=start_time, home=home)
+
+        check_interval = max(interval / 2.0, 2.0)
+        while True:
+            try:
+                time.sleep(check_interval)
+            except Exception:
+                return  # Thread interrupted — exit.
+
+            try:
+                last_monotonic = _read_heartbeat_monotonic()
+                age = time.monotonic() - last_monotonic
+            except Exception:
+                # Can't read the file — skip this cycle.
+                continue
+
+            if age < stale_limit:
+                continue  # Heartbeat still fresh — loop is alive.
+
+            # Heartbeat is stale — event loop appears frozen.
+            try:
+                logger.critical(
+                    "Event-loop health watchdog fired: heartbeat stale for "
+                    "%.0fs (limit=%.0fs, pid=%d). The asyncio loop is "
+                    "presumed frozen — hard-exiting so the service "
+                    "manager can restart the gateway.",
+                    age,
+                    stale_limit,
+                    _pid,
+                )
+            except Exception:
+                pass
+
+            # Dump diagnostics before the hard exit.
+            dump_path = get_shutdown_watchdog_dump_path(home)
+            snapshot: Optional[Dict[str, Any]] = {
+                "event": "event_loop_health_watchdog_fired",
+                "heartbeat_age_s": round(age, 1),
+                "stale_limit_s": round(stale_limit, 1),
+                "prompt": "Event loop frozen — no heartbeat in %.0fs" % age,
+            }
+            _write_watchdog_dump(dump_path, delay_s=age, snapshot=snapshot)
+
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+
+            try:
+                from hermes_logging import drain_log_queue
+                drain_log_queue(timeout=1.0)
+            except Exception:
+                pass
+
+            os._exit(exit_code)
+
+    try:
+        t = threading.Thread(target=_watchdog_loop, daemon=True, name=name)
+        t.start()
+        logger.debug(
+            "Event-loop health watchdog armed (check_interval=%.1fs, "
+            "stale_limit=%.0fs, path=%s)",
+            max(interval / 2.0, 2.0),
+            stale_limit,
+            heartbeat_path,
+        )
+    except Exception:
+        logger.debug("Failed to arm event-loop health watchdog", exc_info=True)
+
+
 async def loop_heartbeat_forever(
     *,
     interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,

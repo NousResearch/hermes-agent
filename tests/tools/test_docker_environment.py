@@ -863,13 +863,52 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
 
-    with pytest.raises(subprocess.TimeoutExpired):
+    with pytest.raises(RuntimeError) as excinfo:
         _make_dummy_env()
 
+    assert "Docker sandbox startup timed out after 120 seconds" in str(excinfo.value)
+    assert "Docker is installed" in str(excinfo.value)
     assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
     rm_cmd = cleanup_calls[0]
     assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
     assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
+
+
+def test_docker_run_failure_surfaces_docker_run_stderr(monkeypatch):
+    """Container startup failures should report the real docker run error."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    cleanup_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                raise subprocess.CalledProcessError(
+                    125,
+                    cmd,
+                    output="",
+                    stderr="context deadline exceeded",
+                )
+            if sub == "rm":
+                cleanup_calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _make_dummy_env(image="nikolaik/python-nodejs:python3.11-nodejs20")
+
+    assert "Docker sandbox startup failed while running `docker run`" in str(excinfo.value)
+    assert "exit code 125" in str(excinfo.value)
+    assert "context deadline exceeded" in str(excinfo.value)
+    assert len(cleanup_calls) == 1, "docker rm should still clean up the orphaned container"
 
 
 def test_no_reuse_when_persist_across_processes_disabled(monkeypatch):

@@ -15,6 +15,12 @@ def _make_adapter(**extra_env):
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
+    adapter._pending_guest_queries = {}
+    adapter._guest_only_chats = set()
+    adapter._guest_reply_buffer = {}
+    adapter._guest_inline_message_ids = {}
+    adapter._seen_guest_update_ids = set()
+    adapter._last_guest_update_id = 0
     adapter.config = PlatformConfig(enabled=True, token="fake-token")
     adapter._bot = AsyncMock()
     adapter._bot.set_message_reaction = AsyncMock()

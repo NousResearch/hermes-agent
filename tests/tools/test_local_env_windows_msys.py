@@ -349,6 +349,10 @@ class TestGitBashCoreutilsOnPath:
         monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
 
         dirs = _git_bash_bin_dirs()
+        # Normalize to POSIX separators — os.path.join on Windows produces
+        # backslash paths (e.g. /pg\mingw64\bin) but the test fixtures use
+        # forward-slash literals (#69371).
+        dirs = [d.replace("\\", "/") for d in dirs]
 
         # usr/bin is the load-bearing coreutils dir; mingw64 precedes it.
         assert "/pg/usr/bin" in dirs
@@ -364,6 +368,8 @@ class TestGitBashCoreutilsOnPath:
         monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
 
         dirs = _git_bash_bin_dirs()
+        # Normalize to POSIX separators (#69371).
+        dirs = [d.replace("\\", "/") for d in dirs]
 
         # MinGit ships bash under usr\bin; root must still resolve to /mg.
         assert "/mg/usr/bin" in dirs

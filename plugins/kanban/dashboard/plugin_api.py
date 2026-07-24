@@ -261,6 +261,15 @@ def _compute_task_diagnostics(
 
     diag_config = kd.config_from_runtime_config(load_config())
 
+    # Add graph-aware review-lane warnings. The diagnostic engine stays DB-
+    # agnostic; this dashboard layer supplies the live parent/source context.
+    try:
+        diag_config["review_lane_parent_warnings"] = (
+            kanban_db.review_lane_dependency_warnings(conn, task_ids)
+        )
+    except Exception:
+        diag_config["review_lane_parent_warnings"] = {}
+
     # Build the candidate task list. We need each task's row + its
     # events + its runs. Doing N separate queries works but scales
     # poorly; do three aggregate queries instead.

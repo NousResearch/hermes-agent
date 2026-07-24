@@ -10,6 +10,9 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionStore
 
 
+AUTO_CONTINUE_MARKER = "[Continuing after max-iteration exhaustion]"
+
+
 @pytest.mark.asyncio
 async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, monkeypatch):
     # Pin DEFAULT_DB_PATH so SessionDB() doesn't write to the real ~/.hermes/state.db.
@@ -98,3 +101,39 @@ async def test_gateway_retry_replays_original_text_not_retry_command(tmp_path):
     )
 
     assert captured["text"] == "real message"
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_ignores_synthetic_continuation_user_marker(tmp_path):
+    config = MagicMock()
+    config.sessions_dir = tmp_path
+    config.max_context_messages = 20
+    gw = GatewayRunner.__new__(GatewayRunner)
+    gw.config = config
+    gw.session_store = MagicMock()
+
+    session_entry = MagicMock(session_id="test-session")
+    session_entry.last_prompt_tokens = 55
+    gw.session_store.get_or_create_session.return_value = session_entry
+    gw.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "original task"},
+        {"role": "assistant", "content": "Starting a fresh continuation turn."},
+        {"role": "user", "content": f"{AUTO_CONTINUE_MARKER}\nkeep going"},
+        {"role": "assistant", "content": "finished"},
+    ]
+    gw.session_store.rewrite_transcript = MagicMock()
+
+    captured = {}
+
+    async def fake_handle_message(event):
+        captured["text"] = event.text
+        return "ok"
+
+    gw._handle_message = AsyncMock(side_effect=fake_handle_message)
+
+    await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert captured["text"] == "original task"
+    gw.session_store.rewrite_transcript.assert_called_once_with("test-session", [])

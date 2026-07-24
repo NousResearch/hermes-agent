@@ -252,6 +252,11 @@ export interface HermesConfig {
     reasoning_effort?: string
     personalities?: Record<string, unknown>
     service_tier?: string
+    auto_continue_on_max_iterations?: {
+      enabled?: boolean
+      max_auto_continues?: number
+      prompt?: string
+    }
   }
   display?: {
     personality?: string

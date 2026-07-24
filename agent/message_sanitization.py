@@ -21,6 +21,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+MAX_ITERATION_CONTINUATION_BOUNDARY = (
+    "The iteration budget was exhausted; starting a fresh continuation turn."
+)
+
 # Lone surrogate code points are invalid in UTF-8 and crash json.dumps
 # inside the OpenAI SDK.  Used by every surrogate-sanitization helper
 # below as well as by run_agent and the CLI for paste-from-clipboard
@@ -308,6 +312,30 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
         "role": "assistant",
         "content": text.strip() or "Operation interrupted.",
     })
+    return True
+
+
+def close_max_iteration_continuation_sequence(messages: list) -> bool:
+    """Close an exhausted turn before a synthetic continuation user is added.
+
+    A fresh turn is allowed to append its synthetic ``user`` only after the
+    exhausted turn has a provider-valid assistant boundary.  This mirrors the
+    interrupted-tool repair above, but is intentionally idempotent because the
+    finalizer may be retried after a persistence/cleanup failure.
+
+    Mutates ``messages`` in place. Returns True when a boundary was appended.
+    """
+    if not messages:
+        return False
+    last = messages[-1]
+    if isinstance(last, dict) and last.get("role") == "assistant":
+        return False
+    messages.append(
+        {
+            "role": "assistant",
+            "content": MAX_ITERATION_CONTINUATION_BOUNDARY,
+        }
+    )
     return True
 
 

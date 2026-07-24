@@ -95,14 +95,22 @@ def _finalize(
     exit_reason,
     api_call_count=60,
     pending_verification_response=None,
+    messages=None,
+    defer_iteration_limit_fallback=None,
+    total_api_call_count=None,
 ):
+    kwargs = {}
+    if defer_iteration_limit_fallback is not None:
+        kwargs["_defer_iteration_limit_fallback"] = defer_iteration_limit_fallback
+    if total_api_call_count is not None:
+        kwargs["total_api_call_count"] = total_api_call_count
     return finalize_turn(
         agent,
         final_response=final_response,
         api_call_count=api_call_count,
         interrupted=False,
         failed=False,
-        messages=[{"role": "user", "content": "task"}],
+        messages=messages or [{"role": "user", "content": "task"}],
         conversation_history=[],
         effective_task_id="task",
         turn_id="turn",
@@ -111,7 +119,85 @@ def _finalize(
         _should_review_memory=False,
         _turn_exit_reason=exit_reason,
         _pending_verification_response=pending_verification_response,
+        **kwargs,
     )
+
+
+def test_deferred_exhaustion_finalizes_tool_tail_for_a_fresh_continuation_turn(
+    monkeypatch,
+):
+    """Intermediate exhaustion is finalized without summary or tool -> user."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(max_iterations=1)
+    messages = [
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "test", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+    ]
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="budget_exhausted",
+        api_call_count=1,
+        total_api_call_count=5,
+        messages=messages,
+        defer_iteration_limit_fallback=True,
+    )
+
+    assert agent._handle_max_iterations_called is False
+    assert result["iteration_limit_continuation_ready"] is True
+    assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
+    assert result["api_calls"] == 5
+    assert result["cycle_api_calls"] == 1
+    assert agent.persisted_messages[-2]["role"] == "tool"
+    assert agent.persisted_messages[-1]["role"] == "assistant"
+    assert agent.persisted_messages[-1].get("tool_calls") is None
+
+
+def test_continuation_boundary_finalization_is_idempotent(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(max_iterations=1)
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+    ]
+
+    first = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="budget_exhausted",
+        api_call_count=1,
+        messages=messages,
+        defer_iteration_limit_fallback=True,
+    )
+    finalized_messages = first["messages"]
+    second = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="budget_exhausted",
+        api_call_count=1,
+        messages=finalized_messages,
+        defer_iteration_limit_fallback=True,
+    )
+
+    boundaries = [
+        message
+        for message in second["messages"]
+        if message.get("role") == "assistant"
+        and "fresh continuation turn" in str(message.get("content", ""))
+    ]
+    assert len(boundaries) == 1
 
 
 def test_pending_verify_response_is_preserved_for_cron_delivery(monkeypatch):
@@ -125,11 +211,13 @@ def test_pending_verify_response_is_preserved_for_cron_delivery(monkeypatch):
         final_response=None,
         exit_reason="unknown",
         pending_verification_response=report,
+        defer_iteration_limit_fallback=True,
     )
 
     assert result["final_response"] == report
     assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
     assert agent._handle_max_iterations_called is False
+    assert "iteration_limit_continuation_ready" not in result
 
 
 def test_pending_pre_verify_response_is_preserved_on_budget_exhaustion(monkeypatch):
@@ -191,18 +279,20 @@ def test_short_preserved_verification_response_is_not_rewritten(monkeypatch):
 
 def test_text_response_exit_not_rewritten_at_iteration_limit(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
-    agent = _LimitAgent(budget_remaining=5)
+    agent = _LimitAgent(budget_remaining=0)
     exit_reason = "text_response(finish_reason=stop)"
 
     result = _finalize(
         agent,
         final_response="normal answer",
         exit_reason=exit_reason,
-        api_call_count=59,
+        api_call_count=60,
+        defer_iteration_limit_fallback=True,
     )
 
     assert result["turn_exit_reason"] == exit_reason
     assert agent._handle_max_iterations_called is False
+    assert "iteration_limit_continuation_ready" not in result
 
 
 @pytest.mark.parametrize(

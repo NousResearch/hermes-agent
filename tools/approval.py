@@ -1149,6 +1149,48 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     return False
 
 
+def _command_region_end(segment: str, start: int) -> int:
+    """Return the end of the command region beginning at ``start``.
+
+    Command starts can sit inside a ``$(...)`` substitution or a bare
+    subshell, sharing their segment with the enclosing command.  A tokenizer
+    that reads to the end of the segment crosses the substitution's closing
+    ``)`` into the enclosing context: for ``echo "n=$(grep -c 'x' f)"`` it
+    sees the enclosing close-quote as a fresh unbalanced quote and misreports
+    well-formed shell as malformed.  The first unmatched ``)`` outside quotes
+    bounds the region to exactly the text that runs at this command position.
+    Matched ``(...)`` pairs (nested substitutions) stay inside the region.
+    """
+    depth = 0
+    quote: str | None = None
+    i = start
+    while i < len(segment):
+        char = segment[i]
+        if quote:
+            if char == "\\" and quote == '"' and i + 1 < len(segment):
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            i += 1
+            continue
+        if char == "\\" and i + 1 < len(segment):
+            i += 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return i
+            depth -= 1
+        i += 1
+    return len(segment)
+
+
 def _shell_tokens_with_spans(segment: str, start: int):
     """Return shell words as ``(value, start, end, quoted)`` or ``None``.
 
@@ -1158,15 +1200,16 @@ def _shell_tokens_with_spans(segment: str, start: int):
     """
     tokens = []
     i = start
-    while i < len(segment):
-        while i < len(segment) and segment[i].isspace():
+    limit = _command_region_end(segment, start)
+    while i < limit:
+        while i < limit and segment[i].isspace():
             i += 1
-        if i >= len(segment):
+        if i >= limit:
             break
         token_start = i
         value = []
         quote = None
-        while i < len(segment) and (quote or not segment[i].isspace()):
+        while i < limit and (quote or not segment[i].isspace()):
             char = segment[i]
             if quote:
                 if char == quote:
@@ -1336,7 +1379,8 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
     can fail closed for a program-bearing option rather than silently skip it.
     """
     try:
-        lexer = shlex.shlex(segment[start:], posix=True, punctuation_chars="<>")
+        end = _command_region_end(segment, start)
+        lexer = shlex.shlex(segment[start:end], posix=True, punctuation_chars="<>")
         lexer.whitespace_split = True
         lexer.commenters = ""
         return list(lexer)

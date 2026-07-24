@@ -311,16 +311,36 @@ function transcriptContent(displayKind: SessionMessage['display_kind'], content:
   return displayKind === 'hidden' ? null : content
 }
 
+function taskCountFromDisplayMetadata(meta: SessionMessage['display_metadata'] | string | unknown): number | undefined {
+  let value: unknown = meta
+
+  // Session DB / remote backends can surface display_metadata as a JSON string
+  // (e.g. historically double-encoded TEXT). Never use `in` here — it throws on
+  // primitives and bricks session.resume for any transcript with a delegation event.
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return undefined
+    }
+  }
+
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+
+  const count = (value as { task_count?: unknown }).task_count
+
+  return typeof count === 'number' ? count : undefined
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
   }
 
   if (message.display_kind === 'async_delegation_complete') {
-    const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
-        : undefined
+    const count = taskCountFromDisplayMetadata(message.display_metadata)
 
     return count === undefined
       ? 'background agent work finished'

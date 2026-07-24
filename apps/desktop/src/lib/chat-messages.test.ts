@@ -191,6 +191,57 @@ describe('toChatMessages', () => {
       'background agent work finished'
     ])
   })
+
+  it('loads async_delegation_complete when display_metadata is a JSON string', () => {
+    // Remote / corrupted session rows can leave display_metadata as TEXT that
+    // only got one json.loads — using `in` on that string throws and fails resume.
+    const meta = {
+      delegation_id: 'deleg_0d84d484',
+      task_count: 1,
+      completed_count: 1,
+      failed_count: 0,
+      duration_seconds: 193.55
+    }
+
+    expect(() =>
+      toChatMessages([
+        {
+          role: 'user',
+          content: 'opaque delegation context payload',
+          display_kind: 'async_delegation_complete',
+          display_metadata: JSON.stringify(meta) as unknown as typeof meta,
+          timestamp: 1
+        }
+      ])
+    ).not.toThrow()
+
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'opaque delegation context payload',
+        display_kind: 'async_delegation_complete',
+        display_metadata: JSON.stringify(meta) as unknown as typeof meta,
+        timestamp: 1
+      }
+    ])
+
+    expect(message.role).toBe('system')
+    expect(chatMessageText(message)).toBe('1 background agent finished')
+  })
+
+  it('loads async_delegation_complete when display_metadata is a parsed object', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'opaque delegation context payload',
+        display_kind: 'async_delegation_complete',
+        display_metadata: { delegation_id: 'deleg_1', task_count: 3 },
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('3 background agents finished')
+  })
 })
 
 describe('renderMediaTags', () => {

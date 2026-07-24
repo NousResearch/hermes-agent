@@ -91,6 +91,15 @@ export const $treeDragging = atom<string | null>(null)
  *  overlay renders its normal targets, scoped to session-hosting zones. */
 export const SESSION_TILE_DRAG = '__session-tile-drag__'
 
+/** Sentinel `$treeDragging` value for a NEW-session drag (the sidebar's
+ *  "New session" row dragged into a zone). It reuses the SAME zone overlay as
+ *  a session drag EXCEPT the "link to chat" affordance never lights: a session
+ *  that doesn't exist yet can't be `@session`-linked, so a center drop stacks a
+ *  fresh tab instead. Keeping this distinct from SESSION_TILE_DRAG is what lets
+ *  the overlay's `sessionDrag` checks (which gate the link affordance) stay
+ *  false here with zero edits to the hot overlay paths. */
+export const NEW_SESSION_DRAG = '__new-session-drag__'
+
 /**
  * Panes hidden by app chrome toggles (titlebar sidebar / right-sidebar
  * buttons). The tree KEEPS the zone and its mounted content; a zone whose

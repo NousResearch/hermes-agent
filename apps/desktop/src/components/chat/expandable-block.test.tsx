@@ -24,7 +24,7 @@ afterEach(() => {
 })
 
 describe('ExpandableBlock', () => {
-  it('lets horizontal scroll through and keeps the last line selectable', () => {
+  it('keeps wide code contained and the last line selectable', () => {
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
 
     const { container } = render(
@@ -37,12 +37,13 @@ describe('ExpandableBlock', () => {
     const toggle = screen.getByRole('button', { name: /expand|collapse/i })
     const fade = toggle.parentElement!
 
-    // Inner container allows horizontal scroll so wide code gets a scrollbar.
-    expect(inner.className).toContain('overflow-x-auto')
+    // Wide code wraps inside the reading column instead of adding a horizontal
+    // scrollbar to the block or transcript.
+    expect(inner.className).toContain('overflow-x-hidden')
 
     // The full-width fade is a pure cue: it spans the bottom edge but must not
-    // intercept pointer events, so the scrollbar drag and text selection on the
-    // last line pass through to the content underneath.
+    // intercept pointer events, so text selection on the last line passes
+    // through to the content underneath.
     expect(fade.className).toContain('pointer-events-none')
     expect(fade.className).toContain('inset-x-0')
 

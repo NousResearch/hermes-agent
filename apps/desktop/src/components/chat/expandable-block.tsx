@@ -32,18 +32,17 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
   return (
     <div className="relative">
       <div
-        className={cn('overflow-y-auto overflow-x-auto', expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]', className)}
+        className={cn('overflow-x-hidden overflow-y-auto', expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]', className)}
         ref={innerRef}
       >
         {children}
       </div>
       {overflowing && (
         // The fade is a pure overflow cue and must not intercept pointer events:
-        // it spans the full bottom edge (over the horizontal scrollbar of a wide
-        // code block AND the block's last line), so making it clickable killed
-        // both sideways scrolling and text selection. Keep the fade
+        // it spans the full bottom edge over the block's last line, so making it
+        // clickable would prevent text selection there. Keep the fade
         // `pointer-events-none` and pin the only clickable target — a compact
-        // toggle — to the right edge, clear of the draggable scrollbar track.
+        // toggle — to the right edge.
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-7 justify-end bg-linear-to-t from-(--ui-chat-surface-background) to-transparent">
           <button
             aria-expanded={expanded}

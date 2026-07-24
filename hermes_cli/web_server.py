@@ -370,9 +370,19 @@ def _has_valid_session_token(request: Request) -> bool:
 # can't be set. Kept narrow — same query-token tradeoff as the /api/pty WS.
 _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
+# /api/audio/{filename} (TTS playback) needs the same query-token allowance:
+# a plain <audio src="..."> GET can't attach the X-Hermes-Session-Token
+# header. Matched by pattern rather than folded into the blanket
+# "/api/audio" prefix so the allowance stays scoped to the file-serving GET
+# and doesn't also loosen /api/audio/speak, /transcribe, or
+# /elevenlabs/voices onto query-token auth.
+_AUDIO_FILE_PATH_RE = re.compile(
+    r"^/api/audio/[^/]+\.(?:mp3|ogg|wav|opus|m4a|flac|aac|webm)$"
+)
+
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
-    if path not in _QUERY_TOKEN_API_PATHS:
+    if path not in _QUERY_TOKEN_API_PATHS and not _AUDIO_FILE_PATH_RE.match(path):
         return False
     token = request.query_params.get("token", "")
     return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
@@ -18512,6 +18522,61 @@ def mount_spa(application: FastAPI):
         return Response(content=css, media_type="text/css")
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+
+    # --- Audio route (TTS playback) --------------------------------
+    # Serves audio files written by tools/tts_tool.py. Must resolve through
+    # the same get_hermes_dir() the tool itself uses (new installs land in
+    # cache/audio; existing installs that already have audio_cache/ on disk
+    # keep using it) — hardcoding audio_cache here 404s for every new install.
+    # Mounted BEFORE the SPA catch-all so /api/audio/* isn't eaten.
+    def _resolve_audio_cache_dir() -> Path:
+        # Resolved per-request (like get_hermes_home() elsewhere) rather than
+        # once at mount time, so HERMES_AUDIO_CACHE/HERMES_HOME set by a test
+        # fixture (or a profile switch) actually takes effect.
+        from hermes_constants import get_hermes_dir as _get_audio_cache_dir
+
+        return Path(os.environ.get(
+            "HERMES_AUDIO_CACHE", str(_get_audio_cache_dir("cache/audio", "audio_cache")),
+        ))
+
+
+    @application.get("/api/audio/{filename}")
+    async def get_audio(filename: str):
+        """Serve audio files for WebUI TTS playback."""
+        import urllib.parse as _urlparse
+        decoded = _urlparse.unquote(filename)
+        audio_dir = _resolve_audio_cache_dir().resolve()
+        file_path = (audio_dir / decoded).resolve()
+        if not file_path.is_relative_to(audio_dir):
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        if not file_path.exists() or not file_path.is_file():
+            return JSONResponse(
+                {"error": f"Audio file not found: {filename}"},
+                status_code=404,
+            )
+        allowed_ext = {"mp3", "ogg", "wav", "opus", "m4a", "flac", "aac", "webm"}
+        ext = file_path.suffix.lower().lstrip(".")
+        if ext not in allowed_ext:
+            media_type = "application/octet-stream"
+        elif ext == "mp3":
+            media_type = "audio/mpeg"
+        elif ext == "ogg" or ext == "opus":
+            media_type = "audio/ogg"
+        elif ext == "wav":
+            media_type = "audio/wav"
+        elif ext == "m4a":
+            media_type = "audio/mp4"
+        elif ext == "flac":
+            media_type = "audio/flac"
+        elif ext == "aac":
+            media_type = "audio/aac"
+        elif ext == "webm":
+            media_type = "audio/webm"
+        else:
+            media_type = "audio/*"
+        return FileResponse(str(file_path), media_type=media_type)
+
+
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):

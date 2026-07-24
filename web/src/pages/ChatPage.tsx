@@ -26,6 +26,48 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+
+// -----------------------------------------------------------------------------
+// TTS: MEDIA: tag detection via WebSocket intercept.
+// xterm writes to WebGL canvas so DOM scanning won't find tags.
+// We intercept at the wire: ws.onmessage → check → term.write.
+// -----------------------------------------------------------------------------
+// _mediaCache deduplicates audio playback per client. Multi-client problem:
+// if two browser tabs have WebUI open, each maintains its own cache.
+// Each media file is keyed by filename so the same file doesn't get played
+// twice even if the message renders twice. Only one <audio> per filename.
+const _mediaCache = new Map<string, string>();
+
+// `token` mirrors the ?token= query-auth the /api/pty WS and
+// /api/files/download already use: loopback mode has no session cookie, so a
+// plain <audio>-triggered GET can't carry the X-Hermes-Session-Token header
+// and must authenticate via the query string instead. Gated (OAuth) mode
+// omits the token — the browser's session cookie covers the request.
+function _playMedia(filename: string, token?: string): void {
+  const url = token
+    ? `/api/audio/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`
+    : `/api/audio/${encodeURIComponent(filename)}`;
+  if (_mediaCache.has(filename)) return;
+  _mediaCache.set(filename, url);
+
+  const audio = new Audio(url);
+  audio.play().catch(() => {});
+  audio.addEventListener('ended', () => {
+    _mediaCache.delete(filename);
+    audio.remove();
+  }, { once: true });
+  audio.addEventListener('error', () => {
+    _mediaCache.delete(filename);
+    audio.remove();
+  }, { once: true });
+  // Clear cache periodically to avoid leaks
+  if (_mediaCache.size > 200) {
+    const keys = Array.from(_mediaCache.keys());
+    for (const k of keys.slice(0, 100)) {
+      _mediaCache.delete(k);
+    }
+  }
+}
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -990,11 +1032,54 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
 
+    // Normal PTY output arrives as binary frames (ws.send_bytes on the
+    // server) — string frames are just the connection's own status/error
+    // text. A MEDIA: tag can land split across two PTY chunks, so both
+    // paths funnel through one carry-over-aware scanner: a short unresolved
+    // tail (e.g. "MEDIA:foo.m") is held back rather than flushed, and
+    // prepended to the next chunk before scanning again. `mediaCarry` is
+    // capped so a stray "MEDIA:" that never gains a matching extension
+    // (garbage or a genuinely truncated stream) doesn't withhold output
+    // forever.
+    let mediaCarry = "";
+    const MEDIA_CARRY_CAP = 256;
+    const binaryDecoder = new TextDecoder();
+
+    const scanAndWrite = (chunk: string) => {
+      const combined = mediaCarry + chunk;
+      const MEDIA_RE = /MEDIA:\s*(\/?[\w./\-_%]+\.\w+)/g;
+      let match: RegExpExecArray | null;
+      while ((match = MEDIA_RE.exec(combined)) != null) {
+        const filePath = match[1];
+        const filename = filePath.split('/').pop();
+        if (filename) _playMedia(filename, token);
+      }
+
+      // Hold back a trailing "MEDIA:..." that hasn't reached a "\.ext" yet —
+      // it may complete once the next chunk arrives.
+      const tailMatch = /MEDIA:\s*[\w./\-_%]*$/.exec(combined);
+      let safeEnd = combined.length;
+      let nextCarry = "";
+      if (tailMatch && !/\.\w+$/.test(tailMatch[0])) {
+        if (combined.length - tailMatch.index <= MEDIA_CARRY_CAP) {
+          safeEnd = tailMatch.index;
+          nextCarry = tailMatch[0];
+        }
+      }
+      mediaCarry = nextCarry;
+
+      const toEmit = combined.slice(0, safeEnd);
+      const clean = toEmit.replace(/MEDIA:\s*\S+/g, '').trim();
+      if (clean) term.write(clean);
+    };
+
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
-        term.write(ev.data);
+        scanAndWrite(ev.data);
       } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
+        // stream: true keeps a multi-byte UTF-8 sequence split across
+        // chunk boundaries pending instead of emitting a replacement char.
+        scanAndWrite(binaryDecoder.decode(new Uint8Array(ev.data as ArrayBuffer), { stream: true }));
       }
     };
 
@@ -1526,6 +1611,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         )}
       </div>
       <PluginSlot name="chat:bottom" />
+    
     </div>
   );
 }

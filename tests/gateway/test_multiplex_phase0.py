@@ -8,9 +8,11 @@ Covers the three Phase 0 deliverables:
      on, without disturbing the positional key layout downstream parsers rely
      on.
 """
-import pytest
+import asyncio
 from datetime import datetime
 from unittest.mock import patch
+
+import pytest
 import yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -166,6 +168,68 @@ class TestMultiplexConfigFlag:
 
         assert scoped_config["display"]["tool_progress"] is False
         assert scoped_config["display"]["interim_assistant_messages"] is False
+
+    def test_profile_runtime_scope_isolates_language_between_profiles(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import i18n
+        from gateway.run import _profile_runtime_scope
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        root_home = tmp_path / "root"
+        zh_home = tmp_path / "profiles" / "zh"
+        ja_home = tmp_path / "profiles" / "ja"
+        for home, language in (
+            (root_home, "en"),
+            (zh_home, "zh"),
+            (ja_home, "ja"),
+        ):
+            home.mkdir(parents=True)
+            home.joinpath("config.yaml").write_text(
+                yaml.safe_dump({"display": {"language": language}}),
+                encoding="utf-8",
+            )
+
+        monkeypatch.setenv("HERMES_HOME", str(root_home))
+        i18n.reset_language_cache()
+        assert i18n.get_language() == "en"  # Prime the process-level cache.
+
+        with _profile_runtime_scope(zh_home):
+            assert i18n.t("gateway.reset.header_default").startswith("✨ 会话")
+            with _profile_runtime_scope(ja_home):
+                assert i18n.t("gateway.reset.header_default").startswith(
+                    "✨ セッション"
+                )
+            assert i18n.t("gateway.reset.header_default").startswith("✨ 会话")
+
+        assert i18n.get_language() == "en"
+
+    @pytest.mark.asyncio
+    async def test_profile_language_scope_is_context_local_across_tasks(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import i18n
+        from gateway.run import _profile_runtime_scope
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        homes = {}
+        for language in ("zh", "ja"):
+            home = tmp_path / language
+            home.mkdir()
+            home.joinpath("config.yaml").write_text(
+                yaml.safe_dump({"display": {"language": language}}),
+                encoding="utf-8",
+            )
+            homes[language] = home
+
+        async def _render(language):
+            with _profile_runtime_scope(homes[language]):
+                await asyncio.sleep(0)
+                return i18n.t("gateway.reset.header_default")
+
+        zh_text, ja_text = await asyncio.gather(_render("zh"), _render("ja"))
+        assert zh_text.startswith("✨ 会话")
+        assert ja_text.startswith("✨ セッション")
 
 
 class TestSessionStoreProfileResolution:

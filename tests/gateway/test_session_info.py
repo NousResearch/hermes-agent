@@ -183,13 +183,56 @@ class TestResetNoticeSessionInfo:
         profile.mkdir(parents=True)
         base.mkdir()
         base.joinpath("config.yaml").write_text(
+            "display:\n  language: en\n"
             "model:\n  default: base-model\n  provider: custom\n  context_length: 1000\n")
         profile.joinpath("config.yaml").write_text(
+            "display:\n  language: zh\n"
             "model:\n  default: profile-model\n  provider: anthropic\n  context_length: 2000\n")
         return base, profile
 
-    def test_multiplex_uses_profile_config(self, runner, tmp_path):
+    @pytest.mark.parametrize(
+        ("reason", "idle_minutes", "expected_reason"),
+        [
+            ("suspended", 60, "previous session was stopped or interrupted"),
+            (
+                "resume_pending_expired",
+                60,
+                "gateway restart recovery timed out",
+            ),
+            ("daily", 60, "daily schedule at 9:00"),
+            ("idle", 120, "inactive for 2h"),
+            ("idle", 150, "inactive for 2h 30m"),
+            ("idle", 30, "inactive for 30m"),
+        ],
+    )
+    def test_english_auto_reset_notice_preserves_legacy_output(
+        self,
+        runner,
+        monkeypatch,
+        reason,
+        idle_minutes,
+        expected_reason,
+    ):
         from types import SimpleNamespace
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        policy = SimpleNamespace(at_hour=9, idle_minutes=idle_minutes)
+        with patch.object(GatewayRunner, "_format_session_info", return_value=""):
+            notice = runner._format_auto_reset_notice_scoped(reason, policy)
+
+        assert notice == (
+            f"◐ Session automatically reset ({expected_reason}). "
+            "Conversation history cleared.\n"
+            "Use /resume to browse and restore a previous session.\n"
+            "Adjust reset timing in config.yaml under session_reset."
+        )
+
+    def test_multiplex_uses_profile_config(self, runner, tmp_path, monkeypatch):
+        from agent import i18n
+        from types import SimpleNamespace
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
         base, profile = self._homes(tmp_path)
         runner.config = SimpleNamespace(multiplex_profiles=True)
         with patch("gateway.run._hermes_home", base), \
@@ -199,13 +242,75 @@ class TestResetNoticeSessionInfo:
         assert "profile-model" in info
         assert "anthropic" in info
         assert "base-model" not in info
+        assert "◆ 模型：" in info
+        assert "◆ Model:" not in info
 
-    def test_single_profile_uses_base_config(self, runner, tmp_path):
+    def test_single_profile_uses_base_config(self, runner, tmp_path, monkeypatch):
+        from agent import i18n
         from types import SimpleNamespace
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
         base, _profile = self._homes(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(base))
         runner.config = SimpleNamespace(multiplex_profiles=False)
         with patch("gateway.run._hermes_home", base), \
              patch("gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME):
             info = runner._reset_notice_session_info(self._source())
         assert "base-model" in info
         assert "profile-model" not in info
+        assert "◆ Model:" in info
+
+    def test_multiplex_auto_reset_notice_uses_profile_language(
+        self, runner, tmp_path, monkeypatch
+    ):
+        from agent import i18n
+        from types import SimpleNamespace
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
+        base, profile = self._homes(tmp_path)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        policy = SimpleNamespace(at_hour=9, idle_minutes=150)
+
+        with patch("gateway.run._hermes_home", base), \
+             patch.object(
+                 GatewayRunner,
+                 "_resolve_profile_home_for_source",
+                 return_value=profile,
+             ), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs",
+                 return_value=self._RUNTIME,
+             ):
+            notice = runner._format_auto_reset_notice(
+                self._source(), "idle", policy
+            )
+
+        assert "会话已自动重置" in notice
+        assert "闲置 2 小时 30 分钟" in notice
+        assert "◆ 模型：" in notice
+        assert "Session automatically reset" not in notice
+
+    def test_resume_recovery_reason_is_localized(
+        self, runner, tmp_path, monkeypatch
+    ):
+        from agent import i18n
+        from types import SimpleNamespace
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
+        _base, profile = self._homes(tmp_path)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        policy = SimpleNamespace(at_hour=9, idle_minutes=60)
+
+        with patch.object(
+            GatewayRunner,
+            "_resolve_profile_home_for_source",
+            return_value=profile,
+        ), patch.object(GatewayRunner, "_format_session_info", return_value=""):
+            notice = runner._format_auto_reset_notice(
+                self._source(), "resume_pending_expired", policy
+            )
+
+        assert "网关重启恢复超时" in notice

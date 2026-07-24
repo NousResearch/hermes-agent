@@ -237,12 +237,18 @@ class TestSystemdServiceRefresh:
         async def fake_start_gateway(**kwargs):
             return True
 
+        # Preserve the process-level exit contract without terminating pytest.
+        exit_codes = []
         monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+        monkeypatch.setattr(
+            "gateway.run._exit_after_graceful_shutdown", exit_codes.append
+        )
 
         gateway_cli.run_gateway()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
+        assert exit_codes == [0]
 
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch
@@ -1539,6 +1545,14 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _stub_user_systemd_preflight(self, monkeypatch):
+        # These tests exercise routing after systemd availability is established;
+        # the preflight contract has dedicated coverage below.
+        monkeypatch.setattr(
+            gateway_cli, "_preflight_user_systemd", lambda **kwargs: None
+        )
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 

@@ -349,3 +349,81 @@ def test_decompose_no_aux_client_configured(kanban_home):
     assert outcome.ok is False
     # call_llm's no-provider RuntimeError surfaces via the LLM-error branch.
     assert "LLM error" in outcome.reason
+
+
+# ── auto_review policy + review-pairing transform ────────────────────────────
+
+def test_review_policy_reads_valid_config():
+    cfg = {"kanban": {"auto_review": {"review_roles": ["coder", " "], "reviewer": " reviewer "}}}
+    assert decomp._review_policy(cfg) == {"review_roles": ["coder"], "reviewer": "reviewer"}
+
+
+def test_review_policy_disabled_when_absent_or_malformed():
+    assert decomp._review_policy({}) == {}
+    assert decomp._review_policy({"kanban": {"auto_review": "on"}}) == {}
+    assert decomp._review_policy({"kanban": {"auto_review": {"review_roles": []}}}) == {}
+    assert decomp._review_policy({"kanban": {"auto_review": {"review_roles": ["c"]}}}) == {}
+    assert decomp._review_policy(None) == {}
+
+
+def test_pair_review_tasks_appends_reviewer_behind_impl():
+    children = [
+        {"title": "build api", "body": "b", "assignee": "coder", "parents": []},
+        {"title": "write docs", "body": "d", "assignee": "writer", "parents": [0]},
+    ]
+    policy = {"review_roles": ["coder"], "reviewer": "reviewer"}
+    out = decomp._pair_review_tasks(children, policy)
+    # original two + one review child for the coder task (index 0)
+    assert len(out) == 3
+    review = out[2]
+    assert review["assignee"] == "reviewer"
+    assert review["parents"] == [0]
+    assert review["title"].startswith("review: build api")
+    # the writer task (not a review role) got no reviewer
+    assert all(c["assignee"] != "reviewer" or c["parents"] == [0] for c in out)
+
+
+def test_pair_review_tasks_noop_without_policy_or_reviewer_role():
+    children = [{"title": "x", "body": "y", "assignee": "coder", "parents": []}]
+    assert decomp._pair_review_tasks(children, {}) == children
+    assert decomp._pair_review_tasks(children, None) == children
+    # a child already assigned to the reviewer is not re-reviewed
+    rev = [{"title": "r", "body": "y", "assignee": "reviewer", "parents": []}]
+    assert decomp._pair_review_tasks(rev, {"review_roles": ["reviewer"], "reviewer": "reviewer"}) == rev
+
+
+def test_decompose_wires_auto_review_end_to_end(kanban_home):
+    """With auto_review configured, decompose_task appends a reviewer child
+    gated behind the impl child (the wiring, not just the transform)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "one impl task",
+        "tasks": [
+            {"title": "build", "body": "code it", "assignee": "engineer", "parents": []},
+        ],
+    })
+    cfg = {"kanban": {"auto_review": {"review_roles": ["engineer"], "reviewer": "reviewer"}}}
+
+    patches = _patch_list_profiles(["orchestrator", "engineer", "reviewer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), \
+                patch("hermes_cli.kanban_decompose._load_config", return_value=cfg):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    # 1 impl child + 1 auto-paired review child
+    assert len(outcome.child_ids) == 2
+    with kb.connect() as conn:
+        kids = [kb.get_task(conn, cid) for cid in outcome.child_ids]
+    assignees = sorted(k.assignee for k in kids)
+    assert assignees == ["engineer", "reviewer"]
+    review = next(k for k in kids if k.assignee == "reviewer")
+    assert review.title.startswith("review: build")

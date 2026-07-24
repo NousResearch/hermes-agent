@@ -4786,3 +4786,65 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+# ── kanban_submit_review producer (running -> review) ────────────────────────
+
+def test_submit_review_transitions_running_task(kanban_home):
+    """submit_review_task moves running -> review and clears the claim."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="impl work", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "running"
+
+        assert kb.submit_review_task(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "review"
+        assert task.claim_lock is None
+        assert task.claim_expires is None
+    finally:
+        conn.close()
+
+
+def test_submit_review_rejects_non_running(kanban_home):
+    """A task that is not running cannot be submitted for review."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="ready work", assignee="worker")
+        # ready, not running
+        assert kb.submit_review_task(conn, tid) is False
+        assert kb.get_task(conn, tid).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_stale_run_cannot_submit_review_new_attempt(kanban_home, monkeypatch):
+    """A worker from an earlier attempt cannot move a later retry to review."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="review retry guarded", assignee="worker")
+
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+
+        # Stale run1 must NOT be able to submit the task (run2 is active).
+        assert not kb.submit_review_task(conn, tid, expected_run_id=run1.id)
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+
+        # The current run2 can.
+        assert kb.submit_review_task(conn, tid, expected_run_id=run2.id)
+        assert kb.get_task(conn, tid).status == "review"
+    finally:
+        conn.close()

@@ -395,6 +395,7 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/screenshots", "browser_screenshots"),
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
+    ("images", "images"),  # desktop/clipboard uploads (#69575)
 ]
 
 

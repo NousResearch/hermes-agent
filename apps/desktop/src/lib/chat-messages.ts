@@ -440,7 +440,7 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
-  const query = firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path'])
+  const query = firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path', 'prompt'])
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
   const preview = typeof payload?.preview === 'string' ? payload.preview.trim() : ''
 
@@ -453,7 +453,7 @@ function toolPartMatchValues(part: ChatMessagePart): string[] {
   }
 
   const args = part.args as Record<string, unknown>
-  const query = firstStringField(args, ['search_term', 'query', 'question', 'command', 'code', 'path'])
+  const query = firstStringField(args, ['search_term', 'query', 'question', 'command', 'code', 'path', 'prompt'])
   const context = typeof args.context === 'string' ? args.context.trim() : ''
   const preview = typeof args.preview === 'string' ? args.preview.trim() : ''
 
@@ -516,7 +516,12 @@ function findToolPartIndex(
     const [singlePendingIndex] = pendingIndices
 
     if (phase === 'running' && matchValues.length && !overlaps(singlePendingIndex)) {
-      return stableId ? singlePendingIndex : -1
+      const pendingMatchValues = toolPartMatchValues(parts[singlePendingIndex])
+
+      // A name-only `tool.generating` row has no identifying values yet; let the
+      // subsequent stable-id start enrich it. Conflicting non-empty values are
+      // separate parallel calls and must not overwrite each other.
+      return stableId && pendingMatchValues.length === 0 ? singlePendingIndex : -1
     }
 
     return singlePendingIndex

@@ -733,6 +733,91 @@ class TestTeamsMessageHandling:
         assert event.text == "what is the weather?"
 
     @pytest.mark.anyio
+    async def test_group_mention_injects_recent_chat_context(self):
+        graph_client = SimpleNamespace(get_json=AsyncMock(return_value={
+            "value": [
+                {
+                    "id": "activity-001",
+                    "from": {"user": {"displayName": "Alex Rivera"}},
+                    "body": {"content": "<at>Hermes</at> could fan out PR review?"},
+                },
+                {
+                    "id": "msg-pr-url",
+                    "from": {"user": {"displayName": "Blake Lee"}},
+                    "body": {"content": "Please review https://github.com/example-org/example-repo/pull/123"},
+                },
+                {
+                    "id": "msg-waiting",
+                    "from": {"user": {"displayName": "Casey Morgan"}},
+                    "body": {"content": "I'm waiting for client's response"},
+                },
+            ]
+        }))
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ), graph_client=graph_client)
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> could fan out agent for PR review and share feedback?",
+            conversation_id="19:23e1298338f141aaafb9844331a7f942@thread.v2",
+            conversation_type="groupChat",
+            activity_id="activity-001",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "could fan out agent for PR review and share feedback?"
+        assert event.channel_context is not None
+        assert "Recent Teams context" in event.channel_context
+        assert "Blake Lee: Please review https://github.com/example-org/example-repo/pull/123" in event.channel_context
+        assert "Casey Morgan: I'm waiting for client's response" in event.channel_context
+        assert "could fan out PR review" not in event.channel_context
+        graph_client.get_json.assert_awaited_once_with(
+            "/chats/19%3A23e1298338f141aaafb9844331a7f942%40thread.v2/messages",
+            params={"$top": 50},
+        )
+
+    @pytest.mark.anyio
+    async def test_channel_mention_uses_team_and_channel_ids_for_recent_context(self):
+        graph_client = SimpleNamespace(get_json=AsyncMock(return_value={
+            "value": [
+                {
+                    "id": "msg-context",
+                    "from": {"user": {"displayName": "Jordan Patel"}},
+                    "body": {"content": "Shared the compliance report.docx for review"},
+                    "attachments": [{"name": "compliance report.docx"}],
+                }
+            ]
+        }))
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ), graph_client=graph_client)
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="<at>Hermes</at> check what Jordan shared above",
+            conversation_type="channel",
+        )
+        activity.channel_data = {
+            "team": {"id": "team-id"},
+            "channel": {"id": "channel-id"},
+        }
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert "Jordan Patel: Shared the compliance report.docx for review" in event.channel_context
+        assert "Attachments: compliance report.docx" in event.channel_context
+        graph_client.get_json.assert_awaited_once_with(
+            "/teams/team-id/channels/channel-id/messages",
+            params={"$top": 50},
+        )
+
+    @pytest.mark.anyio
     async def test_deduplication(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",

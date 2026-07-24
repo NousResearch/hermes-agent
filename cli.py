@@ -13748,6 +13748,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     event.app.invalidate()
                 return
 
+            # --- Backslash+Enter → newline (Claude Code convention) ---
+            # Terminals that don't send a distinct Shift+Enter sequence
+            # (e.g. iTerm2 with default settings) cannot be distinguished
+            # at the byte level.  The backslash-escape convention gives
+            # users a universal newline shortcut: a trailing `\` before
+            # Enter is consumed and replaced with `\n`.  To insert a
+            # literal backslash at end-of-line, type `\\` then Enter
+            # (the first `\` escapes the second, leaving one `\` and
+            # submitting).  See issue #35057.
+            buf = event.app.current_buffer
+            doc = buf.document
+            if doc.text and doc.cursor_position > 0:
+                char_before = doc.text[doc.cursor_position - 1]
+                if char_before == "\\":
+                    # Delete the trailing backslash and insert a newline.
+                    buf.delete_before_cursor(1)
+                    buf.insert_text("\n")
+                    return
+
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)

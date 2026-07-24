@@ -2,9 +2,10 @@ import { act, cleanup, render } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { mainComposerScope, stashSessionDraft, type ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
 
 import type { QueueEditState } from '../composer-utils'
+
 import { useComposerDraft } from './use-composer-draft'
 
 const mockComposerApi = { setText: vi.fn() }

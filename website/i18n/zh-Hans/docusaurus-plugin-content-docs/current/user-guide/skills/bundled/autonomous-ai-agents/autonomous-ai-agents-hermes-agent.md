@@ -209,7 +209,7 @@ hermes webhook test NAME    Send a test POST
 
 ```
 hermes profile list         List all profiles
-hermes profile create NAME  Create (--clone, --clone-all, --clone-from)
+hermes profile create NAME  Create (--clone, --clone-all, --clone-from, --no-skills)
 hermes profile use NAME     Set sticky default
 hermes profile delete NAME  Delete a profile
 hermes profile show NAME    Show details

@@ -212,6 +212,36 @@ class TestCompletionQueue:
 # =========================================================================
 
 class TestCheckpointNotify:
+    def test_terminal_rewrites_checkpoint_after_notify_metadata(self, tmp_path):
+        """The persisted entry must reflect the final notify flag, not spawn defaults."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.process_registry import process_registry
+        from tools.terminal_tool import terminal_tool
+
+        checkpoint = tmp_path / "procs.json"
+        tokens = set_session_vars(
+            platform="webui",
+            session_key="webui-session",
+            async_delivery=True,
+        )
+        result = None
+        try:
+            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), \
+                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                result = json.loads(terminal_tool(
+                    "python -c \"import time; time.sleep(30)\"",
+                    background=True,
+                    notify_on_complete=True,
+                    task_id="checkpoint-notify-test",
+                ))
+                assert result["notify_on_complete"] is True
+                data = json.loads(checkpoint.read_text(encoding="utf-8"))
+                row = next(x for x in data if x["session_id"] == result["session_id"])
+                assert row["notify_on_complete"] is True
+                process_registry.kill_process(result["session_id"])
+        finally:
+            clear_session_vars(tokens)
+
     def test_checkpoint_includes_notify(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
             s = _make_session(notify_on_complete=True)
@@ -245,6 +275,35 @@ class TestCheckpointNotify:
             assert recovered == 1
             s = registry.get("proc_live")
             assert s.notify_on_complete is True
+
+    def test_recovered_detached_process_notifies_without_polling(self, registry, tmp_path):
+        """A restarted idle host must autonomously notice recovered process exit."""
+        import subprocess
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
+        checkpoint = tmp_path / "procs.json"
+        start = registry._safe_host_start_time(proc.pid)
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_recovered_notify",
+            "command": "short recovered process",
+            "pid": proc.pid,
+            "pid_scope": "host",
+            "host_start_time": start,
+            "task_id": "t1",
+            "session_key": "webui-session",
+            "notify_on_complete": True,
+        }]))
+        try:
+            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+                assert registry.recover_from_checkpoint() == 1
+                evt = registry.completion_queue.get(timeout=4.0)
+            assert evt["type"] == "completion"
+            assert evt["session_id"] == "proc_recovered_notify"
+            assert evt["session_key"] == "webui-session"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
 
     def test_recover_requeues_notify_watchers(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"

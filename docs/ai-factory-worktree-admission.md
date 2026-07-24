@@ -8,7 +8,7 @@ HER-95 adds a machine-wide worktree admission gate to the existing `factory_lane
 
 ```bash
 python scripts/factory_lane.py \
-  --registry /Users/jeanyoder/Documents/Jean-AI-Memory/Agent-Shared/AI-Factory/registry \
+  --registry <registry-root> \
   admit HER-95 \
   --mode owner \
   --hard \
@@ -17,7 +17,7 @@ python scripts/factory_lane.py \
   --session <session-id> \
   --gateway-session-key <platform:chat:thread> \
   --owner-pid <long-lived-agent-pid> \
-  --worktree /Users/jeanyoder/Documents/GitHub/_worktrees/hermes-her-95-worktree-admission-gate
+  --worktree <worktree>
 ```
 
 Hard owner admission:

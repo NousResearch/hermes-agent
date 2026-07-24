@@ -21,6 +21,26 @@ from tools.environments.file_sync import (
 logger = logging.getLogger(__name__)
 
 
+def _timeout_env(name: str, default: int) -> int:
+    """Read a positive integer timeout (seconds) from the environment.
+
+    Invalid or non-positive values fall back to ``default`` so a bad
+    override can never make the backend less usable than stock behavior.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid %s=%r; using default %ss", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("Ignoring non-positive %s=%r; using default %ss", name, raw, default)
+        return default
+    return value
+
+
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
     if not shutil.which("ssh"):
@@ -40,6 +60,19 @@ class SSHEnvironment(BaseEnvironment):
     Session snapshot preserves env vars across calls.
     CWD persists via in-band stdout markers.
     Uses SSH ControlMaster for connection reuse.
+
+    Timeouts are tunable via environment variables (integer seconds;
+    invalid or non-positive values fall back to the defaults):
+
+    - ``TERMINAL_SSH_CONNECT_TIMEOUT`` — OpenSSH ``ConnectTimeout`` option
+      passed on every ssh/scp invocation (default: 10).
+    - ``TERMINAL_SSH_ESTABLISH_TIMEOUT`` — overall deadline for the initial
+      connection handshake in ``_establish_connection`` (default: 15).
+    - ``TERMINAL_SSH_FILE_SYNC_TIMEOUT`` — deadline for the tar-over-SSH
+      bulk file sync streams (default: 120).
+
+    Raising these helps on congested-but-alive links, where the stock
+    short timeouts can misclassify a reachable host as unreachable.
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
@@ -49,6 +82,10 @@ class SSHEnvironment(BaseEnvironment):
         self.user = user
         self.port = port
         self.key_path = key_path
+
+        self.connect_timeout = _timeout_env("TERMINAL_SSH_CONNECT_TIMEOUT", 10)
+        self.establish_timeout = _timeout_env("TERMINAL_SSH_ESTABLISH_TIMEOUT", 15)
+        self.file_sync_timeout = _timeout_env("TERMINAL_SSH_FILE_SYNC_TIMEOUT", 120)
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +124,7 @@ class SSHEnvironment(BaseEnvironment):
         cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
-        cmd.extend(["-o", "ConnectTimeout=10"])
+        cmd.extend(["-o", f"ConnectTimeout={self.connect_timeout}"])
         if self.port != 22:
             cmd.extend(["-p", str(self.port)])
         if self.key_path:
@@ -105,7 +142,7 @@ class SSHEnvironment(BaseEnvironment):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=self.establish_timeout,
                 stdin=subprocess.DEVNULL,
             )
             if result.returncode != 0:
@@ -272,7 +309,7 @@ class SSHEnvironment(BaseEnvironment):
             tar_proc.stdout.close()
 
             try:
-                _, ssh_stderr = ssh_proc.communicate(timeout=120)
+                _, ssh_stderr = ssh_proc.communicate(timeout=self.file_sync_timeout)
                 # Use communicate() instead of wait() to drain stderr and
                 # avoid deadlock if tar produces more than PIPE_BUF of errors.
                 tar_stderr_raw = b""
@@ -313,7 +350,7 @@ class SSHEnvironment(BaseEnvironment):
                 stdin=subprocess.DEVNULL,
                 stdout=f,
                 stderr=subprocess.PIPE,
-                timeout=120,
+                timeout=self.file_sync_timeout,
             )
         if result.returncode != 0:
             raise RuntimeError(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}")

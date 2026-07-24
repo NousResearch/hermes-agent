@@ -2494,6 +2494,25 @@ async function releaseBackendLock(updateRoot, tag) {
     return { unlocked: true }
   }
 
+  // Stop any independently-running gateway process before checking the venv
+  // lock.  Gateways started via `hermes gateway run` or as a Windows service
+  // are NOT in our backend pool — they hold the venv shim open and block the
+  // update.  Best-effort: if the stop fails we still check the lock and
+  // surface a helpful error.
+  try {
+    const venvScripts = path.join(updateRoot, 'venv', 'Scripts')
+    const hermesBin = path.join(venvScripts, 'hermes.exe')
+    const { execFileSync } = require('child_process')
+    execFileSync(hermesBin, ['gateway', 'stop'], {
+      timeout: 15000,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    rememberLog(`[${tag}] gateway stop requested before update`)
+  } catch {
+    // Gateway may not be running, or hermes.exe may be locked — non-fatal.
+  }
+
   // Collect every backend PID the desktop owns: primary window backend + pool.
   const pids = []
   const hermesProcess = backendConnectionState.getProcess()
@@ -2668,8 +2687,9 @@ async function applyUpdates(opts = {}) {
       // user close the holder and retry. Restart our own backend so the app
       // keeps working after the failed attempt.
       const message =
-        'Update aborted: another process is holding the Hermes install open ' +
-        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
+        'Update aborted: another process is holding the Hermes install open. ' +
+        'If a gateway is running, stop it with `hermes gateway stop` and retry. ' +
+        'Otherwise close any other Hermes windows or terminals.'
 
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})

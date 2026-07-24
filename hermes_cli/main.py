@@ -6905,6 +6905,13 @@ def _update_via_zip(args):
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
         preserve = {"venv", "node_modules", ".git", ".env"}
+        # Subdirectories within a replaced directory that must survive the
+        # atomic swap.  On Windows the pre-built desktop binary lives in
+        # apps/desktop/release/win-unpacked/ — it is NOT in the source ZIP
+        # so _atomic_replace_dir would delete it, breaking the shortcut.
+        _preserve_subdirs: dict[str, list[str]] = {
+            "apps": ["desktop/release"],
+        }
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -6914,7 +6921,23 @@ def _update_via_zip(args):
             if os.path.isdir(src):
                 # Atomic-ish replace: never leave dst half-deleted if the copy
                 # fails partway (the failure mode behind #49145 on Windows).
+                saved_subdirs: list[tuple[str, str]] = []
+                for sub in _preserve_subdirs.get(item, []):
+                    sub_dst = os.path.join(dst, sub)
+                    if os.path.isdir(sub_dst):
+                        sub_staging = f"{sub_dst}.hermes-preserve"
+                        if os.path.exists(sub_staging):
+                            shutil.rmtree(sub_staging, ignore_errors=True)
+                        shutil.copytree(sub_dst, sub_staging)
+                        saved_subdirs.append((sub_dst, sub_staging))
                 _atomic_replace_dir(src, dst)
+                for sub_dst, sub_staging in saved_subdirs:
+                    try:
+                        # Move the preserved copy back into the new tree.
+                        os.makedirs(os.path.dirname(sub_dst), exist_ok=True)
+                        os.rename(sub_staging, sub_dst)
+                    except OSError:
+                        shutil.rmtree(sub_staging, ignore_errors=True)
             else:
                 shutil.copy2(src, dst)
             update_count += 1

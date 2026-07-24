@@ -240,6 +240,8 @@ export interface Translations {
     showRightSidebar: string
     muteHaptics: string
     unmuteHaptics: string
+    openCurrentPageInPane: string
+    openRouteInPane: (title: string) => string
     openSettings: string
     openStarmap: string
     openKeybinds: string

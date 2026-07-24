@@ -179,6 +179,13 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   return (
     <Routes>
       <Route element={chatView} index />
+      {routeContributions.map(route => (
+        <Route
+          element={page(<ContribBoundary id={route.key}>{route.render()}</ContribBoundary>)}
+          key={route.key}
+          path={route.path.slice(1)}
+        />
+      ))}
       <Route element={chatView} path=":sessionId" />
       <Route element={page(<SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="skills" />
       <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
@@ -189,16 +196,6 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={null} path="profiles" />
       <Route element={null} path="settings" />
       <Route element={null} path="starmap" />
-      {/* Registry-contributed pages (core features + plugins) render in the
-          workspace pane like any built-in view — behind the same blast wall
-          as every other contribution mount. */}
-      {routeContributions.map(route => (
-        <Route
-          element={page(<ContribBoundary id={route.key}>{route.render()}</ContribBoundary>)}
-          key={route.key}
-          path={route.path.slice(1)}
-        />
-      ))}
       <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
       <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
       <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />

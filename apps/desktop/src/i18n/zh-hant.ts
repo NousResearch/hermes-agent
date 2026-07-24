@@ -194,6 +194,8 @@ export const zhHant = defineLocale({
     showRightSidebar: '顯示右側邊欄',
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
+    openCurrentPageInPane: '在窗格中開啟目前頁面',
+    openRouteInPane: title => `在窗格中開啟${title}`,
     openSettings: '開啟設定',
     openStarmap: '開啟記憶圖譜'
   },

@@ -200,6 +200,8 @@ export const ja = defineLocale({
     showRightSidebar: '右サイドバーを表示',
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
+    openCurrentPageInPane: '現在のページをペインで開く',
+    openRouteInPane: title => `${title} をペインで開く`,
     openSettings: '設定を開く',
     openStarmap: 'メモリグラフを開く'
   },

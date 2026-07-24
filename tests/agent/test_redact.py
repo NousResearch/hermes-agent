@@ -230,6 +230,27 @@ class TestJsonFields:
         result = redact_sensitive_text(text)
         assert result == text
 
+    def test_json_escaped_quote_masks_whole_value(self):
+        # Escape-aware value match: naive [^"]+ stops at \" and leaks the suffix
+        # while corrupting shape to `"***"bar_secret_value"`.
+        text = r'{"password": "foo\"bar_secret_value"}'
+        result = redact_sensitive_text(text)
+        assert "bar_secret_value" not in result
+        assert '"***"bar' not in result
+        assert result.startswith('{"password": "')
+        assert result.endswith('"}')
+    def test_json_escaped_quote_short_value_fully_masked(self):
+        text = r'{"password": "a\"b"}'
+        result = redact_sensitive_text(text)
+        assert result == '{"password": "***"}'
+
+    def test_json_escaped_backslash_masks_whole_value(self):
+        text = r'{"api_key": "opaque\\secret_value_long_enough"}'
+        result = redact_sensitive_text(text)
+        assert "secret_value_long_enough" not in result
+        assert result.startswith('{"api_key": "')
+        assert result.endswith('"}')
+
 
 class TestAuthHeaders:
     def test_bearer_token(self):

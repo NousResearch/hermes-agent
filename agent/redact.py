@@ -176,9 +176,13 @@ _YAML_ASSIGN_RE = re.compile(
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
+# Value match is escape-aware (``(?:\\.|[^"\\])+``): a naive ``[^"]+`` stops at
+# the first raw ``"`` inside an escaped quote (``\"``), masking only the prefix
+# and leaving the remainder in cleartext while corrupting JSON shape
+# (``"***"bar...``). See RD-005 / sibling escape-aware JSON matchers.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(
-    rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    rf'("{_JSON_KEY_NAMES}")\s*:\s*"((?:\\.|[^"\\])+)"',
     re.IGNORECASE,
 )
 

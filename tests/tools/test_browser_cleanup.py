@@ -1,6 +1,6 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class TestScreenshotPathRecovery:
@@ -138,3 +138,68 @@ class TestBrowserCleanup:
         assert browser_tool._session_last_activity == {}
         assert browser_tool._recording_sessions == set()
         assert browser_tool._cleanup_done is True
+
+
+class TestWindowsAgentBrowserHostCleanup:
+    socket_a = r"C:\\Temp\\agent-browser-a"
+    socket_b = r"C:\\Temp\\agent-browser-b"
+
+    def _proc(self, env=None, error=None):
+        proc = Mock(pid=123)
+        proc.name.side_effect = error or (lambda: "agent-browser-win32-x64.exe")
+        proc.cmdline.side_effect = error or (lambda: [])
+        proc.environ.side_effect = error or (lambda: env or {})
+        return proc
+
+    def _run(self, monkeypatch, processes, start=101, terminate=None):
+        import psutil
+        from tools import browser_tool
+        from tools.process_registry import ProcessRegistry
+        monkeypatch.setattr(browser_tool.sys, "platform", "win32")
+        monkeypatch.setattr(psutil, "process_iter", lambda _attrs: processes)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: start)
+        terminate = terminate or Mock()
+        monkeypatch.setattr(ProcessRegistry, "_terminate_host_pid", terminate)
+        browser_tool._cleanup_windows_agent_browser_host(self.socket_a)
+        return terminate
+
+    def test_per_session_cleanup_invokes_host_cleanup(self, monkeypatch):
+        from tools import browser_tool
+        browser_tool._active_sessions["task"] = {"session_name": "a", "bb_session_id": None}
+        helper = Mock()
+        monkeypatch.setattr(browser_tool, "_cleanup_windows_agent_browser_host", helper)
+        with (patch("tools.browser_tool._maybe_stop_recording"),
+              patch("tools.browser_tool._run_browser_command"),
+              patch("tools.browser_tool.os.path.exists", return_value=True),
+              patch("tools.browser_tool.os.path.isfile", return_value=False),
+              patch("tools.browser_tool.shutil.rmtree")):
+            browser_tool.cleanup_browser("task")
+        helper.assert_called_once()
+
+    def test_matching_binding_terminates_with_start_token(self, monkeypatch):
+        proc = self._proc({"AGENT_BROWSER_SOCKET_DIR": self.socket_a})
+        self._run(monkeypatch, [proc]).assert_called_once_with(123, expected_start=101)
+
+    def test_different_binding_is_preserved(self, monkeypatch):
+        self._run(monkeypatch, [self._proc({"AGENT_BROWSER_SOCKET_DIR": self.socket_b})]).assert_not_called()
+
+    def test_missing_binding_is_preserved(self, monkeypatch):
+        self._run(monkeypatch, [self._proc()]).assert_not_called()
+
+    def test_missing_start_token_is_skipped(self, monkeypatch):
+        self._run(monkeypatch, [self._proc({"AGENT_BROWSER_SOCKET_DIR": self.socket_a})], start=None).assert_not_called()
+
+    def test_recycled_pid_is_rejected_by_registry(self, monkeypatch):
+        from tools import process_registry
+        from tools.process_registry import ProcessRegistry
+        monkeypatch.setattr(process_registry, "_IS_WINDOWS", True)
+        monkeypatch.setattr(ProcessRegistry, "_is_host_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(ProcessRegistry, "_safe_host_start_time", lambda _pid: 202)
+        taskkill = Mock()
+        monkeypatch.setattr(process_registry.subprocess, "run", taskkill)
+        self._run(monkeypatch, [self._proc({"AGENT_BROWSER_SOCKET_DIR": self.socket_a})], terminate=ProcessRegistry._terminate_host_pid)
+        taskkill.assert_not_called()
+
+    def test_inaccessible_process_does_not_crash(self, monkeypatch):
+        import psutil
+        self._run(monkeypatch, [self._proc(error=psutil.AccessDenied(pid=123))])

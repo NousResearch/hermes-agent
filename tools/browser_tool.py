@@ -4424,6 +4424,59 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         _last_active_session_key.pop(bare_task_id, None)
 
 
+def _cleanup_windows_agent_browser_host(socket_dir: str) -> None:
+    """Best-effort cleanup of the agent-browser host bound to one session."""
+    if sys.platform != "win32":
+        return
+    try:
+        import psutil
+        from gateway.status import get_process_start_time
+        from tools.process_registry import ProcessRegistry
+    except Exception:
+        return
+
+    target_socket = os.path.normcase(os.path.normpath(socket_dir))
+    try:
+        processes = psutil.process_iter(["pid", "name", "cmdline"])
+    except Exception:
+        return
+
+    for proc in processes:
+        try:
+            pid = proc.pid
+            name = (proc.name() or "").lower()
+            argv = [str(arg) for arg in (proc.cmdline() or [])]
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+        if "agent-browser" not in name and not any("agent-browser" in arg.lower() for arg in argv):
+            continue
+
+        argv_bound = False
+        for arg in argv:
+            value = arg.split("=", 1)[1] if arg.startswith("--") and "=" in arg else arg
+            if value and os.path.normcase(os.path.normpath(value.strip("\"'"))) == target_socket:
+                argv_bound = True
+                break
+        try:
+            env_socket = (proc.environ() or {}).get("AGENT_BROWSER_SOCKET_DIR", "")
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+        env_bound = bool(env_socket) and os.path.normcase(os.path.normpath(env_socket)) == target_socket
+        if not argv_bound and not env_bound:
+            continue
+
+        try:
+            start_time = get_process_start_time(pid)
+        except Exception:
+            continue
+        if start_time is None:
+            continue
+        try:
+            ProcessRegistry._terminate_host_pid(pid, expected_start=start_time)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+
+
 def _cleanup_single_browser_session(task_id: str) -> None:
     """Internal: reap a single browser session by its exact session key."""
     # Stop the CDP supervisor for this task FIRST so we close our WebSocket
@@ -4484,6 +4537,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         if session_name:
             socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{session_name}")
             if os.path.exists(socket_dir):
+                _cleanup_windows_agent_browser_host(socket_dir)
                 # agent-browser writes {session}.pid in the socket dir
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
                 if os.path.isfile(pid_file):
@@ -4519,7 +4573,7 @@ def cleanup_all_browsers() -> None:
     except Exception:
         pass
 
-    # Reset cached lookups so they are re-evaluated on next use.
+
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed

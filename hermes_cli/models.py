@@ -1136,6 +1136,7 @@ except Exception:
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+_PROVIDER_LABELS["openai"] = "OpenAI"  # legacy slug
 
 
 # ---------------------------------------------------------------------------
@@ -2338,8 +2339,15 @@ def provider_label(provider: Optional[str]) -> str:
     normalized = original.lower()
     if normalized == "auto":
         return "Auto"
+    # Strip "custom:" prefix for custom providers
+    if normalized.startswith("custom:"):
+        return "Custom"
     normalized = normalize_provider(normalized)
-    return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
+    label = _PROVIDER_LABELS.get(normalized, None)
+    if label is not None:
+        return label
+    # Fall back to original verbatim for unknown providers
+    return original or "OpenRouter"
 
 
 # Models that support OpenAI Priority Processing (service_tier="priority").

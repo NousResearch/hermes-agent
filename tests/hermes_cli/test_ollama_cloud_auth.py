@@ -378,13 +378,16 @@ class TestEnsureDirectAliases:
         ms._ensure_direct_aliases()
         assert "test" in ms.DIRECT_ALIASES
 
-    def test_ensure_no_reload_when_populated(self, monkeypatch):
-        """_ensure_direct_aliases does not reload if already populated."""
+    def test_ensure_no_reload_when_config_unchanged(self, monkeypatch):
+        """_ensure_direct_aliases does not reload if config stat is unchanged."""
         import hermes_cli.model_switch as ms
         from hermes_cli.model_switch import DirectAlias
 
         existing = {"pre": DirectAlias("pre-model", "custom", "")}
         monkeypatch.setattr(ms, "DIRECT_ALIASES", existing)
+        cache_key = ("config.yaml", 123, 456)
+        monkeypatch.setattr(ms, "_DIRECT_ALIASES_CACHE_KEY", cache_key)
+        monkeypatch.setattr(ms, "_direct_aliases_cache_key", lambda: cache_key)
 
         call_count = [0]
         original_load = ms._load_direct_aliases
@@ -396,6 +399,28 @@ class TestEnsureDirectAliases:
         ms._ensure_direct_aliases()
         assert call_count[0] == 0
         assert "pre" in ms.DIRECT_ALIASES
+
+    def test_resolve_alias_reloads_when_config_stat_changes(self, monkeypatch):
+        """Long-running processes should see new direct aliases after config changes."""
+        import hermes_cli.model_switch as ms
+        from hermes_cli.model_switch import DirectAlias
+
+        keys = iter([
+            ("config.yaml", 123, 10),
+            ("config.yaml", 124, 12),
+        ])
+        loads = iter([
+            {"old": DirectAlias("old-model", "custom", "")},
+            {"new": DirectAlias("new-model", "custom", "")},
+        ])
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(ms, "_DIRECT_ALIASES_CACHE_KEY", None)
+        monkeypatch.setattr(ms, "_direct_aliases_cache_key", lambda: next(keys))
+        monkeypatch.setattr(ms, "_load_direct_aliases", lambda: next(loads))
+
+        assert ms.resolve_alias("old", "openrouter") == ("custom", "old-model", "old")
+        assert ms.resolve_alias("new", "openrouter") == ("custom", "new-model", "new")
+        assert "old" not in ms.DIRECT_ALIASES
 
 
 # ---------------------------------------------------------------------------

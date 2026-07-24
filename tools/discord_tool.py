@@ -511,17 +511,26 @@ def _search_members(token: str, guild_id: str, query: str, limit: int = 20, **_k
 def _fetch_messages(
     token: str, channel_id: str, limit: int = 50,
     before: Optional[str] = None, after: Optional[str] = None,
+    around: Optional[str] = None,
     **_kwargs: Any,
 ) -> str:
-    """Fetch recent messages from a channel."""
+    """Fetch recent messages from a channel.
+
+    Anchors are mutually exclusive per Discord's API. ``around`` returns
+    messages centered on a specific snowflake (handy when the agent has a
+    replied-to ``message_id`` and wants surrounding context).
+    """
     try:
         limit = int(limit)
     except (TypeError, ValueError):
         limit = 50
     params: Dict[str, str] = {"limit": str(min(limit, 100))}
-    if before:
+    # Discord rejects combinations; prefer the most specific anchor.
+    if around:
+        params["around"] = around
+    elif before:
         params["before"] = before
-    if after:
+    elif after:
         params["after"] = after
     messages = _discord_request("GET", f"/channels/{channel_id}/messages", token, params=params)
     result = []
@@ -665,7 +674,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("list_roles", "(guild_id)", "roles sorted by position"),
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
-    ("fetch_messages", "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("fetch_messages", "(channel_id)", "recent messages; optional around/before/after snowflakes"),
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
@@ -866,6 +875,10 @@ def _build_schema(
         "after": {
             "type": "string",
             "description": "Snowflake ID for forward pagination (fetch_messages).",
+        },
+        "around": {
+            "type": "string",
+            "description": "Snowflake ID to anchor a fetch_messages call. Returns ~limit/2 messages before and after this message_id. Use this to pull context around a replied-to message — pass the reply_to message_id from the user's message.",
         },
         "auto_archive_duration": {
             "type": "integer",

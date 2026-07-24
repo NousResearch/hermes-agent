@@ -893,6 +893,14 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
 
+
+def _select_streaming_tts_display_callback(
+    token_streaming_enabled: bool,
+    display_callback,
+):
+    """Avoid rendering the same response from both token and TTS streams."""
+    return None if token_streaming_enabled else display_callback
+
 # Import agent and tool systems lazily. Bare interactive startup only needs the
 # prompt; the full agent/tool registry is initialized on first use.
 def AIAgent(*args, **kwargs):
@@ -12447,7 +12455,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 tts_thread = threading.Thread(
                     target=stream_tts_to_speaker,
                     args=(text_queue, stop_event, self._voice_tts_done),
-                    kwargs={"display_callback": display_callback},
+                    kwargs={
+                        "display_callback": _select_streaming_tts_display_callback(
+                            self.streaming_enabled,
+                            display_callback,
+                        )
+                    },
                     daemon=True,
                 )
                 tts_thread.start()

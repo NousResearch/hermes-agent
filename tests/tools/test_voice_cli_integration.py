@@ -222,6 +222,25 @@ class TestStreamingTTSActivation:
             "_HAS_AUDIO should not exist -- lazy imports replaced it"
 
 
+def test_token_streaming_disables_the_tts_display_callback():
+    from cli import _select_streaming_tts_display_callback
+
+    display_callback = MagicMock()
+
+    assert _select_streaming_tts_display_callback(True, display_callback) is None
+
+
+def test_non_streaming_display_preserves_the_tts_display_callback():
+    from cli import _select_streaming_tts_display_callback
+
+    display_callback = MagicMock()
+
+    assert (
+        _select_streaming_tts_display_callback(False, display_callback)
+        is display_callback
+    )
+
+
 # ============================================================================
 # Voice mode user message prefix (Bug B fix)
 # ============================================================================

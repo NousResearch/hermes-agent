@@ -2029,15 +2029,15 @@ async def _send_qqbot(pconfig, chat_id, message):
                 "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            # Build payloads.
-            # Channel endpoint: content-only (no markdown, no msg_seq).
+            # Build payloads — channel vs C2C/group use different formats.
+            # Channel is content-only (no msg_type / msg_seq / markdown).
             channel_payload = {"content": message[:4000]}
             # C2C / group endpoints: respect markdown_support + include msg_seq.
             markdown_enabled = bool(
                 (pconfig.extra or {}).get("markdown_support", True)
             )
             msg_seq = (int(time.time()) % 100000000
-                       ^ int(uuid.uuid4().hex[:4], 16)) % 65536
+                ^ int(uuid.uuid4().hex[:4], 16)) % 65536
             if markdown_enabled:
                 c2c_payload = {
                     "markdown": {"content": message[:4000]},

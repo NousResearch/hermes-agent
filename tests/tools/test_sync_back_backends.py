@@ -1,6 +1,7 @@
 """Tests for backend-specific bulk download implementations and cleanup() wiring."""
 
 import asyncio
+import io
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +12,23 @@ from tools.environments import ssh as ssh_env
 from tools.environments import modal as modal_env
 from tools.environments import daytona as daytona_env
 from tools.environments.ssh import SSHEnvironment
+
+
+def _mock_download_proc(
+    data: bytes = b"fake-tar-data", *, returncode: int | None = 0, stderr: bytes = b""
+):
+    proc = MagicMock()
+    proc.stdout = io.BytesIO(data)
+    proc.stderr = io.BytesIO(stderr)
+    proc.returncode = returncode
+    proc.poll.side_effect = lambda: proc.returncode
+    proc.wait.side_effect = lambda: proc.returncode
+
+    def kill():
+        proc.returncode = -9
+
+    proc.kill.side_effect = kill
+    return proc
 
 
 # ── SSH helpers ──────────────────────────────────────────────────────
@@ -104,15 +122,18 @@ class TestSSHBulkDownload:
     """Unit tests for _ssh_bulk_download."""
 
     def test_ssh_bulk_download_runs_tar_over_ssh(self, ssh_mock_env, tmp_path):
-        """subprocess.run command should include tar cf - over SSH."""
+        """The streamed process command should include tar cf - over SSH."""
         dest = tmp_path / "backup.tar"
+        preflight = subprocess.CompletedProcess([], 0, stdout="0\n", stderr="")
+        proc = _mock_download_proc()
 
-        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
-            # open() will be called to write stdout; mock it to avoid actual file I/O
+        with patch.object(subprocess, "run", return_value=preflight) as mock_run, \
+             patch.object(subprocess, "Popen", return_value=proc) as mock_popen:
             ssh_mock_env._ssh_bulk_download(dest)
 
         mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        mock_popen.assert_called_once()
+        cmd = mock_popen.call_args[0][0]
         cmd_str = " ".join(cmd)
         assert "tar cf -" in cmd_str
         assert "-C /" in cmd_str
@@ -121,39 +142,56 @@ class TestSSHBulkDownload:
         assert "testuser@example.com" in cmd_str
 
     def test_ssh_bulk_download_writes_to_dest(self, ssh_mock_env, tmp_path):
-        """subprocess.run should receive stdout=open(dest, 'wb')."""
+        """The bounded receiver should write process stdout to dest."""
         dest = tmp_path / "backup.tar"
+        preflight = subprocess.CompletedProcess([], 0, stdout="0\n", stderr="")
+        proc = _mock_download_proc(b"archive-bytes")
 
-        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
+        with patch.object(subprocess, "run", return_value=preflight), \
+             patch.object(subprocess, "Popen", return_value=proc):
             ssh_mock_env._ssh_bulk_download(dest)
 
-        # The stdout kwarg should be a file object opened for writing
-        call_kwargs = mock_run.call_args
-        # stdout is passed as a keyword arg
-        stdout_val = call_kwargs.kwargs.get("stdout") or call_kwargs[1].get("stdout")
-        # The file was opened via `with open(dest, "wb") as f` and passed as stdout=f.
-        # After the context manager exits, the file is closed, but we can verify
-        # the dest path was used by checking if the file was created.
-        assert dest.exists()
+        assert dest.read_bytes() == b"archive-bytes"
 
     def test_ssh_bulk_download_raises_on_failure(self, ssh_mock_env, tmp_path):
         """Non-zero returncode should raise RuntimeError."""
         dest = tmp_path / "backup.tar"
+        preflight = subprocess.CompletedProcess([], 0, stdout="0\n", stderr="")
+        proc = _mock_download_proc(b"", returncode=1, stderr=b"Permission denied")
 
-        failed = subprocess.CompletedProcess([], 1, stderr=b"Permission denied")
-        with patch.object(subprocess, "run", return_value=failed):
+        with patch.object(subprocess, "run", return_value=preflight), \
+             patch.object(subprocess, "Popen", return_value=proc):
             with pytest.raises(RuntimeError, match="SSH bulk download failed"):
                 ssh_mock_env._ssh_bulk_download(dest)
 
-    def test_ssh_bulk_download_uses_120s_timeout(self, ssh_mock_env, tmp_path):
-        """The subprocess.run call should use a 120s timeout."""
+    def test_ssh_bulk_download_timeout_kills_process(self, ssh_mock_env, tmp_path):
+        """The streamed receive path should enforce its 120s timeout."""
         dest = tmp_path / "backup.tar"
+        preflight = subprocess.CompletedProcess([], 0, stdout="0\n", stderr="")
+        proc = _mock_download_proc(b"", returncode=None)
+        timer_intervals = []
 
-        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
-            ssh_mock_env._ssh_bulk_download(dest)
+        class ImmediateTimer:
+            daemon = False
 
-        call_kwargs = mock_run.call_args
-        assert call_kwargs.kwargs.get("timeout") == 120 or call_kwargs[1].get("timeout") == 120
+            def __init__(self, interval, callback):
+                timer_intervals.append(interval)
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+            def cancel(self):
+                pass
+
+        with patch.object(subprocess, "run", return_value=preflight), \
+             patch.object(subprocess, "Popen", return_value=proc), \
+             patch.object(ssh_env.threading, "Timer", ImmediateTimer):
+            with pytest.raises(RuntimeError, match="SSH bulk download timed out"):
+                ssh_mock_env._ssh_bulk_download(dest)
+
+        assert timer_intervals == [120]
+        proc.kill.assert_called()
 
 
 class TestSSHCleanup:

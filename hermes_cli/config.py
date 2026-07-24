@@ -6492,31 +6492,40 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "delegations too."
                 )
 
-    # ── Version 33 → 34: remove the baked-in 600s delegation timeout ──
+    # ── Version 33 → 34: surface the legacy 600s delegation timeout ──
     # v29 changed the schema default from 600 seconds to disabled, but did not
-    # bump the config version or migrate installs where the old default had
-    # already been materialised. That stale literal continued to override the
-    # new no-timeout default indefinitely and killed active subagents at exactly
-    # ten minutes. Remove that one legacy sentinel once. Other positive caps are
-    # deliberate and remain untouched; a user can set 600 again after v34.
+    # bump the config version. Existing profiles may therefore still carry the
+    # old materialised default. We cannot distinguish that value from a user
+    # who deliberately opted into a ten-minute cap, so never mutate it. Warn
+    # once during migration and require an explicit config command to disable
+    # the cap.
     if current_ver < 34:
         config = read_raw_config()
         raw_deleg = config.get("delegation")
-        if (
-            isinstance(raw_deleg, dict)
-            and raw_deleg.get("child_timeout_seconds") == 600
-        ):
-            raw_deleg.pop("child_timeout_seconds")
-            config["delegation"] = raw_deleg
-            _persist_migration(config)
-            results["config_added"].append(
-                "removed legacy delegation.child_timeout_seconds=600 default"
+        raw_timeout = (
+            raw_deleg.get("child_timeout_seconds")
+            if isinstance(raw_deleg, dict)
+            else None
+        )
+        try:
+            is_legacy_timeout = (
+                isinstance(raw_timeout, (int, float, str))
+                and not isinstance(raw_timeout, bool)
+                and float(raw_timeout) == 600.0
             )
+        except (TypeError, ValueError):
+            is_legacy_timeout = False
+        if is_legacy_timeout:
+            warning = (
+                "delegation.child_timeout_seconds=600 is an explicit 10-minute "
+                "wall-clock cap. Hermes cannot determine whether it came from "
+                "an older default or was intentional, so it was preserved. To "
+                "disable the cap, run `hermes config set "
+                "delegation.child_timeout_seconds 0`."
+            )
+            results["warnings"].append(warning)
             if not quiet:
-                print(
-                    "  ✓ Removed the legacy 600-second delegation timeout — "
-                    "subagents now use the no-timeout default."
-                )
+                print(f"  ⚠ {warning}")
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

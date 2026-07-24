@@ -2114,9 +2114,37 @@ class TestDelegationCapUnificationMigration:
 
 
 class TestLegacyDelegationTimeoutMigration:
-    """v33 → v34: remove the persisted legacy 600-second default cap."""
+    """v33 → v34: preserve ambiguous 600-second caps and require opt-out."""
 
-    def test_stale_600_second_default_is_removed(self, tmp_path):
+    @pytest.mark.parametrize("yaml_value", ["600", "600.0", "'600'"])
+    def test_pre_v34_600_second_cap_is_preserved_and_warned(
+        self, tmp_path, yaml_value
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "_config_version: 33\ndelegation:\n"
+            f"  child_timeout_seconds: {yaml_value}\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            from tools.delegate_tool import _get_child_timeout
+
+            effective_timeout = _get_child_timeout()
+
+        assert float(raw["delegation"]["child_timeout_seconds"]) == 600.0
+        assert effective_timeout == 600.0
+        assert raw["_config_version"] == 34
+        assert len(results["warnings"]) == 1
+        warning = results["warnings"][0]
+        assert "was preserved" in warning
+        assert "hermes config set delegation.child_timeout_seconds 0" in warning
+
+    def test_pre_v34_600_second_cap_prints_actionable_warning(
+        self, tmp_path, capsys
+    ):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             "_config_version: 33\ndelegation:\n  child_timeout_seconds: 600\n",
@@ -2124,20 +2152,17 @@ class TestLegacyDelegationTimeoutMigration:
         )
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            loaded = load_config()
-            from tools.delegate_tool import _get_child_timeout
+            migrate_config(interactive=False, quiet=False)
 
-            effective_timeout = _get_child_timeout()
-
-        assert "child_timeout_seconds" not in raw.get("delegation", {})
-        assert loaded["delegation"]["child_timeout_seconds"] == 0
-        assert effective_timeout is None
-        assert raw["_config_version"] == 34
+        output = capsys.readouterr().out
+        assert "⚠" in output
+        assert "was preserved" in output
+        assert "hermes config set delegation.child_timeout_seconds 0" in output
 
     @pytest.mark.parametrize("cap", [30, 599, 900, 3600])
-    def test_other_pre_v34_positive_caps_are_preserved(self, tmp_path, cap):
+    def test_other_pre_v34_positive_caps_are_preserved_without_warning(
+        self, tmp_path, cap
+    ):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             f"_config_version: 33\ndelegation:\n  child_timeout_seconds: {cap}\n",
@@ -2145,13 +2170,16 @@ class TestLegacyDelegationTimeoutMigration:
         )
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            migrate_config(interactive=False, quiet=True)
+            results = migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
         assert raw["delegation"]["child_timeout_seconds"] == cap
         assert raw["_config_version"] == 34
+        assert not any("child_timeout_seconds=600" in item for item in results["warnings"])
 
-    def test_post_v34_explicit_600_second_cap_is_preserved(self, tmp_path):
+    def test_post_v34_explicit_600_second_cap_is_preserved_without_warning(
+        self, tmp_path
+    ):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             "_config_version: 34\ndelegation:\n  child_timeout_seconds: 600\n",
@@ -2159,11 +2187,12 @@ class TestLegacyDelegationTimeoutMigration:
         )
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            migrate_config(interactive=False, quiet=True)
+            results = migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
         assert raw["delegation"]["child_timeout_seconds"] == 600
         assert raw["_config_version"] == 34
+        assert not any("child_timeout_seconds=600" in item for item in results["warnings"])
 
 
 class TestConfigNormalizationDoesNotOverwriteUserValues:

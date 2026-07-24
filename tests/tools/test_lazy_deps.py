@@ -316,15 +316,26 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_any_unique_package_present(self, monkeypatch):
+        # platform.slack has shared security pins like aiohttp, but a unique
+        # package such as slack-bolt is still enough to prove activation.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_transitive_pin_alone_does_not_activate_matrix(self, monkeypatch):
+        # aiohttp is mirrored into several messaging features as a shared
+        # security pin. Its presence alone must not make Matrix look active.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "aiohttp",
+        )
+        active = ld.active_features()
+        assert "platform.matrix" not in active
+        assert "platform.slack" not in active
+        assert "platform.discord" not in active
 
 
 class TestRefreshActiveFeatures:

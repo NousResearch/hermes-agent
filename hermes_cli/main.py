@@ -13368,7 +13368,15 @@ def _read_ssh_session_token_file(path: str) -> str:
         raise SystemExit("--ssh-session-token-file must be absolute")
 
     token_path = _Path(path)
-    token_root = _get_hermes_home() / "desktop-ssh"
+    # The desktop client always writes the token under the ROOT Hermes home
+    # (~/.hermes/desktop-ssh/...), while the serve process may have adopted a
+    # sticky profile that re-homes HERMES_HOME into ~/.hermes/profiles/<name>.
+    # Resolve back to the root so the path validation accepts the client token.
+    hermes_home = _get_hermes_home()
+    if hermes_home.parent.name == "profiles":
+        token_root = hermes_home.parent.parent / "desktop-ssh"
+    else:
+        token_root = hermes_home / "desktop-ssh"
     try:
         relative = token_path.relative_to(token_root)
     except ValueError as exc:

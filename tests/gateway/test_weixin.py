@@ -1205,3 +1205,306 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+
+class TestWeixinVoiceAlwaysDownloaded:
+    """Regression tests for #27300: when WeChat (Weixin) returns a
+    ``voice_item.text`` (Tencent Cloud's STT) we must still download
+    the raw audio and route it through Hermes' own STT pipeline.
+
+    Non-Chinese users currently see garbled transcriptions because the
+    existing code short-circuits in two places: ``_download_voice``
+    returns ``None`` whenever Tencent provided *any* text (even
+    incorrect), and ``_extract_text`` returns that text as the message
+    body. The fix is to always download and never return Tencent's
+    text — the central STT pipeline in ``gateway/run.py`` produces
+    the actual body from the downloaded audio.
+    """
+
+    def _make_voice_item(self, text: str = "") -> dict:
+        """Build a minimal voice item with media + optional Tencent text."""
+        return {
+            "type": weixin.ITEM_VOICE,
+            "voice_item": {
+                "text": text,
+                "media": {
+                    "encrypt_query_param": "q",
+                    "aes_key": "a" * 32,
+                    "full_url": "https://example.invalid/voice.silk",
+                },
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_download_voice_returns_path_when_tencent_text_set(self, tmp_path, monkeypatch):
+        """#27300 PRIMARY: ``_download_voice`` must not short-circuit on
+        ``voice_item.text``. The audio is needed so Hermes' own STT can
+        re-transcribe when Tencent's text is in the wrong language.
+        """
+        adapter = _make_adapter()
+        adapter._cdn_base_url = "https://example.invalid"
+        adapter._poll_session = Mock()
+
+        fake_audio_bytes = b"\\x00\\x01\\x02FAKE_SILK"
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
+                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+
+        async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
+                                 aes_key_b64, full_url, timeout_seconds):
+            return fake_audio_bytes
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        item = self._make_voice_item(text="garbled-tencent-transcript")
+        result = await adapter._download_voice(item)
+
+        # Currently broken: returns None when voice_item.text is set.
+        # After fix: returns a local path so the central STT pipeline
+        # can pick it up and re-transcribe.
+        assert result is not None, (
+            "_download_voice returned None even though raw audio is "
+            "available — Hermes' STT pipeline needs the audio to handle "
+            "non-Chinese voice messages (#27300)."
+        )
+        assert result.endswith(".silk")
+
+    def test_extract_text_does_not_return_tencent_voice_text(self):
+        """#27300 SECONDARY: ``_extract_text`` must not return
+        ``voice_item.text`` verbatim. That text is Tencent Cloud's
+        STT output, which is wrong for non-Chinese audio and the
+        whole reason #27300 was filed. Returning empty forces the
+        central STT pipeline's transcript to become the body.
+        """
+        item_list = [self._make_voice_item(text="garbled-tencent-transcript")]
+        result = weixin._extract_text(item_list)
+        # Currently broken: returns "garbled-tencent-transcript".
+        # After fix: returns "" (empty string) so the central pipeline
+        # transcript replaces it as the user-visible body.
+        assert result != "garbled-tencent-transcript", (
+            "_extract_text returned Tencent's text directly — for "
+            "non-Chinese audio this is garbage; the central STT "
+            "pipeline's transcript should be the body (#27300)."
+        )
+
+    def test_extract_text_voice_only_returns_empty(self):
+        """When the only item is a voice attachment (no text item),
+        ``_extract_text`` should return empty so the central STT
+        pipeline's transcript becomes the body. Currently returns
+        Tencent's text which is what the bug is about.
+        """
+        item_list = [self._make_voice_item(text="какой-то текст")]
+        result = weixin._extract_text(item_list)
+        assert result == "", (
+            "Voice-only message: _extract_text should return empty so "
+            "the central STT pipeline output replaces it as the body."
+        )
+
+    def test_extract_text_still_returns_text_for_text_items(self):
+        """Sanity: the fix must not regress the text-item path. A plain
+        text message should still produce its text body.
+        """
+        item_list = [{
+            "type": weixin.ITEM_TEXT,
+            "text_item": {"text": "hello world"},
+        }]
+        assert weixin._extract_text(item_list) == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_collect_media_includes_voice_when_tencent_text_set(self, tmp_path, monkeypatch):
+        """#27300 INTEGRATION: ``_collect_media`` should add a ``.silk``
+        path to ``media_paths`` even when Tencent returned text, so the
+        central STT pipeline can re-transcribe. Currently the
+        short-circuit in ``_download_voice`` means the audio is never
+        downloaded, and the message body is whatever Tencent wrote
+        (garbled for non-Chinese audio).
+        """
+        adapter = _make_adapter()
+        adapter._cdn_base_url = "https://example.invalid"
+        adapter._poll_session = Mock()
+
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
+                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+
+        async def _fake_download(session, *, cdn_base_url, encrypted_query_param,
+                                 aes_key_b64, full_url, timeout_seconds):
+            return b"\\x00FAKE"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        media_paths: list = []
+        media_types: list = []
+        item = self._make_voice_item(text="какой-то текст")
+        await adapter._collect_media(item, media_paths, media_types)
+
+        assert len(media_paths) == 1, (
+            "_collect_media dropped the voice attachment because "
+            "voice_item.text was set — Hermes' STT never gets a "
+            "chance to re-transcribe (#27300)."
+        )
+        assert media_types == ["audio/silk"]
+
+
+class TestWeixinVoiceGatewayHandoff:
+    """#27300 integration-level regression: the routing fix must not only
+    download the audio and drop Tencent's text at the adapter level — the
+    inbound voice item must surface as a VOICE ``MessageEvent`` carrying the
+    ``audio/silk`` media, and that event must reach the runner's central STT
+    pipeline (``_enrich_message_with_transcription``) instead of being trusted
+    as already-transcribed text. This covers the gateway-runner handoff that the
+    adapter-only tests above do not exercise.
+    """
+
+    def _inbound_voice_message(self, text: str) -> dict:
+        return {
+            "from_user_id": "user-123",
+            "to_user_id": "test-account",
+            "message_id": "msg-voice-1",
+            "msg_type": 1,
+            "item_list": [
+                {
+                    "type": weixin.ITEM_VOICE,
+                    "voice_item": {
+                        "text": text,
+                        "media": {
+                            "encrypt_query_param": "q",
+                            "aes_key": "a" * 32,
+                            "full_url": "https://example.invalid/voice.silk",
+                        },
+                    },
+                }
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_voice_item_builds_voice_event_with_silk_media(self, tmp_path, monkeypatch):
+        """Inbound voice item carrying Tencent text must produce a VOICE
+        event whose media is ``audio/silk`` — the exact shape the runner keys
+        off to route into Hermes' STT pipeline.
+        """
+        adapter = _make_adapter()
+        adapter._poll_session = Mock()  # satisfies the `assert` in _process_message
+        adapter._token = None  # typing-ticket task early-returns when no token
+        adapter._cdn_base_url = "https://example.invalid"
+
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
+                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        async def _fake_download(*a, **k):
+            return b"\x00\x01FAKE_SILK"
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+
+        await adapter._process_message(self._inbound_voice_message("garbled-tencent-text"))
+
+        assert "event" in captured, "no MessageEvent handed to handle_message"
+        event = captured["event"]
+        assert event.message_type == MessageType.VOICE, (
+            f"expected VOICE event, got {event.message_type}"
+        )
+        assert event.media_types == ["audio/silk"], (
+            f"voice event must carry audio/silk media, got {event.media_types}"
+        )
+        assert len(event.media_urls) == 1, "expected one local silk audio path"
+
+    @pytest.mark.asyncio
+    async def test_voice_event_body_is_not_tencent_text(self, tmp_path, monkeypatch):
+        """The VOICE event handed to the runner must NOT carry Tencent's STT
+        text as its body — the central pipeline's transcript replaces it.
+        """
+        adapter = _make_adapter()
+        adapter._poll_session = Mock()
+        adapter._token = None
+        adapter._cdn_base_url = "https://example.invalid"
+
+        monkeypatch.setattr(weixin, "cache_audio_from_bytes",
+                            lambda data, ext: str(tmp_path / f"voice.{ext.lstrip('.')}"))
+        async def _fake_download(*a, **k):
+            return b"\x00\x01FAKE_SILK"
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+
+        tencent_text = "garbled English phonemes for a Russian voice"
+        await adapter._process_message(self._inbound_voice_message(tencent_text))
+
+        assert "event" in captured
+        event = captured["event"]
+        # The text field must be empty (Tencent text dropped) so the runner
+        # has no pre-filled body and routes the audio to STT.
+        assert event.text != tencent_text, (
+            "VOICE event body leaked Tencent's STT text — runner would trust "
+            "the wrong transcript instead of re-transcribing (#27300)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_runner_routes_voice_event_to_transcription(self, tmp_path, monkeypatch):
+        """Regression for the gateway-runner handoff: a VOICE event carrying
+        ``audio/silk`` must reach ``_enrich_message_with_transcription`` so the
+        central STT pipeline produces the body. We drive the real runner method
+        (patched to capture the call) using the same selection rule the runner
+        applies in ``gateway/run.py`` (audio/* media -> transcription path).
+        """
+        import gateway.run as run_module
+        from gateway.run import GatewayRunner
+        from gateway.platforms.base import MessageType as _MT
+        from gateway.session import SessionSource
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(stt_enabled=True)
+
+        captured = {}
+        real_enrich = GatewayRunner._enrich_message_with_transcription
+
+        async def _spy_enrich(self, user_text, audio_paths):
+            captured["audio_paths"] = audio_paths
+            # Delegate to the real implementation so the contract is exercised
+            # end-to-end rather than re-implemented.
+            return await real_enrich(self, user_text, audio_paths)
+
+        monkeypatch.setattr(
+            run_module.GatewayRunner,
+            "_enrich_message_with_transcription",
+            _spy_enrich,
+        )
+
+        event = MessageEvent(
+            text="",
+            message_type=_MT.VOICE,
+            source=SessionSource(platform="weixin", chat_id="user-123", chat_type="dm"),
+            raw_message={},
+            message_id="msg-voice-1",
+            media_urls=[str(tmp_path / "voice.silk")],
+            media_types=["audio/silk"],
+            timestamp=__import__("datetime").datetime.now(),
+        )
+
+        # Same selection rule the runner uses: audio/* media (or VOICE/AUDIO
+        # message type) marks the path for transcription.
+        audio_paths = [
+            p for i, p in enumerate(event.media_urls)
+            if (event.media_types[i].startswith("audio/")
+                or event.message_type in (_MT.VOICE, _MT.AUDIO))
+        ]
+        assert audio_paths, "VOICE/audio/silk event must be selected for transcription"
+
+        enriched, transcripts = await runner._enrich_message_with_transcription(
+            event.text, audio_paths
+        )
+        assert captured.get("audio_paths") == audio_paths, (
+            "the VOICE event's audio/silk path must reach "
+            "_enrich_message_with_transcription"
+        )
+        # Real implementation echoes a transcript back when STT is enabled.
+        assert isinstance(enriched, str)

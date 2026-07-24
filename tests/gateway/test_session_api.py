@@ -1,6 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -338,6 +339,46 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_client_disconnect_interrupts_agent(adapter, session_db):
+    """A client closing the session SSE stream should stop the active agent run."""
+    session_id = session_db.create_session("disconnect-session", "api_server")
+    fake_agent = MagicMock()
+    write_count = {"n": 0}
+
+    class DisconnectingStreamResponse:
+        def __init__(self, *args, **kwargs):
+            self.headers = kwargs.get("headers", {})
+
+        async def prepare(self, request):
+            return None
+
+        async def write(self, payload):
+            write_count["n"] += 1
+            if write_count["n"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    async def fake_run(**kwargs):
+        if "agent_ref" in kwargs:
+            kwargs["agent_ref"][0] = fake_agent
+        kwargs["stream_delta_callback"]("partial response")
+        await asyncio.sleep(60)
+        return {"final_response": "should not complete", "session_id": session_id}, {"total_tokens": 1}
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+    request.json = AsyncMock(return_value={"message": "start then disconnect"})
+
+    import gateway.platforms.api_server as api_mod
+
+    with patch.object(api_mod.web, "StreamResponse", DisconnectingStreamResponse):
+        with patch.object(adapter, "_run_agent", side_effect=fake_run):
+            await adapter._handle_session_chat_stream(request)
+
+    fake_agent.interrupt.assert_called_once_with("SSE client disconnected")
 
 
 @pytest.mark.asyncio

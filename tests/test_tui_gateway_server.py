@@ -7482,6 +7482,77 @@ def test_session_undo_allowed_when_idle():
         server._sessions.pop("sid", None)
 
 
+def test_session_undo_persists_truncated_transcript(monkeypatch):
+    """/undo must write the truncated transcript back to the DB.
+
+    Otherwise the undo lives only in memory: session.history re-reads from
+    the DB so any refetch (tab switch, reconnect, resume) resurrects the
+    undone turn, and the next prompt.submit appends on top of the stale
+    rows, corrupting the persisted transcript. Mirrors prompt.submit's
+    truncate_before_user_ordinal persistence.
+    """
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+    server._sessions["sid"] = _session(
+        running=False,
+        history=[
+            {"role": "user", "content": "keep"},
+            {"role": "assistant", "content": "keep reply"},
+            {"role": "user", "content": "drop"},
+            {"role": "assistant", "content": "drop reply"},
+            {"role": "tool", "content": "drop tool"},
+        ],
+    )
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert resp["result"]["removed"] == 3
+        remaining = [
+            {"role": "user", "content": "keep"},
+            {"role": "assistant", "content": "keep reply"},
+        ]
+        assert server._sessions["sid"]["history"] == remaining
+        # The truncated transcript must have been persisted exactly once.
+        assert stub_db.replaced == [("session-key", remaining)]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_undo_skips_db_when_nothing_removed(monkeypatch):
+    """No history to pop → no DB write, so an empty transcript is never
+    clobbered with an empty replace."""
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+    server._sessions["sid"] = _session(running=False, history=[])
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        resp = server.handle_request(
+            {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
+        )
+        assert resp.get("result")
+        assert resp["result"]["removed"] == 0
+        assert stub_db.replaced == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_session_compress_rejects_while_running(monkeypatch):
     server._sessions["sid"] = _session(running=True)
     try:

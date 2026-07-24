@@ -291,6 +291,82 @@ def test_notifier_sends_rich_approval_for_needs_input_block(kanban_home):
     asyncio.run(_run())
 
 
+def test_notifier_sends_protocol_violation_decision_card_for_gave_up(kanban_home):
+    """Protocol-violation give-up events use the dedicated decision card."""
+
+    async def _run():
+        import hermes_cli.kanban_db as kb
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform
+
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="quiet worker", assignee="profile-developer")
+            kb.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="discord",
+                chat_id="chat1",
+                thread_id="thread1",
+                notifier_profile="profile-pmo",
+            )
+            kb._append_event(
+                conn,
+                tid,
+                kind="gave_up",
+                payload={
+                    "error": "worker exited cleanly without terminal Kanban call",
+                    "protocol_violations": 3,
+                    "protocol_violation_limit": 3,
+                    "protocol_violation": True,
+                },
+            )
+        finally:
+            conn.close()
+
+        runner = object.__new__(GatewayRunner)
+        runner._running = True
+        runner._kanban_sub_fail_counts = {}
+        runner._active_profile_name = lambda: "profile-pmo"
+
+        fake_adapter = MagicMock()
+
+        async def _decision_and_stop(*args, **kwargs):
+            runner._running = False
+            return SimpleNamespace(success=True, message_id="m_proto")
+
+        fake_adapter.send_kanban_protocol_violation = AsyncMock(side_effect=_decision_and_stop)
+        fake_adapter.send = AsyncMock()
+        runner.adapters = {Platform.DISCORD: fake_adapter}
+        runner._profile_adapters = {}
+
+        _orig_sleep = asyncio.sleep
+
+        async def _fast_sleep(_):
+            await _orig_sleep(0)
+
+        with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=10.0,
+            )
+
+        fake_adapter.send_kanban_protocol_violation.assert_awaited_once()
+        fake_adapter.send.assert_not_called()
+        _, kwargs = fake_adapter.send_kanban_protocol_violation.call_args
+        assert kwargs["chat_id"] == "chat1"
+        assert kwargs["task_id"] == tid
+        assert kwargs["board"] == "default"
+        assert kwargs["title"] == "quiet worker"
+        assert kwargs["assignee"] == "profile-developer"
+        assert "without terminal Kanban call" in kwargs["error"]
+        assert kwargs["violation_count"] == 3
+        assert kwargs["violation_limit"] == 3
+        assert kwargs["metadata"]["thread_id"] == "thread1"
+
+    asyncio.run(_run())
+
+
 # NOTE: SimpleNamespace is imported later in this module for slash-command tests;
 # keep this local import near the test that needs it to avoid changing older tests.
 from types import SimpleNamespace

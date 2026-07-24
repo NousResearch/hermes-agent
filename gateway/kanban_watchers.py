@@ -359,6 +359,7 @@ class GatewayKanbanWatchersMixin:
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         rich_approval: dict[str, Any] | None = None
+                        rich_protocol_violation: dict[str, Any] | None = None
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
@@ -428,6 +429,24 @@ class GatewayKanbanWatchersMixin:
                                 f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
                                 f"after repeated spawn failures{err}"
                             )
+                            payload = ev.payload or {}
+                            is_protocol_violation = bool(
+                                payload.get("protocol_violation")
+                                or payload.get("protocol_violations")
+                                or "protocol violation" in str(payload.get("error") or "").lower()
+                            )
+                            if is_protocol_violation:
+                                rich_protocol_violation = {
+                                    "chat_id": sub["chat_id"],
+                                    "task_id": sub["task_id"],
+                                    "board": board_slug or _kb.DEFAULT_BOARD,
+                                    "title": title,
+                                    "assignee": task.assignee if task and task.assignee else "",
+                                    "error": str(payload.get("error") or "Worker exited without a terminal Kanban lifecycle call."),
+                                    "violation_count": int(payload.get("protocol_violations") or 0),
+                                    "violation_limit": int(payload.get("protocol_violation_limit") or 0),
+                                    "metadata": metadata,
+                                }
                         elif kind == "crashed":
                             msg = (
                                 f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
@@ -461,7 +480,18 @@ class GatewayKanbanWatchersMixin:
                         )
                         try:
                             send_kanban_approval = getattr(adapter, "send_kanban_approval", None)
-                            if rich_approval and callable(send_kanban_approval) and inspect.iscoroutinefunction(send_kanban_approval):
+                            send_kanban_protocol_violation = getattr(adapter, "send_kanban_protocol_violation", None)
+                            if rich_protocol_violation and callable(send_kanban_protocol_violation) and inspect.iscoroutinefunction(send_kanban_protocol_violation):
+                                result = await send_kanban_protocol_violation(**rich_protocol_violation)
+                                if not getattr(result, "success", False):
+                                    logger.warning(
+                                        "kanban notifier: protocol violation decision card send failed for %s, falling back to text: %s",
+                                        sub["task_id"], getattr(result, "error", "unknown error"),
+                                    )
+                                    await adapter.send(
+                                        sub["chat_id"], msg, metadata=metadata,
+                                    )
+                            elif rich_approval and callable(send_kanban_approval) and inspect.iscoroutinefunction(send_kanban_approval):
                                 result = await send_kanban_approval(**rich_approval)
                                 if not getattr(result, "success", False):
                                     logger.warning(

@@ -6691,6 +6691,93 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    async def send_kanban_protocol_violation(
+        self,
+        chat_id: str,
+        task_id: str,
+        board: str,
+        title: str,
+        assignee: str,
+        error: str,
+        violation_count: int = 0,
+        violation_limit: int = 0,
+        metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a production decision card for Kanban protocol violations.
+
+        This is distinct from `send_kanban_approval`: a protocol violation is
+        not a simple approve/reject gate. The human needs operational choices:
+        retry, mark done after external verification, create remediation, or
+        keep blocked for investigation.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            error_text = str(error or "Protocol violation: worker exited without kanban_complete or kanban_block.").strip()
+            count_label = (
+                f"{violation_count}/{violation_limit}"
+                if violation_count and violation_limit
+                else "threshold reached"
+            )
+            content = (
+                "⚠️ **Kanban Protocol Violation — Human Decision Needed**\n\n"
+                f"**Task:** {task_id}\n"
+                f"**Title:** {title}\n"
+                f"**Assignee:** {assignee or 'unknown'}\n"
+                f"**Violation count:** {count_label}\n\n"
+                "**What happened:**\n"
+                f"{error_text}\n\n"
+                "**Choose one:**\n"
+                "🔁 Retry worker — promote the blocked task back to ready.\n"
+                "✅ Mark verified done — only if you already checked the artifact/output manually.\n"
+                "🛠 Create remediation — create an idempotent triage child task.\n"
+                "⛔ Keep blocked — leave it stopped and record the decision."
+            )
+
+            embed = discord.Embed(
+                title="⚠️ Kanban Protocol Violation",
+                description=f"**Task:** `{task_id}`  \n**Title:** {title}",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="Assignee", value=assignee or "unknown", inline=True)
+            embed.add_field(name="Violation count", value=count_label, inline=True)
+            embed.add_field(name="What happened", value=error_text[:1024] or "—", inline=False)
+            embed.add_field(
+                name="Decision options",
+                value=(
+                    "🔁 Retry worker — promote task to ready.\n"
+                    "✅ Mark verified done — human has checked the output.\n"
+                    "🛠 Create remediation — idempotent triage child.\n"
+                    "⛔ Keep blocked — audit only."
+                ),
+                inline=False,
+            )
+            embed.set_footer(text=f"Task ID: {task_id} | Board: {board}")
+
+            view = KanbanProtocolViolationView(
+                task_id=task_id,
+                board=board,
+                channel_id=target_id,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+                error=error_text,
+            )
+            msg = await channel.send(content=content, embed=embed, view=view)
+            view._message = msg
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -7871,7 +7958,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView, KanbanApprovalView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView, KanbanApprovalView, KanbanProtocolViolationView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -8268,6 +8355,181 @@ def _define_discord_view_classes() -> None:
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass  # message deleted or too old to edit
+
+
+    class KanbanProtocolViolationView(discord.ui.View):
+        """Decision buttons for Kanban workers that violated lifecycle protocol."""
+
+        def __init__(
+            self,
+            task_id: str,
+            board: str,
+            channel_id: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+            error: str = "",
+        ):
+            super().__init__(timeout=900)  # 15 minutes: ops decisions take longer
+            self.task_id = task_id
+            self.board = board
+            self.channel_id = channel_id
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.error = str(error or "").strip()
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids
+            )
+
+        async def _resolve(
+            self,
+            interaction: discord.Interaction,
+            decision: str,
+            color: discord.Color,
+            label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This protocol-violation decision has already been resolved~",
+                    ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to resolve this Kanban protocol violation~",
+                    ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+            for child in self.children:
+                child.disabled = True
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            except Exception as exc:
+                logger.debug("Kanban protocol violation UI update failed: %s", exc)
+
+            try:
+                from hermes_cli.kanban import run_slash
+
+                actor = str(getattr(interaction.user, "display_name", "") or getattr(interaction.user, "id", "user"))
+                decision_text = f"PROTOCOL_VIOLATION_DECISION: {decision} by {actor}"
+                commands = [
+                    f"--board {shlex.quote(self.board)} comment {self.task_id} {shlex.quote(decision_text)} --author {shlex.quote(actor)}",
+                ]
+                if decision == "RETRY":
+                    commands.append(
+                        f"--board {shlex.quote(self.board)} promote --force {self.task_id} {shlex.quote(decision_text)}"
+                    )
+                elif decision == "REMEDIATE":
+                    remediation_title = f"Remediate protocol violation for {self.task_id}"
+                    remediation_body = (
+                        f"{decision_text}\n\n"
+                        f"Original task `{self.task_id}` stopped because the worker exited without a terminal Kanban lifecycle call.\n\n"
+                        f"Observed error:\n{self.error or 'Protocol violation: worker exited without kanban_complete or kanban_block.'}\n\n"
+                        "Required next action: inspect worker output/artifacts, then either finish the task with kanban_complete or update the task/worker so it follows the Kanban protocol."
+                    )
+                    commands.append(
+                        f"--board {shlex.quote(self.board)} create {shlex.quote(remediation_title)} "
+                        f"--body {shlex.quote(remediation_body)} "
+                        f"--parent {self.task_id} --triage "
+                        f"--idempotency-key {shlex.quote('kanban-protocol-violation:' + self.task_id)} "
+                        f"--created-by {shlex.quote(actor)}"
+                    )
+                elif decision == "HUMAN_VERIFIED_DONE":
+                    result = (
+                        f"Human verified completion after protocol violation. {decision_text}. "
+                        "Use this only when artifacts/output have already been checked outside the worker."
+                    )
+                    commands.append(
+                        f"--board {shlex.quote(self.board)} complete {self.task_id} "
+                        f"--result {shlex.quote(result)} --summary {shlex.quote(result)}"
+                    )
+                elif decision == "KEEP_BLOCKED":
+                    # Durable side effect is the audit comment above. The task
+                    # is already blocked by the gave_up/protocol-violation path.
+                    pass
+                else:
+                    raise RuntimeError(f"unknown protocol violation decision: {decision}")
+
+                for command in commands:
+                    result = await asyncio.to_thread(run_slash, command)
+                    if result and ("usage error" in result.lower() or "invalid choice" in result.lower()):
+                        raise RuntimeError(result[:500])
+                    logger.debug(
+                        "Kanban protocol violation command for task %s by %s: %s",
+                        self.task_id,
+                        actor,
+                        result[:200] if result else "OK",
+                    )
+                logger.info(
+                    "Kanban protocol violation decision %s for task %s by %s",
+                    decision,
+                    self.task_id,
+                    actor,
+                )
+            except Exception as exc:
+                logger.error("Failed to resolve Kanban protocol violation decision: %s", exc)
+
+        @discord.ui.button(label="🔁 Retry worker", style=discord.ButtonStyle.blurple)
+        async def retry(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(interaction, "RETRY", discord.Color.blue(), "🔁 Retry")
+
+        @discord.ui.button(label="✅ Mark verified done", style=discord.ButtonStyle.green)
+        async def mark_verified_done(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(
+                interaction,
+                "HUMAN_VERIFIED_DONE",
+                discord.Color.green(),
+                "✅ Human verified done",
+            )
+
+        @discord.ui.button(label="🛠 Create remediation", style=discord.ButtonStyle.grey)
+        async def create_remediation(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(
+                interaction,
+                "REMEDIATE",
+                discord.Color.orange(),
+                "🛠 Remediation created",
+            )
+
+        @discord.ui.button(label="⛔ Keep blocked", style=discord.ButtonStyle.red)
+        async def keep_blocked(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(
+                interaction,
+                "KEEP_BLOCKED",
+                discord.Color.red(),
+                "⛔ Kept blocked",
+            )
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Protocol violation decision expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass
 
 
     class SlashConfirmView(discord.ui.View):

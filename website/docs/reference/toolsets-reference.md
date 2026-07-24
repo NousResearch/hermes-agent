@@ -29,16 +29,24 @@ hermes chat --toolsets all              # everything
 ### Per-platform (config.yaml)
 
 ```yaml
-toolsets:
-  - hermes-cli          # default for CLI
-  # - hermes-telegram   # override for Telegram gateway
+platform_toolsets:
+  cli:
+    - hermes-cli
+  telegram:
+    - hermes-telegram
 ```
 
 ### Interactive management
 
 ```bash
 hermes tools                            # curses UI to enable/disable per platform
+hermes tools enable kanban --platform slack  # explicit profile-gated opt-in
 ```
+
+Kanban intentionally stays out of the interactive picker and the `all`
+toolset. Its explicit command updates both the profile-level runtime gate and
+the selected platform, preventing a platform-only configuration that looks
+enabled but omits the native `kanban_*` tools at runtime.
 
 Or in-session:
 

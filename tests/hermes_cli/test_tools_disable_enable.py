@@ -60,6 +60,64 @@ class TestToolsEnableBuiltin:
         assert saved["platform_toolsets"]["cli"].count("web") == 1
 
 
+# ── Profile-gated toolsets ─────────────────────────────────────────────────
+
+
+class TestToolsProfileGated:
+
+    def test_enable_kanban_sets_profile_and_platform_opt_ins(self):
+        config = {
+            "toolsets": ["hermes-cli"],
+            "platform_toolsets": {"slack": ["web"]},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["kanban"], platform="slack")
+            )
+        saved = mock_save.call_args[0][0]
+        assert saved["toolsets"] == ["hermes-cli", "kanban"]
+        assert "kanban" in saved["platform_toolsets"]["slack"]
+
+    def test_enable_kanban_is_idempotent(self):
+        config = {
+            "toolsets": ["kanban"],
+            "platform_toolsets": {"slack": ["web", "kanban"]},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["kanban"], platform="slack")
+            )
+        saved = mock_save.call_args[0][0]
+        assert saved["toolsets"].count("kanban") == 1
+        assert saved["platform_toolsets"]["slack"].count("kanban") == 1
+
+    def test_disable_kanban_clears_profile_and_platform_opt_ins(self):
+        config = {
+            "toolsets": ["hermes-cli", "kanban"],
+            "platform_toolsets": {"slack": ["web", "kanban"]},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["kanban"], platform="slack")
+            )
+        saved = mock_save.call_args[0][0]
+        assert saved["toolsets"] == ["hermes-cli"]
+        assert "kanban" not in saved["platform_toolsets"]["slack"]
+
+    def test_list_reports_missing_profile_opt_in(self, capsys):
+        config = {"platform_toolsets": {"slack": ["web", "kanban"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config):
+            tools_disable_enable_command(
+                Namespace(tools_action="list", platform="slack")
+            )
+        out = capsys.readouterr().out
+        assert "kanban" in out
+        assert "profile opt-in missing" in out
+
+
 # ── MCP tool disable ────────────────────────────────────────────────────────
 
 

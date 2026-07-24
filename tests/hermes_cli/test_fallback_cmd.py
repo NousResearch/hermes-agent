@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import types
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -407,6 +409,93 @@ class TestRemoveCommand:
         assert len(cfg["fallback_providers"]) == 1
 
 
+
+# ---------------------------------------------------------------------------
+# cmd_fallback_move
+# ---------------------------------------------------------------------------
+
+class TestMoveCommand:
+    def test_move_empty_chain(self, isolated_home, capsys):
+        _write_config(isolated_home, {})
+        from hermes_cli.fallback_cmd import cmd_fallback_move
+        cmd_fallback_move(types.SimpleNamespace(from_position=1, to_position=1))
+        out = capsys.readouterr().out
+        assert "nothing to move" in out
+
+    def test_move_first_to_last(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "gpt-5.4"},
+                {"provider": "nous", "model": "Hermes-4"},
+                {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_move
+        cmd_fallback_move(types.SimpleNamespace(from_position=1, to_position=3))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            {"provider": "nous", "model": "Hermes-4"},
+            {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            {"provider": "openrouter", "model": "gpt-5.4"},
+        ]
+        out = capsys.readouterr().out
+        assert "Moved fallback from position 1 to 3" in out
+
+    def test_move_last_to_first_preserves_custom_fields(self, isolated_home):
+        custom = {
+            "provider": "custom:local",
+            "model": "qwen2.5-coder:3b",
+            "base_url": "http://localhost:11434/v1",
+            "api_mode": "chat_completions",
+        }
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "gpt-5.4"},
+                {"provider": "nous", "model": "Hermes-4"},
+                custom,
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_move
+        cmd_fallback_move(types.SimpleNamespace(from_position="3", to_position="1"))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            custom,
+            {"provider": "openrouter", "model": "gpt-5.4"},
+            {"provider": "nous", "model": "Hermes-4"},
+        ]
+
+    def test_move_middle_to_front(self, isolated_home):
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "a", "model": "a-model"},
+                {"provider": "b", "model": "b-model"},
+                {"provider": "c", "model": "c-model"},
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_move
+        cmd_fallback_move(types.SimpleNamespace(from_position=2, to_position=1))
+
+        cfg = _read_config(isolated_home)
+        assert [entry["provider"] for entry in cfg["fallback_providers"]] == ["b", "a", "c"]
+
+    @pytest.mark.parametrize("from_position,to_position", [(0, 1), (4, 1), (1, 0), (1, 4), ("x", 1), (1, "x")])
+    def test_move_rejects_invalid_positions(self, isolated_home, from_position, to_position):
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "a", "model": "a-model"},
+                {"provider": "b", "model": "b-model"},
+                {"provider": "c", "model": "c-model"},
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_move
+        with pytest.raises(SystemExit):
+            cmd_fallback_move(types.SimpleNamespace(from_position=from_position, to_position=to_position))
+
+        cfg = _read_config(isolated_home)
+        assert [entry["provider"] for entry in cfg["fallback_providers"]] == ["a", "b", "c"]
+
 # ---------------------------------------------------------------------------
 # cmd_fallback_clear
 # ---------------------------------------------------------------------------
@@ -473,6 +562,18 @@ class TestDispatcher:
         out = capsys.readouterr().out
         assert "nothing to remove" in out
 
+    def test_move_dispatches(self, isolated_home):
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "a", "model": "a-model"},
+                {"provider": "b", "model": "b-model"},
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback
+        cmd_fallback(types.SimpleNamespace(fallback_command="move", from_position=2, to_position=1))
+        cfg = _read_config(isolated_home)
+        assert [entry["provider"] for entry in cfg["fallback_providers"]] == ["b", "a"]
+
     def test_unknown_subcommand_exits(self, isolated_home):
         _write_config(isolated_home, {})
         from hermes_cli.fallback_cmd import cmd_fallback
@@ -492,8 +593,6 @@ class TestArgparseWiring:
     """
 
     def test_fallback_help_lists_subcommands(self):
-        import subprocess
-        import sys
         result = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", "fallback", "--help"],
             capture_output=True,
@@ -503,8 +602,34 @@ class TestArgparseWiring:
         # --help exits 0
         assert result.returncode == 0, f"stderr: {result.stderr}"
         out = result.stdout + result.stderr
-        # All four subcommands should appear in help
+        # All five subcommands should appear in help
         assert "list" in out
         assert "add" in out
+        assert "move" in out
         assert "remove" in out
         assert "clear" in out
+
+    def test_fallback_move_cli_reorders_temp_config(self, isolated_home):
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "a", "model": "a-model"},
+                {"provider": "b", "model": "b-model", "base_url": "http://localhost:11434/v1"},
+                {"provider": "c", "model": "c-model"},
+            ],
+        })
+
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "fallback", "move", "2", "1"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        assert "Moved fallback from position 2 to 1" in result.stdout
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            {"provider": "b", "model": "b-model", "base_url": "http://localhost:11434/v1"},
+            {"provider": "a", "model": "a-model"},
+            {"provider": "c", "model": "c-model"},
+        ]

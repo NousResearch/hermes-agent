@@ -53,9 +53,7 @@ class KimiProfile(ProviderProfile):
             base_url=effective_base or None,
             timeout=timeout,
         )
-        if models is None or confirmed_coding_endpoint:
-            return models
-        return [model for model in models if model.strip().lower() != "k3"]
+        return models
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, **context
@@ -86,8 +84,10 @@ class KimiProfile(ProviderProfile):
 
         # Enabled: prefer an explicit effort; only fall back to extra_body
         # thinking when no recognized effort is requested.
+        # Kimi K3 accepts low|high|max (default: max; K3 always thinks), so
+        # pass "max" through instead of dropping it to the thinking toggle.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in {"low", "medium", "high"}:
+        if effort in {"low", "medium", "high", "max"}:
             top_level["reasoning_effort"] = effort
         else:
             extra_body["thinking"] = {"type": "enabled"}

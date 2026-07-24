@@ -45,7 +45,7 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "max"])
     def test_explicit_effort_sends_effort_only(self, kimi_profile, effort):
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
@@ -60,10 +60,11 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    @pytest.mark.parametrize("effort", ["", "garbage", "xhigh", "max"])
+    @pytest.mark.parametrize("effort", ["", "garbage", "xhigh", "ultra"])
     def test_unrecognized_effort_falls_back_to_thinking(self, kimi_profile, effort):
-        """Unknown/strong efforts aren't in Moonshot's low|medium|high set, so
-        we drop to the thinking toggle rather than sending an invalid effort."""
+        """Unknown/strong efforts outside Moonshot's set drop to the thinking
+        toggle rather than sending an invalid effort. K3's "max" is recognized
+        and passed through (covered above); xhigh/ultra are not."""
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
         )
@@ -120,7 +121,7 @@ class TestKimiModelDiscovery:
                 base_url="https://[api.kimi.com/coding",
             )
 
-        assert models == ["kimi-k2.6"]
+        assert models == ["k3", "kimi-k2.6"]
 
 
 class TestKimiFullKwargsIntegration:

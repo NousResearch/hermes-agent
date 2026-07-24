@@ -1052,13 +1052,41 @@ def _discover_all_plugins() -> list:
     seen: dict = {}  # key -> (name, version, description, source, path, key)
 
     # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_cli.plugins import _env_enabled, get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     for base, source, skip in (
         (repo_plugins, "bundled", {"memory", "context_engine"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+
+    if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+        _scan_level(
+            Path.cwd() / ".hermes" / "plugins",
+            "project",
+            set(),
+            "",
+            0,
+            seen,
+        )
+
+    # Configured external roots support either a collection directory or a
+    # direct checkout containing a root plugin.yaml. Keep this control-plane
+    # view aligned with PluginManager so list/enable/disable can address the
+    # same external plugins the runtime sees.
+    from hermes_cli.plugins import PluginManager, _get_extra_plugin_paths
+    external_scanner = PluginManager()
+    for external_root in _get_extra_plugin_paths():
+        for manifest in external_scanner._scan_external_path(external_root):
+            key = manifest.key or manifest.name
+            seen[key] = (
+                manifest.name,
+                manifest.version,
+                manifest.description,
+                "external",
+                Path(manifest.path) if manifest.path else external_root,
+                key,
+            )
 
     # Entry-point plugins (installed as Python packages; no plugin directory).
     for name, version, description, path in _discover_entrypoint_plugins():

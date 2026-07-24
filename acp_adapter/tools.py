@@ -248,6 +248,33 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
     return False
 
 
+def _is_async_background_dispatch(result: Optional[str], tool_name: str | None = None) -> bool:
+    """Return True when ``delegate_task`` merely *dispatched* a background batch.
+
+    ``delegate_task(background=True)`` returns
+    ``{"status": "dispatched", "mode": "background", ...}`` the instant the async
+    unit is accepted — the child agents keep running and their consolidated
+    result re-enters the conversation later as its own out-of-turn frame (see
+    ``server._notify_background_completion``). Reporting the dispatch tool_call as
+    ``completed`` here made ACP clients show every subagent as Done ~1s after
+    dispatch. Keep the frame ``in_progress`` so completion is driven by the
+    re-entry frames, not the dispatch ack.
+
+    The pool-at-capacity and synchronous paths in ``delegate_tool`` return the
+    real aggregated results (not ``status="dispatched"``), so they stay
+    ``completed`` — this predicate matches only the accepted-async case.
+    """
+    if tool_name != "delegate_task":
+        return False
+    data = _json_loads_maybe(result)
+    if not isinstance(data, dict):
+        return False
+    return (
+        str(data.get("status") or "").strip().lower() == "dispatched"
+        and str(data.get("mode") or "").strip().lower() == "background"
+    )
+
+
 def _truncate_text(text: str, limit: int = 5000) -> str:
     if len(text) <= limit:
         return text
@@ -1321,10 +1348,16 @@ def build_tool_complete(
             function_args=function_args,
             snapshot=snapshot,
         )
+    if _is_async_background_dispatch(result, tool_name):
+        status = "in_progress"
+    elif _tool_result_failed(result, tool_name):
+        status = "failed"
+    else:
+        status = "completed"
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,
-        status="failed" if _tool_result_failed(result, tool_name) else "completed",
+        status=status,
         content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result) else result,
     )

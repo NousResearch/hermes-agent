@@ -450,6 +450,53 @@ class TestBuildToolComplete:
         result = build_tool_complete("tc-ok", "some_tool", '{"error": "timeout while reading optional source"}')
         assert result.status == "completed"
 
+    def test_build_tool_complete_keeps_background_dispatch_in_progress(self):
+        """delegate_task(background=True) only *dispatched* the batch; the child
+        agents keep running and re-enter later as their own frames. The dispatch
+        tool_call must stay in_progress so clients do not show every subagent as
+        Done ~1s after dispatch.
+        """
+        result = build_tool_complete(
+            "tc-bg",
+            "delegate_task",
+            '{"status": "dispatched", "mode": "background", "count": 2, '
+            '"delegation_id": "abc123", "goals": ["a", "b"]}',
+        )
+        assert result.status == "in_progress"
+
+    def test_build_tool_complete_marks_synchronous_delegate_completed(self):
+        """The sync / pool-at-capacity paths return aggregated child results
+        (not status=dispatched), so they must complete normally.
+        """
+        result = build_tool_complete(
+            "tc-sync",
+            "delegate_task",
+            '{"results": [{"goal": "a", "output": "done"}]}',
+        )
+        assert result.status == "completed"
+
+    def test_build_tool_complete_ignores_dispatched_without_background_mode(self):
+        """Only the accepted-async case (mode=background) stays in_progress; a
+        foreground dispatch ack must still complete.
+        """
+        result = build_tool_complete(
+            "tc-fg",
+            "delegate_task",
+            '{"status": "dispatched", "mode": "foreground"}',
+        )
+        assert result.status == "completed"
+
+    def test_build_tool_complete_background_marker_scoped_to_delegate_task(self):
+        """The in_progress carve-out is delegate_task-only; a same-shaped result
+        from another tool must not be held open.
+        """
+        result = build_tool_complete(
+            "tc-other",
+            "terminal",
+            '{"status": "dispatched", "mode": "background"}',
+        )
+        assert result.status == "completed"
+
     def test_build_tool_complete_for_skill_manage_summarizes_without_raw_json(self):
         result = build_tool_complete(
             "tc-skill-manage",

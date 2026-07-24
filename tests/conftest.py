@@ -911,3 +911,38 @@ def _live_system_guard(request, monkeypatch):
         pass
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_computer_use_approval_state():
+    """Reset computer-use approval globals after every test.
+
+    ``tools.computer_use.tool`` keeps three module-globals for the CLI
+    approval flow: ``_approval_callback`` (set by the CLI console on init)
+    plus the per-session unlock stores ``_always_allow`` /
+    ``_session_auto_approve``. A test that installs a callback — or drives
+    CLI init far enough that the real one is registered — and does not reset
+    it poisons every later computer-use test in the same process:
+
+    * a leaked callback that raises (dead UI/queue infra, or a stale
+      two-argument signature — the real contract is ``(action, args,
+      summary)``) turns into ``verdict = "deny"`` in ``_request_approval``,
+      so dispatch tests fail with an empty backend call list;
+    * a leaked callback that blocks (the real CLI one waits on an answer
+      queue) hangs the whole single-process run forever — pytest-timeout is
+      the only thing that can cut it.
+
+    Both symptoms are order-dependent: the affected files pass in isolation
+    and only fail in full-suite runs. Teardown-only, so tests that install
+    their own callback keep it for their own duration.
+    """
+    yield
+    try:
+        from tools.computer_use import tool as _cu_tool
+
+        _cu_tool.set_approval_callback(None)
+        with _cu_tool._approval_lock:
+            _cu_tool._always_allow.clear()
+            _cu_tool._session_auto_approve.clear()
+    except Exception:
+        pass

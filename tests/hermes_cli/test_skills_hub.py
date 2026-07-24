@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_diff, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -96,6 +96,36 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 
     do_update(console=console)
     return sink.getvalue(), installs
+
+
+def _capture_diff(name: str) -> str:
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_diff(name, console=console)
+    return sink.getvalue()
+
+
+def _diff_result(name: str, line: str) -> dict:
+    return {
+        "ok": True,
+        "name": name,
+        "found": True,
+        "modified": True,
+        "message": f"Changes for '{name}'",
+        "diffs": [
+            {
+                "path": "SKILL.md",
+                "status": "modified",
+                "diff": (
+                    "--- SKILL.md\n"
+                    "+++ SKILL.md\n"
+                    "@@ -1 +1 @@\n"
+                    "-old\n"
+                    f"+{line}\n"
+                ),
+            }
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +277,76 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+def test_do_diff_all_reports_no_modified_bundled_skills(monkeypatch):
+    import tools.skills_sync as skills_sync
+
+    monkeypatch.setattr(skills_sync, "list_user_modified_bundled_skills", lambda: [])
+
+    output = _capture_diff("all")
+
+    assert "No user-modified bundled skills" in output
+
+
+def test_do_diff_all_prints_each_modified_bundled_skill(monkeypatch):
+    import tools.skills_sync as skills_sync
+
+    diffed = []
+
+    monkeypatch.setattr(
+        skills_sync,
+        "list_user_modified_bundled_skills",
+        lambda: [
+            {"name": "alpha", "dest": "alpha-dest", "bundled_src": "alpha-src"},
+            {"name": "beta", "dest": "beta-dest", "bundled_src": "beta-src"},
+        ],
+    )
+    monkeypatch.setattr(
+        skills_sync,
+        "diff_bundled_skill",
+        lambda name: pytest.fail("bulk diff should reuse listed skill paths"),
+    )
+
+    def _fake_diff_paths(name, dest, bundled_src):
+        diffed.append((name, dest, bundled_src))
+        return _diff_result(name, f"{name} local edit")
+
+    monkeypatch.setattr(skills_sync, "diff_bundled_skill_paths", _fake_diff_paths)
+
+    output = _capture_diff("all")
+
+    assert diffed == [
+        ("alpha", "alpha-dest", "alpha-src"),
+        ("beta", "beta-dest", "beta-src"),
+    ]
+    assert "2 user-modified bundled skill diff(s)" in output
+    assert "# alpha" in output
+    assert "+alpha local edit" in output
+    assert "# beta" in output
+    assert "+beta local edit" in output
+    assert "Revert one skill with: hermes skills reset <name> --restore" in output
+
+
+def test_do_diff_named_skill_uses_single_skill_diff(monkeypatch):
+    import tools.skills_sync as skills_sync
+
+    monkeypatch.setattr(
+        skills_sync,
+        "list_user_modified_bundled_skills",
+        lambda: pytest.fail("single-skill diff should not list all modified skills"),
+    )
+    monkeypatch.setattr(
+        skills_sync,
+        "diff_bundled_skill",
+        lambda name: _diff_result(name, "named local edit"),
+    )
+
+    output = _capture_diff("alpha")
+
+    assert "Changes for 'alpha'" in output
+    assert "+named local edit" in output
+    assert "Revert with: hermes skills reset alpha --restore" in output
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
@@ -780,4 +880,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

@@ -301,16 +301,16 @@ class NodeRegistry:
     @staticmethod
     def _migrate_audit_head(conn: sqlite3.Connection) -> None:
         """Idempotently anchor a legacy event chain outside its event rows."""
-        schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if schema_version >= 1:
-            return
-        if (
-            conn.execute("SELECT 1 FROM managed_node_audit_head LIMIT 1").fetchone()
-            is not None
-        ):
-            conn.execute("PRAGMA user_version = 1")
-            return
         with write_txn(conn):
+            schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if schema_version >= 1:
+                return
+            if (
+                conn.execute("SELECT 1 FROM managed_node_audit_head LIMIT 1").fetchone()
+                is not None
+            ):
+                conn.execute("PRAGMA user_version = 1")
+                return
             latest = conn.execute(
                 """
                 SELECT sequence, event_hash

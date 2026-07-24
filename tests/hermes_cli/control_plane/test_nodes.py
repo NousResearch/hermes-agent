@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+from threading import Barrier
 
 import pytest
 
@@ -634,6 +635,41 @@ def test_audit_chain_detects_tail_and_all_event_deletion(registry):
     with sqlite3.connect(registry.db_path) as conn:
         conn.execute("DELETE FROM managed_node_events")
     assert registry.verify_audit_chain() is False
+
+
+def test_concurrent_first_open_creates_one_audit_head(tmp_path, monkeypatch):
+    db_path = tmp_path / "control-plane.db"
+    contenders = 24
+    migration_barrier = Barrier(contenders)
+    migrate = NodeRegistry._migrate_audit_head
+
+    def synchronized_migrate(conn):
+        migration_barrier.wait()
+        migrate(conn)
+
+    monkeypatch.setattr(
+        NodeRegistry, "_migrate_audit_head", staticmethod(synchronized_migrate)
+    )
+
+    def connect():
+        with NodeRegistry(db_path).connect():
+            pass
+
+    with ThreadPoolExecutor(max_workers=contenders) as executor:
+        futures = [executor.submit(connect) for _ in range(contenders)]
+        for future in futures:
+            future.result()
+
+    with sqlite3.connect(db_path) as conn:
+        heads = conn.execute(
+            "SELECT singleton, event_sequence, event_hash FROM managed_node_audit_head"
+        ).fetchall()
+        schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    assert heads == [(1, 0, None)]
+    assert schema_version == 1
+    monkeypatch.undo()
+    assert NodeRegistry(db_path).verify_audit_chain()
 
 
 def test_audit_head_migration_is_idempotent_and_preserves_valid_legacy_chain(

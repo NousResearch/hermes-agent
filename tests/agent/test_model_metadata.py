@@ -224,6 +224,38 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    def test_qwen38_preview_context_is_scoped_to_token_plan_endpoint(self):
+        """Token Plan preview metadata must not leak to custom Qwen routes."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            accepted_urls = (
+                "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+                "https://TOKEN-PLAN.AP-SOUTHEAST-1.MAAS.ALIYUNCS.COM:443/compatible-mode/v1/",
+            )
+            rejected_urls = (
+                "http://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+                "https://token-plan.ap-southeast-1.maas.aliyuncs.com:8443/compatible-mode/v1",
+                "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/other",
+                "https://custom.example.com/compatible-mode/v1",
+            )
+
+            for base_url in accepted_urls:
+                assert get_model_context_length(
+                    "qwen3.8-max-preview",
+                    provider="alibaba-token-plan",
+                    base_url=base_url,
+                ) == 983_616
+
+            for base_url in rejected_urls:
+                assert get_model_context_length(
+                    "qwen3.8-max-preview",
+                    provider="qwen-token-plan",
+                    base_url=base_url,
+                ) != 983_616
+
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.

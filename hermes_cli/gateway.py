@@ -6019,7 +6019,9 @@ def _setup_signal():
             "    Linux:  download from https://github.com/AsamK/signal-cli/releases"
         )
         print_info("    macOS:  brew install signal-cli")
-        print_info("    Docker: bbernhard/signal-cli-rest-api")
+        print_info(
+            "    Use the native signal-cli HTTP daemon; REST wrappers are not compatible."
+        )
         print()
         print_info("  After installing, link your account and start the daemon:")
         print_info('    signal-cli link -n "HermesAgent"')

@@ -660,3 +660,67 @@ def replay_pending_action(pending_id: str) -> Dict[str, Any]:
         "message": f"Executed '{tool_name}' for approved action {pending_id}.",
         "result": result if isinstance(result, str) else str(result),
     }
+
+
+def maybe_replay_kanban_task(task_id: str) -> Optional[Dict[str, Any]]:
+    """Entry point for a kanban worker: replay iff ``task_id`` is an exec card.
+
+    The dispatcher spawns a plain ``hermes chat -q "work kanban task <id>"``
+    subprocess for every task, exec cards included — there is no separate
+    code path today that recognises an exec card and runs
+    :func:`replay_pending_action` deterministically instead of a full LLM
+    turn. Without this, an approved action's exec card would just prompt a
+    model to "replay the staged tool call" in prose, which is neither
+    deterministic nor guaranteed to actually call the tool.
+
+    Callers should invoke this *before* starting the agent loop, using it as
+    a short-circuit: ``None`` means "not an exec card, proceed normally";
+    otherwise the worker should report the returned message and exit,
+    skipping the LLM entirely.
+
+    Terminates the kanban task itself (mirroring what a normal worker turn
+    does by calling the ``kanban_complete`` / ``kanban_block`` tools) so the
+    dispatcher sees a clean completion rather than a protocol violation from
+    a worker that exited without a terminal board tool.
+
+    Returns ``None`` when ``task_id`` is not an exec card (or the task can't
+    be read), else ``{"ok": bool, "message": str}``.
+    """
+    try:
+        from hermes_cli import kanban_db as kb
+        conn = kb.connect()
+        try:
+            task = kb.get_task(conn, task_id)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("maybe_replay_kanban_task: could not read task %s: %s", task_id, e)
+        return None
+
+    body = getattr(task, "body", "") if task is not None else ""
+    pending_id = parse_replay_marker(body)
+    if not pending_id:
+        return None
+
+    outcome = replay_pending_action(pending_id)
+
+    from model_tools import handle_function_call
+    try:
+        if outcome.get("ok"):
+            handle_function_call(
+                "kanban_complete",
+                {"summary": outcome.get("message") or "Replayed approved action."},
+            )
+        else:
+            handle_function_call(
+                "kanban_block",
+                {"reason": outcome.get("message") or "Replay failed."},
+            )
+    except Exception as e:
+        # The tool call above is best-effort bookkeeping — the replay itself
+        # already ran and its own status/message is authoritative. A failure
+        # here just means the dispatcher sees this task time out instead of
+        # a clean terminal state; log it but don't mask the replay outcome.
+        logger.error("maybe_replay_kanban_task: failed to terminate task %s: %s", task_id, e)
+
+    return outcome

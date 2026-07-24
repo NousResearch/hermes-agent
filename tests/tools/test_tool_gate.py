@@ -416,6 +416,97 @@ class TestReplay:
         assert len(not_oks) == 1
         assert "already" in not_oks[0]["message"].lower() or "executing" in not_oks[0]["message"].lower()
 
+    def test_maybe_replay_kanban_task_not_an_exec_card(self, hermes_home):
+        """A normal (non-exec-card) task must fall through to None so the
+        caller proceeds with the regular LLM worker turn."""
+        from hermes_cli import kanban_db as kb
+        conn = kb.connect()
+        task_id = kb.create_task(
+            conn, title="Normal work", body="Please do the normal thing.",
+            assignee="default", created_by="default",
+        )
+        assert tool_gate.maybe_replay_kanban_task(task_id) is None
+
+    def test_maybe_replay_kanban_task_success_completes_task(self, hermes_home, monkeypatch):
+        """An exec card whose replay succeeds must call kanban_complete, not
+        hand the replay off to an LLM turn."""
+        _set_gate(hermes_home, enabled=True, require_approval=["echo_tool"],
+                  force_deferred=["echo_tool"])
+        os.environ["HERMES_CRON_SESSION"] = "1"
+        r = approval_module.check_tool_approval("echo_tool", {"msg": "hi"})
+        pid = r["pending_id"]
+        approve = tool_gate.approve_action(pid)
+        exec_card_id = approve["exec_card_id"]
+
+        calls = []
+        import model_tools
+        _real_hfc = model_tools.handle_function_call
+
+        def _fake_hfc(name, args=None, **kwargs):
+            calls.append((name, args))
+            if name == "echo_tool":
+                return '{"ok": true}'
+            # kanban_complete/kanban_block must go through for real so the
+            # task's board state is actually observable.
+            return _real_hfc(name, args or {}, **kwargs)
+
+        monkeypatch.setattr("model_tools.handle_function_call", _fake_hfc)
+        os.environ["HERMES_KANBAN_TASK"] = exec_card_id
+        try:
+            outcome = tool_gate.maybe_replay_kanban_task(exec_card_id)
+        finally:
+            os.environ.pop("HERMES_KANBAN_TASK", None)
+
+        assert outcome is not None
+        assert outcome["ok"] is True
+        called_names = [c[0] for c in calls]
+        assert "echo_tool" in called_names
+        assert "kanban_complete" in called_names
+        assert "kanban_block" not in called_names
+
+        from hermes_cli import kanban_db as kb
+        conn = kb.connect()
+        task = kb.get_task(conn, exec_card_id)
+        assert task.status == "done"
+
+    def test_maybe_replay_kanban_task_failure_blocks_task(self, hermes_home, monkeypatch):
+        """A replay that fails must call kanban_block, not silently vanish."""
+        _set_gate(hermes_home, enabled=True, require_approval=["echo_tool"],
+                  force_deferred=["echo_tool"])
+        os.environ["HERMES_CRON_SESSION"] = "1"
+        r = approval_module.check_tool_approval("echo_tool", {"msg": "hi"})
+        pid = r["pending_id"]
+        approve = tool_gate.approve_action(pid)
+        exec_card_id = approve["exec_card_id"]
+
+        calls = []
+        import model_tools
+        _real_hfc = model_tools.handle_function_call
+
+        def _fake_hfc(name, args=None, **kwargs):
+            calls.append((name, args))
+            if name == "echo_tool":
+                raise RuntimeError("boom")
+            return _real_hfc(name, args or {}, **kwargs)
+
+        monkeypatch.setattr("model_tools.handle_function_call", _fake_hfc)
+        os.environ["HERMES_KANBAN_TASK"] = exec_card_id
+        try:
+            outcome = tool_gate.maybe_replay_kanban_task(exec_card_id)
+        finally:
+            os.environ.pop("HERMES_KANBAN_TASK", None)
+
+        assert outcome is not None
+        assert outcome["ok"] is False
+        called_names = [c[0] for c in calls]
+        assert "kanban_block" in called_names
+        assert "kanban_complete" not in called_names
+
+        from hermes_cli import kanban_db as kb
+        conn = kb.connect()
+        task = kb.get_task(conn, exec_card_id)
+        assert task.status == "blocked"
+
     def test_approve_action_spawns_exec_card(self, hermes_home):
         _set_gate(hermes_home, enabled=True, require_approval=["echo_tool"],
                   force_deferred=["echo_tool"])

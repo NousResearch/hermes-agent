@@ -16401,6 +16401,32 @@ def main(
             single_query_image_urls: list[str] = []
             _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
             if _kanban_task_id:
+                # An exec card minted by tools.tool_gate.approve_action carries a
+                # replay marker in its body instead of ordinary task
+                # instructions. Those must run deterministically via
+                # replay_pending_action (the approved tool call, replayed
+                # exactly, exactly once) rather than being handed to the model
+                # as a prose instruction to "replay the staged tool call" —
+                # which would neither be deterministic nor guaranteed to
+                # actually invoke the tool. Short-circuit before touching the
+                # agent loop at all.
+                try:
+                    from tools.tool_gate import maybe_replay_kanban_task
+                    _replay_outcome = maybe_replay_kanban_task(_kanban_task_id)
+                except Exception as _replay_exc:
+                    logger.debug("kanban replay short-circuit failed: %s", _replay_exc)
+                    _replay_outcome = None
+                if _replay_outcome is not None:
+                    if not quiet:
+                        print(_replay_outcome.get("message") or "")
+                    # Always a clean exit: the task's board state (done vs
+                    # blocked, set above by maybe_replay_kanban_task) is what
+                    # tells the dispatcher whether the approved action
+                    # actually succeeded — a denied/failed tool call still
+                    # leaves this worker process completing normally, exactly
+                    # like an LLM-driven turn that calls kanban_block itself
+                    # and then exits 0.
+                    sys.exit(0)
                 try:
                     from hermes_cli import kanban_db as _kb
                     from agent.image_routing import extract_image_refs as _extract_refs

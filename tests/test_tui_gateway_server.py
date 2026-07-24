@@ -13112,3 +13112,86 @@ def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, con
     monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
 
     assert server._clarify_timeout_seconds() == expected
+
+
+def test_build_persist_message_with_image_refs_without_images_returns_text(monkeypatch):
+    """#70720: when no images are attached the persisted message is the raw
+    prompt — no @image directive prefix is introduced."""
+    assert server._build_persist_message_with_image_refs("what is this?", []) == "what is this?"
+    assert server._build_persist_message_with_image_refs("", []) == ""
+
+
+def test_build_persist_message_with_image_refs_prepends_existing_paths(monkeypatch, tmp_path):
+    """Attached images that still exist on disk are persisted as leading
+    ``@image:<path>`` directive lines so the desktop renders them after a
+    restart (instead of the vision-only enrichment that silently breaks)."""
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"\x89PNG")
+
+    result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
+
+    assert result == f"@image:{img}\nwhat is in this photo?"
+
+
+def test_build_persist_message_with_image_refs_skips_missing_paths(monkeypatch, tmp_path):
+    """Only paths that still exist are persisted; a missing file must not
+    inject a dangling @image ref into the transcript."""
+    existing = tmp_path / "a.png"
+    existing.write_bytes(b"png")
+    missing = str(tmp_path / "gone.png")
+
+    result = server._build_persist_message_with_image_refs("compare them", [str(existing), missing])
+
+    assert result == f"@image:{existing}\ncompare them"
+
+
+def test_build_persist_message_with_image_refs_without_text_is_refs_only(monkeypatch, tmp_path):
+    """A stand-alone attachment (no caption) persists as just the directive
+    line, so a bare image survives in history and is not dropped as empty."""
+    img = tmp_path / "only.png"
+    img.write_bytes(b"png")
+
+    assert server._build_persist_message_with_image_refs("", [str(img)]) == f"@image:{img}"
+
+
+def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
+    """#70720: _run_prompt_submit must forward the (image-ref-aware) persisted
+    user message to run_conversation via persist_user_message, so the gateway
+    stores the UI-recognizable form instead of the vision enrichment."""
+    captured = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            captured["persist_user_message"] = _kwargs.get("persist_user_message")
+            return {
+                "final_response": "reply",
+                "messages": [{"role": "assistant", "content": "reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+        assert resp.get("result")
+
+        # Without attachments the persist form equals the raw prompt.
+        assert captured.get("persist_user_message") == "hi"
+    finally:
+        server._sessions.pop("sid", None)

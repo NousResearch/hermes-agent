@@ -4,6 +4,8 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
@@ -424,3 +426,32 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"
     )
+
+
+def test_transaction_closes_connection_on_exit(tmp_path, monkeypatch):
+    """_transaction() context manager MUST actually close the underlying FD."""
+    from agent import verification_evidence as ve
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(ve, "_db_path", lambda: home / "verification_evidence.db")
+    with ve._transaction() as conn:
+        conn.execute("SELECT 1").fetchone()
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_transaction_closes_on_exception(tmp_path, monkeypatch):
+    """Connection closed even when the body raises."""
+    from agent import verification_evidence as ve
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(ve, "_db_path", lambda: home / "verification_evidence.db")
+    captured = []
+    with pytest.raises(RuntimeError, match="boom"):
+        with ve._transaction() as conn:
+            captured.append(conn)
+            raise RuntimeError("boom")
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured[0].execute("SELECT 1")

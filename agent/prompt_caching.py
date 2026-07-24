@@ -27,7 +27,7 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         if role == "tool" and not native_anthropic:
             # OpenRouter rejects top-level cache_control on role:tool (silent
             # hang) and an empty message has no content part to carry the
-            # marker — skip. Non-empty tool content falls through below and
+            # marker -- skip. Non-empty tool content falls through below and
             # gets the marker on a content part, which OpenRouter honors.
             return
         if role == "assistant" and not native_anthropic:
@@ -56,7 +56,7 @@ def _can_carry_marker(msg: dict, native_anthropic: bool) -> bool:
     relocated by the adapter). On the envelope layout (OpenRouter et al.) only
     markers inside content parts are honored: empty-content messages (e.g.
     assistant turns that are pure tool_calls) and empty tool messages would
-    receive a top-level marker the provider ignores — wasting one of the four
+    receive a top-level marker the provider ignores -- wasting one of the four
     breakpoints. Skip those so the breakpoints land on messages that count.
     """
     if native_anthropic:
@@ -99,12 +99,30 @@ def apply_anthropic_cache_control(
         return messages
 
     marker = _build_marker(cache_ttl)
-
     breakpoints_used = 0
 
+    # Handle possible split system message (static + volatile parts) for
+    # better cross-session prompt caching.
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
-        breakpoints_used += 1
+        msg = messages[0]
+        content = msg.get("content")
+        if isinstance(content, str) and "<<SPLIT_HERE>>" in content:
+            before, after = content.split("<<SPLIT_HERE>>", 1)
+            # Create two system messages: static part and volatile part.
+            static_msg = {"role": "system", "content": before.strip()}
+            volatile_msg = {"role": "system", "content": after.strip()}
+            # Replace the single system message with the two split messages.
+            messages[0:1] = [static_msg, volatile_msg]
+            # Apply a cache_control marker to the static part if it can carry one.
+            if _can_carry_marker(static_msg, native_anthropic=native_anthropic):
+                _apply_cache_marker(static_msg, marker, native_anthropic=native_anthropic)
+                breakpoints_used += 1
+            # The volatile part gets no marker (we save breakpoints for non-system messages).
+        else:
+            # Normal system message (no split marker).
+            if _can_carry_marker(messages[0], native_anthropic=native_anthropic):
+                _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+                breakpoints_used += 1
 
     remaining = 4 - breakpoints_used
     non_sys = [

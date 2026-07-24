@@ -12,8 +12,9 @@ import os
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -29,7 +30,10 @@ def _connect() -> sqlite3.Connection:
     from hermes_state import apply_wal_with_fallback
 
     EXECUTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(EXECUTIONS_FILE, timeout=5)
+    return sqlite3.connect(EXECUTIONS_FILE, timeout=5)
+
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
     apply_wal_with_fallback(conn, db_label="cron/executions.db")
@@ -58,7 +62,27 @@ def _connect() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
     )
-    return conn
+
+
+@contextmanager
+def _transaction() -> Iterator[sqlite3.Connection]:
+    """Open a connection, commit/rollback on exit, always close.
+
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back
+    the transaction; it does not close the connection. Relying on that alone
+    leaks a connection (and its WAL/SHM file descriptors) on every call,
+    since closing then depends on the garbage collector. Schema init runs
+    inside the ``try`` too, so a PRAGMA/DDL failure after a successful
+    ``connect()`` still closes the connection instead of leaking it.
+    """
+    with _lock:
+        conn = _connect()
+        try:
+            _initialize_schema(conn)
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _record(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -103,7 +127,7 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
@@ -121,7 +145,7 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
 def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
     now = _hermes_now().isoformat()
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions SET status='running', started_at=?
                WHERE id=? AND status='claimed'""",
@@ -141,7 +165,7 @@ def finish_execution(
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions SET status=?, finished_at=?, error=?
                WHERE id=? AND status IN ('claimed','running')""",
@@ -159,7 +183,7 @@ def recover_interrupted_executions() -> int:
     """Mark provably abandoned attempts unknown without scheduling retries."""
     now = _hermes_now().isoformat()
     changed = 0
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, process_id, pid, process_started_at FROM executions
                WHERE status IN ('claimed','running')"""
@@ -198,7 +222,7 @@ def list_executions(
         params.append(str(before_claimed_at))
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         rows = conn.execute(
             "SELECT * FROM executions" + where
             + " ORDER BY claimed_at DESC, id DESC LIMIT ?",
@@ -218,7 +242,7 @@ def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     if not clean:
         return {}
     placeholders = ",".join("?" for _ in clean)
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         rows = conn.execute(
             f"""SELECT e.* FROM executions e
                 WHERE e.job_id IN ({placeholders})

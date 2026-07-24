@@ -1063,6 +1063,15 @@ class TestPatternKeyUniqueness:
     patterns starting with the same word (e.g. find -exec rm and find -delete)
     produce the same key. Approving one silently approves the other."""
 
+    def setup_method(self):
+        # Earlier tests in this module exercise permanent allowlist loading.
+        # This class pins session-scoped approval isolation, so start from a
+        # clean module state to avoid a legacy permanent key (``find``)
+        # masking a session-key collision regression.
+        approval_module._session_approved.clear()
+        approval_module._pending.clear()
+        approval_module._permanent_approved.clear()
+
     def test_find_exec_rm_and_find_delete_have_different_keys(self):
         _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
         _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")

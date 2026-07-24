@@ -18,7 +18,13 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
     if text.endswith("Z"):
         text = f"{text[:-1]}+00:00"
-    parsed = datetime.fromisoformat(text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        # A malformed / non-ISO timestamp (a corrupt stored job, or an
+        # unexpected Graph payload) must not crash model deserialization in
+        # __post_init__; treat it as absent, like the empty value above.
+        return None
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed

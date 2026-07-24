@@ -102,6 +102,7 @@ describe('useMessageStream moa.reference accumulation (#64658)', () => {
     emit('moa.reference', { count: 3, index: 3, label: 'model-c', text: 'advice-c' })
 
     const text = reasoningText()
+
     const orderOk =
       text.indexOf('advice-a') < text.indexOf('advice-b') && text.indexOf('advice-b') < text.indexOf('advice-c')
 

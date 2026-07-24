@@ -1522,22 +1522,6 @@ class MoAChatCompletions:
         """
         return self.create(messages=messages, _moa_prepare_only=True)
 
-    def rebase_prepared_request(
-        self, prepared: dict[str, Any], messages: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        """Apply already-generated advisor guidance to a rebuilt API transcript.
-
-        Context compression changes the persisted transcript but not the
-        ephemeral advisor result.  Reusing the guidance avoids a second costly
-        fan-out while keeping the aggregator request aligned with the compacted
-        history.
-        """
-        guidance = prepared.get("guidance")
-        agg_messages = [dict(message) for message in messages]
-        if guidance:
-            _attach_reference_guidance(agg_messages, str(guidance))
-        return {**prepared, "messages": agg_messages}
-
     def _call_prepared_aggregator(
         self, prepared: dict[str, Any], api_kwargs: dict[str, Any]
     ) -> Any:

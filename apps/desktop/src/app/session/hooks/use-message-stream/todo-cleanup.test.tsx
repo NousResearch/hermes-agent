@@ -6,10 +6,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { TodoItem } from '@/lib/todos'
+import { dispatchNativeNotification } from '@/store/native-notifications'
+import type * as NativeNotifications from '@/store/native-notifications'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
+
+vi.mock('@/store/native-notifications', async importOriginal => {
+  const actual = await importOriginal<typeof NativeNotifications>()
+
+  return {
+    ...actual,
+    dispatchNativeNotification: vi.fn()
+  }
+})
 
 const SID = 'session-1'
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
@@ -70,6 +81,29 @@ describe('useMessageStream turn-end todo cleanup', () => {
     complete()
 
     expect($todosBySession.get()[SID]).toBeUndefined()
+  })
+
+  it('uses generic native notification text instead of assistant response previews', async () => {
+    await mountStream()
+
+    act(() =>
+      handleEvent!({
+        payload: { text: 'private assistant reply with sensitive transcript details' },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    expect(dispatchNativeNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.not.stringContaining('private assistant reply'),
+        kind: 'turnDone',
+        sessionId: SID
+      })
+    )
+    expect(dispatchNativeNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.not.stringContaining('sensitive transcript details') })
+    )
   })
 
   it('keeps a finished list on completion so its linger shows the final checkmarks', async () => {

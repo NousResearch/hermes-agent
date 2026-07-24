@@ -2892,7 +2892,20 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     seen_assistant_call_ids.add(cid)
                 kept_tcs.append(tc)
             if len(kept_tcs) != len(msg.get("tool_calls") or []):
-                msg = {**msg, "tool_calls": kept_tcs}
+                if kept_tcs:
+                    msg = {**msg, "tool_calls": kept_tcs}
+                else:
+                    # ALL calls were duplicates (e.g. a host-fed/merged history
+                    # carries two assistant turns with the same tool_call ids —
+                    # observed from the WebUI sidecar+state.db merge). Writing
+                    # ``tool_calls: []`` here reproduces the exact 400 this
+                    # function's normalization pass exists to prevent — but that
+                    # pass runs BEFORE this dedup and cannot see arrays emptied
+                    # here. Drop the key entirely instead (DeepSeek: HTTP 400
+                    # "Invalid 'messages[N].tool_calls': empty array").
+                    msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+                    if not str(msg.get("content") or "").strip():
+                        msg = {**msg, "content": "(duplicate tool call removed)"}
             deduped.append(msg)
         elif role == "tool":
             cid = (msg.get("tool_call_id") or "").strip()

@@ -1,7 +1,7 @@
 ---
 name: xurl
-description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
-version: 1.1.1
+description: "X/Twitter via xurl CLI: raw post search, posting, DM, media."
+version: 1.1.2
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -20,7 +20,7 @@ metadata:
 
 Use this skill for:
 - posting, replying, quoting, deleting posts
-- searching posts and reading timelines/mentions
+- searching for raw posts (actual post JSON with IDs you can engage with) and reading timelines/mentions
 - liking, reposting, bookmarking
 - following, unfollowing, blocking, muting
 - direct messages
@@ -182,6 +182,8 @@ xurl delete 1234567890
 ```
 
 ### Reading & Search
+
+`xurl search` queries the X index as your authenticated account and returns raw post objects — IDs, authors, full text — so results can be immediately engaged with (reply, like, repost, quote). Use it when you need the actual posts rather than a summarized answer about a topic.
 
 ```bash
 xurl read 1234567890

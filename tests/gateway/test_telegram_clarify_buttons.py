@@ -47,6 +47,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
+from plugins.platforms.telegram import adapter as telegram_adapter_module
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import PlatformConfig
 
@@ -189,6 +190,65 @@ class TestTelegramSendClarify:
         assert "<script>" not in kwargs["text"]
         assert "&lt;script&gt;" in kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_open_ended_fenced_table_renders_as_pre_block(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_clarify(
+            chat_id="12345",
+            question=(
+                "请选择要下载的版本：\n\n"
+                "```text\n"
+                "1.  BluRay  H.264  🧲 42  💾 1.5GB\n"
+                "2.  HDTV      —    🧲  1  💾 3.2GB\n"
+                "```"
+            ),
+            choices=None,
+            clarify_id="cid6",
+            session_key="sk6",
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert "reply_markup" not in kwargs
+        assert "请选择要下载的版本：" in kwargs["text"]
+        assert "```text" not in kwargs["text"]
+        assert "<pre>1.  BluRay  H.264  🧲 42  💾 1.5GB\n2.  HDTV" in kwargs["text"]
+        assert "</pre>" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_numeric_choices_render_inline_buttons_without_duplicate_body_list(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 105
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_clarify(
+            chat_id="12345",
+            question=(
+                "请选择要下载的版本：\n\n"
+                "```text\n"
+                "1.  BluRay  H.264  🧲 42  💾 1.5GB\n"
+                "2.  HDTV      —    🧲  1  💾 3.2GB\n"
+                "```"
+            ),
+            choices=["1", "2", "3", "4"],
+            clarify_id="cid7",
+            session_key="sk7",
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert "请选择要下载的版本：" in kwargs["text"]
+        assert "<pre>1.  BluRay  H.264  🧲 42  💾 1.5GB\n2.  HDTV" in kwargs["text"]
+        assert "1. 1" not in kwargs["text"]
+        assert "2. 2" not in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
+        rows = telegram_adapter_module.InlineKeyboardMarkup.call_args.args[0]
+        assert [len(row) for row in rows] == [4, 1]
+
 
 # ===========================================================================
 # Callback dispatch — _handle_callback_query routing for cl:* prefixes
@@ -213,7 +273,8 @@ class TestTelegramClarifyCallback:
         query.data = "cl:cidA:1"  # green
         query.message = MagicMock()
         query.message.chat_id = 12345
-        query.message.text = "Pick"
+        query.message.text = "❓ Pick\n\n1.  BluRay  H.264\n2.  HDTV"
+        query.message.text_html = "❓ Pick\n\n<pre>1.  BluRay  H.264\n2.  HDTV</pre>"
         query.from_user = MagicMock()
         query.from_user.id = "777"
         query.from_user.first_name = "Tester"
@@ -241,6 +302,12 @@ class TestTelegramClarifyCallback:
         assert entry.event.is_set()
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
+        edited = query.edit_message_text.call_args.kwargs
+        assert "<pre>1.  BluRay  H.264\n2.  HDTV</pre>" in edited["text"]
+        assert "&lt;pre&gt;" not in edited["text"]
+        assert edited["text"].count("❓") == 1
+        assert edited["parse_mode"] == telegram_adapter_module.ParseMode.HTML
+        assert edited["reply_markup"] is None
 
     @pytest.mark.asyncio
     async def test_other_button_flips_to_text_mode(self):
@@ -254,7 +321,8 @@ class TestTelegramClarifyCallback:
         query.data = "cl:cidB:other"
         query.message = MagicMock()
         query.message.chat_id = 12345
-        query.message.text = "Pick"
+        query.message.text = "❓ Pick\n\n1.  x\n2.  y"
+        query.message.text_html = "❓ Pick\n\n<pre>1.  x\n2.  y</pre>"
         query.from_user = MagicMock()
         query.from_user.id = "777"
         query.from_user.first_name = "Tester"
@@ -280,6 +348,10 @@ class TestTelegramClarifyCallback:
             entry = cm._entries.get("cidB")
         assert entry is not None
         assert not entry.event.is_set()
+        edited = query.edit_message_text.call_args.kwargs
+        assert "<pre>1.  x\n2.  y</pre>" in edited["text"]
+        assert edited["text"].count("❓") == 1
+        assert edited["parse_mode"] == telegram_adapter_module.ParseMode.HTML
 
     @pytest.mark.asyncio
     async def test_already_resolved(self):
@@ -364,7 +436,8 @@ class TestTelegramClarifyCallback:
         query.data = "cl:cidExpired:0"
         query.message = MagicMock()
         query.message.chat_id = 12345
-        query.message.text = "Pick"
+        query.message.text = "❓ Pick\n\n1.  x\n2.  y"
+        query.message.text_html = "❓ Pick\n\n<pre>1.  x\n2.  y</pre>"
         query.from_user = MagicMock()
         query.from_user.id = "777"
         query.from_user.first_name = "Tester"
@@ -384,6 +457,8 @@ class TestTelegramClarifyCallback:
         edit_text = query.edit_message_text.call_args[1]["text"].lower()
         assert "expired" in edit_text or "session reset" in edit_text
         assert "/retry" in edit_text
+        assert "<pre>1.  x\n2.  y</pre>" in edit_text
+        assert edit_text.count("❓") == 1
 
     @pytest.mark.asyncio
     async def test_other_button_expired_notifies_user(self):

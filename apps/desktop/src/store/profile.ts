@@ -225,6 +225,7 @@ export function prewarmProfileBackend(name: string): void {
 }
 
 let gatewaySwitch: Promise<void> | null = null
+let profileSelectionGeneration = 0
 
 // Keep the renderer's $connection (mode / baseUrl / profile) in lockstep with
 // the profile the live gateway is now on. $connection seeds from the PRIMARY
@@ -335,6 +336,7 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // $activeGatewayProfile → name, so $profileScope follows).
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
+  const selectionGeneration = ++profileSelectionGeneration
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
@@ -345,7 +347,17 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  void ensureGatewayProfile(target).then(async () => {
+    // Persist only the latest completed explicit selection. Rapid A → B clicks
+    // can finish their backend opens out of order; an older completion must not
+    // overwrite newer intent. A failed activation is never persisted.
+    if (
+      selectionGeneration === profileSelectionGeneration &&
+      normalizeProfileKey($activeGatewayProfile.get()) === target
+    ) {
+      await window.hermesDesktop.profile.remember(target)
+    }
+  }).catch(() => undefined)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse

@@ -9016,6 +9016,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+ipcMain.handle('hermes:profile:remember', async (_event, name) => ({ profile: writeActiveDesktopProfile(name) }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 
@@ -9205,6 +9206,10 @@ async function remoteSessionList(profile, searchParams) {
 
   for (const s of rowsOf(data)) {
     s.profile = profile
+    // Older remote dashboards may omit profile_name because they serve only
+    // one state.db and do not know the Desktop-side route label. Keep both
+    // public identity fields explicit after remote aggregation.
+    s.profile_name = profile
     s.is_default_profile = false
   }
 

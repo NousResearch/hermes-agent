@@ -19,7 +19,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
+const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles, selectProfile } =
   await import('./profile')
 
 const { $connection } = await import('./session')
@@ -43,16 +43,19 @@ const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: '', mode: 'local', profile: 'default', ...over }) as HermesConnection
 
 const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
+const rememberProfile = vi.fn<(profile?: string | null) => Promise<{ profile: string | null }>>()
 
 beforeEach(() => {
   getConnection.mockReset()
+  rememberProfile.mockReset()
+  rememberProfile.mockResolvedValue({ profile: null })
   ensureGatewayForProfile.mockClear()
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  vi.stubGlobal('window', { hermesDesktop: { getConnection, profile: { remember: rememberProfile } } })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
 })
@@ -107,6 +110,26 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('selected profile persistence', () => {
+  it('remembers a named profile only after its gateway becomes active', async () => {
+    getConnection.mockResolvedValue(remoteConn({ profile: 'secretary' }))
+
+    selectProfile('secretary')
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('secretary'))
+
+    expect($activeGatewayProfile.get()).toBe('secretary')
+  })
+
+  it('does not remember a profile when its gateway activation fails', async () => {
+    ensureGatewayForProfile.mockRejectedValueOnce(new Error('backend unavailable'))
+
+    selectProfile('secretary')
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('secretary'))
+
+    expect(rememberProfile).not.toHaveBeenCalled()
   })
 })
 

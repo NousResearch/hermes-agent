@@ -16459,6 +16459,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
         message: str,
         handler,
+        allow_always: bool = True,
     ) -> Optional[str]:
         """Ask the user to confirm an expensive slash command.
 
@@ -16466,6 +16467,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         where ``choice`` is ``"once"``, ``"always"``, or ``"cancel"``.
         The handler runs on the event loop when the user responds; its
         return value is sent back as a gateway message.
+
+        ``allow_always`` (default True) is forwarded to the adapter's
+        ``send_slash_confirm`` to control whether the middle "Always
+        Approve" button renders.  Pass False for rare high-stakes commands
+        (e.g. ``/update``) where a permanent one-tap opt-out is a footgun.
 
         Returns a short acknowledgment string to send immediately (before
         the user's response).  If buttons rendered successfully the ack
@@ -16496,15 +16502,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         used_buttons = False
         if adapter is not None:
+            # Build kwargs: only pass allow_always when it is False (non-default).
+            # Legacy adapters without the parameter will use their own default
+            # (True) and won't raise TypeError on an unexpected kwarg.
+            kwargs = dict(
+                chat_id=source.chat_id,
+                title=title,
+                message=message,
+                session_key=session_key,
+                confirm_id=confirm_id,
+                metadata=metadata,
+            )
+            if not allow_always:
+                kwargs["allow_always"] = False
             try:
-                button_result = await adapter.send_slash_confirm(
-                    chat_id=source.chat_id,
-                    title=title,
-                    message=message,
-                    session_key=session_key,
-                    confirm_id=confirm_id,
-                    metadata=metadata,
-                )
+                button_result = await adapter.send_slash_confirm(**kwargs)
                 if button_result and getattr(button_result, "success", False):
                     used_buttons = True
             except Exception as exc:

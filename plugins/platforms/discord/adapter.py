@@ -6604,8 +6604,14 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[dict] = None,
+        allow_always: bool = True,
     ) -> SendResult:
-        """Send a three-button slash-command confirmation prompt."""
+        """Send a slash-command confirmation prompt.
+
+        Renders Approve Once / Cancel, plus a middle "Always Approve" button
+        when ``allow_always`` is True (the default).  Callers pass False for
+        rare high-stakes commands (``/update``).
+        """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
 
@@ -6637,6 +6643,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                allow_always=allow_always,
             )
 
             msg = await channel.send(content=content, embed=embed, view=view)
@@ -8014,6 +8021,7 @@ def _define_discord_view_classes() -> None:
             confirm_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            allow_always: bool = True,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -8021,6 +8029,12 @@ def _define_discord_view_classes() -> None:
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            # High-stakes callers (e.g. /update) suppress the middle "Always
+            # Approve" button — a one-tap permanent opt-out would be a
+            # footgun.  The button is defined via a @discord.ui.button
+            # decorator, so remove the bound child item when not allowed.
+            if not allow_always:
+                self.remove_item(self.approve_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(

@@ -3270,21 +3270,29 @@ class BasePlatformAdapter(ABC):
         session_key: str,
         confirm_id: str,
         metadata: Optional[Dict[str, Any]] = None,
+        allow_always: bool = True,
     ) -> SendResult:
-        """Send a three-option slash-command confirmation prompt.
+        """Send a slash-command confirmation prompt.
 
         Used by the gateway's generic slash-confirm primitive (see
         ``GatewayRunner._request_slash_confirm``) for commands that have a
         non-destructive but expensive side effect the user should explicitly
-        acknowledge — the current caller is ``/reload-mcp``, which
-        invalidates the provider prompt cache.
+        acknowledge — e.g. ``/reload-mcp`` (invalidates the provider prompt
+        cache) and the destructive session commands (/new, /reset, /undo).
 
         Platforms with inline-button support (Telegram, Discord, Slack,
-        Matrix, Feishu) should override this to render three buttons:
-        Approve Once / Always Approve / Cancel.  Button callbacks MUST be
-        routed back through the gateway by calling
+        Matrix, Feishu) should override this to render the choice buttons.
+        Button callbacks MUST be routed back through the gateway by calling
         ``GatewayRunner._resolve_slash_confirm(confirm_id, choice)`` where
         ``choice`` is ``"once"`` / ``"always"`` / ``"cancel"``.
+
+        ``allow_always`` controls whether the middle "Always Approve" button
+        is rendered.  It defaults to ``True`` (three buttons: Approve Once /
+        Always Approve / Cancel).  Callers pass ``False`` for rare,
+        high-stakes commands where a permanent one-tap opt-out would be a
+        footgun — currently ``/update``, which pulls new code and restarts
+        the gateway.  With ``allow_always=False`` only two buttons render
+        (Approve Once / Cancel) and there is no persist-the-opt-out path.
 
         Platforms without button UIs leave this as the default and fall
         through to the gateway's text fallback (which sends ``message`` as

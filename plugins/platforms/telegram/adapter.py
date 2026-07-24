@@ -5107,19 +5107,30 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+        allow_always: bool = True,
     ) -> SendResult:
-        """Render a three-button slash-command confirmation prompt."""
+        """Render a slash-command confirmation prompt.
+
+        Renders Approve Once / Cancel, plus a middle "Always Approve" button
+        when ``allow_always`` is True (the default).  Callers pass False for
+        rare high-stakes commands (``/update``) where a one-tap permanent
+        opt-out would be a footgun.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
         try:
             preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
 
+            top_row = [
+                InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
+            ]
+            if allow_always:
+                top_row.append(
+                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}")
+                )
             keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
-                ],
+                top_row,
                 [
                     InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
                 ],

@@ -878,13 +878,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         session_key: str,
         confirm_id: str,
         metadata: Optional[Dict[str, Any]] = None,
+        allow_always: bool = True,
     ) -> SendResult:
-        """Render a 3-button slash-command confirmation prompt.
+        """Render a slash-command confirmation prompt.
 
-        Mirrors Telegram's send_slash_confirm: Approve Once / Always /
-        Cancel. The confirm_id is supplied by the caller (slash command
-        handler) — we just store the session_key mapping for the inbound
-        resolver to look up.
+        Mirrors Telegram's send_slash_confirm: Approve Once / Cancel, plus a
+        middle "Always" button when ``allow_always`` is True (the default).
+        Callers pass False for rare high-stakes commands (``/update``). The
+        confirm_id is supplied by the caller (slash command handler) — we
+        just store the session_key mapping for the inbound resolver to look
+        up.
         """
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
@@ -892,24 +895,31 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         body_text = self._truncate_body(f"*{title}*\n\n{message}")
         reply_to = (metadata or {}).get("reply_to_message_id") if metadata else None
 
+        buttons = [
+            {
+                "type": "reply",
+                "reply": {"id": f"sc:once:{confirm_id}", "title": "✅ Approve Once"},
+            },
+        ]
+        if allow_always:
+            buttons.append(
+                {
+                    "type": "reply",
+                    "reply": {"id": f"sc:always:{confirm_id}", "title": "🔒 Always"},
+                }
+            )
+        buttons.append(
+            {
+                "type": "reply",
+                "reply": {"id": f"sc:cancel:{confirm_id}", "title": "❌ Cancel"},
+            }
+        )
+
         interactive = {
             "type": "button",
             "body": {"text": body_text},
             "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {"id": f"sc:once:{confirm_id}", "title": "✅ Approve Once"},
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {"id": f"sc:always:{confirm_id}", "title": "🔒 Always"},
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {"id": f"sc:cancel:{confirm_id}", "title": "❌ Cancel"},
-                    },
-                ],
+                "buttons": buttons,
             },
         }
 

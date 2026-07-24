@@ -4866,19 +4866,25 @@ class GatewaySlashCommandsMixin:
 
         return await loop.run_in_executor(None, _collect_and_upload)
 
-    async def _handle_update_command(self, event: MessageEvent) -> str:
+    async def _handle_update_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /update command — update Hermes Agent to the latest version.
 
-        Spawns ``hermes update`` in a detached session (via ``setsid``) so it
-        survives the gateway restart that ``hermes update`` may trigger. Marker
-        files are written so either the current gateway process or the next one
-        can notify the user when the update finishes.
+        Runs cheap pre-flight validation (platform allowed, not a managed
+        install, is a git repo, ``hermes`` binary resolvable) and fast-fails
+        with an error *before* prompting.  Then ALWAYS routes through the
+        slash-confirm primitive — native Approve Once / Cancel buttons on
+        Telegram, Discord, and Slack, text fallback elsewhere — because
+        ``hermes update`` pulls new code and restarts the running gateway,
+        interrupting every active session on the host.
+
+        Deliberately renders NO "Always Approve" button and offers no config
+        opt-out (``allow_always=False``): a permanent one-tap disable of the
+        confirmation on such a rare, high-stakes command would reintroduce
+        the exact accidental-fire footgun this prompt exists to prevent.
+
+        The actual detached spawn lives in ``_execute_update``.
         """
-        from gateway.run import _hermes_home, _resolve_hermes_bin
-        import json
-        import shutil
-        import subprocess
-        from datetime import datetime
+        from gateway.run import _resolve_hermes_bin
         from hermes_cli.config import is_managed, format_managed_message
 
         # Block non-messaging platforms (API server, webhooks, ACP)
@@ -4906,6 +4912,48 @@ class GatewaySlashCommandsMixin:
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
+
+        # /update always confirms — no opt-out.  It pulls new code and
+        # restarts the running gateway (interrupting every active session on
+        # the host), so it's a rare, high-stakes action where an accidental
+        # invoke must never fire instantly.  Unlike /reload-mcp and the
+        # destructive session commands, there is deliberately NO "Always
+        # Approve" button and no config gate to permanently disable the
+        # prompt (allow_always=False) — a one-tap permanent opt-out would
+        # reintroduce exactly the footgun this confirmation exists to close.
+        async def _on_confirm(choice: str) -> Optional[str]:
+            if choice == "cancel":
+                return t("gateway.update.cancelled")
+            # Any non-cancel choice ("once"; "always" can still arrive via a
+            # typed /always on a text-fallback platform) proceeds exactly
+            # once.  Nothing is persisted.
+            return await self._execute_update(event, hermes_cmd)
+
+        return await self._request_slash_confirm(
+            event=event,
+            command="update",
+            title="/update",
+            message=t("gateway.update.confirm_prompt"),
+            handler=_on_confirm,
+            allow_always=False,
+        )
+
+    async def _execute_update(self, event: MessageEvent, hermes_cmd: list) -> str:
+        """Spawn the detached ``hermes update`` process.
+
+        Spawns ``hermes update`` in a detached session (via ``setsid``) so it
+        survives the gateway restart that ``hermes update`` may trigger. Marker
+        files are written so either the current gateway process or the next one
+        can notify the user when the update finishes.
+
+        ``hermes_cmd`` is the argv list already resolved by the caller via
+        ``_resolve_hermes_bin`` (validation happens in ``_handle_update_command``).
+        """
+        from gateway.run import _hermes_home
+        import json
+        import shutil
+        import subprocess
+        from datetime import datetime
 
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"

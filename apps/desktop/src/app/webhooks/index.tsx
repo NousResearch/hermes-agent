@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
@@ -22,7 +23,6 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createWebhook,
@@ -34,7 +34,8 @@ import {
   type WebhooksResponse
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Globe, Plus, RefreshCw, Trash2 } from '@/lib/icons'
+import { AlertTriangle, Globe, Plus, RefreshCw } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope } from '@/store/profile'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -64,6 +65,19 @@ interface CreatedWebhook {
   url: string
 }
 
+// One affordance for "value + CopyButton": flat, token-backed (no border, no
+// raw literals). DESIGN.md Principle 1 (flat, not boxed) + 4 (tokens, not
+// literals). Reused by the detail URL row and the create-result URL/secret so
+// there is a single copyable-value chrome in this file.
+function CopyValueRow({ copyLabel, mono = true, value }: { copyLabel: string; mono?: boolean; value: string }) {
+  return (
+    <div className="flex items-center gap-1 rounded bg-foreground/5 px-2.5 py-1.5 text-[0.7rem]">
+      <span className={cn('min-w-0 flex-1 truncate text-foreground/80', mono && 'font-mono')}>{value}</span>
+      <CopyButton appearance="icon" buttonSize="icon-sm" label={copyLabel} text={value} />
+    </div>
+  )
+}
+
 interface WebhooksViewProps {
   onClose: () => void
 }
@@ -81,7 +95,6 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const [restartNeeded, setRestartNeeded] = useState(false)
   const [restartError, setRestartError] = useState<null | string>(null)
   const [restarting, setRestarting] = useState(false)
-  const [togglingName, setTogglingName] = useState<null | string>(null)
   // Master/detail: the subscription whose config fills the right pane.
   const [selectedName, setSelectedName] = useState<null | string>(null)
 
@@ -97,7 +110,6 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const [created, setCreated] = useState<CreatedWebhook | null>(null)
 
   const [pendingDelete, setPendingDelete] = useState<null | string>(null)
-  const [deleting, setDeleting] = useState(false)
 
   const {
     data,
@@ -242,7 +254,6 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
 
   const handleToggle = useCallback(
     async (subName: string, nextEnabled: boolean) => {
-      setTogglingName(subName)
       // Optimistic cache paint; the invalidate below lets backend truth win.
       queryClient.setQueryData<WebhooksResponse>(queryKey, current =>
         current
@@ -262,29 +273,26 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       } catch (err) {
         await reload(true)
         notifyError(err, w.toggleFailed(subName))
-      } finally {
-        setTogglingName(null)
       }
     },
     [queryClient, queryKey, reload, w]
   )
 
+  // ConfirmDialog owns the pending→done→close beat; throw to surface its inline
+  // error and keep the dialog open. Success toast matches the cron delete idiom
+  // (title + name).
   const handleDelete = useCallback(async () => {
     if (!pendingDelete) {
       return
     }
 
-    setDeleting(true)
-
     try {
       await deleteWebhook(pendingDelete)
-      notify({ kind: 'success', message: `${pendingDelete}` })
-      setPendingDelete(null)
+      notify({ kind: 'success', title: w.deleted, message: pendingDelete })
       void reload(true)
     } catch (err) {
       notifyError(err, w.deleteFailed(pendingDelete))
-    } finally {
-      setDeleting(false)
+      throw err
     }
   }, [pendingDelete, reload, w])
 
@@ -414,12 +422,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
             </PanelList>
 
             {selectedSub ? (
-              <WebhookDetail
-                onDelete={() => setPendingDelete(selectedSub.name)}
-                onToggle={() => void handleToggle(selectedSub.name, !selectedSub.enabled)}
-                sub={selectedSub}
-                toggling={togglingName === selectedSub.name}
-              />
+              <WebhookDetail sub={selectedSub} />
             ) : (
               <PanelEmpty description={w.empty} icon="search" />
             )}
@@ -437,23 +440,9 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
 
           {created ? (
             <div className="grid gap-2">
+              <ListRow action={<CopyValueRow copyLabel={w.copy} value={created.url} />} title={w.webhookUrl} wide />
               <ListRow
-                action={
-                  <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.url}</span>
-                    <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.url} />
-                  </div>
-                }
-                title={w.webhookUrl}
-                wide
-              />
-              <ListRow
-                action={
-                  <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.secret}</span>
-                    <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.secret} />
-                  </div>
-                }
+                action={<CopyValueRow copyLabel={w.copy} value={created.secret} />}
                 title={w.secretOnce}
                 wide
               />
@@ -562,73 +551,42 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirm dialog */}
-      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{w.deleteTitle}</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? w.deleteDescription(pendingDelete) : w.deleteGeneric}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button disabled={deleting} onClick={() => setPendingDelete(null)} size="sm" variant="secondary">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={deleting} onClick={() => void handleDelete()} size="sm" variant="destructive">
-              {w.delete}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        busyLabel={w.deleting}
+        cancelLabel={t.common.cancel}
+        confirmLabel={w.delete}
+        description={
+          pendingDelete ? (
+            <>
+              {w.deleteDescPrefix}
+              <span className="font-medium text-foreground">{pendingDelete}</span>
+              {w.deleteDescSuffix}
+            </>
+          ) : null
+        }
+        destructive
+        onClose={() => setPendingDelete(null)}
+        onConfirm={handleDelete}
+        open={pendingDelete !== null}
+        title={w.deleteTitle}
+      />
     </Panel>
   )
 }
 
-function WebhookDetail({
-  onDelete,
-  onToggle,
-  sub,
-  toggling
-}: {
-  onDelete: () => void
-  onToggle: () => void
-  sub: WebhookRoute
-  toggling: boolean
-}) {
+function WebhookDetail({ sub }: { sub: WebhookRoute }) {
   const { t } = useI18n()
   const w = t.webhooks
 
   return (
     <PanelDetail>
       <header className="space-y-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{sub.name}</h3>
-            <PanelPill tone={sub.enabled ? 'good' : 'muted'}>
-              {sub.enabled ? t.messaging.states.enabled : t.messaging.states.disabled}
-            </PanelPill>
-            {sub.deliver_only && <PanelPill tone="warn">{w.deliverOnly}</PanelPill>}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Switch
-              aria-label={sub.enabled ? w.disableRow : w.enableRow}
-              checked={sub.enabled}
-              disabled={toggling}
-              onCheckedChange={onToggle}
-              size="xs"
-            />
-            <Button
-              aria-label={w.delete}
-              className="text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-destructive"
-              onClick={onDelete}
-              size="icon-sm"
-              title={w.delete}
-              variant="ghost"
-            >
-              <Trash2 />
-            </Button>
-          </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{sub.name}</h3>
+          <PanelPill tone={sub.enabled ? 'good' : 'muted'}>
+            {sub.enabled ? t.messaging.states.enabled : t.messaging.states.disabled}
+          </PanelPill>
+          {sub.deliver_only && <PanelPill tone="warn">{w.deliverOnly}</PanelPill>}
         </div>
 
         <PanelMeta
@@ -664,10 +622,7 @@ function WebhookDetail({
           ]}
         />
 
-        <div className="flex items-center gap-1 rounded bg-foreground/5 px-2.5 py-1.5 text-[0.7rem] text-muted-foreground">
-          <span className="min-w-0 flex-1 truncate font-mono text-foreground/80">{sub.url}</span>
-          <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={sub.url} />
-        </div>
+        <CopyValueRow copyLabel={w.copy} value={sub.url} />
       </header>
 
       {sub.description ? (

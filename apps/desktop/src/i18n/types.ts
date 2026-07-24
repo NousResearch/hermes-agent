@@ -1191,9 +1191,11 @@ export interface Translations {
     enableRow: string
     disableRow: string
     delete: string
+    deleting: string
+    deleted: string
     deleteTitle: string
-    deleteDescription: (name: string) => string
-    deleteGeneric: string
+    deleteDescPrefix: string
+    deleteDescSuffix: string
     deleteFailed: (name: string) => string
     toggleFailed: (name: string) => string
     newSubscription: string

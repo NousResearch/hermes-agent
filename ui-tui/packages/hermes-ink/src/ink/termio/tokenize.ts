@@ -6,7 +6,7 @@
  * identifies boundaries for use by keyboard input parsing.
  */
 
-import { C0, ESC_TYPE, isEscFinal } from './ansi.js'
+import { C0, ESC_TYPE, isC0, isEscFinal } from './ansi.js'
 import { isCSIFinal, isCSIIntermediate, isCSIParam } from './csi.js'
 
 export type Token = { type: 'text'; value: string } | { type: 'sequence'; value: string }
@@ -154,6 +154,10 @@ function tokenize(
           seqStart = i
           result.state = 'escape'
           i++
+        } else if (isC0(code)) {
+          flushText()
+          i++
+          flushText()
         } else {
           i++
         }

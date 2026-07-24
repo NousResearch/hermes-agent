@@ -108,3 +108,61 @@ def test_replaced_prefixes_are_frozen_for_renormalization():
         assert ContextCompressor._is_context_summary_content(content)
         stripped = ContextCompressor._strip_summary_prefix(content)
         assert not stripped.startswith(old_prefix)
+
+
+# Exact literal copy of the live SUMMARY_PREFIX as it shipped immediately
+# before #69619 (four-heading discard clause + tools-active clause).
+# Frozen on purpose: do NOT derive it from module constants — the test must
+# fail if the corresponding entry in _HISTORICAL_SUMMARY_PREFIXES is mutated
+# or dropped.
+_PRE_69619_LIVE_PREFIX = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' / '## Historical In-Progress State' / "
+    "'## Historical Pending User Asks' / "
+    "'## Historical Remaining Work' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:"
+)
+
+
+def test_pre_69619_prefix_generation_is_frozen_and_stripped():
+    """Regression for the #69619 review: the prefix generation live right
+    before the section-header removal was never added to
+    _HISTORICAL_SUMMARY_PREFIXES, so a summary persisted immediately before
+    upgrading survived resume/re-compaction undetected and unstripped.
+    That exact generation must stay frozen, detectable, and strippable."""
+    from agent.context_compressor import (
+        _HISTORICAL_SUMMARY_PREFIXES,
+        ContextCompressor,
+    )
+
+    assert _PRE_69619_LIVE_PREFIX in _HISTORICAL_SUMMARY_PREFIXES, (
+        "pre-#69619 live prefix missing from _HISTORICAL_SUMMARY_PREFIXES — "
+        "summaries persisted by the immediately previous build are no longer "
+        "normalized on resume"
+    )
+    content = _PRE_69619_LIVE_PREFIX + "\nBODY"
+    assert ContextCompressor._is_context_summary_content(content)
+    assert ContextCompressor._strip_summary_prefix(content) == "BODY"

@@ -125,6 +125,49 @@ class TestScrollPattern:
         assert min(m["id"] for m in v2["window"]) < min(m["id"] for m in v1["window"])
 
 
+class TestActiveFlag:
+    """Rewound (active=0) rows must not resurface in the window — they are
+    soft-deleted by rewind_to_message (the /undo mechanic) and every other
+    reader honours the flag. See get_messages / search_messages.
+    """
+
+    def test_rewound_rows_excluded_from_window(self, db):
+        ids = _seed(db, n=10)
+        # Rewind from ids[6] (a user message) onward → ids[6..9] go inactive.
+        db.rewind_to_message("s1", ids[6])
+        view = db.get_messages_around("s1", ids[4], window=5)
+        returned = [m["id"] for m in view["window"]]
+        # None of the rewound ids may appear in the window.
+        assert all(i not in returned for i in ids[6:])
+        # The active tail (ids[5]) is still reachable.
+        assert ids[5] in returned
+
+    def test_rewound_rows_excluded_from_boundary_counts(self, db):
+        ids = _seed(db, n=10)
+        db.rewind_to_message("s1", ids[6])  # ids[6..9] inactive, head is ids[5]
+        view = db.get_messages_around("s1", ids[5], window=5)
+        # Only ids[0..4] remain after the anchor's left side; nothing active
+        # after the anchor, so messages_after must be 0 (not 4 stale rows).
+        assert view["messages_after"] == 0
+        assert view["messages_before"] == 5
+
+    def test_anchor_on_rewound_row_returns_empty(self, db):
+        ids = _seed(db, n=10)
+        db.rewind_to_message("s1", ids[6])
+        view = db.get_messages_around("s1", ids[7], window=3)
+        assert view["window"] == []
+        assert view["messages_before"] == 0
+        assert view["messages_after"] == 0
+
+    def test_include_inactive_opts_back_in(self, db):
+        ids = _seed(db, n=10)
+        db.rewind_to_message("s1", ids[6])
+        view = db.get_messages_around("s1", ids[7], window=3, include_inactive=True)
+        returned = [m["id"] for m in view["window"]]
+        # Audit view: the rewound anchor and its neighbours come back.
+        assert ids[7] in returned
+
+
 class TestContentHydration:
     def test_content_is_decoded(self, db):
         ids = _seed(db, n=3)

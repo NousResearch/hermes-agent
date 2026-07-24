@@ -6235,6 +6235,7 @@ class SessionDB:
         session_id: str,
         around_message_id: int,
         window: int = 5,
+        include_inactive: bool = False,
     ) -> Dict[str, Any]:
         """Load a window of messages anchored on a specific message id.
 
@@ -6252,15 +6253,25 @@ class SessionDB:
         session boundaries: when either is less than ``window``, the agent has
         reached one end of the session.
 
-        Returns an empty window when ``around_message_id`` is not a real id in
-        ``session_id`` — callers decide how to surface that.
+        By default only active messages are considered — the anchor, the window
+        slices, and the boundary counts. This matches :meth:`get_messages`,
+        :meth:`get_messages_as_conversation` and :meth:`search_messages`, so
+        rewound (``active=0``) rows never leak back into a search context window.
+        Pass ``include_inactive=True`` for audit / forensic views that want the
+        soft-deleted rows too. See :meth:`rewind_to_message`.
+
+        Returns an empty window when ``around_message_id`` is not a real (active,
+        unless ``include_inactive``) id in ``session_id`` — callers decide how to
+        surface that.
         """
         if window < 0:
             window = 0
+        active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             # Confirm the anchor exists in this session.
             anchor_exists = self._conn.execute(
-                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                "SELECT 1 FROM messages WHERE id = ? AND session_id = ?"
+                f"{active_clause} LIMIT 1",
                 (around_message_id, session_id),
             ).fetchone()
             if not anchor_exists:
@@ -6270,13 +6281,15 @@ class SessionDB:
             # (ASC, take window). Final order is id ASC.
             before_rows = self._conn.execute(
                 "SELECT * FROM messages "
-                "WHERE session_id = ? AND id <= ? "
+                "WHERE session_id = ? AND id <= ?"
+                f"{active_clause} "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1),
             ).fetchall()
             after_rows = self._conn.execute(
                 "SELECT * FROM messages "
-                "WHERE session_id = ? AND id > ? "
+                "WHERE session_id = ? AND id > ?"
+                f"{active_clause} "
                 "ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window),
             ).fetchall()
@@ -6315,6 +6328,7 @@ class SessionDB:
         window: int = 5,
         bookend: int = 3,
         keep_roles: Optional[Tuple[str, ...]] = ("user", "assistant"),
+        include_inactive: bool = False,
     ) -> Dict[str, Any]:
         """Return an anchored window plus session bookends.
 
@@ -6341,14 +6355,20 @@ class SessionDB:
 
         ``keep_roles=None`` disables role filtering (raw window + raw
         bookends).
+
+        Like :meth:`get_messages_around`, rewound (``active=0``) rows are
+        excluded from the window AND the bookends by default; pass
+        ``include_inactive=True`` to include them.
         """
         if bookend < 0:
             bookend = 0
+        active_clause = "" if include_inactive else " AND active = 1"
 
         # Reuse the primitive — handles anchor-existence, content decoding,
         # tool_calls deserialisation, and boundary counts.
         primitive = self.get_messages_around(
-            session_id, around_message_id, window=window
+            session_id, around_message_id, window=window,
+            include_inactive=include_inactive,
         )
         window_rows = primitive["window"]
         if not window_rows:
@@ -6390,7 +6410,7 @@ class SessionDB:
 
                 bookend_start_rows = self._conn.execute(
                     f"SELECT * FROM messages "
-                    f"WHERE session_id = ? AND id < ?{role_clause} "
+                    f"WHERE session_id = ? AND id < ?{role_clause}{active_clause} "
                     f"AND length(content) > 0 "
                     f"ORDER BY id ASC LIMIT ?",
                     (session_id, window_min_id, *role_params, bookend),
@@ -6398,7 +6418,7 @@ class SessionDB:
 
                 bookend_end_rows = self._conn.execute(
                     f"SELECT * FROM messages "
-                    f"WHERE session_id = ? AND id > ?{role_clause} "
+                    f"WHERE session_id = ? AND id > ?{role_clause}{active_clause} "
                     f"AND length(content) > 0 "
                     f"ORDER BY id DESC LIMIT ?",
                     (session_id, window_max_id, *role_params, bookend),

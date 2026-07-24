@@ -149,6 +149,31 @@ class TestAnchorValidation:
         assert view["messages_after"] == 0
 
 
+class TestActiveFlag:
+    """Rewound (active=0) rows must not leak into the window or the bookends."""
+
+    def test_rewound_tail_excluded_from_window_and_end_bookend(self, db):
+        ids = _seed_long_session(db, n=30)
+        # Rewind the last third of the session (ids[20] is a user message).
+        db.rewind_to_message("s1", ids[20])
+        view = db.get_anchored_view("s1", ids[10], window=3, bookend=3)
+        seen = [m["id"] for m in view["window"] + view["bookend_end"]]
+        assert all(i not in seen for i in ids[20:])
+        # bookend_end now reflects the active tail just before the rewind.
+        assert view["bookend_end"], "expected bookends from the surviving tail"
+        assert max(m["id"] for m in view["bookend_end"]) < ids[20]
+
+    def test_include_inactive_brings_back_rewound_tail(self, db):
+        ids = _seed_long_session(db, n=30)
+        db.rewind_to_message("s1", ids[20])
+        view = db.get_anchored_view(
+            "s1", ids[10], window=3, bookend=3, include_inactive=True
+        )
+        end_ids = [m["id"] for m in view["bookend_end"]]
+        # Audit view surfaces the rewound tail again.
+        assert ids[-1] in end_ids
+
+
 class TestSessionIsolation:
     """Bookends must not cross session boundaries."""
 

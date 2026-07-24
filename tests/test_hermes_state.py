@@ -194,6 +194,44 @@ class TestSessionLifecycle:
         child = db.get_session("child")
         assert child["git_branch"] == "feature-x"
 
+    def test_child_session_inherits_profile_name_from_parent(self, db):
+        """A parented child born without profile_name (compression rotation,
+        /branch) must inherit its parent's owning profile — otherwise the
+        lineage silently migrates to the launch/default profile in unified
+        session lists (the cross-profile session-jump bug)."""
+        db.create_session(session_id="parent", source="cli", profile_name="ai-engineer")
+        # Rotation path: parent is ended with 'compression' BEFORE the child
+        # row is created (agent/conversation_compression.py).
+        db.end_session("parent", "compression")
+
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        assert db.get_session("child")["profile_name"] == "ai-engineer"
+
+    def test_child_session_explicit_profile_name_is_not_overwritten(self, db):
+        """Inheritance only fills NULLs — an explicit profile_name on the
+        child is never clobbered by the parent's."""
+        db.create_session(session_id="parent", source="cli", profile_name="ai-engineer")
+
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent",
+            profile_name="other",
+        )
+
+        assert db.get_session("child")["profile_name"] == "other"
+
+    def test_multi_generation_lineage_inherits_profile_name(self, db):
+        """profile_name survives a compress-then-branch chain (root -> rotation
+        child -> branch tip) — the exact lineage that used to land on default."""
+        db.create_session(session_id="root", source="cli", profile_name="ai-engineer")
+        db.end_session("root", "compression")
+
+        db.create_session(session_id="gen1", source="cli", parent_session_id="root")
+        db.create_session(session_id="gen2", source="cli", parent_session_id="gen1")
+
+        assert db.get_session("gen1")["profile_name"] == "ai-engineer"
+        assert db.get_session("gen2")["profile_name"] == "ai-engineer"
+
     def test_compression_child_inherits_gateway_origin_columns(self, db):
         """A compression fork's child inherits gateway routing metadata
         (session_key/chat_id/...) from the ended parent, so a crash before

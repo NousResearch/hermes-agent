@@ -2144,6 +2144,10 @@ def _ensure_session_db_row(session: dict) -> None:
             model_config=model_config or None,
             parent_session_id=parent_session_id,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
+            # Self-describing rows: aggregators that merge multiple profile DBs
+            # into one list can't rely on which file a row came from alone. NULL
+            # means the launch/default profile (matches run_agent's convention).
+            profile_name=Path(profile_home).name if profile_home else None,
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
@@ -9706,6 +9710,14 @@ def _(rid, params: dict) -> dict:
                 model_config={"_branched_from": old_key},
                 parent_session_id=old_key,
                 cwd=_session_cwd(session),
+                # The branch stays on its parent's profile. Explicit stamp (not
+                # just the parent-backfill) so it holds even when the parent row
+                # predates the profile_name column.
+                profile_name=(
+                    Path(session["profile_home"]).name
+                    if session.get("profile_home")
+                    else None
+                ),
             )
             for msg in history:
                 db.append_message(

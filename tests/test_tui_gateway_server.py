@@ -12045,6 +12045,60 @@ def test_restart_slash_worker_noop_without_worker(monkeypatch):
         server._sessions.pop("lazy-noop", None)
 
 
+def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
+    """With eager pre-warm removed, slash.exec is the only spawn path — two
+    concurrent worker-routed commands on a fresh session must not each fork a
+    full MCP-fleet worker. The per-session spawn lock serializes first use."""
+    import time as _time
+
+    spawned = []
+    barrier = threading.Barrier(2, timeout=5)
+
+    class _SlowWorker:
+        def __init__(self, *a, **k):
+            spawned.append(self)
+            _time.sleep(0.05)  # widen the None-observation window
+
+        def run(self, cmd):
+            return f"ran {cmd}"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(server, "_SlashWorker", _SlowWorker)
+    monkeypatch.setattr(server, "_mirror_slash_side_effects", lambda *a, **k: None)
+    session = _session(slash_worker=None)
+    server._sessions["race-spawn"] = session
+
+    results = []
+
+    def _exec(n):
+        barrier.wait()
+        resp = server.handle_request(
+            {
+                "id": str(n),
+                "method": "slash.exec",
+                "params": {"command": "/context", "session_id": "race-spawn"},
+            }
+        )
+        results.append(resp)
+
+    try:
+        threads = [threading.Thread(target=_exec, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        assert len(spawned) == 1, (
+            f"concurrent slash.exec spawned {len(spawned)} workers — first-use "
+            f"spawn must be serialized per session"
+        )
+        assert session["slash_worker"] is spawned[0]
+        assert all("result" in r for r in results), results
+    finally:
+        server._sessions.pop("race-spawn", None)
+
+
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
     claimed = {"session_key": "k"}

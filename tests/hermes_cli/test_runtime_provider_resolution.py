@@ -1525,6 +1525,29 @@ def test_anthropic_messages_in_valid_api_modes():
     assert rp._parse_api_mode("anthropic_messages") == "anthropic_messages"
 
 
+def test_responses_alias_maps_to_codex_responses():
+    """api_mode: responses should be accepted as an alias for codex_responses.
+
+    Azure Foundry users configure ``api_mode: responses`` in config.yaml
+    expecting the Responses API.  ``_parse_api_mode`` must normalise this
+    to the canonical ``codex_responses`` value so downstream code wraps
+    the client in ``CodexAuxiliaryClient`` instead of silently falling
+    back to ``chat_completions`` (which 401s on Responses-only endpoints).
+
+    Regression test for NousResearch/hermes-agent#39750.
+    """
+    assert rp._parse_api_mode("responses") == "codex_responses"
+    assert rp._parse_api_mode("Responses") == "codex_responses"
+    assert rp._parse_api_mode(" responses ") == "codex_responses"
+
+
+def test_invalid_api_mode_still_ignored():
+    """Truly invalid api_mode values should still return None."""
+    assert rp._parse_api_mode("bogus_mode") is None
+    assert rp._parse_api_mode("") is None
+    assert rp._parse_api_mode(None) is None
+
+
 def test_api_key_provider_anthropic_url_auto_detection(monkeypatch):
     """API-key providers with /anthropic base URL should auto-detect anthropic_messages mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")

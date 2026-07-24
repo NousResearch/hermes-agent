@@ -360,12 +360,23 @@ _VALID_API_MODES = {
 }
 
 
+# User-facing aliases that map to canonical internal api_mode values.
+# ``_VALID_API_MODES`` contains the canonical set; this dict normalises
+# shorter / alternative names users may type in config.yaml.
+_API_MODE_ALIASES: Dict[str, str] = {
+    "responses": "codex_responses",
+}
+
+
 def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode value from config. Returns None if invalid."""
     if isinstance(raw, str):
         normalized = raw.strip().lower()
         if normalized in _VALID_API_MODES:
             return normalized
+        aliased = _API_MODE_ALIASES.get(normalized)
+        if aliased:
+            return aliased
     return None
 
 

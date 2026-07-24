@@ -6122,6 +6122,43 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def _hydrate_message_row(self, row, *, caller: str) -> Dict[str, Any]:
+        """Turn a raw ``messages`` row into a JSON-hydrated dict.
+
+        Shared by :meth:`get_messages`, :meth:`get_messages_around`, and
+        :meth:`get_anchored_view` — the three read paths that return the raw
+        row shape (all columns, dict(row)) rather than the trimmed OpenAI
+        conversation shape :meth:`_rows_to_conversation` builds. Decodes
+        ``content`` and JSON-deserializes the ``tool_calls`` /
+        ``display_metadata`` TEXT columns, dropping either to a safe empty
+        value (``[]`` / ``None``) on a decode failure instead of handing the
+        caller a raw string. ``caller`` is folded into the warning log line
+        so a bad row is traceable to the read path that hit it.
+
+        Before ``display_metadata`` was added here, only ``tool_calls`` was
+        hydrated in these three paths — the drift that produced #70586
+        (the desktop renderer's ``'task_count' in message.display_metadata``
+        check crashing on the un-hydrated string). Route every new
+        JSON-TEXT column through this helper rather than adding another
+        one-off block per read path.
+        """
+        msg = dict(row)
+        if "content" in msg:
+            msg["content"] = self._decode_content(msg["content"])
+        if msg.get("tool_calls"):
+            try:
+                msg["tool_calls"] = json.loads(msg["tool_calls"])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Failed to deserialize tool_calls in %s, falling back to []", caller)
+                msg["tool_calls"] = []
+        if msg.get("display_metadata") and isinstance(msg["display_metadata"], str):
+            try:
+                msg["display_metadata"] = json.loads(msg["display_metadata"])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Failed to deserialize display_metadata in %s, dropping it", caller)
+                msg["display_metadata"] = None
+        return msg
+
     def get_messages(
         self,
         session_id: str,
@@ -6160,22 +6197,7 @@ class SessionDB:
             rows = cursor.fetchall()
         result = []
         for row in rows:
-            msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
-                    msg["tool_calls"] = []
-            if msg.get("display_metadata") and isinstance(msg["display_metadata"], str):
-                try:
-                    msg["display_metadata"] = json.loads(msg["display_metadata"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize display_metadata in get_messages, dropping it")
-                    msg["display_metadata"] = None
-            result.append(msg)
+            result.append(self._hydrate_message_row(row, caller="get_messages"))
         return result
 
     def get_messages_around(
@@ -6231,28 +6253,7 @@ class SessionDB:
 
         # before_rows is DESC; reverse so it's ASC, then concatenate after_rows.
         rows = list(reversed(before_rows)) + list(after_rows)
-        result = []
-        for row in rows:
-            msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Failed to deserialize tool_calls in get_messages_around, falling back to []"
-                    )
-                    msg["tool_calls"] = []
-            if msg.get("display_metadata") and isinstance(msg["display_metadata"], str):
-                try:
-                    msg["display_metadata"] = json.loads(msg["display_metadata"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Failed to deserialize display_metadata in get_messages_around, dropping it"
-                    )
-                    msg["display_metadata"] = None
-            result.append(msg)
+        result = [self._hydrate_message_row(row, caller="get_messages_around") for row in rows]
 
         # before_rows includes the anchor itself; subtract 1 for the count of
         # messages strictly before the anchor in the returned slice.
@@ -6362,34 +6363,12 @@ class SessionDB:
                 # End rows came back DESC for the LIMIT cap; flip to ASC.
                 bookend_end_rows = list(reversed(bookend_end_rows))
 
-        def _hydrate(row) -> Dict[str, Any]:
-            msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
-                    )
-                    msg["tool_calls"] = []
-            if msg.get("display_metadata") and isinstance(msg["display_metadata"], str):
-                try:
-                    msg["display_metadata"] = json.loads(msg["display_metadata"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Failed to deserialize display_metadata in get_anchored_view, dropping it"
-                    )
-                    msg["display_metadata"] = None
-            return msg
-
         return {
             "window": filtered_window,
             "messages_before": primitive["messages_before"],
             "messages_after": primitive["messages_after"],
-            "bookend_start": [_hydrate(r) for r in bookend_start_rows],
-            "bookend_end": [_hydrate(r) for r in bookend_end_rows],
+            "bookend_start": [self._hydrate_message_row(r, caller="get_anchored_view") for r in bookend_start_rows],
+            "bookend_end": [self._hydrate_message_row(r, caller="get_anchored_view") for r in bookend_end_rows],
         }
 
     def resolve_resume_session_id(self, session_id: str) -> str:

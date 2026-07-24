@@ -795,3 +795,79 @@ def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
 
     # When --force is set, we should not have even consulted psutil.
     detect.assert_not_called()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_kill_hermes_python_processes_calls_taskkill(_winp):
+    """_kill_hermes_python_processes sends taskkill /T /F for each PID."""
+    fake_procs = [(42, "python.exe", "headroom.cli proxy --port 8787")]
+    with patch.object(cli_main, "_detect_venv_python_processes", return_value=fake_procs):
+        with patch("subprocess.run") as mock_run:
+            cli_main._kill_hermes_python_processes()
+
+    # Should have called taskkill once per PID (one in this case)
+    assert mock_run.call_count == 1
+    call = mock_run.call_args[0][0]
+    assert call == ["taskkill", "/PID", "42", "/T", "/F"]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_kill_hermes_python_processes_off_windows_noop(_winp):
+    """_kill_hermes_python_processes is a no-op if _is_windows is False."""
+    with patch.object(cli_main, "_is_windows", return_value=False):
+        with patch.object(cli_main, "_detect_venv_python_processes") as mock_detect:
+            cli_main._kill_hermes_python_processes()
+    mock_detect.assert_not_called()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_kill_hermes_python_processes_no_matches_noop(_winp):
+    """_kill_hermes_python_processes does nothing when no venv processes found."""
+    with patch.object(cli_main, "_detect_venv_python_processes", return_value=[]):
+        with patch("subprocess.run") as mock_run:
+            cli_main._kill_hermes_python_processes()
+    mock_run.assert_not_called()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_kill_hermes_python_processes_never_raises(_winp):
+    """_kill_hermes_python_processes never raises even when taskkill fails."""
+    fake_procs = [(99, "python.exe", "headroom.cli proxy")]
+    with patch.object(cli_main, "_detect_venv_python_processes", return_value=fake_procs):
+        with patch("subprocess.run", side_effect=OSError("access denied")):
+            # Should not raise
+            cli_main._kill_hermes_python_processes()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_cmd_update_force_kill_bypasses_venv_guard(_winp, tmp_path):
+    """--force-kill proceeds past the venv holder guard by killing processes."""
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "hermes.exe").write_bytes(b"")
+
+    args = SimpleNamespace(
+        check=False,
+        gateway=False,
+        yes=False,
+        force=False,
+        force_kill=True,
+        force_venv=False,
+        backup=False,
+        no_backup=True,
+        branch=None,
+    )
+
+    sentinel = RuntimeError("reached post-guard body")
+
+    with patch.object(cli_main, "_venv_scripts_dir", return_value=scripts_dir):
+        with patch.object(cli_main, "_detect_concurrent_hermes_instances", return_value=[]):
+            with patch.object(cli_main, "_kill_hermes_python_processes") as mock_kill:
+                with patch.object(cli_main, "_pause_windows_gateways_for_update", return_value=None):
+                    with patch.object(cli_main, "_detect_venv_python_processes", side_effect=sentinel):
+                        with patch.object(cli_main, "_install_hangup_protection", return_value={}):
+                            with pytest.raises(RuntimeError, match="reached post-guard body"):
+                                cli_main._cmd_update_impl(args, gateway_mode=False)
+
+    # _kill_hermes_python_processes should have been called
+    mock_kill.assert_called_once()

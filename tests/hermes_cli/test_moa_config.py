@@ -176,7 +176,9 @@ def test_normalize_moa_config_parses_json_string_reference_models():
     cfg = normalize_moa_config(
         {"presets": {"p": {"reference_models": json.dumps(models)}}}
     )
-    assert cfg["presets"]["p"]["reference_models"] == models
+    assert cfg["presets"]["p"]["reference_models"] == [
+        {**m, "enabled": True} for m in models
+    ]
 
 
 def test_normalize_moa_config_malformed_json_string_falls_back_to_defaults():
@@ -185,7 +187,9 @@ def test_normalize_moa_config_malformed_json_string_falls_back_to_defaults():
     cfg = normalize_moa_config(
         {"presets": {"p": {"reference_models": "[{'provider': broken"}}}
     )
-    assert cfg["presets"]["p"]["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["presets"]["p"]["reference_models"] == [
+        {**m, "enabled": True} for m in DEFAULT_MOA_REFERENCE_MODELS
+    ]
 
 
 def test_normalize_moa_config_preserves_slot_reasoning_effort():
@@ -608,8 +612,8 @@ def test_slot_max_tokens_preserved():
         }
     )
     refs = cfg["presets"]["p"]["reference_models"]
-    assert refs[0] == {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": 600}
-    assert refs[1] == {"provider": "openai-codex", "model": "gpt-5.5"}
+    assert refs[0] == {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": 600, "enabled": True}
+    assert refs[1] == {"provider": "openai-codex", "model": "gpt-5.5", "enabled": True}
 
 
 def test_slot_max_tokens_coerced_from_string():

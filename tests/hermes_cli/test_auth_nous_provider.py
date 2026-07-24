@@ -2378,6 +2378,50 @@ class TestStalePortalBaseUrlMigration:
         assert len(refresh_calls) == 1
         assert "localhost" in refresh_calls[0]
 
+    def test_runtime_rejects_http_for_production_portal(self, tmp_path, monkeypatch):
+        """An allowlisted production host is still unsafe over plain HTTP.
+
+        resolve_nous_access_token() and resolve_nous_runtime_credentials() are
+        twin allowlist checks on the same portal_base_url field (see
+        test_runtime_credentials_rejects_http_for_production_portal). Both
+        POST the refresh_token bearer to portal_base_url on refresh, so both
+        must reject a scheme-downgraded value even when the hostname is
+        allowlisted, not just an off-allowlist hostname.
+        """
+        from hermes_cli import auth as auth_mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _setup_nous_auth(
+            tmp_path,
+            access_token="expired-access",
+            refresh_token="valid-refresh",
+            expires_at="2025-01-01T00:00:00+00:00",
+        )
+        auth_file = tmp_path / "auth.json"
+        store = json.loads(auth_file.read_text())
+        store["providers"]["nous"]["portal_base_url"] = (
+            "http://portal.nousresearch.com"
+        )
+        auth_file.write_text(json.dumps(store, indent=2))
+
+        refresh_calls = []
+
+        def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+            del client, client_id, refresh_token
+            refresh_calls.append(portal_base_url)
+            return {
+                "access_token": "refreshed-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            }
+
+        monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+
+        token = auth_mod.resolve_nous_access_token()
+        assert token == "refreshed-access"
+        assert len(refresh_calls) == 1
+        assert refresh_calls[0] == auth_mod.DEFAULT_NOUS_PORTAL_URL
+
     def test_runtime_credentials_fallback_for_invalid_portal_url(self, tmp_path, monkeypatch):
         """resolve_nous_runtime_credentials also rejects an off-allowlist portal host.
 

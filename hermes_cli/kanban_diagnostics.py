@@ -136,7 +136,7 @@ def _task_field(task, name, default=None):
     try:
         # Row raises IndexError if the key isn't a column in the query;
         # dicts return default via .get. Handle both.
-        if hasattr(task, "keys") and name in task.keys():
+        if hasattr(task, "keys") and name in task:
             return task[name]
     except Exception:
         pass

@@ -3708,7 +3708,7 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
                 kind=r["kind"],
                 payload=payload,
                 created_at=r["created_at"],
-                run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+                run_id=(int(r["run_id"]) if "run_id" in r and r["run_id"] is not None else None),
             )
         )
     return out
@@ -5426,10 +5426,10 @@ def block_task(
         ).fetchone()
         if cur_row is None:
             return False
-        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
+        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row else None
         prev_recurrences = (
             int(cur_row["block_recurrences"])
-            if "block_recurrences" in cur_row.keys()
+            if "block_recurrences" in cur_row
             and cur_row["block_recurrences"] is not None
             else 0
         )
@@ -7333,7 +7333,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             # Skip liveness check inside the launch-window grace period
             # so a freshly-spawned worker isn't reclaimed before its PID
             # is visible on /proc.
-            started_at = row["started_at"] if "started_at" in row.keys() else None
+            started_at = row["started_at"] if "started_at" in row else None
             if started_at is not None:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
@@ -7622,7 +7622,7 @@ def _record_task_failure(
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
         task_override = (
-            row["max_retries"] if "max_retries" in row.keys() else None
+            row["max_retries"] if "max_retries" in row else None
         )
         if task_override is not None:
             effective_limit = int(task_override)
@@ -9406,7 +9406,7 @@ def unseen_events_for_sub(
         out.append(Event(
             id=r["id"], task_id=r["task_id"], kind=r["kind"],
             payload=payload, created_at=r["created_at"],
-            run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+            run_id=(int(r["run_id"]) if "run_id" in r and r["run_id"] is not None else None),
         ))
         max_id = max(max_id, int(r["id"]))
     return max_id, out

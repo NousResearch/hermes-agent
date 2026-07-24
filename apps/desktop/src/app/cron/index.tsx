@@ -283,6 +283,10 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const [loading, setLoading] = useState(jobs.length === 0)
   const [query, setQuery] = useState('')
   const [busyJobId, setBusyJobId] = useState<null | string>(null)
+  const [pendingTriggers, setPendingTriggers] = useState<Record<string, number>>({})
+  // React state only disables the button after a render. This ref is the
+  // synchronous boundary that rejects a second click in the same event batch.
+  const pendingTriggersRef = useRef(new Map<string, number>())
   // Master/detail: the job whose schedule + run history fill the right pane.
   const [selectedJobId, setSelectedJobId] = useState<null | string>(null)
   // Set when a job is opened from the sidebar so we scroll it into view once the
@@ -376,11 +380,38 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     } catch (err) {
       notifyError(err, c.failedUpdate)
     } finally {
-      setBusyJobId(null)
+      setBusyJobId(current => (current === job.id ? null : current))
     }
   }
 
+  const clearPendingTrigger = useCallback((jobId: string, requestedAt: number) => {
+    if (pendingTriggersRef.current.get(jobId) !== requestedAt) {
+      return
+    }
+
+    pendingTriggersRef.current.delete(jobId)
+    setPendingTriggers(current => {
+      if (current[jobId] !== requestedAt) {
+        return current
+      }
+
+      const next = { ...current }
+
+      delete next[jobId]
+
+      return next
+    })
+  }, [])
+
   async function handleTrigger(job: CronJob) {
+    if (pendingTriggersRef.current.has(job.id)) {
+      return
+    }
+
+    const requestedAt = Date.now()
+
+    pendingTriggersRef.current.set(job.id, requestedAt)
+    setPendingTriggers(current => ({ ...current, [job.id]: requestedAt }))
     setBusyJobId(job.id)
 
     try {
@@ -388,9 +419,10 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
       notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
     } catch (err) {
+      clearPendingTrigger(job.id, requestedAt)
       notifyError(err, c.failedTrigger)
     } finally {
-      setBusyJobId(null)
+      setBusyJobId(current => (current === job.id ? null : current))
     }
   }
 
@@ -491,12 +523,14 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
             {selectedJob ? (
               <CronJobDetail
-                busy={busyJobId === selectedJob.id}
+                busy={busyJobId === selectedJob.id || pendingTriggers[selectedJob.id] !== undefined}
                 c={c}
                 job={selectedJob}
                 onOpenSession={onOpenSession}
                 onPauseResume={() => void handlePauseResume(selectedJob)}
+                onPendingRunSettled={clearPendingTrigger}
                 onTrigger={() => void handleTrigger(selectedJob)}
+                pendingRunAt={pendingTriggers[selectedJob.id]}
               />
             ) : (
               <PanelEmpty description={c.emptyDescSearch} icon="search" />
@@ -565,15 +599,19 @@ function CronJobDetail({
   c,
   job,
   onOpenSession,
+  onPendingRunSettled,
   onPauseResume,
-  onTrigger
+  onTrigger,
+  pendingRunAt
 }: {
   busy: boolean
   c: Translations['cron']
   job: CronJob
   onOpenSession?: (sessionId: string) => void
+  onPendingRunSettled: (jobId: string, requestedAt: number) => void
   onPauseResume: () => void
   onTrigger: () => void
+  pendingRunAt?: number
 }) {
   const state = jobState(job)
   const isPaused = state === 'paused'
@@ -593,7 +631,12 @@ function CronJobDetail({
             <PanelAction disabled={busy} icon={isPaused ? 'play' : 'debug-pause'} onClick={onPauseResume}>
               {isPaused ? c.resumeTitle : c.pauseTitle}
             </PanelAction>
-            <PanelAction disabled={busy} icon="zap" onClick={onTrigger}>
+            <PanelAction
+              disabled={busy}
+              icon={pendingRunAt === undefined ? 'zap' : 'loading'}
+              onClick={onTrigger}
+              spinning={pendingRunAt !== undefined}
+            >
               {c.triggerNow}
             </PanelAction>
           </div>
@@ -624,7 +667,13 @@ function CronJobDetail({
         </section>
       ) : null}
 
-      <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+      <CronJobRuns
+        c={c}
+        jobId={job.id}
+        onOpenSession={onOpenSession}
+        onPendingRunSettled={onPendingRunSettled}
+        pendingRunAt={pendingRunAt}
+      />
     </PanelDetail>
   )
 }
@@ -643,33 +692,64 @@ function formatRunTime(seconds?: null | number): string {
 // while the panel is open + on tab re-focus so a fired run shows up within a few
 // seconds instead of waiting for a reload.
 const RUNS_POLL_INTERVAL_MS = 8000
+const PENDING_RUNS_POLL_INTERVAL_MS = 1000
+const PENDING_RUN_TIMEOUT_MS = 90_000
 
 function CronJobRuns({
   c,
   jobId,
-  onOpenSession
+  onOpenSession,
+  onPendingRunSettled,
+  pendingRunAt
 }: {
   c: Translations['cron']
   jobId: string
   onOpenSession?: (sessionId: string) => void
+  onPendingRunSettled: (jobId: string, requestedAt: number) => void
+  pendingRunAt?: number
 }) {
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  const runIdsRef = useRef(new Set<string>())
 
   useEffect(() => {
     let cancelled = false
+    let loading = false
 
-    const load = () =>
-      getCronJobRuns(jobId)
-        .then(result => {
-          if (!cancelled) {
-            setRuns(result)
+    const load = async () => {
+      if (loading) {
+        return
+      }
+
+      loading = true
+
+      try {
+        const result = await getCronJobRuns(jobId)
+
+        if (!cancelled) {
+          const previousIds = runIdsRef.current
+
+          runIdsRef.current = new Set(result.map(run => run.id))
+          setRuns(result)
+
+          if (
+            pendingRunAt !== undefined &&
+            result.some(run => {
+              const startedAt = (run.started_at || run.last_active || 0) * 1000
+
+              return !previousIds.has(run.id) && startedAt >= pendingRunAt - 1000
+            })
+          ) {
+            onPendingRunSettled(jobId, pendingRunAt)
           }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setRuns(prev => prev ?? [])
-          }
-        })
+        }
+      } catch {
+        if (!cancelled) {
+          setRuns(prev => prev ?? [])
+        }
+      } finally {
+        loading = false
+      }
+    }
 
     void load()
 
@@ -677,7 +757,7 @@ function CronJobRuns({
       if (document.visibilityState === 'visible') {
         void load()
       }
-    }, RUNS_POLL_INTERVAL_MS)
+    }, pendingRunAt === undefined ? RUNS_POLL_INTERVAL_MS : PENDING_RUNS_POLL_INTERVAL_MS)
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
@@ -692,23 +772,52 @@ function CronJobRuns({
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [jobId])
+  }, [jobId, onPendingRunSettled, pendingRunAt])
+
+  useEffect(() => {
+    if (pendingRunAt === undefined) {
+      return
+    }
+
+    const remainingMs = Math.max(0, pendingRunAt + PENDING_RUN_TIMEOUT_MS - Date.now())
+    const timeoutId = window.setTimeout(() => onPendingRunSettled(jobId, pendingRunAt), remainingMs)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [jobId, onPendingRunSettled, pendingRunAt])
+
+  const pending = pendingRunAt !== undefined
 
   return (
     <div>
       <PanelSectionLabel className="mb-1.5">
         {c.runHistory}
-        {runs && runs.length > 0 ? ` · ${runs.length}` : ''}
+        {runs && runs.length + (pending ? 1 : 0) > 0 ? ` · ${runs.length + (pending ? 1 : 0)}` : ''}
       </PanelSectionLabel>
-      {runs === null ? (
+      {runs === null && !pending ? (
         <div className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground">
           <Codicon name="loading" size="0.75rem" spinning />
         </div>
-      ) : runs.length === 0 ? (
+      ) : runs?.length === 0 && !pending ? (
         <div className="py-1 text-xs text-muted-foreground">{c.noRuns}</div>
       ) : (
         <div className="flex flex-col gap-px">
-          {runs.map(run => (
+          {pending && (
+            <div
+              aria-live="polite"
+              className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-xs text-muted-foreground"
+              data-slot="cron-run-pending"
+              role="status"
+            >
+              <span className="flex min-w-0 items-center gap-1.5">
+                <Codicon name="loading" size="0.75rem" spinning />
+                <span className="truncate">{c.triggered}</span>
+              </span>
+              <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
+                {formatRunTime(pendingRunAt / 1000)}
+              </span>
+            </div>
+          )}
+          {(runs ?? []).map(run => (
             <button
               className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               key={run.id}

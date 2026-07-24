@@ -2,7 +2,7 @@ import { type MutableRefObject, useCallback } from 'react'
 
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { Translations } from '@/i18n'
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, textPart, toChatMessages } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -21,6 +21,8 @@ import {
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { backendSupportsPromptSubmitIdempotency } from '@/store/updates'
+import type { SessionMessage, SessionResumeResponse } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -79,6 +81,12 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
   setAwaitingResponse,
   setBusy,
   setMessages
+}
+
+interface PromptSubmitResponse {
+  duplicate?: boolean
+  messages?: SessionMessage[]
+  status?: 'complete' | 'queued' | 'redirected' | 'steered' | 'streaming'
 }
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
@@ -236,7 +244,25 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-      const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const supportsPromptIdempotency = backendSupportsPromptSubmitIdempotency()
+      // On a v5 backend this id belongs to the user intent, not an individual
+      // JSON-RPC attempt. Timeout recovery reuses it so a lost acknowledgement
+      // cannot turn the retry into a second backend turn.
+      const clientRequestId = supportsPromptIdempotency ? crypto.randomUUID() : null
+
+      const optimisticId = clientRequestId
+        ? `user-${clientRequestId}`
+        : `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+      const promptSubmitParams = (runtimeSessionId: string, text: string) => ({
+        ...(clientRequestId ? { client_request_id: clientRequestId } : {}),
+        ...(clientRequestId && (targetStoredSessionId ?? startingStoredSessionId)
+          ? { expected_stored_session_id: targetStoredSessionId ?? startingStoredSessionId }
+          : {}),
+        session_id: runtimeSessionId,
+        text,
+        ...(interrupted && { interrupted })
+      })
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
@@ -510,25 +536,30 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
 
-        const submitParams = (targetId: string) => ({
-          session_id: targetId,
-          text,
-          ...(interrupted && { interrupted })
-        })
-
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. Detect this,
         // resume the stored session to re-register it, and retry once.
         let submitErr: unknown = null
+        let submitResult: PromptSubmitResponse | null = null
+        let recoveredMessages: ChatMessage[] | null = null
+        const submittedSessionId = sessionId
 
         try {
-          await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+          submitResult = await withSessionBusyRetry(() =>
+            requestGateway<PromptSubmitResponse>(
+              'prompt.submit',
+              promptSubmitParams(submittedSessionId, text),
+              PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+            )
           )
         } catch (firstErr) {
-          const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+          const recoverStoredSessionId =
+            targetStoredSessionId ?? startingStoredSessionId ?? selectedStoredSessionIdRef.current
 
-          if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && recoverStoredSessionId) {
+          if (
+            (isSessionNotFoundError(firstErr) || (isGatewayTimeoutError(firstErr) && supportsPromptIdempotency)) &&
+            recoverStoredSessionId
+          ) {
             // Re-register the session in the gateway and get a fresh live ID.
             // Timeouts recover the same way as "session not found": a starved
             // backend loop (#55578 symptom d) rejects the submit even though
@@ -536,7 +567,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // out and losing the session binding.
             const resumeProfile = await resolveSessionProfile(recoverStoredSessionId)
 
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+            const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
               session_id: recoverStoredSessionId,
               source: 'desktop',
               ...(resumeProfile ? { profile: resumeProfile } : {})
@@ -551,14 +582,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             }
 
             const recoveredId = resumed?.session_id
+            recoveredMessages = Array.isArray(resumed?.messages) ? toChatMessages(resumed.messages) : null
 
             if (recoveredId) {
               if (targetIsCurrentView()) {
                 activeSessionIdRef.current = recoveredId
               }
 
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(recoveredId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+              sessionId = recoveredId
+              submitResult = await withSessionBusyRetry(() =>
+                requestGateway<PromptSubmitResponse>(
+                  'prompt.submit',
+                  promptSubmitParams(recoveredId, text),
+                  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                )
               )
             } else {
               submitErr = firstErr
@@ -574,6 +611,27 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         if (usingComposerAttachments) {
           scope.clearAttachments()
+        }
+
+        if (submitResult?.duplicate && submitResult.status === 'complete') {
+          const completedMessages = Array.isArray(submitResult.messages)
+            ? toChatMessages(submitResult.messages)
+            : recoveredMessages
+
+          updateSessionState(
+            sessionId,
+            state => ({
+              ...state,
+              messages: completedMessages?.length ? completedMessages : state.messages,
+              busy: false,
+              awaitingResponse: false,
+              pendingBranchGroup: null
+            }),
+            targetStoredSessionId
+          )
+          releaseBusy()
+
+          return true
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit

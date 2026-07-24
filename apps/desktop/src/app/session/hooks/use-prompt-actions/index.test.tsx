@@ -18,6 +18,7 @@ import {
   setMessages,
   setSessions
 } from '@/store/session'
+import { $backendContract, REQUIRED_BACKEND_CONTRACT } from '@/store/updates'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SubmitTextOptions } from './utils'
@@ -31,6 +32,10 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
+
+afterEach(() => {
+  $backendContract.set(null)
+})
 
 // The active id the desktop holds is the *runtime* session id from
 // session.create — deliberately distinct from the stored DB id here, because
@@ -2119,7 +2124,9 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // "session not found" — resume + retry — not surface an error that leaves
     // activeSessionId null and lets the next send mint a new session.
     const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
     let submitAttempts = 0
+    $backendContract.set(REQUIRED_BACKEND_CONTRACT)
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
@@ -2131,7 +2138,14 @@ describe('usePromptActions sleep/wake session recovery', () => {
           throw new Error('request timed out: prompt.submit')
         }
 
-        return {} as never
+        return {
+          duplicate: true,
+          status: 'complete',
+          messages: [
+            { role: 'user', content: 'message during starved loop' },
+            { role: 'assistant', content: 'recovered answer' }
+          ]
+        } as never
       }
 
       if (method === 'session.resume') {
@@ -2145,6 +2159,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     await actRender(
       <Harness
         onReady={h => (handle = h)}
+        onSeedState={state => states.push(state)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         storedSessionId={STORED_SESSION_ID}
@@ -2156,10 +2171,50 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[0]?.params).toMatchObject({
+      client_request_id: expect.any(String),
+      expected_stored_session_id: STORED_SESSION_ID,
+      session_id: RUNTIME_SESSION_ID,
+      text: 'message during starved loop'
+    })
     expect(calls[2]?.params).toEqual({
+      client_request_id: calls[0]?.params?.client_request_id,
+      expected_stored_session_id: STORED_SESSION_ID,
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
     })
+    expect(states.at(-1)?.busy).toBe(false)
+    expect(states.at(-1)?.messages).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: 'assistant', parts: [textPart('recovered answer')] })])
+    )
+  })
+
+  it('does not retry an ambiguous timeout against a backend without idempotency', async () => {
+    $backendContract.set(REQUIRED_BACKEND_CONTRACT - 1)
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'prompt.submit') {
+        throw new Error('request timed out: prompt.submit')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('do not duplicate this')).toBe(false)
+    expect(calls).toEqual(['prompt.submit'])
   })
 
   it('resumes the SELECTED stored session instead of minting a new one when activeSessionId is null (#55578 split)', async () => {
@@ -2517,6 +2572,8 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     let submitAttempts = 0
 
     let releaseResume: () => void = () => {}
+
+    $backendContract.set(REQUIRED_BACKEND_CONTRACT)
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }
 

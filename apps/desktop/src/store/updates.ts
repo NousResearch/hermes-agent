@@ -93,7 +93,9 @@ function isUpdateToastSnoozed(): boolean {
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
-const REQUIRED_BACKEND_CONTRACT = 4
+// v5: requires prompt.submit destination binding and retry idempotency.
+export const REQUIRED_BACKEND_CONTRACT = 5
+export const $backendContract = atom<number | null>(null)
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
@@ -141,6 +143,8 @@ function isInstallMethodToastSnoozed(): boolean {
  * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
+  $backendContract.set(contract ?? null)
+
   if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
     // Backend caught up — forget any prior snooze so a future regression warns
@@ -169,6 +173,11 @@ export function reportBackendContract(contract: number | undefined): void {
     onDismiss: () => snoozeSkewToast(),
     title: translateNow('notifications.backendOutOfDateTitle')
   })
+}
+
+/** Whether an ambiguous prompt.submit timeout can be retried at-most-once. */
+export function backendSupportsPromptSubmitIdempotency(): boolean {
+  return ($backendContract.get() ?? 0) >= REQUIRED_BACKEND_CONTRACT
 }
 
 export function reportInstallMethodWarning(message: string | undefined): void {

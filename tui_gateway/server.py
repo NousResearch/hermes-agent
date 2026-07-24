@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -29,6 +30,7 @@ from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
+from tui_gateway.prompt_intents import PromptIntentClaim, PromptIntentLedger
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -921,6 +923,13 @@ except (TypeError, ValueError):
 _SESSION_TTL_S = max(0.0, _SESSION_TTL_S)
 _REAPER_SCAN_S = 300.0
 
+# Accepted prompt intents outlive any one ephemeral runtime session id, so a
+# lost-ack retry after session.resume still collapses onto the original turn.
+_prompt_intents = PromptIntentLedger(
+    db_path=_hermes_home / "state" / "prompt_intents.sqlite3",
+    session_ttl_s=_SESSION_TTL_S,
+)
+
 
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-WS-disconnect drop sentinel; a session
@@ -1787,6 +1796,169 @@ def _start_agent_build(sid: str, session: dict) -> None:
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+
+
+def _prompt_submit_session_contract(
+    params: dict, rid, session: dict
+) -> dict | None:
+    """Return a fail-closed durable-destination error, if any.
+
+    ``session_id`` is only the live runtime handle. New desktop clients also
+    send the stored conversation they selected, which must still identify this
+    session before prompt.submit mutates transport, history, inflight state, or
+    persistence. Omission remains compatible with older clients.
+
+    Normal sessions accept a compression ancestor by resolving both sides
+    through the session's profile-correct DB. An unupgraded lazy/watch session
+    is exact-child only: its parent lineage is not an equivalent destination.
+    """
+    expected = str(
+        params.get("expected_stored_session_id")
+        or params.get("expected_session_key")
+        or ""
+    ).strip()
+    runtime_id = str(params.get("session_id") or "").strip()
+    live_lookup = _session_lookup_key(session, fallback=runtime_id).strip()
+    current_ids = {
+        str(session.get("session_key") or "").strip(),
+        str(session.get("resume_session_id") or "").strip(),
+        live_lookup,
+    }
+    current_ids.discard("")
+
+    # No durable assertion means there is nothing to resolve. This preserves
+    # the legacy fast path and avoids opening the profile session database for
+    # lineage resolution solely because a submit carries a client request id.
+    if not expected:
+        return None
+
+    # The normal desktop path names the live durable id exactly. Reserve DB
+    # lineage resolution for compression ancestors that are not exact matches.
+    if expected in current_ids:
+        return None
+
+    resolved_expected = expected
+    resolved_current_ids = set(current_ids)
+    lazy_watch = bool(session.get("lazy") and session.get("agent") is None)
+
+    if not lazy_watch:
+        try:
+            with _session_db(session) as db:
+                resolver = (
+                    getattr(db, "resolve_resume_session_id", None)
+                    if db is not None
+                    else None
+                )
+                if callable(resolver):
+                    if expected:
+                        resolved_expected = str(
+                            resolver(expected) or expected
+                        ).strip()
+                    resolved_current_ids = {
+                        str(resolver(current) or current).strip()
+                        for current in current_ids
+                    }
+                    resolved_current_ids.discard("")
+        except Exception:
+            logger.debug(
+                "failed to resolve prompt.submit session contract", exc_info=True
+            )
+
+    matches = (
+        not lazy_watch
+        and bool(resolved_expected)
+        and resolved_expected in resolved_current_ids
+    )
+    if matches:
+        return None
+
+    live = ", ".join(sorted(current_ids)) or "unknown"
+    if resolved_current_ids != current_ids or resolved_expected != expected:
+        resolved = ", ".join(sorted(resolved_current_ids)) or "unknown"
+        live = f"{live} (resolved: {resolved})"
+    return _err(
+        rid,
+        4019,
+        f"stored session mismatch: expected {expected!r}; live session is {live}",
+    )
+
+
+def _claim_prompt_submit_intent(
+    params: dict, rid, session: dict
+) -> dict | None:
+    """Atomically reserve a client prompt intent, or return its retry result."""
+    client_request_id = str(params.get("client_request_id") or "").strip()
+    if not client_request_id:
+        return None
+
+    try:
+        claim = _prompt_intents.claim(
+            profile_scope=str(session.get("profile_home") or get_hermes_home()),
+            request_id=client_request_id,
+            route_identity=(
+                params.get("expected_stored_session_id")
+                or params.get("expected_session_key")
+                or _session_lookup_key(
+                    session, fallback=str(params.get("session_id") or "")
+                )
+            ),
+            text=params.get("text"),
+            truncate_ordinal=params.get("truncate_before_user_ordinal"),
+        )
+    except sqlite3.Error:
+        logger.warning("prompt intent ledger unavailable", exc_info=True)
+        return _err(
+            rid,
+            4022,
+            "prompt idempotency is temporarily unavailable; retry later",
+        )
+    if claim is PromptIntentClaim.ACCEPTED:
+        return None
+    if claim is PromptIntentClaim.DUPLICATE:
+        queued = session.get("queued_prompt")
+        queued_match = (
+            isinstance(queued, dict)
+            and client_request_id in (queued.get("client_request_ids") or ())
+        )
+        if queued_match:
+            # The original queued acknowledgement may have been lost with its
+            # websocket. A matching durable retry must move the eventual drain
+            # to this request's freshly rebound session transport.
+            queued["transport"] = session.get("transport")
+        status = (
+            "queued"
+            if queued_match
+            else ("streaming" if session.get("running") else "complete")
+        )
+        payload = {"duplicate": True, "status": status}
+        if status == "complete":
+            # prompt.submit holds history_lock while claiming. Returning the
+            # transcript here makes completion + hydration one atomic snapshot,
+            # closing the race where an earlier session.resume saw the turn
+            # streaming just before this duplicate observed it complete.
+            payload["messages"] = list(session.get("history", []))
+        return _ok(rid, payload)
+    if claim is PromptIntentClaim.CONFLICT:
+        return _err(
+            rid,
+            4020,
+            "client_request_id was already used for a different prompt",
+        )
+    if claim is PromptIntentClaim.INVALID:
+        return _err(rid, 4021, "client_request_id must be at most 256 characters")
+    return _err(
+        rid,
+        4022,
+        "prompt idempotency is temporarily unavailable; retry later",
+    )
+
+
+def _abort_prompt_submit_intent(params: dict, session: dict) -> None:
+    """Release an accepted intent when setup failed before agent execution."""
+    _prompt_intents.abort(
+        profile_scope=str(session.get("profile_home") or get_hermes_home()),
+        request_id=str(params.get("client_request_id") or ""),
+    )
 
 
 def _sess(params, rid):
@@ -4000,7 +4172,8 @@ def _current_profile_name() -> str:
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
 # v4: session.create fast=false is an explicit per-session normal-tier override.
-DESKTOP_BACKEND_CONTRACT = 4
+# v5: adds prompt.submit durable-destination validation and retry idempotency.
+DESKTOP_BACKEND_CONTRACT = 5
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -5964,7 +6137,12 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
-def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    client_request_id: str = "",
+) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
     Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
@@ -5974,6 +6152,13 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     the client that sent it even if the session transport is rebound meanwhile.
     """
     existing = session.get("queued_prompt")
+    client_request_ids = list(
+        existing.get("client_request_ids") or ()
+        if isinstance(existing, dict)
+        else ()
+    )
+    if client_request_id and client_request_id not in client_request_ids:
+        client_request_ids.append(client_request_id)
     if (
         existing
         and isinstance(existing.get("text"), str)
@@ -5981,7 +6166,10 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     ):
         prev = existing["text"]
         text = f"{prev}\n\n{text}" if prev and text else (prev or text)
-    session["queued_prompt"] = {"text": text, "transport": transport}
+    queued = {"text": text, "transport": transport}
+    if client_request_ids:
+        queued["client_request_ids"] = client_request_ids
+    session["queued_prompt"] = queued
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -6020,7 +6208,12 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
 
 
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    client_request_id: str = "",
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -6076,7 +6269,7 @@ def _handle_busy_submit(
     with session["history_lock"]:
         if not session.get("running"):
             return None
-        _enqueue_prompt(session, text, transport)
+        _enqueue_prompt(session, text, transport, client_request_id)
         session["last_active"] = time.time()
 
     if mode != "queue":
@@ -9988,15 +10181,13 @@ def _(rid, params: dict) -> dict:
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
-    if params.get("interrupted"):
-        # Client-side barge-in (desktop VAD / typing over playback) — latch it
-        # so this turn's model message carries the interruption note.
-        from tools.tts_streaming import mark_speech_interrupted
-
-        mark_speech_interrupted()
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
+    contract_err = _prompt_submit_session_contract(params, rid, session)
+    if contract_err:
+        return contract_err
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
@@ -10004,58 +10195,128 @@ def _(rid, params: dict) -> dict:
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
         session["transport"] = t
+
+    client_request_id = str(params.get("client_request_id") or "").strip()
+    intent_checked = False
+
     while True:
         busy_transport = None
         with session["history_lock"]:
             if session.get("running"):
+                # Rewind/edit/regenerate submits must apply their history
+                # truncation atomically before the replacement turn starts.
+                # Queueing only their text would silently turn a rewind into an
+                # append. Return busy before claiming the durable request id so
+                # the desktop can interrupt and retry it unchanged.
+                if truncate_user_ordinal is not None:
+                    return _err(rid, 4009, "session busy")
+
+                # Reserve the durable client intent before any busy-turn
+                # mutation. A lost-ack retry with the same id returns success
+                # here instead of steering or queueing the prompt twice.
+                if not intent_checked:
+                    retry_result = _claim_prompt_submit_intent(params, rid, session)
+                    if retry_result is not None:
+                        return retry_result
+                    intent_checked = True
+
+                    if params.get("interrupted"):
+                        # Latch client-side barge-in only for the accepted
+                        # intent. A duplicate retry must not leak an interrupt
+                        # marker into a later, unrelated turn.
+                        from tools.tts_streaming import mark_speech_interrupted
+
+                        mark_speech_interrupted()
+
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
                 # provider interrupt itself must happen after this lock is
                 # released: a non-interruptible tool may keep it waiting.
                 busy_transport = t or session.get("transport")
             else:
+                # A watch session's run lives in the PARENT turn, so its own
+                # running flag is False. Without this guard, typing mid-run
+                # builds a second agent racing the child on the same stored
+                # session.
+                if session.get("lazy") and _child_run_active(
+                    str(session.get("session_key") or "")
+                ):
+                    if intent_checked:
+                        _abort_prompt_submit_intent(params, session)
+                    return _err(
+                        rid, 4009, "subagent still running — wait for it to finish"
+                    )
+
+                truncated = None
+                if truncate_user_ordinal is not None:
+                    try:
+                        ordinal = int(truncate_user_ordinal)
+                    except (TypeError, ValueError):
+                        return _err(
+                            rid,
+                            4004,
+                            "truncate_before_user_ordinal must be an integer",
+                        )
+                    history = session.get("history", [])
+                    user_indices = [
+                        i for i, message in enumerate(history)
+                        if message.get("role") == "user"
+                    ]
+                    # Reject out-of-range ordinals on BOTH ends. A negative
+                    # value would otherwise index the last user turn and
+                    # persist an unrecoverable history overwrite.
+                    if ordinal < 0 or ordinal >= len(user_indices):
+                        return _err(
+                            rid,
+                            4018,
+                            "target user message is no longer in session history",
+                        )
+                    truncated = history[: user_indices[ordinal]]
+
+                if not intent_checked:
+                    retry_result = _claim_prompt_submit_intent(params, rid, session)
+                    if retry_result is not None:
+                        return retry_result
+                    intent_checked = True
+
+                    if params.get("interrupted"):
+                        from tools.tts_streaming import mark_speech_interrupted
+
+                        mark_speech_interrupted()
+
+                if truncated is not None:
+                    session["history"] = truncated
+                    session["history_version"] = int(
+                        session.get("history_version", 0)
+                    ) + 1
+                    if (db := _get_db()) is not None:
+                        try:
+                            db.replace_messages(session["session_key"], truncated)
+                        except Exception as exc:
+                            print(
+                                "prompt.submit: replace_messages failed: "
+                                f"{exc}",
+                                file=sys.stderr,
+                            )
+                session["running"] = True
+                session["_turn_cancel_requested"] = False
+                session["last_active"] = time.time()
+                _start_inflight_turn(session, text)
                 break
-        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+
+        busy_response = _handle_busy_submit(
+            rid,
+            sid,
+            session,
+            text,
+            busy_transport,
+            client_request_id,
+        )
         if busy_response is not None:
             return busy_response
-        # The old turn finished between the two lock acquisitions. Retry the
-        # claim so this prompt starts normally instead of being stranded in a
-        # queue whose drain already ran.
-
-    with session["history_lock"]:
-        # A watch session's run lives in the PARENT turn, so its own running
-        # flag is False — without this, typing mid-run builds a second agent
-        # racing the in-flight child on the same stored session (interleaved
-        # transcript, stale fork). After the run completes, submitting is fine:
-        # the upgrade resumes the child's transcript as a normal conversation.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish")
-        if truncate_user_ordinal is not None:
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            # Reject out-of-range ordinals on BOTH ends. A negative value would
-            # otherwise sail past the upper-bound check and hit Python's negative
-            # indexing below (user_indices[-1] -> the LAST user turn), silently
-            # truncating history to everything before it and persisting that loss
-            # via replace_messages — an unrecoverable overwrite of the session DB.
-            if ordinal < 0 or ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
-                try:
-                    db.replace_messages(session["session_key"], truncated)
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
-        session["running"] = True
-        session["_turn_cancel_requested"] = False
-        session["last_active"] = time.time()
-        _start_inflight_turn(session, text)
+        # The old turn finished between the two lock acquisitions. Re-enter
+        # without re-claiming this request id, then start it normally instead
+        # of stranding it in a queue whose drain already ran.
 
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
@@ -10077,6 +10338,7 @@ def _(rid, params: dict) -> dict:
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
+            _abort_prompt_submit_intent(params, session)
             _emit(
                 "error",
                 sid,
@@ -10092,6 +10354,7 @@ def _(rid, params: dict) -> dict:
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
+                _abort_prompt_submit_intent(params, session)
                 session["running"] = False
                 _clear_inflight_turn(session)
                 return

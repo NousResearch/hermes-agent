@@ -111,6 +111,51 @@ class TestChromeDebugLaunch:
         assert command is not None
         assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
 
+    def test_linux_candidates_prefer_helium_browser_when_present(self):
+        helium = "/usr/bin/helium-browser"
+        chrome = "/usr/bin/google-chrome"
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: helium if name == "helium-browser" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path in {helium, chrome}):
+            candidates = get_chrome_debug_candidates("Linux")
+
+        assert candidates[0] == helium
+
+    def test_helium_manual_command_retains_cdp_and_first_run_flags_omits_user_data_dir(self):
+        helium = "/usr/bin/helium-browser"
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: helium if name == "helium-browser" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == helium):
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert command is not None
+        assert command.startswith(f"{helium} --remote-debugging-port=9222")
+        assert "--no-first-run" in command
+        assert "--no-default-browser-check" in command
+        assert "--user-data-dir" not in command
+
+    def test_helium_popen_launch_retains_cdp_and_first_run_flags_omits_user_data_dir(self):
+        helium = "/usr/bin/helium-browser"
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return object()
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: helium if name == "helium-browser" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == helium), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", return_value="ready"), \
+             patch("subprocess.Popen", side_effect=fake_popen):
+            assert HermesCLI._try_launch_chrome_debug(9222, "Linux") is True
+
+        cmd = captured["cmd"]
+        assert cmd[0] == helium
+        assert "--remote-debugging-port=9222" in cmd
+        assert "--no-first-run" in cmd
+        assert "--no-default-browser-check" in cmd
+        assert not any(arg.startswith("--user-data-dir") for arg in cmd)
+
     def test_linux_candidates_prefer_chrome_before_brave_when_both_exist(self):
         chrome = "/usr/bin/google-chrome"
         brave = "/usr/bin/brave-browser"

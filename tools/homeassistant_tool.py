@@ -153,10 +153,24 @@ def _build_service_payload(
     return payload
 
 
+def _build_service_url(
+    hass_url: str,
+    domain: str,
+    service: str,
+    return_response: bool = False,
+) -> str:
+    """Build the HA service URL, optionally requesting response data."""
+    url = f"{hass_url}/api/services/{domain}/{service}"
+    if return_response:
+        url += "?return_response"
+    return url
+
+
 def _parse_service_response(
     domain: str,
     service: str,
     result: Any,
+    return_response: bool = False,
 ) -> Dict[str, Any]:
     """Parse HA service call response into a structured result."""
     affected = []
@@ -167,10 +181,30 @@ def _parse_service_response(
                 "state": s.get("state", ""),
             })
 
-    return {
+    parsed = {
         "success": True,
         "service": f"{domain}.{service}",
         "affected_entities": affected,
+    }
+    if return_response:
+        parsed["response"] = result
+    return parsed
+
+
+def _extract_todo_items_response(
+    entity_id: str,
+    service_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Extract todo items from a HA todo.get_items service response."""
+    response = service_result.get("response", {}) if isinstance(service_result, dict) else {}
+    entity_payload = response.get(entity_id, {}) if isinstance(response, dict) else {}
+    items = entity_payload.get("items", []) if isinstance(entity_payload, dict) else []
+    if not isinstance(items, list):
+        items = []
+    return {
+        "entity_id": entity_id,
+        "count": len(items),
+        "items": items,
     }
 
 
@@ -179,12 +213,13 @@ async def _async_call_service(
     service: str,
     entity_id: Optional[str] = None,
     data: Optional[Dict[str, Any]] = None,
+    return_response: bool = False,
 ) -> Dict[str, Any]:
     """Call a Home Assistant service."""
     import aiohttp
 
     hass_url, hass_token = _get_config()
-    url = f"{hass_url}/api/services/{domain}/{service}"
+    url = _build_service_url(hass_url, domain, service, return_response)
     payload = _build_service_payload(entity_id, data)
 
     async with aiohttp.ClientSession() as session:
@@ -197,7 +232,7 @@ async def _async_call_service(
             resp.raise_for_status()
             result = await resp.json()
 
-    return _parse_service_response(domain, service, result)
+    return _parse_service_response(domain, service, result, return_response=return_response)
 
 
 # ---------------------------------------------------------------------------
@@ -280,12 +315,54 @@ def _handle_call_service(args: dict, **kw) -> str:
         except json.JSONDecodeError as e:
             return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
 
+    return_response = args.get("return_response", False)
+    if isinstance(return_response, str):
+        return_response = return_response.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        return_response = bool(return_response)
+
     try:
-        result = _run_async(_async_call_service(domain, service, entity_id, data))
+        result = _run_async(
+            _async_call_service(
+                domain,
+                service,
+                entity_id,
+                data,
+                return_response=return_response,
+            )
+        )
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
         return tool_error(f"Failed to call {domain}.{service}: {e}")
+
+
+def _handle_get_todo_items(args: dict, **kw) -> str:
+    """Handler for ha_get_todo_items tool."""
+    entity_id = args.get("entity_id", "")
+    if not entity_id:
+        return tool_error("Missing required parameter: entity_id")
+    if not _ENTITY_ID_RE.match(entity_id):
+        return tool_error(f"Invalid entity_id format: {entity_id}")
+    if not entity_id.startswith("todo."):
+        return tool_error(f"ha_get_todo_items only supports todo entities, got: {entity_id}")
+
+    status = args.get("status", "needs_action") or "needs_action"
+    if status not in {"needs_action", "completed"}:
+        return tool_error("Invalid status: expected 'needs_action' or 'completed'")
+
+    try:
+        result = _run_async(_async_call_service(
+            "todo",
+            "get_items",
+            entity_id=entity_id,
+            data={"status": status},
+            return_response=True,
+        ))
+        return json.dumps({"result": _extract_todo_items_response(entity_id, result)})
+    except Exception as e:
+        logger.error("ha_get_todo_items error: %s", e)
+        return tool_error(f"Failed to get todo items for {entity_id}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -464,8 +541,42 @@ HA_CALL_SERVICE_SCHEMA = {
                     '{"volume_level": 0.5} for media players.'
                 ),
             },
+            "return_response": {
+                "type": "boolean",
+                "description": (
+                    "Set true for Home Assistant services that return response data, "
+                    "such as todo.get_items. This appends ?return_response to the REST call."
+                ),
+            },
         },
         "required": ["domain", "service"],
+    },
+}
+
+
+HA_GET_TODO_ITEMS_SCHEMA = {
+    "name": "ha_get_todo_items",
+    "description": (
+        "Get items from a Home Assistant todo list entity, such as a Bring grocery list. "
+        "Use this to read shopping-list contents."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": "Todo entity ID, e.g. 'todo.tawnberry' or 'todo.costco'.",
+            },
+            "status": {
+                "type": "string",
+                "description": (
+                    "Item status to fetch: 'needs_action' for active items or 'completed'. "
+                    "Defaults to 'needs_action'."
+                ),
+                "enum": ["needs_action", "completed"],
+            },
+        },
+        "required": ["entity_id"],
     },
 }
 
@@ -510,4 +621,13 @@ registry.register(
     handler=_handle_call_service,
     check_fn=_check_ha_available,
     emoji="🏠",
+)
+
+registry.register(
+    name="ha_get_todo_items",
+    toolset="homeassistant",
+    schema=HA_GET_TODO_ITEMS_SCHEMA,
+    handler=_handle_get_todo_items,
+    check_fn=_check_ha_available,
+    emoji="🛒",
 )

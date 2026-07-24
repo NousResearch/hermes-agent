@@ -48,7 +48,7 @@ Home Assistant will appear as a connected platform alongside any other messaging
 
 ## Available Tools
 
-Hermes Agent registers four tools for smart home control:
+Hermes Agent registers Home Assistant tools for smart-home control and todo/shopping-list access:
 
 ### `ha_list_entities`
 
@@ -91,6 +91,20 @@ List available services (actions) for device control. Shows what actions can be 
 What services are available for climate devices?
 ```
 
+### `ha_get_todo_items`
+
+Get active or completed items from a Home Assistant `todo` entity, including Bring! shopping lists.
+
+**Parameters:**
+- `entity_id` *(required)* — Todo entity ID, e.g. `todo.shopping_list`, `todo.groceries`
+- `status` *(optional)* — `needs_action` for active items, or `completed`. Defaults to `needs_action`.
+
+**Example:**
+```
+What's on my grocery list?
+→ ha_get_todo_items(entity_id="todo.shopping_list")
+```
+
 ### `ha_call_service`
 
 Call a Home Assistant service to control a device.
@@ -100,6 +114,7 @@ Call a Home Assistant service to control a device.
 - `service` *(required)* — Service name: `turn_on`, `turn_off`, `toggle`, `set_temperature`, `set_hvac_mode`, `open_cover`, `close_cover`, `set_volume_level`
 - `entity_id` *(optional)* — Target entity, e.g., `light.living_room`
 - `data` *(optional)* — Additional parameters as a JSON object
+- `return_response` *(optional)* — Set to `true` for services that return data, such as `todo.get_items`.
 
 **Examples:**
 

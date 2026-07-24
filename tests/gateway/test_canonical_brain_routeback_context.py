@@ -215,14 +215,14 @@ def test_enabled_context_surfaces_lookup_failure_as_incomplete_blocker(monkeypat
     assert "do not create a duplicate case" in prompt
 
 
-def test_compatibility_posture_is_operational_but_not_privileged(monkeypatch):
+def test_compatibility_posture_is_configured_but_not_privileged(monkeypatch):
     import gateway.canonical_writer_boundary as boundary
 
     monkeypatch.setattr(
         boundary,
         "canonical_runtime_posture",
         lambda: {
-            "data_plane": "operational",
+            "data_plane": "configured",
             "transport": "legacy_direct_helper_compat",
             "privileged_isolation": "pending",
             "compatibility_fallback_active": True,
@@ -231,7 +231,8 @@ def test_compatibility_posture_is_operational_but_not_privileged(monkeypatch):
 
     prompt = build_canonical_runtime_posture_prompt()
 
-    assert "Canonical data plane: OPERATIONAL" in prompt
+    assert "Canonical data plane: CONFIGURED" in prompt
+    assert "proves the corresponding live Canonical read/write path OPERATIONAL" in prompt
     assert "Privileged writer isolation: PENDING" in prompt
     assert "Do not report Canonical linkage as unreadable or unwritable" in prompt
 

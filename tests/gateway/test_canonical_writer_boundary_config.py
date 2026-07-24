@@ -157,7 +157,7 @@ def test_legacy_direct_compat_enables_model_tools_without_writer_boundary():
     assert boundary.canonical_model_tools_configured() is True
     assert boundary.canonical_data_plane_mode() == "legacy_direct_helper_compat"
     assert boundary.canonical_runtime_posture() == {
-        "data_plane": "operational",
+        "data_plane": "configured",
         "transport": "legacy_direct_helper_compat",
         "privileged_isolation": "pending",
         "compatibility_fallback_active": True,
@@ -169,7 +169,7 @@ def test_privileged_writer_reports_both_data_plane_and_isolation_active():
 
     assert boundary.canonical_data_plane_mode() == "privileged_writer"
     assert boundary.canonical_runtime_posture() == {
-        "data_plane": "operational",
+        "data_plane": "configured",
         "transport": "privileged_writer",
         "privileged_isolation": "active",
         "compatibility_fallback_active": False,

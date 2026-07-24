@@ -196,13 +196,20 @@ def _writer_proxy_result(
 
 
 def _with_canonical_runtime_posture(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach the two-lane data-plane/isolation posture to model-facing I/O."""
+    """Attach configuration posture and promote only proven successful I/O."""
 
     from gateway.canonical_writer_boundary import canonical_runtime_posture
 
+    posture = dict(canonical_runtime_posture())
+    if (
+        result.get("success") is True
+        and posture.get("transport")
+        in {"privileged_writer", "legacy_direct_helper_compat"}
+    ):
+        posture["data_plane"] = "operational"
     return {
         **result,
-        "canonical_runtime": canonical_runtime_posture(),
+        "canonical_runtime": posture,
     }
 
 

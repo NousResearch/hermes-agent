@@ -57,6 +57,29 @@ def _enable_boundary(monkeypatch, call):
     monkeypatch.setattr(writer_boundary, "canonical_writer_call", call)
 
 
+def test_runtime_posture_promotes_only_proven_successful_io(monkeypatch):
+    monkeypatch.setattr(
+        writer_boundary,
+        "canonical_runtime_posture",
+        lambda: {
+            "data_plane": "configured",
+            "transport": "privileged_writer",
+            "privileged_isolation": "active",
+            "compatibility_fallback_active": False,
+        },
+    )
+
+    failed = canonical_tool._with_canonical_runtime_posture(
+        {"success": False, "status": "CANONICAL_EVENT_APPEND_READBACK_FAILED"}
+    )
+    passed = canonical_tool._with_canonical_runtime_posture(
+        {"success": True, "status": "CANONICAL_EVENT_APPEND_PASS"}
+    )
+
+    assert failed["canonical_runtime"]["data_plane"] == "configured"
+    assert passed["canonical_runtime"]["data_plane"] == "operational"
+
+
 def _guild_target(_target_ref):
     return {
         "channel_id": DISCORD_CHANNEL_ID,
@@ -677,6 +700,16 @@ def test_public_query_active_plan_and_routeback_context_contracts(monkeypatch):
         pytest.fail(f"unexpected operation: {operation}")
 
     _enable_boundary(monkeypatch, call)
+    monkeypatch.setattr(
+        writer_boundary,
+        "canonical_runtime_posture",
+        lambda: {
+            "data_plane": "configured",
+            "transport": "privileged_writer",
+            "privileged_isolation": "active",
+            "compatibility_fallback_active": False,
+        },
+    )
 
     query = json.loads(canonical_tool.canonical_brain_query_tool(
         case_id="case:writer-boundary",
@@ -688,7 +721,15 @@ def test_public_query_active_plan_and_routeback_context_contracts(monkeypatch):
     )
     context = routeback_context.lookup_routeback_context_for_thread("owner-thread")
 
-    assert query == query_result
+    assert query == {
+        **query_result,
+        "canonical_runtime": {
+            "data_plane": "operational",
+            "transport": "privileged_writer",
+            "privileged_isolation": "active",
+            "compatibility_fallback_active": False,
+        },
+    }
     assert active is True
     assert context == routeback_context.RouteBackContextLookup(
         cases=(

@@ -88,7 +88,7 @@ def _helper_available() -> bool:
 
 
 def build_canonical_runtime_posture_prompt() -> str:
-    """Describe temporary compatibility without conflating it with outage."""
+    """Describe configured compatibility without claiming unproven live I/O."""
 
     from gateway.canonical_writer_boundary import canonical_runtime_posture
 
@@ -99,9 +99,9 @@ def build_canonical_runtime_posture_prompt() -> str:
         [
             "## Canonical Brain Runtime Posture",
             "",
-            "- Canonical data plane: OPERATIONAL through the explicitly approved temporary compatibility transport.",
+            "- Canonical data plane: CONFIGURED through the explicitly approved temporary compatibility transport.",
             "- Privileged writer isolation: PENDING migration; report this as a separate security-hardening lane.",
-            "- A successful `canonical_brain_query` or `canonical_event_append` is functional Canonical read/write proof.",
+            "- Only a successful `canonical_brain_query` or `canonical_event_append` proves the corresponding live Canonical read/write path OPERATIONAL.",
             "- Do not report Canonical linkage as unreadable or unwritable solely because the privileged service/socket is not active.",
             "- Do not describe the compatibility transport as privileged isolation; the target remains the separate managed writer service.",
         ]

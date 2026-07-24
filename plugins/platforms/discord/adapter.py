@@ -854,21 +854,23 @@ def _discord_explicitly_allowed_guild_target(channel: Any) -> bool:
 
     if channel is None or getattr(channel, "guild", None) is None:
         return False
-    target_ids = {
-        str(value).strip()
+    targets = {
+        str(value).strip().casefold()
         for value in (
             getattr(channel, "id", None),
             getattr(channel, "parent_id", None),
             getattr(getattr(channel, "parent", None), "id", None),
+            getattr(channel, "name", None),
+            getattr(getattr(channel, "parent", None), "name", None),
         )
         if value
     }
-    allowed_channel_ids = {
-        value.strip()
+    allowed_targets = {
+        value.strip().lstrip("#").casefold()
         for value in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(",")
         if value.strip()
     }
-    return bool(target_ids & allowed_channel_ids)
+    return "*" in allowed_targets or bool(targets & allowed_targets)
 
 
 def _discord_private_target_with_bot_access(channel: Any) -> bool:
@@ -975,8 +977,9 @@ def _discord_policy_public_target_error(
         if _discord_approved_private_guild_target(channel):
             return None
         return (
-            "Discord target is not an approved private guild channel with "
-            "explicit bot access, or one of that channel's threads."
+            "Discord target is not in DISCORD_ALLOWED_CHANNELS and is not an "
+            "approved private guild channel with explicit bot access, or one "
+            "of that channel's threads."
         )
     if not _discord_public_only_policy_required():
         return None
@@ -4248,7 +4251,14 @@ class DiscordAdapter(BasePlatformAdapter):
         an opaque interaction failure rather than a clean rejection.
         """
         chan_obj = getattr(interaction, "channel", None)
-        public_target_error = _discord_policy_public_target_error(chan_obj)
+        public_target_error = (
+            _discord_policy_public_target_error(chan_obj)
+            if (
+                chan_obj is not None
+                and not os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
+            )
+            else None
+        )
         if public_target_error:
             return (
                 False,
@@ -4388,8 +4398,11 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name, user_id, chan_id, guild_id, command_text, reason,
         )
 
-        unsafe_target = _discord_policy_public_target_error(
-            getattr(interaction, "channel", None)
+        interaction_channel = getattr(interaction, "channel", None)
+        unsafe_target = (
+            _discord_policy_public_target_error(interaction_channel)
+            if interaction_channel is not None
+            else None
         )
         if not unsafe_target:
             try:

@@ -1061,10 +1061,61 @@ def test_unit_input_authority_is_signed_locally_and_staged_before_release(
     )
     staged = (tmp_path / "staged").resolve()
     _patch_staged_paths(monkeypatch, staged)
+    monkeypatch.setattr(cutover, "EVIDENCE_ROOT", tmp_path.resolve())
 
-    receipt = stager.stage_publication(publication, require_root=False)
+    class InstalledStager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict]] = []
+
+        def invoke(
+            self,
+            revision: str,
+            action: str,
+            *,
+            publication: dict,
+        ) -> dict:
+            self.calls.append((revision, action, copy.deepcopy(publication)))
+            return stager.stage_publication(
+                publication,
+                require_root=False,
+                now_unix=now,
+            )
+
+    transport = InstalledStager()
+    changed = {
+        **publication,
+        "secret_material_recorded": True,
+    }
+    changed["publication_sha256"] = hashlib.sha256(_canonical({
+        name: item
+        for name, item in changed.items()
+        if name != "publication_sha256"
+    })).hexdigest()
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="owner_cutover_unit_input_stage_invalid",
+    ):
+        owner.stage_unit_input_authority(
+            release_revision=REVISION,
+            remote_stager_revision="b" * 40,
+            publication=changed,
+            transport=transport,
+            now_unix=now,
+        )
+    assert transport.calls == []
+
+    receipt = owner.stage_unit_input_authority(
+        release_revision=REVISION,
+        remote_stager_revision="b" * 40,
+        publication=publication,
+        transport=transport,
+        now_unix=now,
+    )
 
     assert receipt["action"] == "unit-input-authority"
+    assert transport.calls == [
+        ("b" * 40, "stage-publication", publication),
+    ]
     assert plan["plan_sha256"] == approval["plan_sha256"]
     assert (staged / "unit-input-plan.json").exists()
     assert (staged / "unit-input-approval.json").exists()
@@ -1190,6 +1241,71 @@ def test_owner_cli_authors_unit_input_publication_without_exporting_key(
     assert publication["action"] == "unit-input-authority"
     assert b"PRIVATE KEY" not in output.read_bytes()
     assert key_path.exists()
+
+
+def test_owner_cli_stages_successor_unit_inputs_through_installed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    old_revision = "b" * 40
+    publication = {"canonical": "successor-unit-input-authority"}
+    publication_path = (tmp_path / "unit-input-publication.json").resolve()
+    publication_path.write_bytes(_canonical(publication))
+    output = (tmp_path / "unit-input-stage-receipt.json").resolve()
+    runtime_calls: list[str] = []
+    identity_calls: list[str] = []
+    staged: list[dict] = []
+    transport = object()
+    receipt = {"receipt_sha256": "c" * 64}
+
+    monkeypatch.setattr(
+        owner,
+        "_active_owner_runtime_attestation",
+        lambda revision: (
+            runtime_calls.append(revision)
+            or _runtime_attestation(revision)
+        ),
+    )
+    monkeypatch.setattr(
+        owner,
+        "build_production_cutover_owner_identity",
+        lambda revision: (
+            identity_calls.append(revision) or (object(), object(), object())
+        ),
+    )
+    monkeypatch.setattr(
+        owner,
+        "ProductionCutoverTransport",
+        lambda *_args, **_kwargs: transport,
+    )
+
+    def stage(**kwargs) -> dict:
+        staged.append(kwargs)
+        return receipt
+
+    monkeypatch.setattr(owner, "stage_unit_input_authority", stage)
+
+    assert owner.main([
+        "stage-unit-inputs",
+        "--revision",
+        REVISION,
+        "--remote-stager-revision",
+        old_revision,
+        "--publication",
+        str(publication_path),
+        "--output",
+        str(output),
+    ]) == 0
+
+    assert runtime_calls == [REVISION]
+    assert identity_calls == [REVISION]
+    assert staged == [{
+        "release_revision": REVISION,
+        "remote_stager_revision": old_revision,
+        "publication": publication,
+        "transport": transport,
+    }]
+    assert json.loads(output.read_bytes()) == receipt
 
 
 def test_sealed_cli_exposes_only_prepare_and_resume_cutover_workflow(

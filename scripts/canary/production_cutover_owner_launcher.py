@@ -1594,6 +1594,62 @@ def _validate_publication_stage_receipt(
     return copy.deepcopy(dict(value))
 
 
+def stage_unit_input_authority(
+    *,
+    release_revision: str,
+    remote_stager_revision: str,
+    publication: Mapping[str, Any],
+    transport: Any,
+    now_unix: int | None = None,
+) -> Mapping[str, Any]:
+    """Stage successor unit inputs through one installed compatible runtime.
+
+    The owner launcher itself remains attested to ``release_revision``.  Only
+    the fixed remote public stager is selected from
+    ``remote_stager_revision`` so the successor's signed unit inputs can be
+    present before that successor release is packaged or installed.
+    """
+
+    documents = publication.get("documents") if isinstance(
+        publication, Mapping
+    ) else None
+    if (
+        package.REVISION.fullmatch(release_revision or "") is None
+        or package.REVISION.fullmatch(remote_stager_revision or "") is None
+        or not isinstance(documents, Mapping)
+        or publication.get("action") != "unit-input-authority"
+        or publication.get("release_revision") != release_revision
+        or set(documents) != {"plan", "approval"}
+        or not callable(getattr(transport, "invoke", None))
+    ):
+        raise OwnerCutoverError("owner_cutover_unit_input_stage_invalid")
+    try:
+        expected_publication = build_publication(
+            action="unit-input-authority",
+            release_revision=release_revision,
+            documents={
+                "plan": documents["plan"],
+                "approval": documents["approval"],
+            },
+            now_unix=now_unix,
+        )
+    except (KeyError, PermissionError, PublicStagingError, TypeError, ValueError):
+        raise OwnerCutoverError(
+            "owner_cutover_unit_input_stage_invalid"
+        ) from None
+    if publication != expected_publication:
+        raise OwnerCutoverError("owner_cutover_unit_input_stage_invalid")
+    return _validate_publication_stage_receipt(
+        transport.invoke(
+            remote_stager_revision,
+            "stage-publication",
+            publication=expected_publication,
+        ),
+        publication=expected_publication,
+        expected_file_count=2,
+    )
+
+
 def _validate_preflight_receipt(
     value: Mapping[str, Any],
     *,
@@ -3413,6 +3469,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     unit.add_argument("--owner-private-key", type=Path, required=True)
     unit.add_argument("--owner-subject-sha256", required=True)
     unit.add_argument("--output", type=Path, required=True)
+    stage_unit = subparsers.add_parser("stage-unit-inputs")
+    stage_unit.add_argument("--revision", required=True)
+    stage_unit.add_argument("--remote-stager-revision", required=True)
+    stage_unit.add_argument("--publication", type=Path, required=True)
+    stage_unit.add_argument("--output", type=Path, required=True)
     os_login_preflight = subparsers.add_parser("os-login-preflight")
     os_login_preflight.add_argument("--revision", required=True)
     os_login_preflight.add_argument(
@@ -3447,6 +3508,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         runtime_attestation = _active_owner_runtime_attestation(
             arguments.revision
         )
+        if arguments.command == "stage-unit-inputs":
+            if not arguments.publication.is_absolute():
+                raise OwnerCutoverError(
+                    "owner_cutover_public_input_invalid"
+                )
+            identity, trusted, configuration = (
+                build_production_cutover_owner_identity(
+                    arguments.revision
+                )
+            )
+            output_value = stage_unit_input_authority(
+                release_revision=arguments.revision,
+                remote_stager_revision=arguments.remote_stager_revision,
+                publication=_read_public_json(arguments.publication),
+                transport=ProductionCutoverTransport(
+                    identity,
+                    gcloud_executable=trusted,
+                    gcloud_configuration=configuration,
+                ),
+            )
+            created = _write_public_output(arguments.output, output_value)
+            print(_canonical({
+                "schema": OWNER_WORKSPACE_SCHEMA,
+                "action": arguments.command,
+                "release_revision": arguments.revision,
+                "remote_stager_revision": (
+                    arguments.remote_stager_revision
+                ),
+                "output_path": str(arguments.output),
+                "output_sha256": output_value["receipt_sha256"],
+                "created": created,
+                "private_key_staged": False,
+                "secret_material_recorded": False,
+            }).decode("utf-8"))
+            return 0
         if arguments.command == "prepare-cutover":
             if (
                 not arguments.isolated_canary_goal_prerequisite.is_absolute()

@@ -334,18 +334,30 @@ def canonical_data_plane_mode() -> str:
 
 
 def canonical_runtime_posture() -> dict[str, Any]:
-    """Return a secret-free model/diagnostic view of the two health lanes."""
+    """Return a secret-free configuration view of the two runtime lanes.
+
+    Configuration proves that a transport is selected, not that the current
+    process has completed live I/O through it.  Model-facing tool responses
+    promote ``data_plane`` to ``operational`` only after the corresponding
+    Canonical request succeeds.
+    """
 
     mode = canonical_data_plane_mode()
     return {
         "data_plane": (
-            "operational"
+            "configured"
             if mode in {"privileged_writer", "legacy_direct_helper_compat"}
             else mode
         ),
         "transport": mode,
         "privileged_isolation": (
-            "active" if mode == "privileged_writer" else "pending"
+            "active"
+            if mode == "privileged_writer"
+            else (
+                "pending"
+                if mode == "legacy_direct_helper_compat"
+                else "inactive"
+            )
         ),
         "compatibility_fallback_active": mode == "legacy_direct_helper_compat",
     }

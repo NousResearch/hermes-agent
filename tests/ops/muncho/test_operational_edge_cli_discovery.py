@@ -99,7 +99,12 @@ def test_bundled_skill_sync_exposes_the_exact_cli_to_the_model(
     assert "muncho-ops catalog" in skill
     assert "muncho-ops schema --operation" in skill
     assert "muncho-ops authorization-hash" in skill
-    assert "Discord DMs remain forbidden" in skill
+    assert "approved private guild channels" in skill
+    assert "newly created private guild channel" in skill
+    assert "`discord.require_mention`" in skill
+    assert "`discord.free_response_channels`" in skill
+    assert "`discord.thread_require_mention`" in skill
+    assert "Public channels and Discord DMs remain" in skill
 
 
 def test_packaged_console_entry_and_catalog_are_exact(

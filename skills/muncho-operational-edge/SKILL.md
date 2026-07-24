@@ -26,7 +26,18 @@ infrastructure observation, GitHub refs, and canonical scheduled operations.
 - Require the release-pinned `muncho-ops` command and a ready isolated service
   for the selected credential domain.
 - Require an exact owner-approved Canonical Writer capability for mutations.
-- Keep Discord delivery public-channel or thread only; never use DMs.
+- Keep Discord delivery inside approved private guild channels or their
+  approved guild threads only. Never use public channels, DMs, group DMs, or
+  Discord private threads.
+- Treat a newly created private guild channel as dynamically approved only
+  when live Discord permissions prove that `@everyone` cannot view it, Muncho
+  has an explicit channel/member or role grant, and Muncho can view, read
+  history, and send there. Do not require a hard-coded channel id when those
+  proofs hold, and fail closed if any proof is missing.
+- Preserve each channel's configured trigger policy. Honor
+  `discord.require_mention`, `discord.free_response_channels`, and
+  `discord.thread_require_mention` exactly; channel access never implies a
+  mention bypass.
 
 ## How to Run
 
@@ -121,7 +132,9 @@ fabricate or edit a capability file.
   genuinely required.
 - On `dispatch_uncertain`, reconcile the same operation, arguments, and
   idempotency key. Do not create a new key to bypass uncertainty.
-- Record `route_back.sent` only after the public-channel send receipt exists;
-  otherwise record `route_back.blocked`. Discord DMs remain forbidden.
+- Record `route_back.sent` only after a send receipt proves delivery to the
+  exact approved private guild channel or its approved guild thread; otherwise
+  record `route_back.blocked`. Public channels and Discord DMs remain
+  forbidden.
 - Confirm the operation id, canonicalized arguments, idempotency key, release
   revision, domain identity, and receipt signature match the intended action.

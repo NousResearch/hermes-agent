@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 from pathlib import Path
+
+import pytest
 
 # Import the stdlib-only boot helper by path (it lives under scripts/, not an
 # installed package) — mirrors the repo's other scripts/-helper tests.
@@ -325,3 +329,106 @@ def test_terminal_entry_missing_marker_is_not_terminal(tmp_path):
     entry) → not terminal, no re-seed."""
     auth = _write_auth(tmp_path, {"nous": {"client_id": "hermes-cli-vps"}})
     assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "not_terminal"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+def test_reseeded_file_is_0600_even_when_chmod_fails(tmp_path, monkeypatch):
+    """The re-seeded auth.json must be 0o600 even if the post-write chmod
+    raises. Before the fix the file was created with a plain open() at the
+    process umask (0o666 under umask 0) and only tightened by a chmod whose
+    OSError was silently swallowed — so a chmod failure left the fresh Nous
+    refresh_token permanently world-readable."""
+    old_umask = os.umask(0)
+    try:
+        auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+
+        def _no_chmod(*_a, **_k):
+            raise OSError("chmod unsupported on this volume")
+
+        monkeypatch.setattr(mod.os, "chmod", _no_chmod)
+
+        assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
+        mode = stat.S_IMODE(os.stat(auth).st_mode)
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+    finally:
+        os.umask(old_umask)
+
+
+def test_fdopen_failure_closes_fd_and_removes_temp(tmp_path, monkeypatch):
+    """If os.fdopen() raises after os.open() succeeds, the raw descriptor must
+    be closed (not leaked) and the just-created temp file removed, and the error
+    must propagate.
+
+    Before the fix os.fdopen was called directly in the `with` header, so a
+    raise there never handed the fd to the context manager: the `with`'s
+    __exit__ never ran, the `finally` only unlinked tmp_path, and the raw fd
+    leaked for the life of the process."""
+    auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+
+    opened_fds: list[int] = []
+    closed_fds: list[int] = []
+
+    real_open = mod.os.open
+    real_close = mod.os.close
+
+    def _spy_open(path, flags, *a, **k):
+        fd = real_open(path, flags, *a, **k)
+        # Only track the rebootstrap temp descriptor, not unrelated opens.
+        if str(path).endswith(".tmp"):
+            opened_fds.append(fd)
+        return fd
+
+    def _spy_close(fd, *a, **k):
+        closed_fds.append(fd)
+        return real_close(fd, *a, **k)
+
+    def _boom_fdopen(*_a, **_k):
+        raise OSError("Cannot allocate memory")
+
+    monkeypatch.setattr(mod.os, "open", _spy_open)
+    monkeypatch.setattr(mod.os, "close", _spy_close)
+    monkeypatch.setattr(mod.os, "fdopen", _boom_fdopen)
+
+    with pytest.raises(OSError, match="Cannot allocate memory"):
+        mod.reseed_if_terminal(auth, _FRESH_SEED)
+
+    # The temp fd was opened exactly once...
+    assert len(opened_fds) == 1, "expected the rebootstrap temp file to be opened once"
+    # ...and that exact fd was closed (no leak).
+    assert opened_fds[0] in closed_fds, "raw fd from os.open was leaked on fdopen failure"
+    # The just-created temp file was cleaned up.
+    leftover = list(tmp_path.glob("auth.json.rebootstrap.*.tmp"))
+    assert leftover == [], f"temp file left behind after fdopen failure: {leftover}"
+    # The original auth.json was left exactly as-is (still terminal).
+    store = json.loads(Path(auth).read_text())
+    assert store["providers"]["nous"]["last_auth_error"]["relogin_required"] is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+def test_reseeded_temp_is_never_created_group_or_world_readable(tmp_path, monkeypatch):
+    """The tokens must never touch disk at a loose mode, even transiently.
+
+    Spy on os.replace to capture the temp file's mode at rename time (i.e.
+    the mode the secrets were written at). Before the fix the temp file was
+    created via plain open() at the process umask, so this window was 0o666
+    under umask 0."""
+    old_umask = os.umask(0)
+    try:
+        auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+
+        real_replace = mod.os.replace
+        captured = {}
+
+        def _spy_replace(src, dst, *a, **k):
+            captured["mode"] = stat.S_IMODE(os.stat(src).st_mode)
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(mod.os, "replace", _spy_replace)
+
+        assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
+        assert captured["mode"] == 0o600, (
+            f"tokens written to a temp file at {oct(captured['mode'])} — "
+            "must be 0o600 with no group/world bits"
+        )
+    finally:
+        os.umask(old_umask)

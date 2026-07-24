@@ -566,7 +566,7 @@ class TestDogfoodSkill:
     def _skill_dir(self):
         # Use the actual repo skills dir (not temp)
         self.skill_dir = os.path.join(
-            os.path.dirname(__file__), "..", "..", "skills", "dogfood"
+            os.path.dirname(__file__), "..", "..", "skills", "software-development", "dogfood"
         )
 
     def test_skill_md_exists(self):

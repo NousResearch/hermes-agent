@@ -464,7 +464,7 @@ class TestBlocklistCoverage:
 
 
 class TestSanePathIncludesHomebrew:
-    """Verify _SANE_PATH includes macOS Homebrew directories."""
+    """Verify _SANE_PATH includes macOS Homebrew and Linuxbrew directories."""
 
     @pytest.fixture(autouse=True)
     def _disable_hermes_bin_injection(self):
@@ -485,6 +485,14 @@ class TestSanePathIncludesHomebrew:
     def test_sane_path_includes_homebrew_sbin(self):
         from tools.environments.local import _SANE_PATH
         assert "/opt/homebrew/sbin" in _SANE_PATH
+
+    def test_sane_path_includes_linuxbrew_bin(self):
+        from tools.environments.local import _SANE_PATH
+        assert "/home/linuxbrew/.linuxbrew/bin" in _SANE_PATH
+
+    def test_sane_path_includes_linuxbrew_sbin(self):
+        from tools.environments.local import _SANE_PATH
+        assert "/home/linuxbrew/.linuxbrew/sbin" in _SANE_PATH
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self):
         """When PATH is minimal, _make_run_env appends missing sane entries."""

@@ -4,7 +4,9 @@ Runs asynchronously after the first response is delivered so it never
 adds latency to the user-facing reply.
 """
 
+import json
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -25,19 +27,119 @@ TitleCallback = Callable[[str], None]
 # the request would reload a model the runtime already evicted (#19027).
 RuntimeValidator = Callable[[], bool]
 
-_TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Write the title in the same language the user is writing in. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
-)
+_DEFAULT_TITLE_MAX_WORDS = 3
+_DEFAULT_TITLE_MAX_CHARACTERS = 40
 
-_TITLE_PROMPT_PINNED_LANGUAGE = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Write the title in {language}. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
-)
+
+def _coerce_bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _title_preferences() -> tuple[int, int, dict[str, str]]:
+    """Return compact-title preferences from config with safe bounds."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
+    except Exception:
+        logger.debug("Failed to read title-generation preferences", exc_info=True)
+        title_config = {}
+
+    max_words = _coerce_bounded_int(
+        title_config.get("max_words"),
+        default=_DEFAULT_TITLE_MAX_WORDS,
+        minimum=1,
+        maximum=10,
+    )
+    max_characters = _coerce_bounded_int(
+        title_config.get("max_characters"),
+        default=_DEFAULT_TITLE_MAX_CHARACTERS,
+        minimum=12,
+        maximum=80,
+    )
+
+    aliases: dict[str, str] = {}
+    raw_aliases = title_config.get("name_aliases")
+    if isinstance(raw_aliases, dict):
+        for raw_alias, raw_name in list(raw_aliases.items())[:50]:
+            alias = str(raw_alias or "").strip()
+            canonical = str(raw_name or "").strip()
+            if alias and canonical and len(alias) <= 80 and len(canonical) <= 80:
+                aliases[alias] = canonical
+    return max_words, max_characters, aliases
+
+
+def _canonical_name_for_exchange(
+    user_message: str,
+    assistant_response: str,
+    name_aliases: dict[str, str],
+) -> Optional[str]:
+    """Return the canonical name for the first configured alias in an exchange.
+
+    The prompt still encourages the model to use configured names, but this
+    post-generation lookup makes the documented case-insensitive behavior
+    deterministic. At the same position, the longest alias wins so a specific
+    alias such as ``atlas app`` takes precedence over ``atlas``.
+    """
+    if not name_aliases:
+        return None
+
+    exchange_parts = [
+        re.sub(r"\s+", " ", str(message or "")).casefold()
+        for message in (user_message, assistant_response)
+    ]
+    matches: list[tuple[int, int, int, int, str]] = []
+    for order, (raw_alias, raw_canonical) in enumerate(name_aliases.items()):
+        alias = re.sub(r"\s+", " ", str(raw_alias or "").strip()).casefold()
+        canonical = str(raw_canonical or "").strip()
+        if not alias or not canonical:
+            continue
+        pattern = rf"(?<!\w){re.escape(alias)}(?!\w)"
+        for message_order, exchange_part in enumerate(exchange_parts):
+            match = re.search(pattern, exchange_part)
+            if match:
+                matches.append(
+                    (message_order, match.start(), -len(alias), order, canonical)
+                )
+
+    return min(matches)[4] if matches else None
+
+
+def _build_title_prompt(
+    *,
+    language: str,
+    max_words: int,
+    max_characters: int,
+    name_aliases: dict[str, str],
+) -> str:
+    language_rule = (
+        f"Write the title in {language}."
+        if language
+        else "Write the title in the same language the user is writing in."
+    )
+    prompt = (
+        "Generate a compact, descriptive title for a conversation that starts with the following exchange. "
+        f"Prefer 1-{max_words} words and stay within {max_characters} characters. "
+        "When the user explicitly names a project, product, organization, person, or place, normally use "
+        "that named project or proper name alone and preserve its spelling and capitalization. "
+        "Avoid generic action or filler words such as Fixing, Update, Setup, Analysis, Discussion, Help, "
+        "Working on, and Request unless one is essential to distinguish the subject. Do not include emoji. "
+        f"{language_rule} "
+        "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    )
+    if name_aliases:
+        prompt += (
+            " Apply these case-insensitive canonical-name replacements whenever an alias appears in the "
+            "exchange: "
+            + json.dumps(name_aliases, ensure_ascii=False, sort_keys=True)
+            + "."
+        )
+    return prompt
 
 
 def _title_language() -> str:
@@ -114,7 +216,13 @@ def generate_title(
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     language = _title_language()
-    prompt = _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language) if language else _TITLE_PROMPT
+    max_words, max_characters, name_aliases = _title_preferences()
+    prompt = _build_title_prompt(
+        language=language,
+        max_words=max_words,
+        max_characters=max_characters,
+        name_aliases=name_aliases,
+    )
 
     messages = [
         {"role": "system", "content": prompt},
@@ -143,9 +251,18 @@ def generate_title(
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
             title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
+        canonical_name = _canonical_name_for_exchange(
+            user_message,
+            assistant_response,
+            name_aliases,
+        )
+        if canonical_name:
+            # Explicit operator vocabulary wins over the generic display budget;
+            # configured canonical names are already bounded to 80 characters.
+            title = canonical_name
+        # Enforce the configured display budget when the model ignores it.
+        elif len(title) > max_characters:
+            title = title[: max_characters - 3].rstrip() + "..."
         return title if title else None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
@@ -157,6 +274,132 @@ def generate_title(
                 failure_callback("title generation", e)
             except Exception:
                 logger.debug("Title generation failure_callback raised", exc_info=True)
+        return None
+
+
+def choose_topic_icon(
+    title: str,
+    user_message: str,
+    allowed_emojis: list[str],
+    timeout: float = 30.0,
+    *,
+    recent_emojis: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Choose a varied semantic Telegram topic emoji from a live allowlist.
+
+    The auxiliary model ranks several valid candidates so the caller can avoid
+    recently used icons without sacrificing semantic fit. The returned value is
+    a normal emoji key; the Telegram adapter resolves it to the allowed
+    sticker's ``custom_emoji_id``.
+    """
+    allowed = list(
+        dict.fromkeys(
+            str(emoji).strip()
+            for emoji in allowed_emojis
+            if str(emoji).strip()
+        )
+    )
+    if not allowed:
+        return None
+
+    def _emoji_key(value: str) -> str:
+        return value.replace("\ufe0e", "").replace("\ufe0f", "")
+
+    allowed_by_key = {_emoji_key(emoji): emoji for emoji in allowed}
+    recent = list(
+        dict.fromkeys(
+            allowed_by_key[key]
+            for emoji in (recent_emojis or [])
+            if (key := _emoji_key(str(emoji).strip())) in allowed_by_key
+        )
+    )
+    recent_keys = {_emoji_key(emoji) for emoji in recent}
+    fresh_allowed = [
+        emoji for emoji in allowed if _emoji_key(emoji) not in recent_keys
+    ]
+    # When there are enough fresh choices, omit recent icons from the model's
+    # candidate pool entirely. Prompt wording and temperature are advisory;
+    # allowlist exclusion is what guarantees real rotation across the live set.
+    exclude_recent = bool(recent) and len(fresh_allowed) >= min(4, len(allowed))
+    selection_pool = fresh_allowed if exclude_recent else allowed
+    candidate_count = min(4, len(selection_pool))
+    prompt = (
+        f"Choose {candidate_count} distinct ranked emoji candidates for a conversation topic, "
+        "from best fit to least preferred. Select only from this allowed list: "
+        + json.dumps(selection_pool, ensure_ascii=False)
+        + ". Prefer specific, playful visual metaphors over generic computer, robot, or rocket "
+        "icons when a more distinctive allowed icon fits. Keep every candidate clearly related "
+        "to the topic; novelty must not override meaning. Return only the ranked emoji characters "
+        "separated by spaces, with no words or explanation."
+    )
+    if recent:
+        if exclude_recent:
+            prompt += (
+                " Icons used recently in this chat were removed from the allowed list: "
+                + json.dumps(recent, ensure_ascii=False)
+                + ". Do not return them."
+            )
+        else:
+            prompt += (
+                " These icons were used recently in this chat: "
+                + json.dumps(recent, ensure_ascii=False)
+                + ". Avoid repeating them unless one is unmistakably the best semantic fit."
+            )
+    messages = [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": (
+                f"Title: {str(title or '')[:120]}\n"
+                f"Opening request: {str(user_message or '')[:500]}"
+            ),
+        },
+    ]
+
+    try:
+        response = call_llm(
+            task="title_generation",
+            messages=messages,
+            max_tokens=64,
+            temperature=0.7,
+            timeout=timeout,
+        )
+        content = response.choices[0].message.content or ""
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        choice = strip_think_blocks(None, content).strip().strip('"\'')
+        normalized_choice = _emoji_key(choice)
+
+        # Extract allowed emojis in the model's ranked response order. Matching
+        # the variation-selector-free form accepts e.g. ``⚡`` for allowed
+        # ``⚡️`` while overlap filtering keeps a compound emoji from also
+        # matching one of its component glyphs.
+        hits: list[tuple[int, int, int, str]] = []
+        for allowed_index, emoji in enumerate(selection_pool):
+            key = _emoji_key(emoji)
+            start = normalized_choice.find(key)
+            while start >= 0:
+                hits.append((start, start + len(key), allowed_index, emoji))
+                start = normalized_choice.find(key, start + max(1, len(key)))
+        hits.sort(key=lambda hit: (hit[0], -(hit[1] - hit[0]), hit[2]))
+
+        candidates: list[str] = []
+        occupied: list[tuple[int, int]] = []
+        for start, end, _, emoji in hits:
+            if any(start < used_end and end > used_start for used_start, used_end in occupied):
+                continue
+            occupied.append((start, end))
+            if emoji not in candidates:
+                candidates.append(emoji)
+        if not candidates:
+            return None
+
+        return next(
+            (emoji for emoji in candidates if _emoji_key(emoji) not in recent_keys),
+            candidates[0],
+        )
+    except Exception:
+        logger.debug("Telegram topic icon selection failed", exc_info=True)
         return None
 
 

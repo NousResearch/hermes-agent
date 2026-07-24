@@ -785,9 +785,44 @@ Every topic gets its own conversation history, model state, tool execution, and 
 
 ### Auto-renamed topics
 
-When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
+When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database". Titles prefer 1–3 words, favor an explicitly named project or proper name, and avoid filler such as "Fixing", "Update", or "Analysis".
 
-To disable this and keep your manually-chosen topic names untouched, set:
+The title policy is configurable for every Hermes surface:
+
+```yaml
+auxiliary:
+  title_generation:
+    max_words: 2
+    max_characters: 24
+    name_aliases:
+      project atlas: ProjectAtlas
+      atlas app: ProjectAtlas
+```
+
+`name_aliases` is case-insensitive and keeps personal project vocabulary in user config rather than Hermes source code. When an alias appears in the opening exchange, Hermes deterministically uses its configured canonical name even if the title model returns something else; explicit canonical names take precedence over the generic character preference.
+
+Telegram can also choose a semantically matching **full-size topic icon** instead of leaving the default colored bubble. This is opt-in because it makes one additional lightweight title-generation call when a new topic is named:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        auto_topic_icons: true
+        preserve_manual_topic_icons: true
+        topic_icon_overrides:
+          ProjectAtlas: "🔭"
+```
+
+Hermes fetches the currently allowed icons with `getForumTopicIconStickers`, asks the title model for a ranked set of up to four semantically valid candidates from that live set, and applies the matching `custom_emoji_id`. The selector prefers specific, playful visual metaphors over generic computer, robot, or rocket icons when a clearer alternative fits. It keeps the 12 most recent selections per chat out of the next model candidate pool whenever at least four fresh options remain, then falls back to ranked non-recent selection for smaller live sets. This bounded diversity history is process-local and resets when the gateway restarts.
+
+`topic_icon_overrides` is optional and uses ordinary emoji characters as portable selectors rather than hard-coded Telegram IDs. An exact override always wins, which is useful when a recurring project should keep a recognizable signature icon.
+
+With `preserve_manual_topic_icons: true` (the default), Hermes preserves a custom icon it positively observed during topic creation or editing. Private DM topics do not always deliver a creation update, so unknown icon state remains eligible during each session's one-shot first-title path, including after `/new` in an existing topic; this never triggers a background scan or mass edit. Because Telegram provides no topic-icon read-back endpoint, preservation can only be guaranteed for state the running gateway observed. Hermes rechecks that state after icon selection so a manual change made while the auxiliary call is running still wins.
+
+The rename and icon assignment are best-effort: failures are logged but don't break the session.
+
+To disable renaming entirely and keep your manually-chosen topic names untouched, set:
 
 ```yaml
 gateway:

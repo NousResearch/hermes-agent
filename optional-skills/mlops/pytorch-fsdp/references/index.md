@@ -1,7 +1,52 @@
-# Pytorch-Fsdp Documentation Index
+# PyTorch FSDP Reference Index
 
-## Categories
+`other.md` is the original generated documentation archive shipped with this
+skill. It is intentionally kept behind progressive disclosure because it is a
+large snapshot and may lag current PyTorch APIs.
 
-### Other
-**File:** `other.md`
-**Pages:** 15
+Use `search_files` within `other.md` for the exact heading below, then use
+`read_file` on only the relevant section.
+
+## FSDP APIs
+
+- `torch.distributed.fsdp.fully_shard` - FSDP2 composable sharding.
+- `FullyShardedDataParallel` - FSDP1 wrapper, policies, and state dictionaries.
+
+## Checkpointing and tensors
+
+- `Distributed Checkpoint - torch.distributed.checkpoint`
+- `torch.distributed.tensor`
+
+## Process groups and launch
+
+- `Distributed communication package - torch.distributed`
+- `Generic Join Context Manager`
+- `Torch Distributed Elastic`
+
+Use `terminal` to invoke the launcher configured for the target environment.
+For a local two-rank smoke test with PyTorch's launcher, a typical command is:
+
+```bash
+torchrun --standalone --nproc-per-node=2 train.py
+```
+
+Adjust the launcher arguments for the installed PyTorch version, device count,
+and multi-node rendezvous configuration.
+
+## Related parallelism
+
+- `DistributedDataParallel`
+- `DDP Communication Hooks`
+- `Pipeline Parallelism`
+- `Tensor Parallelism - torch.distributed.tensor.parallel`
+
+## Currency rule
+
+The archive records documentation captured in 2025. Use it for concepts and
+search terms, but verify signatures and recommendations against the current
+official documentation:
+
+- FSDP2: https://docs.pytorch.org/docs/stable/distributed.fsdp.fully_shard.html
+- FSDP1: https://docs.pytorch.org/docs/stable/fsdp.html
+- Distributed checkpointing:
+  https://docs.pytorch.org/docs/stable/distributed.checkpoint.html

@@ -120,6 +120,20 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'tool.complete'
 ])
 
+const LEGACY_INTERRUPT_STATUS_PATTERNS = [
+  /^Operation interrupted\.$/,
+  /^Operation interrupted: waiting for model response \(\d+\.\d+s elapsed\)\.$/,
+  /^Operation interrupted during retry \(.+, attempt \d+\/\d+\)\.$/,
+  /^Operation interrupted: handling API error \([^:\r\n]+: .*\)\.$/,
+  /^Operation interrupted: retrying API call after error \(retry \d+\/\d+\)\.$/
+] as const
+
+const isLegacyInterruptStatus = (text: string) => {
+  const normalized = text.trim()
+
+  return LEGACY_INTERRUPT_STATUS_PATTERNS.some(pattern => pattern.test(normalized))
+}
+
 interface GatewayEventDeps {
   activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
@@ -128,7 +142,7 @@ interface GatewayEventDeps {
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
-  completeAssistantMessage: (sessionId: string, text: string, responsePreviewed?: boolean) => void
+  completeAssistantMessage: (sessionId: string, text: string, responsePreviewed?: boolean, interrupted?: boolean) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
   finalizeInterimAssistantMessage: (sessionId: string, text: string) => void
@@ -608,11 +622,20 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
-        // Keyed by session so only one window beeps when several are open.
-        playCompletionSound(sessionId)
+        const completionInterrupted = payload?.status === 'interrupted' || sessionInterrupted(sessionId)
+        const completionText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
-        const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText, payload?.response_previewed)
+        const finalText =
+          completionInterrupted && isLegacyInterruptStatus(completionText)
+            ? ''
+            : completionText
+
+        // Keyed by session so only one window beeps when several are open.
+        if (!completionInterrupted) {
+          playCompletionSound(sessionId)
+        }
+
+        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, completionInterrupted)
 
         // Structured billing wall forwarded by the gateway (out of credits /
         // payment required) — cache it + raise a billing-specific toast.
@@ -623,18 +646,24 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (isActiveEvent) {
           setTurnStartedAt(null)
 
-          // Pet beat: a finished turn always celebrates — go straight to the
-          // jump, never linger on the run/reason pose. One atom update (clears
-          // toolRunning/reasoning AND sets celebrate together) so no stray "run"
-          // frame leaks to the sprite — including the popped-out overlay, which
-          // mirrors each activity change. The jump runs ~2 loops, then settles.
-          flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+          if (completionInterrupted) {
+            // Clear stale working poses without turning cancellation into a
+            // completion celebration.
+            setPetActivity({ reasoning: false, toolRunning: false })
+          } else {
+            // Pet beat: a finished turn always celebrates — go straight to the
+            // jump, never linger on the run/reason pose. One atom update (clears
+            // toolRunning/reasoning AND sets celebrate together) so no stray "run"
+            // frame leaks to the sprite — including the popped-out overlay, which
+            // mirrors each activity change. The jump runs ~2 loops, then settles.
+            flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
 
-          // Light up the pet's mail icon if the user wasn't looking when the turn
-          // finished — a glanceable "new message" hint on the popped-out overlay.
-          // Cleared when they open the app via the mail icon or refocus the window.
-          if (typeof document !== 'undefined' && !document.hasFocus()) {
-            markPetUnread()
+            // Light up the pet's mail icon if the user wasn't looking when the turn
+            // finished — a glanceable "new message" hint on the popped-out overlay.
+            // Cleared when they open the app via the mail icon or refocus the window.
+            if (typeof document !== 'undefined' && !document.hasFocus()) {
+              markPetUnread()
+            }
           }
         }
 

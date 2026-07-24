@@ -4981,9 +4981,8 @@ class TestRunConversation:
             "Use the corrected approach."
         )
 
-    def test_interrupt_before_any_stream_keeps_sentinel(self, agent):
-        """An interrupt with no streamed text falls back to the metadata sentinel."""
-        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+    def test_interrupt_before_any_stream_returns_no_assistant_prose(self, agent):
+        """An interrupt with no streamed text is metadata-only."""
 
         self._setup_agent(agent)
 
@@ -4993,15 +4992,25 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session") as persist_session,
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("hi")
 
         assert result["interrupted"] is True
-        assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+        assert result["completed"] is False
+        assert result["final_response"] == ""
+        assert "interrupt_message" not in result
         assert result["messages"][-1]["role"] == "user"
+        assert all(
+            not (
+                message.get("role") == "assistant"
+                and str(message.get("content") or "").startswith("Operation interrupted:")
+            )
+            for message in result["messages"]
+        )
+        assert persist_session.called
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)

@@ -311,6 +311,25 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     return True
 
 
+INTERRUPTED_TOOL_TAIL_KEY = "_interrupted_tool_tail"
+
+
+def mark_interrupted_tool_tail(messages: list) -> bool:
+    """Mark a tool-result tail as ended by an explicit turn interruption.
+
+    The marker is durable internal metadata. API-copy sanitization consumes it
+    when a later user redirect needs a synthetic assistant closure; provider
+    transports strip the underscore-prefixed key from the wire payload.
+    """
+    if not messages:
+        return False
+    tail = messages[-1]
+    if not isinstance(tail, dict) or tail.get("role") != "tool":
+        return False
+    tail[INTERRUPTED_TOOL_TAIL_KEY] = True
+    return True
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -462,8 +481,9 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 
 
 __all__ = [
+    "INTERRUPTED_TOOL_TAIL_KEY",
+    "mark_interrupted_tool_tail",
     "_SURROGATE_RE",
-    "close_interrupted_tool_sequence",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",

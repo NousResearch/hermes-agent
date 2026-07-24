@@ -188,15 +188,32 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
+            # When SOUL.md matches the default template, apply the
+            # configurable attribution so ``agent.attribution`` controls
+            # the identity even in the normal (SOUL-loaded) path.
+            from hermes_cli.default_soul import DEFAULT_SOUL_MD
+            attribution = getattr(agent, "_attribution", "Nous Research")
+            if _soul_content.strip() == DEFAULT_SOUL_MD.strip() and attribution != "Nous Research":
+                _soul_content = _soul_content.replace(
+                    "created by Nous Research",
+                    f"created by {attribution}",
+                )
             stable_parts.append(_soul_content)
             _soul_loaded = True
 
     if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        # Fallback to identity with configurable attribution
+        from agent.prompt_builder import build_agent_identity
+        attribution = getattr(agent, "_attribution", "Nous Research")
+        stable_parts.append(build_agent_identity(attribution))
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    # Skip when attribution is empty (user wants clean identity without attribution).
+    from agent.prompt_builder import build_help_guidance
+    attribution = getattr(agent, "_attribution", "Nous Research")
+    help_guidance = build_help_guidance(attribution)
+    if help_guidance:
+        stable_parts.append(help_guidance)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

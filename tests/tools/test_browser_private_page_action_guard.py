@@ -85,6 +85,62 @@ def test_guard_inactive_does_not_block_or_probe(monkeypatch):
     assert calls == [("task-1", "click", ["@e1"])]
 
 
+def test_selector_routes_to_agent_browser(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+
+    def fake_run(task_id, command, args):
+        calls.append((task_id, command, args))
+        return {"success": True}
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
+
+    click = json.loads(browser_tool.browser_click(selector="button.submit", task_id="click-task"))
+    typed = json.loads(browser_tool.browser_type(selector="input.username", text="hello", task_id="type-task"))
+
+    assert click == {"success": True, "clicked": "button.submit"}
+    assert typed["success"] is True
+    assert typed["element"] == "input.username"
+    assert calls == [
+        ("click-task", "click", ["button.submit"]),
+        ("type-task", "fill", ["input.username", "hello"]),
+    ]
+
+
+def test_click_and_type_preserve_positional_task_id(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+
+    def fake_run(task_id, command, args):
+        calls.append((task_id, command, args))
+        return {"success": True}
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
+
+    click = json.loads(browser_tool.browser_click("@e1", "click-task"))
+    typed = json.loads(browser_tool.browser_type("@e2", "hello", "type-task"))
+
+    assert click == {"success": True, "clicked": "@e1"}
+    assert typed["success"] is True
+    assert typed["element"] == "@e2"
+    assert calls == [
+        ("click-task", "click", ["@e1"]),
+        ("type-task", "fill", ["@e2", "hello"]),
+    ]
+
+
+def test_selector_target_validation():
+    for result in (
+        browser_tool.browser_click(),
+        browser_tool.browser_click("@e1", selector="button.submit"),
+        browser_tool.browser_type(text="hello"),
+        browser_tool.browser_type("@e1", "hello", selector="input.username"),
+    ):
+        assert json.loads(result)["success"] is False
+
+
 def test_camofox_short_circuits_before_guard(monkeypatch):
     """Camofox mode returns from the dedicated camofox_* path BEFORE reaching the
     private-page guard, so the guard's helpers must never be consulted. Guards the
@@ -99,7 +155,7 @@ def test_camofox_short_circuits_before_guard(monkeypatch):
 
     import tools.browser_camofox as camofox
 
-    monkeypatch.setattr(camofox, "camofox_click", lambda ref, task_id: '{"success": true, "camofox": true}')
+    monkeypatch.setattr(camofox, "camofox_click", lambda ref, task_id, selector=None: '{"success": true, "camofox": true}')
 
     out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
 

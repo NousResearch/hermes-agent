@@ -222,7 +222,7 @@ class TestCamofoxInteractions:
         camofox_navigate("https://x.com", task_id="t4")
 
         mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://x.com"})
-        result = json.loads(camofox_click("@e5", task_id="t4"))
+        result = json.loads(camofox_click("@e5", "t4"))
         assert result["success"] is True
         assert result["clicked"] == "e5"
 
@@ -233,10 +233,50 @@ class TestCamofoxInteractions:
         camofox_navigate("https://x.com", task_id="t5")
 
         mock_post.return_value = _mock_response(json_data={"ok": True})
-        result = json.loads(camofox_type("@e3", "hello world", task_id="t5"))
+        result = json.loads(camofox_type("@e3", "hello world", "t5"))
         assert result["success"] is True
         # Normal text is left readable.
         assert result["typed"] == "hello world"
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_click_with_selector(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab_selector_click", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t_selector_click")
+
+        mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://x.com"})
+        result = json.loads(camofox_click(selector="button.submit", task_id="t_selector_click"))
+
+        assert result["success"] is True
+        assert result["clicked"] == "button.submit"
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["selector"] == "button.submit"
+        assert "ref" not in payload
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_type_with_selector(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab_selector_type", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t_selector_type")
+
+        mock_post.return_value = _mock_response(json_data={"ok": True})
+        result = json.loads(camofox_type(text="hello", selector="input.username", task_id="t_selector_type"))
+
+        assert result["success"] is True
+        assert result["element"] == "input.username"
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["selector"] == "input.username"
+        assert payload["text"] == "hello"
+        assert "ref" not in payload
+
+    def test_selector_target_validation(self):
+        for result in (
+            camofox_click(),
+            camofox_click("@e1", selector="button.submit"),
+            camofox_type(text="hello"),
+            camofox_type("@e1", "hello", selector="input.username"),
+        ):
+            assert json.loads(result)["success"] is False
 
     @patch("tools.browser_camofox.requests.post")
     def test_type_redacts_api_key(self, mock_post, monkeypatch):
@@ -455,5 +495,3 @@ class TestBrowserToolRouting:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         from tools.browser_tool import check_browser_requirements
         assert check_browser_requirements() is True
-
-

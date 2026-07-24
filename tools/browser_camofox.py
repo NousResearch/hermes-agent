@@ -646,8 +646,17 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
         return tool_error(str(e), success=False)
 
 
-def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
-    """Click an element by ref via Camofox."""
+def camofox_click(
+    ref: Optional[str] = None,
+    task_id: Optional[str] = None,
+    selector: Optional[str] = None,
+) -> str:
+    """Click an element by ref or CSS selector via Camofox."""
+    if not ref and not selector:
+        return tool_error("Either 'ref' or 'selector' must be provided.", success=False)
+    if ref and selector:
+        return tool_error("Parameters 'ref' and 'selector' are mutually exclusive.", success=False)
+
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -657,24 +666,40 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
         if blocked:
             return blocked
 
-        # Strip @ prefix if present (our tool convention)
-        clean_ref = ref.lstrip("@")
+        body = {"userId": session["user_id"]}
+        if ref:
+            # Strip @ prefix if present (our tool convention)
+            target = ref.lstrip("@")
+            body["ref"] = target
+        else:
+            target = selector
+            body["selector"] = target
 
         data = _post(
             f"/tabs/{session['tab_id']}/click",
-            {"userId": session["user_id"], "ref": clean_ref},
+            body,
         )
         return json.dumps({
             "success": True,
-            "clicked": clean_ref,
+            "clicked": target,
             "url": data.get("url", ""),
         })
     except Exception as e:
         return tool_error(str(e), success=False)
 
 
-def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
-    """Type text into an element by ref via Camofox."""
+def camofox_type(
+    ref: Optional[str] = None,
+    text: str = "",
+    task_id: Optional[str] = None,
+    selector: Optional[str] = None,
+) -> str:
+    """Type text into an element by ref or CSS selector via Camofox."""
+    if not ref and not selector:
+        return tool_error("Either 'ref' or 'selector' must be provided.", success=False)
+    if ref and selector:
+        return tool_error("Parameters 'ref' and 'selector' are mutually exclusive.", success=False)
+
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
@@ -684,11 +709,18 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         if blocked:
             return blocked
 
-        clean_ref = ref.lstrip("@")
+        body = {"userId": session["user_id"], "text": text}
+        if ref:
+            # Strip @ prefix if present (our tool convention)
+            target = ref.lstrip("@")
+            body["ref"] = target
+        else:
+            target = selector
+            body["selector"] = target
 
         _post(
             f"/tabs/{session['tab_id']}/type",
-            {"userId": session["user_id"], "ref": clean_ref, "text": text},
+            body,
         )
         from agent.display import (
             redact_browser_typed_text_for_display,
@@ -704,7 +736,7 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             # tool progress or chat history.  The raw text is still typed into
             # the page; only the returned display value is redacted.
             "typed": display_text,
-            "element": clean_ref,
+            "element": target,
         }
         response = redact_browser_typed_text_for_display(response, text)
         return json.dumps(response)
@@ -944,6 +976,5 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
 
 

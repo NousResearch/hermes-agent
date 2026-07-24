@@ -38,6 +38,13 @@ describe('comboFromEvent — ctrl as a distinct modifier on macOS', () => {
     expect(comboFromEvent(keydown({ code: 'Tab', ctrlKey: true }))).toBe('mod+tab')
     expect(comboFromEvent(keydown({ code: 'Tab', ctrlKey: true, shiftKey: true }))).toBe('mod+shift+tab')
   })
+
+  it('recognizes PageUp and PageDown chords', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    expect(comboFromEvent(keydown({ code: 'PageUp', ctrlKey: true }))).toBe('ctrl+pageup')
+    expect(comboFromEvent(keydown({ code: 'PageDown', ctrlKey: true }))).toBe('ctrl+pagedown')
+  })
 })
 
 describe('canonicalizeCombo', () => {
@@ -71,6 +78,13 @@ describe('formatCombo — honest Control labels', () => {
 
     expect(formatCombo('ctrl+tab')).toBe('Ctrl+⇥')
     expect(formatCombo('ctrl+shift+tab')).toBe('Ctrl+Shift+⇥')
+  })
+
+  it('renders PageUp and PageDown with compact labels', async () => {
+    const { formatCombo } = await loadCombo('Win32')
+
+    expect(formatCombo('ctrl+pageup')).toBe('Ctrl+PgUp')
+    expect(formatCombo('ctrl+pagedown')).toBe('Ctrl+PgDn')
   })
 })
 

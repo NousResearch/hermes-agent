@@ -3,8 +3,18 @@ web/package-lock.json linguist-generated=true
 
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
-# container entrypoint with "no such file or directory".
+# container entrypoint with "no such file or directory". Three traps we
+# have hit so far:
+#   1. `*.sh`             — generic shell scripts
+#   2. `Dockerfile`       — RUN printf "..." + COPY chains
+#   3. `docker/cont-init.d/*` and `docker/s6-rc.d/**/type` — s6-overlay
+#      reads these via `with-contenv sh`; a stray \r makes it try to
+#      exec "sh\r" → "No such file or directory" at PID-1, cascading
+#      every service down (we have hit this twice: see
+#      hermes-docker-crlf-image-boot-failure.md).
 *.sh        text eol=lf
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
+docker/cont-init.d/*    text eol=lf
 docker/entrypoint.sh text eol=lf
+docker/s6-rc.d/**/type  text eol=lf

@@ -259,6 +259,16 @@ RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
 # /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
+# Defense in depth: strip any stray CR from the s6-rc tree after COPY.
+# `.gitattributes` (s6-rc.d/**/type) should already guarantee LF, but a
+# Windows checkout with core.autocrlf disabled (or a file added without
+# `git add --renormalize`) can still leak CRLF into the build context.
+# s6 strictly requires LF on `type`/contents.d files; a stray CR (e.g.
+# "longrun\r") is silently rejected as "invalid type: must be oneshot,
+# longrun, or bundle" and the whole bundle fails to start. See
+# hermes-docker-crlf-image-boot-failure.md.
+RUN find /etc/s6-overlay/s6-rc.d -type f -exec sed -i 's/\r$//' {} +
+
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
 # skills sync — all the work the old entrypoint.sh did before
 # `exec hermes`. Wired in as cont-init.d/01- so it
@@ -273,6 +283,15 @@ RUN mkdir -p /etc/cont-init.d && \
     chmod +x /etc/cont-init.d/01-hermes-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
 COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
+
+# Defense in depth: strip any stray CR from the cont-init scripts after
+# COPY. `.gitattributes` (docker/cont-init.d/*) should already guarantee
+# LF, but a Windows checkout with core.autocrlf disabled (or a file
+# added without `git add --renormalize`) can still leak CRLF into the
+# build context. s6-overlay's `with-contenv sh` then fails to exec
+# "sh\r" at container boot with "No such file or directory" and every
+# service cascades down. Mirrors the s6-rc.d normalization above.
+RUN find /etc/cont-init.d -type f -exec sed -i 's/\r$//' {} +
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

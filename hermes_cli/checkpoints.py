@@ -148,12 +148,15 @@ def cmd_prune(args: argparse.Namespace) -> int:
             if not _confirm("Delete these orphan projects?"):
                 print("Aborted.")
                 return 1
-            # Bind the deletion to exactly what was just displayed and
-            # confirmed — a project that becomes orphaned only *after* this
-            # preview (e.g. its workdir disappears while waiting on input())
-            # must not be swept up under this same confirmation.
-            orphan_allowlist = {p["hash"] for p in orphans}
-            orphan_allowlist.update(p["path"] for p in pre_v2_orphans)
+        # Bind the deletion to exactly what was just displayed (and, when
+        # non-empty, confirmed) — a project that becomes orphaned only
+        # *after* this preview (e.g. its workdir disappears while waiting on
+        # input()) must not be swept up under this same run. This is set
+        # unconditionally for every non-force run: an EMPTY preview binds to
+        # an EMPTY allowlist, so a zero-orphan preview can never authorize
+        # deletion of orphans discovered by the later rescan.
+        orphan_allowlist = {p["hash"] for p in orphans}
+        orphan_allowlist.update(p["path"] for p in pre_v2_orphans)
 
     print("Pruning checkpoint store…")
     print(f"  retention_days:    {retention_days}")

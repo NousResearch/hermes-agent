@@ -536,6 +536,56 @@ class PairingStore:
                 "user_name": matched_entry.get("user_name", ""),
             }
 
+    def approve_by_user_id(self, platform: str, user_id: str) -> Optional[dict]:
+        """
+        Approve a pending pairing request by the sender's ``user_id``.
+
+        This is the fallback path for platforms where the pairing code DM
+        may not reach the operator (e.g. WeChat/Weixin rate-limiting).
+        The ``user_id`` is already shown in ``list_pending`` output, so
+        the operator can copy it directly.
+
+        Returns ``{user_id, user_name}`` on success, ``None`` if no
+        pending entry matches the user_id or the platform is locked out.
+
+        Unlike :meth:`approve_code`, this does **not** count as a failed
+        attempt when no match is found — there is no secret to brute-force.
+        """
+        with self._lock:
+            self._cleanup_expired(platform)
+
+            if self._is_locked_out(platform):
+                return None
+
+            pending = self._load_json(self._pending_path(platform))
+
+            matched_key = None
+            matched_entry = None
+            for entry_id, entry in pending.items():
+                if not isinstance(entry, dict):
+                    continue
+                entry_uid = entry.get("user_id", "")
+                if not entry_uid:
+                    continue
+                if self._user_ids_match(platform, user_id, entry_uid):
+                    matched_key = entry_id
+                    matched_entry = entry
+                    break
+
+            if matched_key is None:
+                return None
+
+            del pending[matched_key]
+            self._save_json(self._pending_path(platform), pending)
+
+            self._approve_user(platform, matched_entry["user_id"],
+                               matched_entry.get("user_name", ""))
+
+            return {
+                "user_id": matched_entry["user_id"],
+                "user_name": matched_entry.get("user_name", ""),
+            }
+
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform.
 

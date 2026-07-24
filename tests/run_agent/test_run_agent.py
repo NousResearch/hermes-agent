@@ -8645,3 +8645,169 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestHandleMaxIterationsHardStop:
+    """Regression tests for #36239 — make the iteration-budget summary
+    a hard stop rather than a soft `role=user` prompt.
+
+    The three layered defenses added by the fix:
+      1) Stop message is now `role=system` (appended to the existing
+         system prompt), not `role=user`.
+      2) `tool_choice="none"` is sent on every summary call.
+      3) If the model *still* returns a `tool_calls` payload, the
+         response is replaced with a fixed fallback string instead of
+         surfacing the model's mid-thought prose.
+    """
+
+    def test_summary_sends_tool_choice_none_to_openai(self, agent):
+        """`tool_choice="none"` must appear in the OpenAI summary
+        kwargs so the provider refuses to emit tool calls even if the
+        model is in 'work in progress' mode."""
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        agent._handle_max_iterations(messages, 60)
+
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs.get("tool_choice") == "none"
+
+    def test_summary_stop_is_system_role_not_user_role(self, agent):
+        """The stop instruction must ride on a `role=system` message,
+        not on a `role=user` "summarize without tools" message that
+        long-context models tend to re-weight as a user follow-up."""
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        agent._handle_max_iterations(messages, 60)
+
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get(
+            "messages", []
+        )
+        assert sent_msgs, "no messages were sent on the wire"
+        # First message must be the system prompt with the stop appended.
+        first = sent_msgs[0]
+        assert first["role"] == "system"
+        assert "Tool-calling budget exhausted" in first["content"]
+        # The legacy soft-prompt phrasing must NOT be appended as a
+        # user-role message anywhere in the wire payload.
+        legacy_user_stops = [
+            m
+            for m in sent_msgs
+            if m.get("role") == "user"
+            and "summarizing what you've found" in (m.get("content") or "")
+        ]
+        assert legacy_user_stops == [], (
+            f"legacy soft user-role stop was injected: {legacy_user_stops}"
+        )
+
+    def test_summary_stop_appends_to_existing_system_prompt(self, agent):
+        """If a system prompt is already cached, the stop instruction
+        should be appended to it (one combined system message), not
+        sent as a separate second system message."""
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        agent._handle_max_iterations(messages, 60)
+
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get(
+            "messages", []
+        )
+        system_msgs = [m for m in sent_msgs if m.get("role") == "system"]
+        assert len(system_msgs) == 1
+        assert "You are helpful." in system_msgs[0]["content"]
+        assert "Tool-calling budget exhausted" in system_msgs[0]["content"]
+
+    def test_summary_uses_fallback_when_response_has_tool_calls(self, agent):
+        """Even with `tool_choice="none"` and a system stop, some
+        downstream models still emit a `tool_calls` payload. The
+        runtime must NOT surface the model's mid-thought prose as the
+        final answer — it must use the fixed fallback string instead."""
+        bad_tool_call = _mock_tool_call(
+            name="search_files",
+            arguments='{"limit": 15}',
+            call_id="call_dangling",
+        )
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="最后做一次反查,确认我的 P0/P1 判断不会误报。",
+            tool_calls=[bad_tool_call],
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "I reached the iteration limit and couldn't generate a summary."
+
+    def test_summary_fallback_does_not_loop_into_retry(self, agent):
+        """When the first summary call already triggers the tool_calls
+        fallback, the runtime must NOT make a second retry call —
+        retrying with the same prompt will just hit the same model
+        state and produce the same tool_calls response."""
+        bad_tool_call = _mock_tool_call(
+            name="search_files",
+            arguments="{}",
+            call_id="call_dangling",
+        )
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="partial prose",
+            tool_calls=[bad_tool_call],
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        agent._handle_max_iterations(messages, 60)
+
+        # Exactly one call — no retry, no second round-trip.
+        assert agent.client.chat.completions.create.call_count == 1
+
+    def test_scrub_helper_returns_content_when_no_tool_calls(self):
+        """Unit test: `_scrub_summary_response_for_tool_calls` returns
+        the normalized `.content` (stripped) when `tool_calls` is empty."""
+        from agent.chat_completion_helpers import (
+            _scrub_summary_response_for_tool_calls,
+        )
+        from agent.transports.types import NormalizedResponse
+
+        normalized = NormalizedResponse(
+            content="  Here is a summary.  ",
+            tool_calls=None,
+            finish_reason="stop",
+        )
+
+        result = _scrub_summary_response_for_tool_calls("test", normalized)
+
+        assert result == "Here is a summary."
+
+    def test_scrub_helper_returns_fallback_when_tool_calls_present(self):
+        """Unit test: when `tool_calls` is non-empty, the helper
+        returns the fixed fallback string and logs a warning — it
+        does NOT return the model's partial content."""
+        from agent.chat_completion_helpers import (
+            _scrub_summary_response_for_tool_calls,
+        )
+        from agent.transports.types import NormalizedResponse, ToolCall
+
+        dangling = ToolCall(
+            id="call_dangling",
+            name="search_files",
+            arguments="{}",
+        )
+        normalized = NormalizedResponse(
+            content="partial mid-thought prose",
+            tool_calls=[dangling],
+            finish_reason="tool_calls",
+        )
+
+        result = _scrub_summary_response_for_tool_calls("test", normalized)
+
+        assert result == "I reached the iteration limit and couldn't generate a summary."

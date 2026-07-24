@@ -1901,16 +1901,57 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
+def _scrub_summary_response_for_tool_calls(label: str, normalized) -> str:
+    """Safety net for the max-iterations summary path.
+
+    If the response still carries a ``tool_calls`` payload (i.e. the
+    model ignored the system stop message AND the
+    ``tool_choice='none'`` constraint), swap it for a fixed fallback
+    string so the user never sees the model's mid-thought "let me do
+    one more cross-check" prose standing in for a real summary. Logs
+    at WARNING so the agent log makes it visible when a downstream
+    model failed to honor the stop contract. See #36239.
+    """
+    if normalized.tool_calls:
+        logger.warning(
+            "handle_max_iterations: %s returned tool_calls=%d despite "
+            "tool_choice='none' and system stop; using fallback instead "
+            "of partial content.",
+            label,
+            len(normalized.tool_calls),
+        )
+        return "I reached the iteration limit and couldn't generate a summary."
+    return (normalized.content or "").strip()
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
-    summary_request = (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
+    # Hard-stop for the iteration budget. Three layered defenses (see #36239):
+    #
+    # 1) System-role stop message — the function builds a `role=system`
+    #    message a few lines below; we append the stop to that same
+    #    system string instead of injecting a `role=user` "summarize
+    #    without tools" message. In long-context tool-heavy histories,
+    #    some models re-weight user messages and read "summarize
+    #    without tools" as "do one more cross-check then summarize".
+    #    A system-role instruction is more authoritative and survives
+    #    that re-weighting.
+    #
+    # 2) `tool_choice="none"` on the OpenAI Chat Completions /
+    #    OpenAI Responses summary call (a hard protocol-level
+    #    constraint that is honored by every provider we have tested).
+    #
+    # 3) If the model *still* returns a `tool_calls` payload despite
+    #    (1) and (2), the `_scrub_summary_response_for_tool_calls`
+    #    helper replaces the response with a fixed fallback string
+    #    so the user never sees a partial "I'm about to do one more
+    #    cross-check" message standing in for a real summary.
+    summary_stop_message = (
+        "Tool-calling budget exhausted. Produce a final summary in plain "
+        "text. Do not call any tools."
     )
-    messages.append({"role": "user", "content": summary_request})
 
     try:
         # Build API messages, stripping internal-only fields
@@ -1962,8 +2003,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         effective_system = agent._cached_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        # Hard-stop the iteration budget via a system-role instruction
+        # (more authoritative than a role=user prompt in long-context
+        # tool-heavy histories). See #36239.
         if effective_system:
-            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            effective_system = effective_system + "\n\n" + summary_stop_message
+        else:
+            effective_system = summary_stop_message
+        api_messages = [{"role": "system", "content": effective_system}] + api_messages
         if agent.prefill_messages:
             sys_offset = 1 if effective_system else 0
             for idx, pfm in enumerate(agent.prefill_messages):
@@ -2021,14 +2068,25 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
             codex_kwargs.pop("tools", None)
+            # Mirror the OpenAI path's hard constraint. The OpenAI
+            # Responses API accepts `tool_choice="none"` to forbid tool
+            # calling. See #36239.
+            codex_kwargs["tool_choice"] = "none"
             summary_response = agent._run_codex_stream(codex_kwargs)
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
-            final_response = (_cnr_sum.content or "").strip()
+            final_response = _scrub_summary_response_for_tool_calls(
+                "codex_summary", _cnr_sum
+            )
         else:
             summary_kwargs = {
                 "model": agent.model,
                 "messages": api_messages,
+                # Hard constraint: the provider is told the model is
+                # not allowed to call any tools, regardless of what the
+                # system stop says. Every Chat Completions provider we
+                # have tested honors `tool_choice: "none"`. See #36239.
+                "tool_choice": "none",
             }
             if _summary_temperature is not None:
                 summary_kwargs["temperature"] = _summary_temperature
@@ -2096,11 +2154,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                preserve_dots=agent._anthropic_preserve_dots())
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
-                final_response = (_summary_result.content or "").strip()
+                final_response = _scrub_summary_response_for_tool_calls(
+                    "anthropic_summary", _summary_result
+                )
             else:
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_summary_result.content or "").strip()
+                final_response = _scrub_summary_response_for_tool_calls(
+                    "chat_completions_summary", _summary_result
+                )
 
         if final_response:
             if "<think>" in final_response:
@@ -2114,10 +2176,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if agent.api_mode == "codex_responses":
                 codex_kwargs = agent._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
+                codex_kwargs["tool_choice"] = "none"
                 retry_response = agent._run_codex_stream(codex_kwargs)
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)
-                final_response = (_cnr_retry.content or "").strip()
+                final_response = _scrub_summary_response_for_tool_calls(
+                    "codex_retry", _cnr_retry
+                )
             elif agent.api_mode == "anthropic_messages":
                 _tretry = agent._get_transport()
                 _ant_kw2 = _tretry.build_kwargs(model=agent.model, messages=api_messages, tools=None,
@@ -2126,11 +2191,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                 preserve_dots=agent._anthropic_preserve_dots())
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
-                final_response = (_retry_result.content or "").strip()
+                final_response = _scrub_summary_response_for_tool_calls(
+                    "anthropic_retry", _retry_result
+                )
             else:
                 summary_kwargs = {
                     "model": agent.model,
                     "messages": api_messages,
+                    "tool_choice": "none",
                 }
                 if _summary_temperature is not None:
                     summary_kwargs["temperature"] = _summary_temperature
@@ -2143,7 +2211,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
                 _retry_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_retry_result.content or "").strip()
+                final_response = _scrub_summary_response_for_tool_calls(
+                    "chat_completions_retry", _retry_result
+                )
 
             if final_response:
                 if "<think>" in final_response:

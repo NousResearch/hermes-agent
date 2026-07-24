@@ -8,6 +8,9 @@ import type { MessagingPlatformInfo } from '@/types/hermes'
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
 const openExternalLink = vi.fn()
+const notify = vi.fn()
+const notifyError = vi.fn()
+const runGatewayRestart = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getMessagingPlatforms: () => getMessagingPlatforms(),
@@ -19,12 +22,12 @@ vi.mock('@/lib/external-link', () => ({
 }))
 
 vi.mock('@/store/notifications', () => ({
-  notify: vi.fn(),
-  notifyError: vi.fn()
+  notify: (payload: unknown) => notify(payload),
+  notifyError: (error: unknown, fallback: string) => notifyError(error, fallback)
 }))
 
 vi.mock('@/store/system-actions', () => ({
-  runGatewayRestart: vi.fn()
+  runGatewayRestart: () => runGatewayRestart()
 }))
 
 function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatformInfo {
@@ -44,6 +47,7 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
 
 beforeEach(() => {
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
+  runGatewayRestart.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -51,12 +55,12 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderMessaging() {
+async function renderMessaging(initialEntry = '/') {
   const { MessagingView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <MessagingView />
       </MemoryRouter>
     )
@@ -91,5 +95,65 @@ describe('MessagingView setup-guide link', () => {
     })
 
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
+  })
+})
+
+describe('MessagingView restart affordance', () => {
+  it('auto-restarts via runGatewayRestart after saving credentials', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          configured: true,
+          enabled: true,
+          env_vars: [
+            {
+              advanced: false,
+              description: 'Discord bot token',
+              is_password: true,
+              is_set: false,
+              key: 'DISCORD_BOT_TOKEN',
+              prompt: 'Bot token',
+              redacted_value: '',
+              required: true,
+              url: ''
+            }
+          ],
+          gateway_running: false,
+          id: 'discord',
+          name: 'Discord',
+          state: 'gateway_stopped'
+        })
+      ]
+    })
+    updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'discord' })
+
+    await renderMessaging('/messaging?platform=discord')
+
+    const input = await screen.findByLabelText('Bot token')
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'token-123' } })
+    })
+
+    const saveButton = screen.getByRole('button', { name: 'Save changes' })
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    await waitFor(() => {
+      expect(updateMessagingPlatform).toHaveBeenCalledWith('discord', {
+        env: { DISCORD_BOT_TOKEN: 'token-123' }
+      })
+    })
+
+    await waitFor(() => expect(runGatewayRestart).toHaveBeenCalledTimes(1))
+
+    const successPayload = notify.mock.calls
+      .map(call => call[0] as { action?: unknown; message?: string; title?: string })
+      .find(payload => payload?.title === 'Discord setup saved')
+
+    expect(successPayload).toBeTruthy()
+    expect(successPayload?.message).toBe('New credentials take effect after a gateway restart.')
+    expect(successPayload?.action).toBeUndefined()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 })

@@ -95,6 +95,10 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
+    assert i18n._normalize_lang("Polski") == "pl"
+    assert i18n._normalize_lang("Polish") == "pl"
+    assert i18n._normalize_lang("pl-PL") == "pl"
+    assert i18n._LANGUAGE_ALIASES["pl-pl"] == "pl"
 
 
 def test_normalize_lang_unknown_falls_back():
@@ -134,6 +138,35 @@ def test_t_explicit_lang():
     assert i18n.t("approval.denied", lang="zh").endswith("已拒绝")
     assert i18n.t("approval.denied", lang="uk").endswith("Відхилено")
     assert i18n.t("approval.denied", lang="tr").endswith("Reddedildi")
+    assert i18n.t("approval.denied", lang="pl").endswith("Odrzucono")
+
+
+def test_polish_catalog_has_no_known_literal_translation_regressions():
+    """Keep machine-translation artifacts out of user-visible Polish copy."""
+    import re
+
+    text = "\n".join(str(value) for value in _flatten(_load_raw("pl")).values())
+    forbidden = [
+        r"modelk",
+        r"Bliźnięt",
+        r"\bBieganie\b",
+        r"\bBiegnij\b",
+        r"\bWłaz\b",
+        r"\bTarło\b",
+        r"Zremis",
+        r"\boddział",
+        r"żeton",
+        r"kompozytor",
+        r"zaplecz",
+        r"Pulpit Hermes",
+        r"Centrum dowodzenia",
+        r"\bbramk",
+        r"\bmonit(?:u|em|ach|ami|y|ów|owi|cie|owanie|owania)?\b",
+        r"zachęt",
+        r"narzędzi\(a\)|serwera\(ów\)|umiejętność\(i\)",
+    ]
+    for pattern in forbidden:
+        assert not re.search(pattern, text, flags=re.IGNORECASE), pattern
 
 
 def test_t_formats_placeholders():

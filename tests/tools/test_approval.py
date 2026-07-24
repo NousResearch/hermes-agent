@@ -1246,6 +1246,85 @@ class TestSmartDeniedPrompt:
             i18n.reset_language_cache()
         assert result == "deny"
 
+class TestPolishApprovalChoiceCopy:
+    """Polish labels must expose the fixed CLI keys, not translated mnemonics."""
+
+    def test_polish_choice_copy_matches_rendered_cli_prompt(
+        self, monkeypatch, capsys
+    ):
+        from agent import i18n
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "pl")
+        i18n.reset_language_cache()
+        menu = (
+            "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |"
+            "  [a] — zezwalaj zawsze  |  [d] — odrzuć"
+        )
+        short_menu = (
+            "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |"
+            "  [d] — odrzuć"
+        )
+        prompt = "      Wybór [o/s/a; d lub Enter = odrzuć]: "
+        short_prompt = "      Wybór [o/s; d lub Enter = odrzuć]: "
+        prompts = []
+
+        def fake_input(value):
+            prompts.append(value)
+            return "o"
+
+        try:
+            assert i18n.t("approval.choose_long") == menu
+            assert i18n.t("approval.choose_short") == short_menu
+            assert i18n.t("approval.prompt_long") == prompt
+            assert i18n.t("approval.prompt_short") == short_prompt
+
+            with mock_patch("builtins.input", side_effect=fake_input):
+                assert (
+                    prompt_dangerous_approval("rm -rf /tmp/test", "test", timeout_seconds=1)
+                    == "once"
+                )
+
+            assert menu in capsys.readouterr().out
+            assert prompts == [prompt]
+        finally:
+            i18n.reset_language_cache()
+
+    def test_polish_smart_deny_copy_uses_explicit_keys(self, monkeypatch, capsys):
+        from agent import i18n
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "pl")
+        i18n.reset_language_cache()
+        menu = "      [o] — zezwól tylko tym razem  |  [d] — odrzuć"
+        prompt = "      Wybór [o; d lub Enter = odrzuć]: "
+        prompts = []
+
+        def choose_once(value):
+            prompts.append(value)
+            return "o"
+
+        try:
+            assert i18n.t("approval.choose_smart_deny") == menu
+            assert i18n.t("approval.prompt_smart_deny") == prompt
+            assert i18n.t("approval.smart_deny_once_inputs") == "o,once"
+            assert i18n.t("approval.smart_deny_deny_inputs") == "d,deny"
+
+            with mock_patch("builtins.input", side_effect=choose_once):
+                assert (
+                    prompt_dangerous_approval(
+                        "rm -rf /tmp/test",
+                        "test",
+                        allow_permanent=False,
+                        smart_denied=True,
+                        timeout_seconds=1,
+                    )
+                    == "once"
+                )
+
+            assert menu in capsys.readouterr().out
+            assert prompts == [prompt]
+        finally:
+            i18n.reset_language_cache()
+
 
 class TestForkBombDetection:
     """The fork bomb regex must match the classic :(){ :|:& };: pattern."""

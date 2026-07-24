@@ -3335,6 +3335,34 @@ def run_job(
                 _drift.append(
                     f"model '{_model_snapshot}' -> '{_current_model}'"
                 )
+        # The guard exists purely to prevent unintended SPEND (#44585). A
+        # free-tier model (``:free`` SKU, or cached-free pricing) forces spend
+        # to zero, so a drift whose RESOLVED model is free — including the
+        # free->free rotation every free-tier user hits when the global default
+        # swaps between free models — carries no billing risk and blocking it is
+        # pure friction with no safe recovery path (#70050). Clear the drift in
+        # that case only: ``is_free_tier_model`` fails closed to "paid" on any
+        # doubt (unknown model, empty cache), so a genuinely-paid or
+        # can't-tell drift still fails closed exactly as before.
+        if _drift:
+            try:
+                from agent.credits_tracker import is_free_tier_model
+
+                if is_free_tier_model(
+                    str(model or ""), str(runtime.get("base_url") or "")
+                ):
+                    logger.info(
+                        "Job '%s': inference config drifted (%s) but the "
+                        "resolved model is free-tier — no spend risk, running "
+                        "anyway.",
+                        job_id,
+                        "; ".join(_drift),
+                    )
+                    _drift = []
+            except Exception:
+                # Never let the free-tier check itself turn a safe run into a
+                # crash; on any error keep the original fail-closed behaviour.
+                pass
         if _drift:
             _changes = "; ".join(_drift)
             logger.warning(

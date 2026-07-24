@@ -756,6 +756,74 @@ class TestSearchFilesFallbackHiddenPaths:
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
+    def test_fallback_find_includes_empty_directories(self, tmp_path, monkeypatch):
+        """target='files' doubles as ls; empty directories must be discoverable."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        empty_dir = root / "vault"
+        empty_dir.mkdir()
+        nonempty_dir = root / "notes"
+        nonempty_dir.mkdir()
+        (nonempty_dir / "readme.md").write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("*", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert str(empty_dir) in result.files
+        assert str(nonempty_dir) in result.files
+        assert str(nonempty_dir / "readme.md") in result.files
+
+    def test_rg_directory_discovery_respects_gitignore(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        (root / ".gitignore").write_text("ignored/\n")
+        kept = root / "kept"
+        ignored = root / "ignored"
+        kept.mkdir()
+        ignored.mkdir()
+
+        ops = ShellFileOperations(self._make_env())
+        result = ops._search_files_rg("*", str(root), limit=50, offset=0)
+
+        assert str(kept) in result.files
+        assert str(ignored) not in result.files
+
+    def test_rg_globally_sorts_files_and_directories_before_pagination(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        old_file = root / "item-old"
+        new_dir = root / "item-new"
+        old_file.write_text("x")
+        new_dir.mkdir()
+        os.utime(old_file, (100, 100))
+        os.utime(new_dir, (200, 200))
+
+        ops = ShellFileOperations(self._make_env())
+        result = ops._search_files_rg("item*", str(root), limit=1, offset=0)
+
+        assert result.files == [str(new_dir)]
+        assert result.truncated is True
+
+    def test_rg_timeout_does_not_start_directory_walk(self):
+        env = MagicMock()
+        env.cwd = "/"
+        env.execute.return_value = {
+            "output": "partial.txt\n[Command timed out after 60s]",
+            "returncode": 124,
+        }
+        ops = ShellFileOperations(env)
+        ops._has_command = MagicMock(return_value=True)
+
+        result = ops._search_files_rg("*", "/repo", limit=50, offset=0)
+
+        assert result.files == ["partial.txt"]
+        assert result.limit_reason == "search_timeout"
+        assert env.execute.call_count == 1
+
 
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):

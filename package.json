@@ -40,7 +40,11 @@
   },
   "overrides": {
     "lodash": "4.18.1",
-    "yauzl": "^3.3.1"
+    "yauzl": "^3.3.1",
+    "fast-uri": "^4.1.1",
+    "tar": "^7.5.21",
+    "dompurify": "^3.4.12",
+    "shell-quote": "^1.10.0"
   },
   "engines": {
     "node": ">=20.0.0"

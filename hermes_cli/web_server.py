@@ -344,6 +344,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 from hermes_cli.dashboard_auth.public_paths import (
     PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
+    is_node_credential_api_request as _is_node_credential_api_request,
 )
 
 
@@ -614,7 +615,15 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not is_mcp_oauth_callback:
+    is_node_credential_request = _is_node_credential_api_request(
+        path, request.method
+    )
+    if (
+        path.startswith("/api/")
+        and path not in _PUBLIC_API_PATHS
+        and not is_mcp_oauth_callback
+        and not is_node_credential_request
+    ):
         if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):
             return JSONResponse(
                 status_code=401,

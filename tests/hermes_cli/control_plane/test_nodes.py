@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 
 import pytest
@@ -69,6 +70,63 @@ def test_enrollment_key_cannot_alias_different_facts(registry):
 
     with pytest.raises(IdempotencyConflict):
         enroll(registry, owner="another-team")
+
+
+def test_requested_node_id_cannot_alias_different_enrollment_key(registry):
+    enroll(registry)
+
+    with pytest.raises(IdempotencyConflict, match="different enrollment key"):
+        enroll(registry, enrollment_key="request-2")
+
+    assert [node.enrollment_key for node in registry.list()] == ["request-1"]
+    assert len(registry.history("node-1")) == 1
+
+
+def test_concurrent_duplicate_node_id_is_an_idempotency_conflict(tmp_path):
+    db_path = tmp_path / "control-plane.db"
+    NodeRegistry(db_path).connect().close()
+
+    def enroll_key(key):
+        return NodeRegistry(db_path).enroll(
+            enrollment_key=key,
+            node_id="node-1",
+            role="worker",
+            owner="ops",
+            actor="operator:alice",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(enroll_key, key) for key in ("request-1", "request-2")
+        ]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(future.result())
+        except IdempotencyConflict as exc:
+            outcomes.append(exc)
+
+    assert sum(not isinstance(value, Exception) for value in outcomes) == 1
+    assert sum(isinstance(value, IdempotencyConflict) for value in outcomes) == 1
+    assert len(NodeRegistry(db_path).list()) == 1
+
+
+def test_enrollment_rejects_nested_secret_capabilities_before_persistence(registry):
+    secret = "must-not-persist"
+
+    with pytest.raises(ValueError, match="must not contain secret field"):
+        enroll(
+            registry,
+            capabilities={"runtime": [{"metadata": {"token": secret}}]},
+        )
+
+    registry.connect().close()
+    with sqlite3.connect(registry.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM managed_nodes").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM managed_node_events").fetchone()[0] == 0
+        )
+        assert secret not in "\n".join(conn.iterdump())
 
 
 def test_retry_without_caller_supplied_node_id_keeps_generated_identity(registry):

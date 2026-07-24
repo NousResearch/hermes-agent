@@ -129,6 +129,13 @@ async def test_api_contracts_and_lifecycle_error_mappings(
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "enrollment_conflict"
 
+    duplicate_id = await client.post(
+        "/api/control-plane/v1/nodes",
+        json=_enrollment(enrollment_key="request-2"),
+    )
+    assert duplicate_id.status_code == 409
+    assert duplicate_id.json()["error"]["code"] == "enrollment_conflict"
+
     invalid = await client.post(
         "/api/control-plane/v1/nodes/node-1/transitions",
         json={

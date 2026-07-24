@@ -357,7 +357,9 @@ class NodeRegistry:
             _required_text(node_id, "node_id") if node_id is not None else None
         )
         node_id = requested_node_id or str(uuid.uuid4())
-        capabilities_json = _canonical_json(dict(capabilities or {}))
+        capabilities_value = _json_object(capabilities or {}, "capabilities")
+        _reject_secret_fields(capabilities_value, "capabilities")
+        capabilities_json = _canonical_json(capabilities_value)
         now = int(self._clock())
 
         with self.connect() as conn, write_txn(conn):
@@ -382,25 +384,41 @@ class NodeRegistry:
                     credential=None,
                 )
 
+            if requested_node_id is not None:
+                existing_id = conn.execute(
+                    "SELECT enrollment_key FROM managed_nodes WHERE id = ?",
+                    (requested_node_id,),
+                ).fetchone()
+                if existing_id is not None:
+                    raise IdempotencyConflict(
+                        f"node id {requested_node_id!r} is already assigned to "
+                        "a different enrollment key"
+                    )
+
             credential = self._new_credential()
-            conn.execute(
-                """
-                INSERT INTO managed_nodes (
-                    id, enrollment_key, role, owner, state, capabilities_json,
-                    revision, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-                """,
-                (
-                    node_id,
-                    key,
-                    role,
-                    owner,
-                    INITIAL_STATE,
-                    capabilities_json,
-                    now,
-                    now,
-                ),
-            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO managed_nodes (
+                        id, enrollment_key, role, owner, state, capabilities_json,
+                        revision, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        node_id,
+                        key,
+                        role,
+                        owner,
+                        INITIAL_STATE,
+                        capabilities_json,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise IdempotencyConflict(
+                    "enrollment identity conflicts with an existing node"
+                ) from exc
             conn.execute(
                 """
                 INSERT INTO managed_node_credentials (

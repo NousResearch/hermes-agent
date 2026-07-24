@@ -28,7 +28,10 @@ entry should be safe to expose to:
 If a new endpoint doesn't pass all three tests, it should be gated and
 the SPA should bootstrap it after login instead.
 """
+
 from __future__ import annotations
+
+import re
 
 PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Liveness probe target. Returns version, gateway state, active
@@ -53,3 +56,21 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # 401 no_cookie. The JWT — not this allowlist — is the security boundary.
     "/api/cron/fire",
 })
+
+_NODE_CREDENTIAL_API_PATH = re.compile(
+    r"^/api/control-plane/v1/nodes/[^/]+/(?:authenticate|observations)$"
+)
+
+
+def is_node_credential_api_request(path: str, method: str) -> bool:
+    """Whether route-level node credential auth owns this request.
+
+    These two POST routes validate the credential in their handlers. Keeping
+    the match method-specific and anchored prevents any operator control-plane
+    route (or the control-plane prefix generally) from bypassing dashboard
+    authentication.
+    """
+    return (
+        method.upper() == "POST"
+        and _NODE_CREDENTIAL_API_PATH.fullmatch(path) is not None
+    )

@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 04:24 PDT (UTC-07:00)
+Last verification time: 2026-07-24 04:40 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -61,11 +61,8 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 - Root: `/home/len/hermes-agent`
 - Branch: `main`
-- Repository baseline before the current managed-node API milestone:
-  `5ac206acc`
-- Upstream relation at this verification: 16 commits ahead of `origin/main`;
-  the verified managed-node API milestone is present in the working tree but
-  cannot be committed while `.git` is mounted read-only
+- Current HEAD: `f230b8a69c2c`
+- Upstream relation at this verification: 19 commits ahead of `origin/main`
 - `DESIRED.md` is an untracked user file and was left untouched
 - Python environment: repository-local `.venv`
 - Repository-local generated state: `.tmp`, `.cache`, `.tools`, and `.venv`
@@ -171,8 +168,8 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 ## Outstanding blockers
 
 - No unresolved Harness control-plane development blocker is known.
-- Committing this completed milestone is blocked by the workspace policy:
-  `.git` is read-only, so Git cannot create `.git/index.lock`.
+- `.git` is mounted read-only in this workspace; the current review fixes are
+  intentionally left uncommitted per the task request.
 - Model selection and provider/account credentials are deferred deployment
   configuration for swappable backends, not control-plane blockers.
 

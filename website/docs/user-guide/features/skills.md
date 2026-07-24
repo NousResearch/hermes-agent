@@ -132,10 +132,16 @@ applies if you have it on.
 Skills use a token-efficient loading pattern:
 
 ```
-Level 0: skills_list()           → [{name, description, category}, ...]   (~3k tokens)
-Level 1: skill_view(name)        → Full content + metadata       (varies)
-Level 2: skill_view(name, path)  → Specific reference file       (varies)
+Level 0: skills_list()                 → All skill metadata
+         skills_list(query="task")    → Top 10 lexical matches
+Level 1: skill_view(name)              → Full content + metadata (varies)
+Level 2: skill_view(name, path)        → Specific reference file (varies)
 ```
+
+Query search ranks visible skills by name, optional routing hints, category,
+and description. It is local, deterministic, and adds no model or network
+call. Use `limit` (1–50) to change the number of matches. A query with no
+lexical evidence returns an empty list instead of unrelated results.
 
 The agent only loads the full skill content when it actually needs it.
 
@@ -150,6 +156,7 @@ platforms: [macos, linux]     # Optional — restrict to specific OS platforms
 metadata:
   hermes:
     tags: [python, automation]
+    triggers: [automate python, python workflow]  # Optional search hints
     category: devops
     fallback_for_toolsets: [web]    # Optional — conditional activation (see below)
     requires_toolsets: [terminal]   # Optional — conditional activation (see below)

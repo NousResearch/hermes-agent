@@ -140,6 +140,25 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     return f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
 
+def _format_model_provider_line(model: Optional[str], provider: Optional[str]) -> str:
+    """Render the ``**Model:** {model} ({provider})`` header line (#56791).
+
+    Empty/missing inputs produce empty strings; callers gate the output on
+    truthiness so headers stay backwards-compatible for jobs with no resolved
+    model/provider yet (e.g. font-end-of-build races between provider
+    selection and the finally-block that emits the markdown).
+    """
+    m = (model or "").strip()
+    p = (provider or "").strip()
+    if not m and not p:
+        return ""
+    if m and p:
+        return f"**Model:** {m} ({p})\n"
+    if m:
+        return f"**Model:** {m}\n"
+    return f"**Provider:** {p}\n"
+
+
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
     injection scanner. Caught in run_job so the operator sees a clean
@@ -3630,6 +3649,7 @@ def run_job(
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+{_format_model_provider_line(model, runtime.get('provider') or '')}
 
 ## Prompt
 
@@ -3652,6 +3672,7 @@ def run_job(
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+{_format_model_provider_line(model, runtime.get('provider') or '')}
 
 ## Prompt
 

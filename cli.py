@@ -7033,7 +7033,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+        # Pre-assembly list: /tools is a discovery/inspection surface, so it
+        # must show the full catalog including tools deferred behind the
+        # tool_search bridge (users check this to verify an MCP installed).
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True,
+                                     skip_tool_search_assembly=True)
         
         if not tools:
             print("(;_;) No tools available")

@@ -3874,6 +3874,52 @@ class TestMCPSelectiveToolLoading:
             "mcp__ink_exclude__list_services",
         ]
 
+    def test_exclude_filter_supports_globs(self):
+        """fnmatch globs in exclude — the Cloudflare flat-mode shape
+        (``*_radar_*`` etc.). Previously silently matched nothing."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"exclude": ["*_radar_*", "delete_*"]},
+        }
+        registered, _ = self._run_discover(
+            "ink_glob",
+            ["get_radar_summary", "get_accounts_radar_http", "delete_service",
+             "create_service", "list_services"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == [
+            "mcp__ink_glob__create_service",
+            "mcp__ink_glob__list_services",
+        ]
+
+    def test_include_filter_supports_globs(self):
+        """Globs work symmetrically on the include whitelist."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"include": ["get_zones_*"]},
+        }
+        registered, _ = self._run_discover(
+            "ink_glob_inc",
+            ["get_zones_dns_records", "get_zones_settings", "delete_zone",
+             "get_accounts"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == [
+            "mcp__ink_glob_inc__get_zones_dns_records",
+            "mcp__ink_glob_inc__get_zones_settings",
+        ]
+
+    def test_exact_names_still_match_exactly(self):
+        """No-metachar entries stay literal — 'docs' must not glob-match
+        'docs_search', and exact matching is unchanged."""
+        from tools.mcp_tool import matches_name_filter
+        assert matches_name_filter("docs", {"docs"})
+        assert not matches_name_filter("docs_search", {"docs"})
+        assert matches_name_filter("docs_search", {"docs*"})
+        assert not matches_name_filter("anything", set())
+
     def test_include_filter_skips_utility_tools_without_capabilities(self):
         config = {
             "url": "https://mcp.example.com",

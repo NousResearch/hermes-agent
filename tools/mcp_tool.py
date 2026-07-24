@@ -93,6 +93,7 @@ import asyncio
 import contextvars
 import concurrent.futures
 import errno
+import fnmatch
 import inspect
 import json
 import logging
@@ -5303,7 +5304,12 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
 
 
 def _normalize_name_filter(value: Any, label: str) -> set[str]:
-    """Normalize include/exclude config to a set of tool names."""
+    """Normalize include/exclude config to a set of tool-name patterns.
+
+    Entries may be exact tool names or fnmatch-style globs
+    (``*_radar_*``, ``get_zones_*``). Matching happens in
+    :func:`matches_name_filter`.
+    """
     if value is None:
         return set()
     if isinstance(value, str):
@@ -5312,6 +5318,25 @@ def _normalize_name_filter(value: Any, label: str) -> set[str]:
         return {str(item) for item in value}
     logger.warning("MCP config %s must be a string or list of strings; ignoring %r", label, value)
     return set()
+
+
+def matches_name_filter(tool_name: str, patterns: set[str]) -> bool:
+    """True if ``tool_name`` matches any entry in ``patterns``.
+
+    Exact names match literally; entries containing fnmatch metacharacters
+    (``*``, ``?``, ``[``) match as case-sensitive globs — the same pattern
+    semantics as ``approvals.deny``. Exact membership is checked first so
+    large literal lists stay O(1).
+    """
+    if not patterns:
+        return False
+    if tool_name in patterns:
+        return True
+    return any(
+        fnmatch.fnmatchcase(tool_name, p)
+        for p in patterns
+        if "*" in p or "?" in p or "[" in p
+    )
 
 
 def _parse_boolish(value: Any, default: bool = True) -> bool:
@@ -5477,9 +5502,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     toolset_name = f"mcp-{name}"
 
     # Selective tool loading: honour include/exclude lists from config.
-    # Rules (matching issue #690 spec):
-    #   tools.include — whitelist: only these tool names are registered
-    #   tools.exclude — blacklist: all tools EXCEPT these are registered
+    # Rules (matching issue #690 spec, extended with glob support):
+    #   tools.include — whitelist: only matching tool names are registered
+    #   tools.exclude — blacklist: all tools EXCEPT matching ones are registered
+    #   entries may be exact names or fnmatch globs (e.g. "*_radar_*")
     #   include takes precedence over exclude
     #   Neither set → register all tools (backward-compatible default)
     tools_filter = config.get("tools") or {}
@@ -5488,9 +5514,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     def _should_register(tool_name: str) -> bool:
         if include_set:
-            return tool_name in include_set
+            return matches_name_filter(tool_name, include_set)
         if exclude_set:
-            return tool_name not in exclude_set
+            return not matches_name_filter(tool_name, exclude_set)
         return True
 
     for mcp_tool in server._tools:

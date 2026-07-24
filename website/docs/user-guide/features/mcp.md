@@ -460,6 +460,24 @@ mcp_servers:
 
 All server tools are registered except the excluded ones.
 
+### Glob patterns
+
+Both lists accept fnmatch-style globs alongside exact names — essential for
+huge flat surfaces like Cloudflare's API MCP (`?codemode=false`, ~3,300
+tools) where excluding product areas one endpoint at a time is impractical:
+
+```yaml
+mcp_servers:
+  cloudflare:
+    url: "https://mcp.cloudflare.com/mcp?codemode=false"
+    auth: oauth
+    tools:
+      exclude: ["*_radar_*", "*_accounts_dlp_*", "*_zones_web3_*"]
+```
+
+Entries without glob metacharacters (`*`, `?`, `[`) match exactly — `docs`
+excludes only the tool named `docs`, never `docs_search`.
+
 ### Precedence rule
 
 If both are present:

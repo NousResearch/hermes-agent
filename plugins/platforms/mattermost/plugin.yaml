@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_MAX_POST_LENGTH
+    description: "Maximum characters per Mattermost post chunk. Default: 4000. Range: 1000-60000."
+    prompt: "Maximum Mattermost post length"
+    password: false

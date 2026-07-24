@@ -155,6 +155,9 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
+
+# Optional: maximum characters per Mattermost post chunk (default: 4000)
+# MATTERMOST_MAX_POST_LENGTH=12000
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -220,6 +223,7 @@ By default, the bot only responds in channels when `@mentioned`. You can change 
 |----------|---------|-------------|
 | `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
+| `MATTERMOST_MAX_POST_LENGTH` | `4000` | Maximum characters per Mattermost post chunk. Values below `1000` are ignored; values above `60000` are clamped. |
 
 To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.
 
@@ -251,6 +255,27 @@ Behavior:
 - Find a channel ID via the Mattermost UI → channel header → "View Info", or read it from the channel URL.
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
+## Long replies (`max_post_length`)
+
+By default, Hermes splits Mattermost replies into 4000-character chunks. This
+keeps chat messages readable and avoids API limits on many installations. If
+your self-hosted Mattermost server accepts larger posts, you can raise the chunk
+size:
+
+```yaml
+mattermost:
+  max_post_length: 12000
+```
+
+Or via env var:
+
+```bash
+MATTERMOST_MAX_POST_LENGTH=12000
+```
+
+Valid values are `1000` through `60000`. Invalid values fall back to the
+default. Values above `60000` are clamped to `60000`.
 
 ## Troubleshooting
 

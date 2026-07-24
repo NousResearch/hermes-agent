@@ -131,6 +131,7 @@ import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
+import { formatRendererConsoleError } from './renderer-console'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -609,11 +610,15 @@ const WINDOW_BUTTON_POSITION = {
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
-const APP_ICON_PATHS = [
-  path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
-  path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
-  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
-]
+const APP_ICON_PATHS = IS_PACKAGED
+  ? [
+      // Prefer the real unpacked file. statSync on an app.asar path makes
+      // Electron's ASAR shim construct deprecated fs.Stats objects (DEP0180).
+      path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png'),
+      path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
+      path.join(APP_ROOT, 'dist', 'apple-touch-icon.png')
+    ]
+  : [path.join(APP_ROOT, 'public', 'apple-touch-icon.png'), path.join(APP_ROOT, 'dist', 'apple-touch-icon.png')]
 
 let rendererTitleBarTheme = null
 const terminalSessions = new Map()
@@ -3269,7 +3274,10 @@ function resolveWebDist() {
 }
 
 function resolveRendererIndex() {
-  const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
+  // resolveWebDist() prefers app.asar.unpacked in packaged builds. Check that
+  // real file before the app.asar fallback to avoid Electron's deprecated
+  // fs.Stats construction in the ASAR stat shim (DEP0180).
+  const candidates = [path.join(resolveWebDist(), 'index.html'), path.join(APP_ROOT, 'dist', 'index.html')]
   const found = candidates.find(fileExists)
 
   if (found) {
@@ -8534,22 +8542,15 @@ function createWindow() {
 
   mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
 
-  // Electron always passes the event first. The canonical (Electron 36+) shape
-  // is (event, messageDetails); the deprecated positional shape is
-  // (event, level, message, line, sourceId). Handle both. `level` is numeric
-  // (0..3), where 3 === error.
-  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
-    const level = details ? details.level : detailsOrLevel
+  // Electron 36+ passes messageDetails as the second argument. Keep the
+  // listener at the canonical two-argument shape: declaring the deprecated
+  // positional fields makes Electron populate them and warn on every launch.
+  mainWindow.webContents.on('console-message', (_event, details) => {
+    const line = formatRendererConsoleError(details)
 
-    if (level !== 3) {
-      return
+    if (line) {
+      rememberLog(line)
     }
-
-    const text = details ? details.message : message
-    const src = details ? details.sourceUrl : sourceId
-    const lineNo = details ? details.lineNumber : line
-    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
   })
 
   if (DEV_SERVER) {

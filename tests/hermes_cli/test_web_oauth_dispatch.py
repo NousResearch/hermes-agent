@@ -22,7 +22,7 @@ These tests pin the corrected behavior.
 import asyncio
 import time
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -67,19 +67,27 @@ def _invoke_scope_refusal():
     return httpx.HTTPStatusError("invalid scope", request=request, response=response)
 
 
-def test_minimax_login_does_not_launch_anthropic_flow():
-    """Click 'Login' on MiniMax → MUST NOT return claude.ai auth_url."""
+def test_minimax_dashboard_rewrites_stale_www_authorize_url():
+    """Dashboard MiniMax login returns the working platform URL, not stale www."""
     fake_user_code_resp = {
         "user_code": "ABCD-1234",
-        "verification_uri": "https://api.minimax.io/oauth/verify",
+        "verification_uri": (
+            "https://www.minimax.io/oauth-authorize?client_id=abc&state=xyz"
+        ),
         # `expired_in` < 1e12 so the heuristic treats it as seconds.
         "expired_in": 600,
         "interval": 2000,
         "state": "stub-state",
     }
+    fake_response = MagicMock(status_code=200, text="ok", reason_phrase="OK")
+    fake_response.json.return_value = fake_user_code_resp
+    fake_http_client = MagicMock()
+    fake_http_client.__enter__.return_value = fake_http_client
+    fake_http_client.post.return_value = fake_response
+
     with patch(
-        "hermes_cli.auth._minimax_request_user_code",
-        return_value=fake_user_code_resp,
+        "httpx.Client",
+        return_value=fake_http_client,
     ), patch(
         "hermes_cli.auth._minimax_pkce_pair",
         return_value=("verifier-stub", "challenge-stub", "stub-state"),
@@ -100,9 +108,11 @@ def test_minimax_login_does_not_launch_anthropic_flow():
     assert "auth_url" not in body
     assert "claude.ai" not in str(body).lower()
 
-    # And the response IS the device-code shape pointing at MiniMax.
+    # The shared MiniMax response boundary normalizes both CLI and dashboard.
     assert body["flow"] == "device_code"
-    assert "minimax" in body["verification_url"].lower()
+    assert body["verification_url"] == (
+        "https://platform.minimax.io/oauth-authorize?client_id=abc&state=xyz"
+    )
     assert body["user_code"] == "ABCD-1234"
     assert body["expires_in"] == 600
 

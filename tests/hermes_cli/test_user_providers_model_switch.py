@@ -625,8 +625,8 @@ def test_list_authenticated_providers_hides_custom_shadowing_builtin_endpoint(mo
     ]
 
     providers = list_authenticated_providers(
-        current_provider="my-alibaba",
-        user_providers={},
+        current_provider="alibaba",
+        user_providers={"alibaba": {}},
         custom_providers=custom_providers,
         max_models=50,
     )

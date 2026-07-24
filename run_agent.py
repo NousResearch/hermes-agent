@@ -4969,6 +4969,25 @@ class AIAgent:
             runtime_base
         )
 
+        # OpenCode Go exposes both OpenAI-compatible and Anthropic-compatible
+        # surfaces under the same provider.  Credential pool entries persist a
+        # provider-level base_url, but the correct runtime URL depends on the
+        # active model's API mode:
+        # - chat_completions: OpenAI client appends /chat/completions, so the
+        #   base URL must include /v1.
+        # - anthropic_messages: Anthropic client appends /v1/messages, so the
+        #   base URL must NOT include /v1.
+        # Normalize on rotation so a credential used by one model family cannot
+        # poison retries for the other model family.
+        if self.provider == "opencode-go" and isinstance(runtime_base, str):
+            raw_runtime_base = runtime_base.rstrip("/")
+            if self.api_mode == "anthropic_messages" and raw_runtime_base.endswith("/v1"):
+                runtime_base = raw_runtime_base[:-3]
+            elif self.api_mode != "anthropic_messages" and not raw_runtime_base.endswith("/v1"):
+                runtime_base = raw_runtime_base + "/v1"
+            else:
+                runtime_base = raw_runtime_base
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 

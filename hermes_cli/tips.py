@@ -147,7 +147,7 @@ TIPS = [
     "/moa routes one hard prompt through your configured Mixture of Agents model set.",
     "Terminal commands support background mode with notify_on_complete for long-running tasks.",
     "Terminal background processes support watch_patterns to alert on specific output lines.",
-    "The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.",
+    "The terminal tool supports 7 backends: local, Docker, SSH, Modal, Daytona, E2B, and Singularity.",
 
     # --- Profiles ---
     "Each profile gets its own config, API keys, memory, sessions, skills, and cron jobs.",

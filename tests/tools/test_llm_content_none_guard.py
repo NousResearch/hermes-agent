@@ -163,6 +163,18 @@ class TestExtractContentOrReasoning:
         response = _make_response("")
         assert extract_content_or_reasoning(response) == ""
 
+    def test_choices_none_returns_empty(self):
+        response = types.SimpleNamespace(choices=None)
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_choices_missing_attribute_returns_empty(self):
+        response = types.SimpleNamespace()
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_choices_empty_list_returns_empty(self):
+        response = types.SimpleNamespace(choices=[])
+        assert extract_content_or_reasoning(response) == ""
+
     def test_think_blocks_stripped_with_remaining_content(self):
         response = _make_response("<think>internal reasoning</think>The answer is 42.")
         assert extract_content_or_reasoning(response) == "The answer is 42."

@@ -34,6 +34,8 @@ What makes Hermes different:
 
 This skill is a concise operating guide, not the complete source of truth for every Hermes feature. If a Hermes feature, command, or setting is not mentioned here or in a reference, do not treat that absence as evidence that it does not exist. Check the live repository and official docs before giving a negative answer.
 
+**Use `web_search` to query `hermes-agent.nousresearch.com/docs/` for the latest documentation.** The docs site is the live source of truth and updates faster than this bundled skill or cached knowledge.
+
 Good verification targets:
 
 - CLI commands: `hermes --help`, `hermes <command> --help`, and `hermes_cli/main.py`

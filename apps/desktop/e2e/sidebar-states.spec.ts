@@ -20,6 +20,8 @@ import { SIDEBAR_CROSS_TEXTS, SIDEBAR_TEXTS, restartMockServer } from './mock-se
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'
+/** Foreground turn-running dot aria-label. */
+const SESSION_RUNNING_DOT_LABEL = 'Session running'
 /** Finished-unread dot aria-label. */
 const UNREAD_DOT_LABEL = 'Finished — unread'
 
@@ -205,17 +207,29 @@ test.describe('sidebar states — cross-session dot transition', () => {
       )
       .toBeGreaterThan(0)
 
-    // Wait for the final answer (turn completes, but bg process still running).
+    // The final answer text streams before message.complete, so text visibility
+    // alone is not a completion barrier. Wait for the foreground-running state
+    // to clear before asserting the background-process state.
     await page.waitForFunction(
       (text) => (document.body.textContent ?? '').includes(text),
       SIDEBAR_CROSS_TEXTS.finalText,
       { timeout: 90_000 },
     )
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${SESSION_RUNNING_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'session running dot should disappear after turn completes' },
+      )
+      .toBe(0)
 
     // The background dot should still be visible (sleep 5 hasn't finished yet,
     // or auto-dismiss hasn't fired).
-    const bgDuringTurn = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
-    expect(bgDuringTurn, 'background dot should still be visible after turn completes').toBeGreaterThan(0)
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'background dot should still be visible after turn completes' },
+      )
+      .toBeGreaterThan(0)
 
     // Evidence: bg dot visible on session A while its turn is done but the
     // background process hasn't exited yet.

@@ -28,6 +28,8 @@ import { SIDEBAR_CROSS_TEXTS, restartMockServer } from './mock-server'
 const UNREAD_DOT_LABEL = 'Finished — unread'
 /** Background-running dot aria-label. */
 const BG_DOT_LABEL = 'Background task running'
+/** Foreground turn-running dot aria-label. */
+const SESSION_RUNNING_DOT_LABEL = 'Session running'
 
 /** Locate a session's sidebar row by its preview text. */
 function sessionRow(page: import('@playwright/test').Page, text: string) {
@@ -60,16 +62,28 @@ async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
     )
     .toBeGreaterThan(0)
 
-  // Wait for the turn to complete (final answer visible).
+  // The final answer text streams before message.complete, so text visibility
+  // alone is not a completion barrier. Wait for the foreground-running state
+  // to clear before asserting the background-process state.
   await page.waitForFunction(
     (text) => (document.body.textContent ?? '').includes(text),
     SIDEBAR_CROSS_TEXTS.finalText,
     { timeout: 90_000 },
   )
+  await expect
+    .poll(
+      () => page.locator(`[aria-label="${SESSION_RUNNING_DOT_LABEL}"]`).count(),
+      { timeout: 30_000, message: 'session running dot should disappear after turn completes' },
+    )
+    .toBe(0)
 
   // The background dot should still be visible (sleep 5 hasn't finished).
-  const bgDuringTurn = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
-  expect(bgDuringTurn, 'background dot should still be visible after turn completes').toBeGreaterThan(0)
+  await expect
+    .poll(
+      () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+      { timeout: 30_000, message: 'background dot should still be visible after turn completes' },
+    )
+    .toBeGreaterThan(0)
 
   // Switch to a new session — session A is no longer $selectedStoredSessionId.
   // This is required: openSessionTile bails if the session is already selected.

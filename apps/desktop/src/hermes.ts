@@ -11,6 +11,7 @@ import type {
   BackendUpdateCheckResponse,
   ComputerUseStatus,
   ConfigSchemaResponse,
+  CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
   CronJobUpdates,
@@ -136,6 +137,7 @@ export type {
   ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
+  CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
   CronJobSchedule,
@@ -1141,6 +1143,18 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
   })
 
   return runs ?? []
+}
+
+// The single source of truth for cron delivery targets (local + configured
+// gateways). Both the manual cron editor and the blueprint dialog use this so
+// they never offer a platform that isn't connected. Mirrors the dashboard.
+export async function getCronDeliveryTargets(): Promise<CronDeliveryTarget[]> {
+  const { targets } = await window.hermesDesktop.api<{ targets: CronDeliveryTarget[] }>({
+    ...profileScoped(),
+    path: '/api/cron/delivery-targets'
+  })
+
+  return targets ?? []
 }
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {

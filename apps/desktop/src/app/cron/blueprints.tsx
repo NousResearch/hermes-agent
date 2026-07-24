@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getAutomationBlueprints } from '@/hermes'
 import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
-import { type Translations, useI18n } from '@/i18n'
+import { useI18n } from '@/i18n'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 
@@ -14,29 +14,15 @@ import { PanelDetail, PanelEmpty, PanelPill } from '../overlays/panel'
 
 // The blueprint catalog is shared with the dashboard, so its deliver slot
 // defaults to "origin" (the chat/home-channel a dashboard or gateway job was
-// created from). Desktop has no origin chat and no home-channel picker, so
-// "origin" would render unlabeled and, at runtime, deliver nowhere. Treat the
-// desktop's native target ("local" = This desktop) as the default and hide the
-// origin option — mirroring the manual cron editor, which only offers
-// local/telegram/discord/slack/email.
+// created from). Desktop has no origin chat, so seed the deliver slot to the
+// desktop's native target ("local" = This desktop) instead. The dialog then
+// renders that slot with the shared DeliverSelect (backend-sourced targets), so
+// the raw "origin" option never reaches the desktop UI.
 const DELIVER_FIELD = 'deliver'
 const DESKTOP_DELIVER_DEFAULT = 'local'
 
 function isDeliverField(field: AutomationBlueprintField): boolean {
   return field.name === DELIVER_FIELD
-}
-
-// Options a desktop user can actually deliver to: drop "origin" (dashboard-only)
-// and de-dupe. Everything else the backend offered (local + configured
-// gateways) passes through.
-function desktopDeliverOptions(options: string[]): string[] {
-  return [...new Set(options.filter(option => option !== 'origin'))]
-}
-
-// Label a deliver value with the desktop's own delivery labels ("This desktop",
-// "Telegram", …), falling back to the raw platform id for anything unmapped.
-function deliverLabel(value: string, c: Translations['cron']): string {
-  return c.deliveryLabels[value] ?? value
 }
 
 // Initial form state for a blueprint = each field's default (or ''). Pure so the
@@ -62,41 +48,36 @@ export function cleanBlueprintFieldError(message: string): string {
 
 // Help text to show under a slot control. The backend deliver help is
 // origin/dashboard-centric and even contradicts desktop semantics ("local =
-// save only" vs. This desktop), and the relabeled dropdown is self-explanatory —
+// save only" vs. This desktop), and the DeliverSelect is self-explanatory —
 // skip it for the deliver slot.
 export function blueprintSlotHelp(field: AutomationBlueprintField): string | undefined {
   return field.help && field.type !== 'text' && !isDeliverField(field) ? field.help : undefined
 }
 
 // Renders one blueprint slot's control (enum/weekdays → Select, time → time
-// input, else text). The deliver slot drops the dashboard-only "origin" option
-// and uses the desktop's delivery labels.
+// input, else text). The deliver slot is handled separately by the dialog's
+// shared DeliverSelect, so it's not rendered here.
 export function BlueprintSlotControl({
-  c,
   field,
   id,
   onChange,
   value
 }: {
-  c: Translations['cron']
   field: AutomationBlueprintField
   id: string
   onChange: (next: string) => void
   value: string
 }) {
   if (field.type === 'enum' || field.type === 'weekdays') {
-    const deliver = isDeliverField(field)
-    const options = deliver ? desktopDeliverOptions(field.options) : field.options
-
     return (
       <Select onValueChange={onChange} value={value}>
         <SelectTrigger className="h-9 rounded-md" id={id}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {options.map(option => (
+          {field.options.map(option => (
             <SelectItem key={option} value={option}>
-              {deliver ? deliverLabel(option, c) : option}
+              {option}
             </SelectItem>
           ))}
         </SelectContent>

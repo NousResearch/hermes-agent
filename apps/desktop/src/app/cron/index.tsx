@@ -29,8 +29,10 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   type AutomationBlueprint,
   createCronJob,
+  type CronDeliveryTarget,
   type CronJob,
   deleteCronJob,
+  getCronDeliveryTargets,
   getCronJobRuns,
   getCronJobs,
   instantiateAutomationBlueprint,
@@ -88,8 +90,6 @@ type CronTab = 'blueprints' | 'jobs'
 // Radix <SelectItem> rejects empty-string values, so the "no override" row in
 // the model picker carries this sentinel and is mapped back to '' on save.
 const MODEL_DEFAULT_VALUE = '__default__'
-
-const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
 
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { expr: '0 9 * * *', value: 'daily' },
@@ -789,6 +789,49 @@ function CronJobRuns({
   )
 }
 
+// Label a cron delivery target: 'local' → localized "This desktop", known
+// platforms → their delivery label, anything else → the backend name. Configured
+// platforms without a cron home channel get a "set a home channel first" hint.
+function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron']): string {
+  const base = target.id === 'local' ? c.deliveryLabels.local : (c.deliveryLabels[target.id] ?? target.name)
+
+  return target.id !== 'local' && !target.home_target_set ? `${base} — ${c.deliverNeedsHomeChannel}` : base
+}
+
+// The delivery-target dropdown, shared by the manual cron editor and the
+// blueprint form so both offer exactly the connected platforms (never a
+// hardcoded list). While the targets load, keep the current value selectable.
+function DeliverSelect({
+  c,
+  id,
+  onChange,
+  targets,
+  value
+}: {
+  c: Translations['cron']
+  id: string
+  onChange: (next: string) => void
+  targets: CronDeliveryTarget[]
+  value: string
+}) {
+  const options = targets.length > 0 ? targets : [{ home_env_var: null, home_target_set: true, id: value, name: value }]
+
+  return (
+    <Select onValueChange={onChange} value={value}>
+      <SelectTrigger className="h-9 rounded-md" id={id}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map(target => (
+          <SelectItem key={target.id} value={target.id}>
+            {deliverTargetLabel(target, c)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
 function CronEditorDialog({
   editor,
   onBlueprintCreate,
@@ -830,6 +873,15 @@ function CronEditorDialog({
     queryKey: ['model-options', 'global'],
     queryFn: () => requestModelOptions({}),
     enabled: open && !scriptOnlyJob && !isBlueprint
+  })
+
+  // Single source of truth for where a cron can deliver (local + configured
+  // gateways) — same endpoint the dashboard uses, so no dialog offers a platform
+  // that isn't connected. Shared by the manual editor and the blueprint form.
+  const deliveryTargets = useQuery({
+    queryKey: ['cron-delivery-targets'],
+    queryFn: getCronDeliveryTargets,
+    enabled: open
   })
 
   useEffect(() => {
@@ -963,13 +1015,25 @@ function CronEditorDialog({
 
               return (
                 <Field htmlFor={fieldId} key={field.name} label={field.label}>
-                  <BlueprintSlotControl
-                    c={c}
-                    field={field}
-                    id={fieldId}
-                    onChange={next => setSlotValues(prev => ({ ...prev, [field.name]: next }))}
-                    value={slotValues[field.name] ?? ''}
-                  />
+                  {field.name === 'deliver' ? (
+                    // Use the shared, backend-sourced delivery targets (same as the
+                    // manual editor) rather than the blueprint's static field.options,
+                    // so both dialogs offer exactly the connected platforms.
+                    <DeliverSelect
+                      c={c}
+                      id={fieldId}
+                      onChange={next => setSlotValues(prev => ({ ...prev, [field.name]: next }))}
+                      targets={deliveryTargets.data ?? []}
+                      value={slotValues[field.name] ?? DEFAULT_DELIVER}
+                    />
+                  ) : (
+                    <BlueprintSlotControl
+                      field={field}
+                      id={fieldId}
+                      onChange={next => setSlotValues(prev => ({ ...prev, [field.name]: next }))}
+                      value={slotValues[field.name] ?? ''}
+                    />
+                  )}
                   {help && <FieldHint>{help}</FieldHint>}
                 </Field>
               )
@@ -1036,18 +1100,13 @@ function CronEditorDialog({
             </Field>
 
             <Field htmlFor="cron-deliver" label={c.deliverLabel}>
-              <Select onValueChange={setDeliver} value={deliver}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-deliver">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {DELIVERY_VALUES.map(value => (
-                    <SelectItem key={value} value={value}>
-                      {c.deliveryLabels[value]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DeliverSelect
+                c={c}
+                id="cron-deliver"
+                onChange={setDeliver}
+                targets={deliveryTargets.data ?? []}
+                value={deliver}
+              />
             </Field>
           </div>
 

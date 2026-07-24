@@ -60,6 +60,18 @@ export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
+// Radix portals Select / Dropdown / Popover content OUTSIDE the dialog (into a
+// `[data-radix-popper-content-wrapper]`). Dismissing that popover fires a
+// pointerdown the Dialog's DismissableLayer reads as an outside-interaction and
+// closes the whole dialog. Guard: if an outside-interaction originates from a
+// popper wrapper, it's a dropdown dismiss inside our own dialog — swallow it so
+// only the dropdown closes. A genuine click elsewhere still closes the dialog.
+function isInteractionFromPopper(event: Event): boolean {
+  const target = event.target
+
+  return target instanceof Element && target.closest('[data-radix-popper-content-wrapper]') !== null
+}
+
 function DialogContent({
   className,
   children,
@@ -68,6 +80,7 @@ function DialogContent({
   banner,
   bannerTone = 'error',
   onOpenAutoFocus,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -84,6 +97,19 @@ function DialogContent({
   const { t } = useI18n()
 
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
+
+  // Compose the popper guard with any caller-supplied onInteractOutside: run the
+  // guard first (it may preventDefault to keep the dialog open), then defer to
+  // the caller for anything it didn't already handle.
+  const handleInteractOutside = (event: Parameters<NonNullable<typeof onInteractOutside>>[0]) => {
+    if (isInteractionFromPopper(event.detail.originalEvent)) {
+      event.preventDefault()
+
+      return
+    }
+
+    onInteractOutside?.(event)
+  }
 
   // No default here — Radix's normal autofocus (first focusable element, often
   // an input) is what most dialogs want. Dialogs with no input should pass
@@ -128,6 +154,7 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
+          onInteractOutside={handleInteractOutside}
           onOpenAutoFocus={onOpenAutoFocus}
           {...props}
         >
@@ -166,6 +193,7 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
+        onInteractOutside={handleInteractOutside}
         onOpenAutoFocus={onOpenAutoFocus}
         {...props}
       >

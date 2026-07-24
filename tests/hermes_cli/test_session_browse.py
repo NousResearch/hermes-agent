@@ -10,7 +10,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-from hermes_cli.main import _session_browse_picker
+from hermes_cli.main import _session_browse_picker, main as hermes_main
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -441,6 +441,72 @@ class TestCmdSessionsBrowse:
                 result = _session_browse_picker(sessions)
 
         assert result == "s1"
+
+    def test_browse_hides_cron_and_tool_sessions_by_default(self, monkeypatch):
+        """Browse should exclude cron/tool sources unless the user explicitly asks for one."""
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "browse"])
+
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source=None,
+            exclude_sources=["tool", "cron"],
+            limit=500,
+        )
+        mock_db.close.assert_called_once()
+
+    def test_browse_source_filter_disables_default_exclusions(self, monkeypatch):
+        """Explicit --source should bypass default source exclusions."""
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "browse", "--source", "cron"])
+
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source="cron",
+            exclude_sources=None,
+            limit=500,
+        )
+        mock_db.close.assert_called_once()
+
+    def test_list_hides_cron_and_tool_sessions_by_default(self, monkeypatch):
+        """List should exclude cron/tool sources unless the user explicitly asks for one."""
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "list"])
+
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source=None,
+            exclude_sources=["tool", "cron"],
+            limit=20,
+        )
+
+    def test_list_source_filter_disables_default_exclusions(self, monkeypatch):
+        """Explicit --source should bypass list default source exclusions too."""
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "list", "--source", "cron"])
+
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source="cron",
+            exclude_sources=None,
+            limit=20,
+        )
 
 
 # ─── Edge cases ──────────────────────────────────────────────────────────────

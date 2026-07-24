@@ -665,3 +665,67 @@ class TestLiveStatusSetting:
         }
         assert resolve_display_setting(config, "slack", "live_status") == "verb"
         assert resolve_display_setting(config, "google_chat", "live_status") == "full"
+
+
+# ---------------------------------------------------------------------------
+# heartbeat_tip — optional tip appended to the long-running heartbeat
+# ---------------------------------------------------------------------------
+
+class TestHeartbeatTip:
+    """``heartbeat_tip`` is off by default and resolvable per-platform,
+    mirroring ``cleanup_progress``. When enabled, the gateway appends a
+    random tip from ``hermes_cli.tips`` to each long-running heartbeat.
+    """
+
+    def test_default_off_for_all_platforms(self):
+        """No config set → heartbeat_tip resolves to False everywhere."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "email"):
+            assert resolve_display_setting({}, plat, "heartbeat_tip") is False
+
+    def test_global_true_applies_to_all_platforms(self):
+        """display.heartbeat_tip=true opts in globally."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"heartbeat_tip": True}}
+        assert resolve_display_setting(config, "telegram", "heartbeat_tip") is True
+        assert resolve_display_setting(config, "discord", "heartbeat_tip") is True
+
+    def test_per_platform_override_wins(self):
+        """display.platforms.<plat>.heartbeat_tip beats the global value."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "heartbeat_tip": False,
+                "platforms": {
+                    "telegram": {"heartbeat_tip": True},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "heartbeat_tip") is True
+        assert resolve_display_setting(config, "discord", "heartbeat_tip") is False
+
+    def test_yaml_off_string_normalises_to_false(self):
+        """YAML 1.1 bare ``off`` becomes string 'off' — treat as False."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"telegram": {"heartbeat_tip": "off"}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "heartbeat_tip") is False
+
+    def test_yaml_true_string_normalises_to_true(self):
+        """String 'true'/'yes'/'on' all resolve to True."""
+        from gateway.display_config import resolve_display_setting
+
+        for val in ("true", "yes", "on", "1"):
+            config = {
+                "display": {
+                    "platforms": {"telegram": {"heartbeat_tip": val}},
+                }
+            }
+            assert resolve_display_setting(config, "telegram", "heartbeat_tip") is True, val

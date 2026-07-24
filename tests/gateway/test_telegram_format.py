@@ -38,6 +38,7 @@ _ensure_telegram_mock()
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _is_telegram_flood_error,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -905,6 +906,83 @@ class TestEditMessageStreamingSafety:
             "message_id": 456,
             "text": "final bold",
         }
+
+    @pytest.mark.asyncio
+    async def test_final_edit_flood_does_not_plain_fallback(self):
+        """Flood control is not a MarkdownV2 parse failure.
+
+        Regression: finalize edits treated RetryAfter/flood like a parse error
+        and stripped formatting to plain text, so users saw unrendered replies.
+        """
+
+        class FloodError(Exception):
+            retry_after = 30.0
+
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=FloodError("Flood control exceeded. Retry in 30 seconds")
+        )
+
+        result = await adapter.edit_message(
+            "123", "456", "final **bold**", finalize=True
+        )
+
+        assert result.success is False
+        assert result.error == "flood_control:30.0"
+        assert result.retry_after == 30.0
+        # Single MarkdownV2 attempt only — never a stripped plain retry.
+        assert adapter._bot.edit_message_text.await_count == 1
+        only_call = adapter._bot.edit_message_text.await_args.kwargs
+        assert "parse_mode" in only_call
+        assert only_call["text"] == "final *bold*"
+
+    @pytest.mark.asyncio
+    async def test_final_edit_short_flood_retries_with_markdownv2(self, monkeypatch):
+        """Short flood waits retry the finalize edit still as MarkdownV2."""
+
+        class FloodError(Exception):
+            retry_after = 1.0
+
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=[
+                FloodError("Flood control exceeded. Retry in 1 seconds"),
+                None,
+            ]
+        )
+        sleep = AsyncMock()
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.asyncio.sleep", sleep
+        )
+
+        result = await adapter.edit_message(
+            "123", "456", "final **bold**", finalize=True
+        )
+
+        assert result.success is True
+        sleep.assert_awaited_once_with(1.0)
+        assert adapter._bot.edit_message_text.await_count == 2
+        first_call = adapter._bot.edit_message_text.await_args_list[0].kwargs
+        second_call = adapter._bot.edit_message_text.await_args_list[1].kwargs
+        assert "parse_mode" in first_call
+        assert "parse_mode" in second_call
+        assert second_call["text"] == "final *bold*"
+
+    def test_is_telegram_flood_error_detects_retry_after_shapes(self):
+        class WithAttr(Exception):
+            retry_after = 12
+
+        assert _is_telegram_flood_error(WithAttr("x"))
+        assert _is_telegram_flood_error(
+            Exception("Flood control exceeded. Retry in 221 seconds")
+        )
+        assert _is_telegram_flood_error(Exception("Too Many Requests: retry after 30"))
+        assert not _is_telegram_flood_error(
+            Exception("Can't parse entities: character '(' is reserved")
+        )
+        assert not _is_telegram_flood_error(Exception("bad markdown"))
 
     @pytest.mark.asyncio
     async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):

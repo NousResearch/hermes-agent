@@ -230,3 +230,264 @@ def test_adc_failure_falls_back_to_service_account(monkeypatch, tmp_path):
     token, project = va.get_vertex_credentials()
     assert token == "ya29.FAKE"
     assert project == "sa-project"
+
+
+# ── API Key (Express Mode) tests ─────────────────────────────────────────────
+
+
+def test_has_vertex_api_key_true_when_env_set(vertex_adapter, monkeypatch):
+    """has_vertex_api_key returns True when GOOGLE_VERTEX_API_KEY is set."""
+    monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyFakeKey123")
+    assert vertex_adapter.has_vertex_api_key() is True
+
+
+def test_has_vertex_api_key_false_when_not_set(vertex_adapter):
+    """has_vertex_api_key returns False when the env var is absent."""
+    assert vertex_adapter.has_vertex_api_key() is False
+
+
+def test_resolve_vertex_api_key_returns_value(vertex_adapter, monkeypatch):
+    """resolve_vertex_api_key returns the env var value."""
+    monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyTestKey456")
+    assert vertex_adapter.resolve_vertex_api_key() == "AIzaSyTestKey456"
+
+
+def test_resolve_vertex_api_key_returns_none_when_not_set(vertex_adapter):
+    """resolve_vertex_api_key returns None when env var is absent."""
+    assert vertex_adapter.resolve_vertex_api_key() is None
+
+
+def test_build_vertex_api_key_base_url_global(vertex_adapter):
+    """Express Mode global endpoint uses aiplatform.googleapis.com."""
+    url = vertex_adapter.build_vertex_api_key_base_url("my-project", "global")
+    assert url == (
+        "https://aiplatform.googleapis.com/v1beta1/projects/my-project/"
+        "locations/global/endpoints/openapi"
+    )
+
+
+def test_build_vertex_api_key_base_url_regional(vertex_adapter):
+    """Express Mode regional endpoint uses {region}-aiplatform.googleapis.com."""
+    url = vertex_adapter.build_vertex_api_key_base_url("my-project", "us-central1")
+    assert url == (
+        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/my-project/"
+        "locations/us-central1/endpoints/openapi"
+    )
+
+
+def test_build_vertex_api_key_base_url_europe(vertex_adapter):
+    """Express Mode with europe-west4 region."""
+    url = vertex_adapter.build_vertex_api_key_base_url("my-project", "europe-west4")
+    assert url == (
+        "https://europe-west4-aiplatform.googleapis.com/v1beta1/projects/my-project/"
+        "locations/europe-west4/endpoints/openapi"
+    )
+
+
+def test_get_vertex_config_with_api_key(vertex_adapter, monkeypatch):
+    """get_vertex_config returns (api_key, base_url) when API key is set."""
+    monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyApiKey")
+    monkeypatch.setenv("GOOGLE_VERTEX_PROJECT", "api-key-project")
+    monkeypatch.setenv("GOOGLE_VERTEX_LOCATION", "europe-west1")
+
+    token_or_key, base_url = vertex_adapter.get_vertex_config()
+    assert token_or_key == "AIzaSyApiKey"
+    assert "projects/api-key-project" in base_url
+    assert "europe-west1-aiplatform.googleapis.com" in base_url
+    assert "locations/europe-west1" in base_url
+
+
+def test_get_vertex_config_api_key_precedence_over_adc(vertex_adapter, monkeypatch):
+    """API key path is used when BOTH API key and ADC credentials are available."""
+    monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyKey")
+    monkeypatch.setenv("GOOGLE_VERTEX_PROJECT", "key-project")
+
+    token_or_key, base_url = vertex_adapter.get_vertex_config()
+    assert token_or_key == "AIzaSyKey"  # API key, not OAuth token
+    assert "projects/key-project" in base_url
+
+
+def test_get_vertex_config_api_key_missing_project(vertex_adapter, monkeypatch):
+    """get_vertex_config returns (None, None) when API key is set but project is not."""
+    monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyKey")
+    # No project ID set anywhere
+
+    result = vertex_adapter.get_vertex_config()
+    assert result == (None, None)
+
+
+def test_has_vertex_credentials_via_api_key(vertex_adapter, monkeypatch):
+    """has_vertex_credentials returns True when only the API key is set."""
+    monkeypatch.setenv("GOOGLE_VERTEX_API_KEY", "AIzaSyKey")
+    assert vertex_adapter.has_vertex_credentials() is True
+
+
+def test_googole_vertex_location_region_precedence(vertex_adapter, monkeypatch):
+    """GOOGLE_VERTEX_LOCATION takes precedence over VERTEX_REGION."""
+    monkeypatch.setenv("GOOGLE_VERTEX_LOCATION", "us-west1")
+    monkeypatch.setenv("VERTEX_REGION", "europe-west4")
+
+    assert vertex_adapter._resolve_region() == "us-west1"
+
+
+def test_googole_vertex_project_precedence(vertex_adapter, monkeypatch):
+    """GOOGLE_VERTEX_PROJECT takes precedence over VERTEX_PROJECT_ID."""
+    monkeypatch.setenv("GOOGLE_VERTEX_PROJECT", "gv-project")
+    monkeypatch.setenv("VERTEX_PROJECT_ID", "legacy-project")
+
+    assert vertex_adapter._resolve_project_override() == "gv-project"
+
+
+def test_googole_vertex_location_falls_back_to_vertex_region(vertex_adapter, monkeypatch):
+    """VERTEX_REGION is used when GOOGLE_VERTEX_LOCATION is not set."""
+    monkeypatch.setenv("VERTEX_REGION", "asia-east1")
+
+    assert vertex_adapter._resolve_region() == "asia-east1"
+
+
+# ── Model Discovery Tests ────────────────────────────────────────────────────
+
+
+class _FakeUrlopenResult:
+    """Mimics the result of urllib.request.urlopen."""
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+def test_discover_vertex_models_parses_response(vertex_adapter, monkeypatch):
+    """discover_vertex_models correctly parses a models.list response."""
+    response_data = {
+        "models": [
+            {
+                "name": "projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash",
+                "displayName": "Gemini 2.5 Flash",
+                "supportedGenerationMethods": ["generateContent", "countTokens"],
+            },
+            {
+                "name": "projects/p/locations/us-central1/publishers/google/models/gemini-3-pro-preview",
+                "displayName": "Gemini 3 Pro Preview",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+            {
+                "name": "projects/p/locations/us-central1/publishers/google/models/gemini-embedding-001",
+                "displayName": "Gemini Embedding 001",
+                "supportedGenerationMethods": ["embedding"],
+            },
+        ]
+    }
+    import urllib.request
+    import json
+
+    def fake_urlopen(req, timeout=10):
+        return _FakeUrlopenResult(json.dumps(response_data).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    models = vertex_adapter.discover_vertex_models("AIzaSyKey", "my-project", "us-central1")
+    assert models == ["gemini-2.5-flash", "gemini-3-pro-preview"]
+
+
+def test_discover_vertex_models_empty_when_no_generate_content(vertex_adapter, monkeypatch):
+    """Models without generateContent are excluded from discovery."""
+    response_data = {
+        "models": [
+            {
+                "name": "projects/p/locations/us-central1/publishers/google/models/textembedding-gecko",
+                "displayName": "Gecko",
+                "supportedGenerationMethods": ["embedding"],
+            },
+        ]
+    }
+    import urllib.request
+    import json
+
+    def fake_urlopen(req, timeout=10):
+        return _FakeUrlopenResult(json.dumps(response_data).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    models = vertex_adapter.discover_vertex_models("AIzaSyKey", "my-project", "us-central1")
+    assert models == []
+
+
+def test_discover_vertex_models_network_failure_returns_empty(vertex_adapter, monkeypatch):
+    """Network errors during discovery return an empty list without crashing."""
+    import urllib.error
+
+    def fake_urlopen(req, timeout=10):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    models = vertex_adapter.discover_vertex_models("AIzaSyKey", "my-project", "us-central1")
+    assert models == []
+
+
+def test_discover_vertex_models_http_error_returns_empty(vertex_adapter, monkeypatch):
+    """HTTP 4xx/5xx during discovery return an empty list."""
+    import urllib.error
+
+    def fake_urlopen(req, timeout=10):
+        raise urllib.error.HTTPError(
+            url=req.full_url if hasattr(req, 'full_url') else "",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=None,
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    models = vertex_adapter.discover_vertex_models("AIzaSyKey", "my-project", "us-central1")
+    assert models == []
+
+
+def test_discover_vertex_models_malformed_json_returns_empty(vertex_adapter, monkeypatch):
+    """Malformed JSON responses return an empty list."""
+    import urllib.request
+
+    def fake_urlopen(req, timeout=10):
+        return _FakeUrlopenResult(b"not json at all")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    models = vertex_adapter.discover_vertex_models("AIzaSyKey", "my-project", "us-central1")
+    assert models == []
+
+
+def test_discover_vertex_models_sorts_results(vertex_adapter, monkeypatch):
+    """discover_vertex_models returns sorted model IDs."""
+    response_data = {
+        "models": [
+            {
+                "name": "projects/p/locations/us-central1/publishers/google/models/gemini-3-pro-preview",
+                "displayName": "Gemini 3 Pro Preview",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+            {
+                "name": "projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash",
+                "displayName": "Gemini 2.5 Flash",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+        ]
+    }
+    import urllib.request
+    import json
+
+    def fake_urlopen(req, timeout=10):
+        return _FakeUrlopenResult(json.dumps(response_data).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    models = vertex_adapter.discover_vertex_models("AIzaSyKey", "my-project", "us-central1")
+    assert models == ["gemini-2.5-flash", "gemini-3-pro-preview"]  # sorted
+    assert models == sorted(models)

@@ -116,6 +116,50 @@ class TestSubscribe:
         assert _load_subscriptions() == {}
 
 
+class TestSecretEcho:
+    """`webhook subscribe` must not print the full HMAC secret by default.
+
+    The command *generates* the secret itself, so an unmasked echo leaks a
+    fresh credential into terminal scrollback and agent/CI transcripts on
+    every invocation — the user cannot avoid it.
+    """
+
+    def test_generated_secret_not_echoed_in_full(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="masked"))
+        out = capsys.readouterr().out
+        secret = _load_subscriptions()["masked"]["secret"]
+        assert secret not in out
+        assert "Secret:" in out  # masked line is still shown
+
+    def test_custom_secret_not_echoed_in_full(self, capsys):
+        secret = "fabricated-example-secret-value-123456"
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="masked2", secret=secret
+        ))
+        out = capsys.readouterr().out
+        assert secret not in out
+
+    def test_masked_echo_points_at_subscriptions_file(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="hinted"))
+        out = capsys.readouterr().out
+        assert "webhook_subscriptions.json" in out
+
+    def test_show_secret_flag_prints_full_secret(self, capsys):
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="shown", show_secret=True
+        ))
+        out = capsys.readouterr().out
+        secret = _load_subscriptions()["shown"]["secret"]
+        assert secret in out
+
+    def test_hmac_signature_still_derivable_from_stored_secret(self):
+        """The masked echo must not change what is persisted — the stored
+        secret remains the HMAC key the sender needs."""
+        webhook_command(_make_args(webhook_action="subscribe", name="hmac"))
+        stored = _load_subscriptions()["hmac"]["secret"]
+        assert len(stored) > 20
+
+
 class TestList:
     def test_empty(self, capsys):
         webhook_command(_make_args(webhook_action="list"))

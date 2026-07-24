@@ -13,7 +13,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import type { HermesGitWorktree } from '@/global'
-import type { SessionInfo } from '@/hermes'
+import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $dismissedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -42,7 +42,8 @@ export function EnteredProjectContent({
   onNewSession,
   repoWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  explicitProjects = []
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
@@ -50,6 +51,9 @@ export function EnteredProjectContent({
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  /** Named projects.db rows — gates live lane injection so a linked worktree
+   *  owned by another named project isn't pulled into this one via path match. */
+  explicitProjects?: ProjectInfo[]
 }) {
   if (!project.repos.length) {
     return null
@@ -62,9 +66,11 @@ export function EnteredProjectContent({
       {project.repos.map(repo => (
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
+          explicitProjects={explicitProjects}
           key={repo.id}
           liveSessions={liveSessions}
           onNewSession={onNewSession}
+          projectId={project.id}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -82,7 +88,9 @@ function RepoFlatSection({
   onNewSession,
   discoveredWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  projectId,
+  explicitProjects
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
@@ -91,6 +99,8 @@ function RepoFlatSection({
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  projectId: string
+  explicitProjects: ProjectInfo[]
 }) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -105,15 +115,21 @@ function RepoFlatSection({
   // git-worktree lanes) so out-of-tree/sibling worktrees — which exist as visual
   // lanes before the snapshot carries their sessions — get the new row. The
   // overlay drops lanes it empties, so re-merge to restore still-real worktrees.
+  // Membership is gated by the entered project's explicit ownership so a
+  // worktree that is its own named project never reappears under the common-root
+  // project after restart.
   const overlaidGroups = useMemo(() => {
     if (!(liveSessions?.length || removedSessionIds?.size)) {
       return mergedGroups
     }
 
-    const { groups } = overlayRepoLanes({ ...repo, groups: mergedGroups }, liveSessions ?? [], removedSessionIds)
+    const { groups } = overlayRepoLanes({ ...repo, groups: mergedGroups }, liveSessions ?? [], removedSessionIds, {
+      explicitProjects,
+      projectId
+    })
 
     return mergeRepoWorktreeGroups({ id: repo.id, path: repo.path, groups }, discoveredWorktrees)
-  }, [repo, mergedGroups, discoveredWorktrees, liveSessions, removedSessionIds])
+  }, [repo, mergedGroups, discoveredWorktrees, liveSessions, removedSessionIds, projectId, explicitProjects])
 
   const discoveredWorktreePaths = useMemo(
     () =>

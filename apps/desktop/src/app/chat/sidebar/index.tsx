@@ -693,10 +693,13 @@ export function ChatSidebar({
   // (which the backend snapshot hasn't folded in yet) counts as content and
   // renders immediately — same optimistic layer as the overview previews. The
   // backend now seeds each project folder as an (empty) repo, so the overlay
-  // always has a lane to place a new in-project session into.
+  // always has a lane to place a new in-project session into. Pass explicit
+  // projects so a linked-worktree session owned by another named project is not
+  // re-injected via a shared common-root worktree lane after restart.
   const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
+    () =>
+      enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds, projects) : undefined,
+    [enteredProject, agentSessions, removedSessionIds, projects]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1411,6 +1414,7 @@ export function ChatSidebar({
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
+                explicitProjects={inProject ? projects : undefined}
                 rootClassName={cn(
                   'min-h-32 flex-1 overflow-hidden p-0',
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'

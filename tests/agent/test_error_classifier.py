@@ -442,6 +442,39 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_zhipu_http_200_body_is_overloaded(self):
+        """Zhipu can surface overload in a successful HTTP response body, so
+        the client exception has no HTTP status to drive classification."""
+        e = MockAPIError("[1305][该模型当前访问量过大，请您稍后再试]")
+
+        result = classify_api_error(e, provider="zai", model="glm-4.5")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_zhipu_structured_overload_body_is_overloaded(self):
+        """The same phrase must be recognized when an SDK keeps it only in
+        the structured error body."""
+        e = MockAPIError(
+            "Provider returned error",
+            body={"error": {"message": "[1305][该模型当前访问量过大，请您稍后再试]"}},
+        )
+
+        result = classify_api_error(e, provider="zai", model="glm-4.5")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    def test_generic_chinese_retry_later_is_not_overloaded(self):
+        """Keep the match provider-specific enough that generic retry advice
+        does not become an overload signal."""
+        e = MockAPIError("请求失败，请您稍后再试")
+
+        result = classify_api_error(e, provider="zai", model="glm-4.5")
+
+        assert result.reason == FailoverReason.unknown
+
     def test_429_with_overloaded_body_is_overloaded_not_rate_limit(self):
         """Z.AI / Zhipu reuse HTTP 429 for server-wide overload. The credential
         is valid — the server is just busy — so it must classify as overloaded
@@ -2169,4 +2202,3 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
-

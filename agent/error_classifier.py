@@ -184,6 +184,7 @@ _OVERLOADED_PATTERNS = [
     "currently overloaded",
     "at capacity",
     "over capacity",
+    "访问量过大",  # Zhipu/GLM HTTP 200 body: [1305][该模型当前访问量过大，请您稍后再试]
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)

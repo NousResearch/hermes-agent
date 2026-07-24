@@ -304,7 +304,7 @@ class _SherpaKwsEngine(_Engine):
         import tempfile
 
         kw = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", prefix="hermes-kws-", delete=False
+            mode="w", suffix=".txt", prefix="hermes-kws-", delete=False, encoding="utf-8"
         )
         display = phrase.upper().replace(" ", "_")
         kw.write(" ".join(tokens[0]) + f" @{display}\n")

@@ -3956,6 +3956,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+        self.interim_assistant_messages = CLI_CONFIG["display"].get(
+            "interim_assistant_messages", False
+        )
         # show_timestamps: prefix user and assistant labels with timestamps
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
         self.timestamp_format = CLI_CONFIG["display"].get("timestamp_format", "%H:%M")
@@ -5736,6 +5739,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         it's a no-op for rendering — kept so the agent's clear callback is bound
         symmetrically with the show callback (and so future REPL UIs can hook it)."""
         return
+
+    def _on_interim_assistant(self, text: str, already_streamed: bool = False) -> None:
+        """Render intermediate assistant messages that appear between tool calls.
+
+        The agent core emits real assistant commentary mid-turn (e.g.
+        "Let me look at the code first…" before calling a read_file tool,
+        or "I see the issue now, let me fix it…" before a patch).
+        Without this callback the CLI only shows the final response,
+        making the agent appear to silently execute tools without
+        any visible reasoning between them.
+        """
+        if already_streamed:
+            return
+        if not self.interim_assistant_messages:
+            return
+        display_text = text.strip()
+        if not display_text:
+            return
+        if hasattr(self, "_stream_buf") and self._stream_buf and getattr(self, "_stream_box_opened", False):
+            self._flush_stream()
+        # Lightweight box frame with left border — distinguishes
+        # interim commentary from tool output and final response panel.
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+        content_width = max(term_width - 10, 20)
+        wrapped = textwrap.fill(display_text, width=content_width)
+        lines = wrapped.split('\n')
+        max_line = max((len(l) for l in lines), default=0)
+        box_width = max_line + 6  # │  {text}  │
+
+        top_dashes = box_width - 6  # ╭─ ◆ ╮ overhead
+        _cprint(f"\n{_DIM}╭─ ◆ {'─' * max(top_dashes, 0)}╮{_RST}")
+        for line in lines:
+            pad = max_line - len(line)
+            _cprint(f"{_DIM}│{_RST}  {line}{' ' * pad}  {_DIM}│{_RST}")
+        bot_dashes = box_width - 2  # ╰╯ overhead
+        _cprint(f"{_DIM}╰{'─' * max(bot_dashes, 0)}╯{_RST}")
 
     # ── Streaming display ────────────────────────────────────────────────
 
@@ -16506,6 +16548,7 @@ def main(
                         # status lines).  The response is printed once below.
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
+                        cli.agent.interim_assistant_callback = None
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,

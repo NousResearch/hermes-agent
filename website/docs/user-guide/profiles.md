@@ -314,3 +314,7 @@ hermes profile update research-bot
 ```
 
 See **[Profile Distributions: Share a Whole Agent](./profile-distributions.md)** for the full guide — authoring, publishing, update semantics, security model, and use cases.
+
+## Shared Anthropic credentials (optional)
+
+Profiles are isolated by default. If you enable machine-wide Anthropic shared OAuth scope (`hermes auth scope anthropic shared --attest-distinct-accounts`), every profile under the same Hermes root resolves the same three root OAuth grants and does **not** re-materialize them into the profile `auth.json`. See [Credential Pools](./features/credential-pools.md#machine-wide-anthropic-shared-oauth-pool).

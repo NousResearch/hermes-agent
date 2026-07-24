@@ -3023,7 +3023,7 @@ def _fetch_anthropic_models(
     except ImportError:
         return None
 
-    token = (api_key or "").strip() or resolve_anthropic_token()
+    token = resolve_anthropic_token(explicit_api_key=api_key, purpose="model_discovery") or ""
     if not token:
         return None
 

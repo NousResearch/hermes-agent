@@ -261,3 +261,31 @@ credential_pool_strategies:
   openrouter: round_robin
   anthropic: least_used
 ```
+
+## Machine-wide Anthropic shared OAuth pool
+
+By default each profile keeps its own Anthropic credentials. Operators who want **one ordered OAuth pool shared by every profile on the machine** can opt in:
+
+```bash
+# 1. Stage exactly three OAuth grants while still in profile scope
+hermes auth add anthropic --type oauth --shared   # ×3, different Anthropic accounts
+hermes auth list anthropic --shared
+
+# 2. Stop gateways, then enable shared scope (operator attestation required)
+hermes auth scope anthropic shared --attest-distinct-accounts
+
+# 3. Restart all Hermes gateways/workers
+```
+
+While shared scope is active:
+
+- Selection is fixed to `fill_first` (account 1 until exhausted, then 2, then 3).
+- Official native Anthropic targets (`api.anthropic.com`) use **only** the shared root pool — `ANTHROPIC_API_KEY` / Claude Code / profile rows / explicit keys are ignored.
+- Azure/Bedrock/Vertex/custom Anthropic-compatible endpoints keep their own auth and never receive shared OAuth.
+- Profile-local Anthropic rows stay on disk but are dormant until you archive them after validation.
+- Dashboard add/delete returns HTTP 409; use the CLI with `--shared`.
+- Disable with `hermes auth scope anthropic profile` (marker removed first; root grants remain for rollback).
+- Destructive clear: `hermes auth logout anthropic --shared` or `hermes logout --provider anthropic --shared`.
+- Backups: `hermes auth backup|restore anthropic --shared ...` only. Generic `hermes backup` refuses when shared state exists.
+
+**Never copy refresh tokens between profiles.** Shared mode keeps a single canonical refresh-token chain per grant under the root auth store with cross-process locking.

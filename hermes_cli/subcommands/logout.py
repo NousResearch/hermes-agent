@@ -21,8 +21,13 @@ def build_logout_parser(subparsers, *, cmd_logout: Callable) -> None:
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "xai-oauth", "spotify"],
+        choices=["nous", "openai-codex", "xai-oauth", "spotify", "anthropic"],
         default=None,
         help="Provider to log out from (default: active provider)",
+    )
+    logout_parser.add_argument(
+        "--shared",
+        action="store_true",
+        help="Clear machine-wide Anthropic shared OAuth pool",
     )
     logout_parser.set_defaults(func=cmd_logout)

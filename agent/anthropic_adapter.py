@@ -1295,19 +1295,68 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
-def resolve_anthropic_token() -> Optional[str]:
+def resolve_anthropic_token(
+    *,
+    purpose: str = "inference",
+    api_mode: Optional[str] = None,
+    base_url: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    provider: str = "anthropic",
+) -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
-    Priority:
-      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
-      2. CLAUDE_CODE_OAUTH_TOKEN env var
-      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+    When machine-wide Anthropic shared OAuth scope is active and the target is
+    the official native Anthropic API, ONLY the shared root pool is used —
+    env vars, Claude Code files, explicit keys, and profile pools are ignored.
+
+    Legacy priority (shared scope inactive or non-official target):
+      1. explicit_api_key argument (when provided)
+      2. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
+      3. CLAUDE_CODE_OAUTH_TOKEN env var
+      4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
-      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      5. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      6. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
+    # Shared-scope authoritative gate for official native Anthropic targets.
+    try:
+        from agent.anthropic_shared_pool import (
+            is_official_anthropic_oauth_target,
+            is_shared_scope_active,
+            resolve_shared_anthropic_credential,
+        )
+
+        if is_shared_scope_active() and is_official_anthropic_oauth_target(
+            provider, purpose, api_mode, base_url
+        ):
+            ctx = resolve_shared_anthropic_credential(
+                provider=provider,
+                purpose=purpose,
+                api_mode=api_mode,
+                base_url=base_url,
+            )
+            return ctx.access_token
+    except Exception as exc:
+        # AuthError / corrupt marker must fail closed for official targets.
+        from hermes_cli.auth import AuthError
+
+        if isinstance(exc, AuthError):
+            raise
+        # Import / unexpected errors: if we cannot evaluate shared scope, do not
+        # silently fall through with env keys when marker may be active.
+        try:
+            from agent.anthropic_shared_pool import scope_marker_path
+
+            if scope_marker_path().exists() or scope_marker_path().is_symlink():
+                raise
+        except Exception:
+            raise exc from exc
+
+    if explicit_api_key and str(explicit_api_key).strip():
+        return str(explicit_api_key).strip()
+
     creds = read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var

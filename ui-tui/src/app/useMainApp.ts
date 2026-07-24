@@ -11,7 +11,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
-import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
@@ -29,9 +29,9 @@ import type {
   TerminalResizeResponse
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
-import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
-import { appendTranscriptMessage } from '../lib/messages.js'
+import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -45,7 +45,7 @@ import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
+import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -63,14 +63,6 @@ import { useSubmission } from './useSubmission.js'
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
-
-const capHistory = (items: Msg[]): Msg[] => {
-  if (items.length <= MAX_HISTORY) {
-    return items
-  }
-
-  return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
-}
 
 const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
@@ -184,7 +176,17 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [stdout])
 
-  const [historyItems, setHistoryItems] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
+  const [historyItems, setHistoryItemsState] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
+  const [historyGeneration, setHistoryGeneration] = useState(0)
+
+  const setHistoryItems = useCallback<StateSetter<Msg[]>>(value => {
+    if (typeof value !== 'function') {
+      setHistoryGeneration(generation => generation + 1)
+    }
+
+    setHistoryItemsState(previous => capTranscriptHistory(typeof value === 'function' ? value(previous) : value))
+  }, [])
+
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
@@ -351,20 +353,20 @@ export function useMainApp(gw: GatewayClient) {
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
-  const heightCache = useMemo(() => {
-    let cache = heightCachesRef.current.get(heightCacheKey)
+  // Build a render-local snapshot. Registering/pruning the shared cache is a
+  // post-commit transition below, so an abandoned concurrent render cannot
+  // delete heights still owned by the committed transcript generation.
+  const activeHeightCache = useMemo(() => new Map(heightCachesRef.current.get(heightCacheKey)), [heightCacheKey])
 
-    if (!cache) {
-      cache = new Map()
-      heightCachesRef.current.set(heightCacheKey, cache)
+  useEffect(() => {
+    pruneVirtualHeightCache(activeHeightCache, virtualRows)
+    heightCachesRef.current.delete(heightCacheKey)
+    heightCachesRef.current.set(heightCacheKey, activeHeightCache)
 
-      if (heightCachesRef.current.size > MAX_HEIGHT_CACHE_BUCKETS) {
-        heightCachesRef.current.delete(heightCachesRef.current.keys().next().value!)
-      }
+    while (heightCachesRef.current.size > MAX_HEIGHT_CACHE_BUCKETS) {
+      heightCachesRef.current.delete(heightCachesRef.current.keys().next().value!)
     }
-
-    return cache
-  }, [heightCacheKey])
+  }, [activeHeightCache, heightCacheKey, historyGeneration, virtualRows])
 
   // Index of the first user-role message — separator-rendering in
   // appLayout.tsx skips this row, so the height estimator must skip it
@@ -410,16 +412,17 @@ export function useMainApp(gw: GatewayClient) {
         const h = heights.get(row.key)
 
         if (h) {
-          heightCache.set(row.key, h)
+          activeHeightCache.set(row.key, h)
         }
       }
     },
-    [heightCache, virtualRows]
+    [activeHeightCache, virtualRows]
   )
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
     estimateHeight: estimateRowHeight,
-    initialHeights: heightCache,
+    generation: historyGeneration,
+    initialHeights: activeHeightCache,
     liveTailActive: turnLiveTailActive,
     onHeightsChange: syncHeightCache
   })
@@ -430,8 +433,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appendMessage = useCallback(
-    (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
-    []
+    (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
+    [setHistoryItems]
   )
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
@@ -812,6 +815,7 @@ export function useMainApp(gw: GatewayClient) {
       session.newSession,
       session.resetSession,
       session.resumeById,
+      setHistoryItems,
       setVoiceEnabled,
       setVoiceProcessing,
       setVoiceRecording,
@@ -923,6 +927,7 @@ export function useMainApp(gw: GatewayClient) {
       selection,
       send,
       session,
+      setHistoryItems,
       sys
     ]
   )

@@ -37,14 +37,16 @@ import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
 import threading
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -212,11 +214,16 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Behavior-changing, synchronous, dispatcher-process-only policy hook.
+    # Unlike lifecycle observers, callback failures must propagate so dispatch
+    # fails closed.
+    "kanban_task_pre_claim",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
+_REGISTERED_PLUGIN_ID_ATTR = "__hermes_registered_plugin_id__"
 
 
 def _env_enabled(name: str) -> bool:
@@ -275,6 +282,91 @@ def _get_enabled_plugins() -> Optional[set]:
 # ---------------------------------------------------------------------------
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+
+#: Public allowlist for ``PreClaimDisposition.block_kind``.
+BLOCK_KINDS: frozenset[str] = frozenset({
+    "policy_violation",
+    "dependency_unsatisfied",
+    "quota_exceeded",
+    "auth_required",
+    "unsupported",
+})
+
+
+class PreClaimHookError(Exception):
+    """Raised when a plugin returns an invalid pre-claim disposition."""
+
+    plugin_id: str
+    rule: str
+
+    def __init__(self, plugin_id: str, rule: str) -> None:
+        self.plugin_id = plugin_id
+        self.rule = rule
+        super().__init__(
+            f"Plugin {plugin_id!r} violated pre-claim disposition rule: {rule}"
+        )
+
+
+@dataclass
+class PreClaimDisposition:
+    decision: Literal["allow", "defer", "block", "complete"]
+    reason: Optional[str] = None
+    block_kind: Optional[str] = None
+    summary: Optional[str] = None
+    evidence: dict = field(default_factory=dict)
+    plugin_id: str = ""
+
+    def __post_init__(self) -> None:
+        def fail(rule: str) -> None:
+            raise PreClaimHookError(self.plugin_id, rule)
+
+        if self.decision not in ("allow", "defer", "block", "complete"):
+            fail("decision must be one of: allow, defer, block, complete")
+        if not isinstance(self.evidence, dict):
+            fail("evidence must be a dict")
+        try:
+            json.dumps(self.evidence)
+        except (TypeError, ValueError) as exc:
+            raise PreClaimHookError(
+                self.plugin_id, "evidence must be JSON-serializable"
+            ) from exc
+
+        for name, value in (("reason", self.reason), ("summary", self.summary)):
+            if value is not None and not isinstance(value, str):
+                fail(f"{name} must be a str or None")
+
+        if self.decision == "allow":
+            if self.reason is not None:
+                fail("allow requires reason to be None")
+            if self.block_kind is not None:
+                fail("allow requires block_kind to be None")
+            if self.summary is not None:
+                fail("allow requires summary to be None")
+            if self.evidence:
+                fail("allow requires evidence to be empty")
+            return
+
+        if self.decision == "defer":
+            if self.block_kind is not None:
+                fail("defer requires block_kind to be None")
+            return
+
+        if self.decision == "block":
+            if not isinstance(self.reason, str) or not self.reason.strip():
+                fail("block requires reason to be a nonblank str")
+            if (
+                not isinstance(self.block_kind, str)
+                or self.block_kind not in BLOCK_KINDS
+            ):
+                fail(f"block_kind must be one of: {', '.join(sorted(BLOCK_KINDS))}")
+            return
+
+        if self.block_kind is not None:
+            fail("complete requires block_kind to be None")
+        if not isinstance(self.summary, str) or not self.summary.strip():
+            fail("complete requires summary to be a nonblank str")
+        if not self.evidence:
+            fail("complete requires evidence to be a non-empty dict")
 
 
 @dataclass
@@ -1169,7 +1261,21 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
-        self._manager._hooks.setdefault(hook_name, []).append(callback)
+
+        registered_callback = callback
+        if hook_name == "kanban_task_pre_claim":
+
+            @wraps(callback)
+            def pre_claim_callback(*args: Any, **kwargs: Any) -> Any:
+                return callback(*args, **kwargs)
+
+            setattr(
+                pre_claim_callback,
+                _REGISTERED_PLUGIN_ID_ATTR,
+                self.manifest.key or self.manifest.name,
+            )
+            registered_callback = pre_claim_callback
+        self._manager._hooks.setdefault(hook_name, []).append(registered_callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
     # -- middleware registration -------------------------------------------
@@ -1926,6 +2032,17 @@ class PluginManager:
                 )
         return results
 
+    def invoke_hook_strict(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Call callbacks without swallowing exceptions.
+
+        Reserved for behavior-changing gates whose caller must fail closed.
+        Observer hooks continue to use :meth:`invoke_hook`.
+        """
+        results: List[Any] = []
+        for callback in self._hooks.get(hook_name, []):
+            results.append(callback(**kwargs))
+        return results
+
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
@@ -2052,6 +2169,71 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def invoke_hook_strict(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a behavior-changing hook and surface callback exceptions."""
+    return get_plugin_manager().invoke_hook_strict(hook_name, **kwargs)
+
+
+def aggregate_hooks(
+    hook_name: str, **kwargs: Any
+) -> Union[List[Any], PreClaimDisposition]:
+    """Invoke hooks using the policy dedicated to each hook kind.
+
+    ``kanban_task_pre_claim`` is a synchronous dispatcher-process policy
+    hook. Every registered callback is invoked in registration order with
+    exactly the caller-supplied task-snapshot keyword arguments; callbacks
+    are never given a database connection or workspace handle. With no
+    callbacks, or with only ``None``/``allow`` responses, the result is
+    ``PreClaimDisposition(decision="allow")``. Otherwise the highest-ranked
+    disposition wins according to ``block > complete > defer > allow``, with
+    registration order breaking equal-rank ties.
+
+    All other hooks retain the observer behavior of :func:`invoke_hook`:
+    callback failures are isolated and non-``None`` results are returned as
+    a list.
+    """
+    if hook_name != "kanban_task_pre_claim":
+        return invoke_hook(hook_name, **kwargs)
+
+    ranks = {"allow": 0, "defer": 1, "complete": 2, "block": 3}
+    best = PreClaimDisposition(decision="allow")
+    best_rank = ranks[best.decision]
+    callbacks = get_plugin_manager()._hooks.get(hook_name, [])
+
+    for callback in callbacks:
+        registered_plugin_id = getattr(callback, _REGISTERED_PLUGIN_ID_ATTR, "")
+        try:
+            response = callback(**kwargs)
+        except PreClaimHookError as exc:
+            if registered_plugin_id:
+                raise PreClaimHookError(registered_plugin_id, exc.rule) from exc
+            raise
+
+        if response is None:
+            continue
+        if not isinstance(response, PreClaimDisposition):
+            raise PreClaimHookError(
+                registered_plugin_id or "<unknown>",
+                "callback must return PreClaimDisposition or None",
+            )
+        try:
+            response = replace(
+                response,
+                plugin_id=registered_plugin_id or response.plugin_id,
+            )
+        except PreClaimHookError as exc:
+            if registered_plugin_id and exc.plugin_id != registered_plugin_id:
+                raise PreClaimHookError(registered_plugin_id, exc.rule) from exc
+            raise
+
+        response_rank = ranks[response.decision]
+        if response_rank > best_rank:
+            best = response
+            best_rank = response_rank
+
+    return best
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

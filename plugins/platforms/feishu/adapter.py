@@ -2681,6 +2681,14 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        hermes_command = (
+            str(action_value.get("hermes_command", "") or "")
+            .strip()
+            .lower()
+            .lstrip("/")
+            if isinstance(action_value, dict)
+            else ""
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
@@ -2690,6 +2698,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 action_value=action_value,
                 loop=loop,
             )
+        if hermes_command == "stop":
+            operator = getattr(event, "operator", None)
+            open_id = str(getattr(operator, "open_id", "") or "")
+            chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+            sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+            if not self._allow_group_message(sender_id, chat_id, is_bot=False):
+                logger.warning("[Feishu] Unauthorized card command click by %s", open_id or "<unknown>")
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
@@ -3025,15 +3041,30 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
+        hermes_command = (
+            str(action_value.get("hermes_command", "") or "")
+            .strip()
+            .lower()
+            .lstrip("/")
+            if isinstance(action_value, dict)
+            else ""
+        )
 
-        synthetic_text = f"/card {action_tag}"
-        if action_value:
+        synthetic_text = "/stop" if hermes_command == "stop" else f"/card {action_tag}"
+        if action_value and hermes_command != "stop":
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
 
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+        if hermes_command == "stop" and not self._allow_group_message(
+            sender_id,
+            chat_id,
+            is_bot=False,
+        ):
+            logger.warning("[Feishu] Unauthorized card command click by %s", open_id)
+            return
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
@@ -3054,6 +3085,8 @@ class FeishuAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
         )
+        if hermes_command == "stop":
+            synthetic_event.metadata["suppress_command_response"] = True
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._handle_message_with_guards(synthetic_event)
 

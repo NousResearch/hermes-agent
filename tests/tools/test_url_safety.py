@@ -532,6 +532,49 @@ class TestGlobalAllowPrivateUrls:
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
         assert _global_allow_private_urls() is True
 
+    @pytest.mark.parametrize(
+        "profile_order",
+        [("allowed", "blocked"), ("blocked", "allowed")],
+        ids=["allowed-then-blocked", "blocked-then-allowed"],
+    )
+    def test_profile_scoped_config_does_not_reuse_another_profiles_opt_out(
+        self, tmp_path, monkeypatch, profile_order
+    ):
+        """Multiplexed profiles must resolve their own private-URL policy."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        allowed_home = tmp_path / "allowed"
+        blocked_home = tmp_path / "blocked"
+        allowed_home.mkdir()
+        blocked_home.mkdir()
+        (allowed_home / "config.yaml").write_text(
+            "security:\n  allow_private_urls: true\n", encoding="utf-8"
+        )
+        (blocked_home / "config.yaml").write_text(
+            "security:\n  allow_private_urls: false\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [(2, 1, 6, "", ("10.0.0.8", 0))],
+        )
+
+        def under_profile(home):
+            token = set_hermes_home_override(home)
+            try:
+                return is_safe_url("http://profile-private.test/resource")
+            finally:
+                reset_hermes_home_override(token)
+
+        homes = {"allowed": allowed_home, "blocked": blocked_home}
+        expected = {"allowed": True, "blocked": False}
+        for profile in profile_order:
+            assert under_profile(homes[profile]) is expected[profile]
+
 
 class TestAllowPrivateUrlsIntegration:
     """Integration tests: is_safe_url respects the global toggle."""

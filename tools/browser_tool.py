@@ -66,7 +66,11 @@ from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from agent.redact import redact_cdp_url
-from hermes_constants import agent_browser_runnable, get_hermes_home
+from hermes_constants import (
+    agent_browser_runnable,
+    get_hermes_home,
+    get_hermes_home_override,
+)
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -1386,26 +1390,39 @@ def _last_session_key(task_id: str) -> str:
 def _allow_private_urls() -> bool:
     """Return whether the browser is allowed to navigate to private/internal addresses.
 
-    Reads ``config["browser"]["allow_private_urls"]`` once and caches the result
-    for the process lifetime.  Defaults to ``False`` (SSRF protection active).
+    Reads ``config["browser"]["allow_private_urls"]``. Single-profile calls
+    cache the result for the process lifetime; multiplexed profile turns resolve
+    their context-local config on each call. Defaults to ``False`` (SSRF
+    protection active).
     """
     global _cached_allow_private_urls, _allow_private_urls_resolved
+
+    # The profile multiplexer scopes config with a ContextVar while sharing
+    # this module. Never reuse another profile's private-network opt-out.
+    if get_hermes_home_override() is not None:
+        return _resolve_allow_private_urls()
+
     if _allow_private_urls_resolved:
         return _cached_allow_private_urls
 
     _allow_private_urls_resolved = True
-    _cached_allow_private_urls = False  # safe default
+    _cached_allow_private_urls = _resolve_allow_private_urls()
+    return _cached_allow_private_urls
+
+
+def _resolve_allow_private_urls() -> bool:
+    """Read the browser private-URL toggle from the active config scope."""
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
         if isinstance(browser_cfg, dict):
-            _cached_allow_private_urls = is_truthy_value(
+            return is_truthy_value(
                 browser_cfg.get("allow_private_urls"), default=False
             )
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
-    return _cached_allow_private_urls
+    return False
 
 
 def _socket_safe_tmpdir() -> str:

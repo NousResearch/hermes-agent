@@ -27,7 +27,7 @@ def test_xai_model_flow_reauth_uses_standard_radio_prompt(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
-        lambda model_ids, current_model="": None,
+        lambda model_ids, current_model="", **kwargs: None,
     )
 
     main_mod._model_flow_xai_oauth(

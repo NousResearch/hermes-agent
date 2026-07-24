@@ -1497,6 +1497,7 @@ class GatewaySlashCommandsMixin:
         user_provs = None
         custom_provs = None
         excluded_provs = []
+        excluded_models = {}
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
             cfg = _load_gateway_config()
@@ -1512,9 +1513,14 @@ class GatewaySlashCommandsMixin:
                     custom_provs = get_compatible_custom_providers(cfg)
                 except Exception:
                     custom_provs = cfg.get("custom_providers")
-                _excl = cfg.get("model_catalog", {}).get("excluded_providers")
-                if isinstance(_excl, list):
-                    excluded_provs = _excl
+                catalog_cfg = cfg.get("model_catalog", {})
+                if isinstance(catalog_cfg, dict):
+                    _excl = catalog_cfg.get("excluded_providers")
+                    if isinstance(_excl, list):
+                        excluded_provs = _excl
+                    _excluded_models = catalog_cfg.get("excluded_models")
+                    if isinstance(_excluded_models, dict):
+                        excluded_models = _excluded_models
         except Exception:
             pass
 
@@ -1559,6 +1565,7 @@ class GatewaySlashCommandsMixin:
                         max_models=50,
                         include_moa=True,
                         excluded_providers=excluded_provs,
+                        excluded_models=excluded_models,
                     )
                 except Exception:
                     providers = []
@@ -1863,6 +1870,7 @@ class GatewaySlashCommandsMixin:
                     custom_providers=custom_provs,
                     max_models=5,
                     excluded_providers=excluded_provs,
+                    excluded_models=excluded_models,
                 )
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""

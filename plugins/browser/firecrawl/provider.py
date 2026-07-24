@@ -112,6 +112,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
             "session_name": session_name,
             "bb_session_id": data["id"],
             "cdp_url": data["cdpUrl"],
+            "browser_backend": "firecrawl",
             "features": {"firecrawl": True},
         }
 

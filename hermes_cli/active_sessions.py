@@ -217,6 +217,66 @@ def _prune_dead(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def prune_stale_for_pid(pid: int, live_session_ids: set[str], *, owner: str) -> int:
+    """Reclaim leases owned by ``pid`` AND tagged ``metadata.owner == owner``
+    whose live session no longer exists.
+
+    ``active_sessions.json`` is cross-process: a PID-alive entry owned by
+    ANOTHER process can't be validated from here (that process's own
+    in-memory session registry isn't visible to us), so only entries whose
+    ``pid`` matches the CURRENT process are even considered. Within that
+    same-pid set, the ``owner`` tag is a structural (not incidental) guard:
+    a CLI lease shares the desktop backend's PID (one ``hermes serve``
+    process serves both), but the CLI's ``_active_session_lease`` is a
+    single, whole-process-lifetime lease with no ``live_session_id`` /
+    ``owner`` concept of its own — an entry missing the exact ``owner`` tag
+    (or tagged for a different owner) is left alone regardless of whether
+    its ``live_session_id`` looks stale, so this sweep can never reclaim a
+    CLI/gateway lease by accident.
+
+    A same-pid, same-owner entry is reclaimed when its
+    ``metadata.live_session_id`` is set but is not a member of
+    ``live_session_ids`` (the caller's current live session-id registry,
+    e.g. a desktop/TUI backend's in-memory session map) — that combination
+    means the in-process session the lease was minted for is gone, but
+    nothing on the release path ever ran to free the slot (e.g. a
+    replacement flow that dropped the old session without an explicit
+    release).
+
+    Fail-open: any error is swallowed and logged, returning 0, so a
+    bookkeeping failure here never blocks the caller's actual lease
+    acquisition.
+
+    Returns the number of leases reclaimed.
+    """
+    try:
+        state_path = _state_path()
+        with _FileLock(_lock_path()):
+            entries = _prune_dead(_read_entries(state_path))
+            kept: list[dict[str, Any]] = []
+            reclaimed = 0
+            for entry in entries:
+                try:
+                    entry_pid = int(entry.get("pid"))
+                except (TypeError, ValueError):
+                    entry_pid = None
+                if entry_pid == pid:
+                    metadata = entry.get("metadata")
+                    metadata = metadata if isinstance(metadata, dict) else {}
+                    if metadata.get("owner") == owner:
+                        live_id = metadata.get("live_session_id")
+                        if live_id is not None and live_id not in live_session_ids:
+                            reclaimed += 1
+                            continue
+                kept.append(entry)
+            if reclaimed:
+                _write_entries(state_path, kept)
+            return reclaimed
+    except Exception:
+        logger.warning("Failed to prune stale active session leases for pid=%s", pid, exc_info=True)
+        return 0
+
+
 @dataclass
 class ActiveSessionLease:
     lease_id: str

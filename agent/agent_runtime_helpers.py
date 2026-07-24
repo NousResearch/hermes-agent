@@ -2943,9 +2943,26 @@ def looks_like_codex_intermediate_ack(
     if len(assistant_text) > 1200:
         return False
 
+    # English future-ack patterns.
     has_future_ack = bool(
-        re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+        re.search(r"\b(i['']ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
     )
+    # CJK future-ack patterns: Chinese/Japanese/Korean intent markers.
+    # These languages don't use word boundaries (\b), so match directly.
+    if not has_future_ack:
+        _CJK_FUTURE_ACK = (
+            "\u6211\u4f1a",      # I will
+            "\u6211\u5148",      # I first / let me
+            "\u8ba9\u6211",      # let me
+            "\u6211\u6765",      # I'll come / let me
+            "\u78ba\u8a8d",      # confirm/check (Japanese/Traditional Chinese)
+            "\u8abf\u67fb",      # investigate (Japanese)
+            "\u3057\u307e\u3059",    # will do (Japanese)
+            "\u3066\u304f\u308c",    # will come (Japanese)
+            "\ud558\uaca0\uc2b5\ub2c8\ub2e4",  # will do (Korean)
+            "\uad00\ucc30",    # observe (Korean)
+        )
+        has_future_ack = any(marker in assistant_text for marker in _CJK_FUTURE_ACK)
     if not has_future_ack:
         return False
 

@@ -24,7 +24,10 @@ from hermes_cli import main as cli_main
 # helper (and need the autouse stub in tests/hermes_cli/conftest.py disabled),
 # or supply their own explicit return value via patch.object. Mark the whole
 # module so the conftest fixture skips its default stub.
-pytestmark = pytest.mark.real_concurrent_gate
+# real_windows_gateway_respawn: this module unit-tests the pause/resume
+# helpers themselves (mocking the inner launch_detached_* primitives), so it
+# opts out of the conftest autouse stub that no-ops them for everyone else.
+pytestmark = [pytest.mark.real_concurrent_gate, pytest.mark.real_windows_gateway_respawn]
 
 
 # ---------------------------------------------------------------------------

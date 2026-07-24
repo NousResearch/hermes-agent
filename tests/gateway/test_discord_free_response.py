@@ -107,7 +107,9 @@ def adapter(monkeypatch):
     # Individual tests still monkeypatch.setenv() for their own scenarios.
     for _var in (
         "DISCORD_REQUIRE_MENTION",
+        "DISCORD_REQUIRE_MENTION_ROLES",
         "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
@@ -127,18 +129,37 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, guild=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
-    return SimpleNamespace(
+    message = SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
+    )
+    # Only set message.guild when callers need role-membership discovery.
+    # FakeTextChannel.guild is a name-only stub and must not be promoted here —
+    # build_source reads message.guild.id when present.
+    if guild is not None:
+        message.guild = guild
+    return message
+
+
+def make_guild_with_bot_roles(bot_user, *role_ids, guild_name: str = "Hermes Server"):
+    """Build a fake guild whose ``me`` / ``get_member`` expose the given bot roles."""
+    roles = [SimpleNamespace(id=role_id) for role_id in role_ids]
+    bot_member = SimpleNamespace(id=bot_user.id, roles=roles)
+    return SimpleNamespace(
+        id=1,
+        name=guild_name,
+        me=bot_member,
+        get_member=lambda member_id: bot_member if member_id == bot_user.id else None,
     )
 
 
@@ -355,6 +376,194 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_role_mentions_ignored_by_default(adapter, monkeypatch):
+    """Role pings do not satisfy require_mention unless the opt-in is enabled."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_ROLES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    bot_role = SimpleNamespace(id=555)
+    guild = make_guild_with_bot_roles(bot_user, bot_role.id)
+    channel = FakeTextChannel(channel_id=321)
+    channel.guild = guild
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> hello with role mention",
+        role_mentions=[bot_role],
+        guild=guild,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_accepts_and_strips_bot_role_mentions_when_enabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    bot_role = SimpleNamespace(id=555)
+    unrelated_role = SimpleNamespace(id=777)
+    guild = make_guild_with_bot_roles(bot_user, bot_role.id)
+    channel = FakeTextChannel(channel_id=321)
+    channel.guild = guild
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> <@&{unrelated_role.id}> hello with role mention",
+        role_mentions=[bot_role, unrelated_role],
+        guild=guild,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == f"<@&{unrelated_role.id}> hello with role mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_accepts_raw_bot_role_mentions_when_enabled(adapter, monkeypatch):
+    """Raw <@&ROLE_ID> should trigger even when role_mentions is empty."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    bot_role_id = 555
+    guild = make_guild_with_bot_roles(bot_user, bot_role_id)
+    channel = FakeTextChannel(channel_id=322)
+    channel.guild = guild
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role_id}> hello from raw role mention",
+        role_mentions=[],
+        guild=guild,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello from raw role mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_unrelated_role_mentions_still_ignored_when_enabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    bot_user = adapter._client.user
+    bot_role = SimpleNamespace(id=555)
+    unrelated_role = SimpleNamespace(id=777)
+    guild = make_guild_with_bot_roles(bot_user, bot_role.id)
+    channel = FakeTextChannel(channel_id=323)
+    channel.guild = guild
+    message = make_message(
+        channel=channel,
+        content=f"<@&{unrelated_role.id}> not for this bot",
+        role_mentions=[unrelated_role],
+        guild=guild,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_require_mention_roles_via_config_extra(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION_ROLES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["require_mention_roles"] = True
+
+    bot_user = adapter._client.user
+    bot_role = SimpleNamespace(id=555)
+    guild = make_guild_with_bot_roles(bot_user, bot_role.id)
+    channel = FakeTextChannel(channel_id=324)
+    channel.guild = guild
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> hello from config",
+        role_mentions=[bot_role],
+        guild=guild,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello from config"
+
+
+def _bot_authored_role_ping(adapter):
+    """Build a bot-authored message that only role-pings a role this bot holds."""
+    bot_user = adapter._client.user
+    bot_role = SimpleNamespace(id=555)
+    guild = make_guild_with_bot_roles(bot_user, bot_role.id)
+    channel = FakeTextChannel(channel_id=325)
+    channel.guild = guild
+    other_bot = SimpleNamespace(id=4242, bot=True, display_name="OtherBot", name="OtherBot")
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> handoff from another bot",
+        role_mentions=[bot_role],
+        guild=guild,
+    )
+    message.author = other_bot
+    return message, bot_role
+
+
+def test_role_ping_does_not_count_as_explicit_or_raw_mention_even_when_enabled(adapter, monkeypatch):
+    """Bot-safety helpers stay direct-user-only when require_mention_roles is on."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    message, _role = _bot_authored_role_ping(adapter)
+
+    assert adapter._self_is_role_mentioned(message) is True
+    assert adapter._self_is_addressed_for_require_mention(message) is True
+    assert adapter._self_is_explicitly_mentioned(message) is False
+    assert adapter._self_is_raw_mentioned(message) is False
+
+
+def test_allow_bots_mentions_rejects_bot_authored_role_ping_even_when_roles_enabled(adapter, monkeypatch):
+    """DISCORD_ALLOW_BOTS=mentions must still require a direct user @mention.
+
+    Mirrors on_message at adapter.py:1134-1136 — a role ping alone must not
+    admit another bot even when DISCORD_REQUIRE_MENTION_ROLES is on.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    message, _role = _bot_authored_role_ping(adapter)
+
+    # Production gate: elif allow_bots == "mentions": require explicit user mention
+    assert adapter._self_is_explicitly_mentioned(message) is False
+
+
+def test_bots_require_inline_mention_rejects_bot_authored_role_ping(adapter, monkeypatch):
+    """DISCORD_BOTS_REQUIRE_INLINE_MENTION must still require literal <@thisbot>.
+
+    Mirrors on_message at adapter.py:1137-1141 — a raw <@&role> token must not
+    satisfy the inline-mention guard.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true")
+    message, _role = _bot_authored_role_ping(adapter)
+
+    assert adapter._discord_bots_require_inline_mention() is True
+    assert adapter._self_is_raw_mentioned(message) is False
 
 
 @pytest.mark.asyncio

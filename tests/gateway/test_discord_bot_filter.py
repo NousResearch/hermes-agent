@@ -140,6 +140,35 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, content=f"<@!{our_user.id}> relay", mentions=[])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
+    def test_allow_bots_mentions_rejects_role_ping_without_user_mention(self):
+        """A <@&role> ping alone must not satisfy DISCORD_ALLOW_BOTS=mentions."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content="<@&555> role handoff",
+            mentions=[],
+        )
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+
+    def test_inline_mention_requirement_rejects_role_ping_without_user_token(self):
+        """A <@&role> token must not satisfy DISCORD_BOTS_REQUIRE_INLINE_MENTION."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content="<@&555> role handoff",
+            mentions=[],
+        )
+        self.assertFalse(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
+
     def test_inline_mention_requirement_off_preserves_reply_ping_behavior(self):
         """Default behavior: resolved reply-ping mentions still admit bot messages."""
         our_user = _make_author(is_self=True)

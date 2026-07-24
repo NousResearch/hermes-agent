@@ -581,6 +581,24 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Override target for restart/shutdown lifecycle notifications on this
+    # platform. When set, ALL lifecycle notifications on this platform
+    # (startup "online", post-restart "restarted", and shutdown drain pings —
+    # both the active-session and home-channel broadcasts) are routed to THIS
+    # single chat instead of the active-session sources and the platform home
+    # channel. Useful when you want operators in an ops channel (e.g.
+    # "#ops-alerts") to know about restarts but don't want end-user channels
+    # to receive lifecycle pings during active conversations.
+    #
+    # The value is a bare platform chat id. It is NOT split on ':' — platform
+    # ids can themselves contain colons (e.g. a Matrix room id like
+    # "!room:example.org"), so the whole string is used verbatim as the chat
+    # id, matching how ``home_channel.chat_id`` is treated. Thread/topic
+    # targeting is not encoded here; point this at a channel/room directly.
+    # Has no effect if ``gateway_restart_notification`` is False (which fully
+    # suppresses lifecycle pings on this platform).
+    gateway_restart_notification_channel: Optional[str] = None
+
     # Whether the gateway shows a "typing…" / "is thinking…" status indicator
     # while the agent processes a message on this platform. Default True
     # preserves prior behavior. Set False on platforms where the indicator is
@@ -615,6 +633,8 @@ class PlatformConfig:
         }
         if self.typing_status_text is not None:
             result["typing_status_text"] = self.typing_status_text
+        if self.gateway_restart_notification_channel:
+            result["gateway_restart_notification_channel"] = self.gateway_restart_notification_channel
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -643,6 +663,13 @@ class PlatformConfig:
         if _grn is None:
             _grn = extra.get("gateway_restart_notification")
 
+        # gateway_restart_notification_channel mirrors the flag above: it may
+        # arrive top-level or bridged into extra by the shared-key loop in
+        # load_gateway_config(), so check both.
+        _grn_chan = data.get("gateway_restart_notification_channel")
+        if _grn_chan is None:
+            _grn_chan = extra.get("gateway_restart_notification_channel")
+
         # typing_indicator mirrors gateway_restart_notification: it may arrive
         # top-level or bridged into extra by the shared-key loop in
         # load_gateway_config(), so check both.
@@ -670,6 +697,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_restart_notification_channel=_grn_chan if _grn_chan else None,
             typing_indicator=_coerce_bool(_typing, True),
             typing_status_text=_typing_text,
             channel_overrides=channel_overrides,
@@ -1546,6 +1574,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "gateway_restart_notification_channel" in platform_cfg:
+                    bridged["gateway_restart_notification_channel"] = platform_cfg["gateway_restart_notification_channel"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 if "typing_status_text" in platform_cfg:

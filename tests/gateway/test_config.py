@@ -120,6 +120,38 @@ class TestPlatformConfigRoundtrip:
     def test_typing_status_text_omitted_from_to_dict_when_unset(self):
         # None must not serialize — keeps existing config files byte-stable.
         assert "typing_status_text" not in PlatformConfig().to_dict()
+    def test_gateway_restart_notification_channel_defaults_none(self):
+        assert PlatformConfig().gateway_restart_notification_channel is None
+        assert PlatformConfig.from_dict({}).gateway_restart_notification_channel is None
+
+    def test_gateway_restart_notification_channel_roundtrip(self):
+        # Nested-platform-block shape: the key sits at the top level of the
+        # platform dict, exactly as ``platforms: telegram: {...}`` produces.
+        pc = PlatformConfig(enabled=True, gateway_restart_notification_channel="C0OPS999")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.gateway_restart_notification_channel == "C0OPS999"
+
+    def test_gateway_restart_notification_channel_from_top_level_key(self):
+        restored = PlatformConfig.from_dict(
+            {"gateway_restart_notification_channel": "C0OPS999"}
+        )
+        assert restored.gateway_restart_notification_channel == "C0OPS999"
+
+    def test_gateway_restart_notification_channel_resolved_from_extra(self):
+        # The shared-key loop in load_gateway_config bridges the value into
+        # extra; from_dict must honor it there too (mirrors _grn fallback).
+        restored = PlatformConfig.from_dict(
+            {"extra": {"gateway_restart_notification_channel": "C0OPS999"}}
+        )
+        assert restored.gateway_restart_notification_channel == "C0OPS999"
+
+    def test_gateway_restart_notification_channel_matrix_room_id_preserved(self):
+        # A Matrix room id contains a ':' and must survive round-tripping
+        # verbatim — it is never parsed/split into chat_id + thread_id.
+        room = "!room123:example.org"
+        pc = PlatformConfig(enabled=True, gateway_restart_notification_channel=room)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.gateway_restart_notification_channel == room
 
     def test_channel_overrides_roundtrip(self):
         pc = PlatformConfig(
@@ -1626,6 +1658,45 @@ class TestLoadGatewayConfig:
             "bridged into PlatformConfig.extra by the shared-key loop"
         )
         assert telegram.extra.get("require_mention") is False
+
+    def test_bridges_gateway_restart_notification_channel_top_level_key(self, tmp_path, monkeypatch):
+        """Top-level shared-key shape: ``telegram: gateway_restart_notification_channel``
+        is bridged into PlatformConfig and surfaces on the typed field."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  gateway_restart_notification_channel: \"C0OPS999\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.gateway_restart_notification_channel == "C0OPS999"
+
+    def test_bridges_gateway_restart_notification_channel_nested_platforms(self, tmp_path, monkeypatch):
+        """Nested-platform-block shape: ``platforms: telegram:
+        gateway_restart_notification_channel`` reaches the typed field."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    gateway_restart_notification_channel: \"C0OPS999\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.gateway_restart_notification_channel == "C0OPS999"
 
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

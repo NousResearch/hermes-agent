@@ -2020,9 +2020,12 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             redacted_input_by_id[_sanitize_tool_id(tc.get("id", ""))] = parsed_args
         replayed: List[Dict[str, Any]] = []
         _relocated_replay_cache_control = None
+        _dropped_blank_text = False
         for b in ordered_blocks:
             clean = _sanitize_replay_block(b)
             if clean is None:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    _dropped_blank_text = True
                 if isinstance(b, dict) and isinstance(b.get("cache_control"), dict):
                     # A dropped blank text block can still carry the cache
                     # breakpoint marker -- relocate it rather than losing it.
@@ -2036,6 +2039,19 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                 if redacted is not None:
                     clean["input"] = redacted
             replayed.append(clean)
+        # When every text block was blank and nothing cacheable survived
+        # (e.g. signed thinking + a blank text block, or a SOLE blank
+        # cache-marked block), emit the non-whitespace placeholder so the
+        # replayed message stays schema-valid (#69512) and a relocated cache
+        # marker still has a carrier instead of being silently lost.
+        _has_cacheable_replay = any(
+            isinstance(b, dict) and b.get("type") in {"text", "tool_use"}
+            for b in replayed
+        )
+        if not _has_cacheable_replay and (
+            _dropped_blank_text or _relocated_replay_cache_control is not None
+        ):
+            replayed.append({"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER})
         if replayed:
             if _relocated_replay_cache_control is not None:
                 _apply_assistant_cache_control_to_last_cacheable_block(

@@ -133,6 +133,15 @@ describe('ModelMenuPanel provider collapse', () => {
     expect(content.queryByText('Deepseek Chat')).not.toBeNull()
   })
 
+  it('reserves the provider disclosure column for model rows', async () => {
+    const { content } = renderPanel()
+
+    const model = await content.findByText('Deepseek V4 Pro')
+    const row = model.closest('[data-slot="dropdown-menu-sub-trigger"]')
+
+    expect(row?.getAttribute('data-inset')).toBe('true')
+  })
+
   it('collapses provider models when header is clicked', async () => {
     const { content } = renderPanel()
 

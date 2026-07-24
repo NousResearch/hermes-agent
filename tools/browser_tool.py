@@ -2151,6 +2151,23 @@ def _agent_browser_candidate_present(path: str | None) -> bool:
     return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
 
 
+def _resolve_npx_bin() -> Optional[str]:
+    """Resolve the npx binary via the same PATH + extended-PATH cascade
+    _find_agent_browser uses, so callers that need npx's actual path
+    (rather than the "npx agent-browser" sentinel) can't diverge from what
+    _find_agent_browser itself would have found. A bare ``shutil.which("npx")``
+    misses Hermes-managed-Node-only setups where npx only resolves via the
+    extended fallback PATH (Homebrew, $HERMES_HOME/node, etc.).
+    """
+    npx_path = shutil.which("npx")
+    if npx_path:
+        return npx_path
+    extended_path = _merge_browser_path("")
+    if extended_path:
+        return shutil.which("npx", path=extended_path)
+    return None
+
+
 def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
@@ -2170,7 +2187,6 @@ def _find_agent_browser(*, validate: bool = True) -> str:
             raise FileNotFoundError(
                 "agent-browser CLI not found (cached). Install it with: "
                 f"{_browser_install_hint()}\n"
-                "Or run 'npm install' in the repo root to install locally.\n"
                 "Or ensure npx is available in your PATH."
             )
         return _cached_agent_browser
@@ -2235,9 +2251,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
             return _cached_agent_browser
 
     # Check common npx locations (also search the extended fallback PATH)
-    npx_path = shutil.which("npx")
-    if not npx_path and extended_path:
-        npx_path = shutil.which("npx", path=extended_path)
+    npx_path = _resolve_npx_bin()
     if npx_path:
         if not validate:
             return "npx agent-browser"
@@ -2271,9 +2285,46 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: "
         f"{_browser_install_hint()}\n"
-        "Or run 'npm install' in the repo root to install locally.\n"
         "Or ensure npx is available in your PATH."
     )
+
+
+def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
+    """Best-effort pre-fetch of the agent-browser npm package via npx.
+
+    agent-browser is no longer a root package.json dependency (#43564) —
+    it resolves lazily via ``npx agent-browser`` instead, which keeps it
+    out of the npm workspace install graph entirely (nothing to prune it
+    anymore) but means the first real invocation in a session would
+    otherwise pay npx's registry-lookup/fetch cost. Calling this during
+    ``hermes update`` (or ``hermes doctor --fix``) warms npx's own cache
+    ahead of time, restoring the "available before any session starts"
+    property agent-browser had while it was an eager root dependency —
+    without re-entangling it with the workspace graph.
+
+    Fire-and-forget: never raises, always safe to call opportunistically.
+    Returns True only if npx actually ran successfully (npx unavailable,
+    a timeout, or a nonzero exit all return False silently).
+    """
+    npx_bin = _resolve_npx_bin()
+    if not npx_bin:
+        return False
+    try:
+        result = subprocess.run(
+            # --prefer-offline: once cached, repeat `hermes update`/`doctor
+            # --fix` runs shouldn't hit the registry just to re-confirm
+            # "latest" is still latest — that would defeat the point of
+            # warming the cache in the first place.
+            [npx_bin, "--prefer-offline", "-y", "agent-browser", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            creationflags=windows_hide_flags(),
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:

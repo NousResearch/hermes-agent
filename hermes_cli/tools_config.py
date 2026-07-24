@@ -1227,62 +1227,47 @@ def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
     if post_setup_key in {"agent_browser", "browserbase"}:
-        node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        npm_bin = shutil.which("npm")
-        npx_bin = shutil.which("npx")
-        # Step 1: install the agent-browser npm package into node_modules/
-        if not node_modules.exists() and npm_bin:
-            _print_info("    Installing Node.js dependencies for browser tools...")
-            import subprocess
-            # Use the resolved npm_bin absolute path so subprocess.Popen can
-            # execute npm.cmd on Windows (CreateProcessW otherwise rejects
-            # batch shims).  On POSIX npm_bin is the plain path — same
-            # behaviour as before.
-            result = subprocess.run(
-                # --workspaces=false restricts the install to the repo root
-                # only, avoiding the apps/* glob which would pull in
-                # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
-                [npm_bin, "install", "--silent", "--workspaces=false"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
-                creationflags=_post_setup_no_window_flags(),
-            )
-            if result.returncode == 0:
-                _print_success("    Node.js dependencies installed")
-            else:
-                from hermes_constants import display_hermes_home
-                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
-                if result.stderr:
-                    _print_info(f"      {result.stderr.strip()[:200]}")
-        elif node_modules.exists():
-            # Distinct message for the re-run case so the GUI action log tells
-            # the truth ("nothing to do") instead of implying a fresh install.
-            _print_success("    agent-browser already installed, nothing to do")
-        else:
-            _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
-            return
-
-        # Step 2: only the local browser provider actually needs Chromium on
-        # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host
-        # their own Chromium and don't need the local install.
-        if post_setup_key != "agent_browser":
-            return
-
-        # Step 3: ensure the Chromium / headless-shell build agent-browser
-        # drives is actually installed. Without it the CLI hangs on first
-        # use until the command timeout fires. Skip inside Docker — the
-        # image bakes Chromium in at build time, and runtime users usually
-        # can't write to PLAYWRIGHT_BROWSERS_PATH anyway.
+        # agent-browser is no longer a root package.json dependency (#43564)
+        # — it resolves lazily via npx (or a global/Hermes-managed install)
+        # instead of a local `npm install`, so there's no node_modules/
+        # population step here anymore.
         try:
             # Import lazily so the tools_config UI doesn't pull in the full
             # browser_tool module at import time.
             from tools.browser_tool import (
                 _chromium_installed,
                 _running_in_docker,
+                _find_agent_browser,
+                _resolve_npx_bin,
             )
         except Exception as exc:  # pragma: no cover — defensive
             _print_warning(f"    Could not check Chromium status: {exc}")
             return
 
+        # Reuse the same resolution cascade browser tools use at runtime
+        # (PATH -> Homebrew/Hermes-managed node -> npx) rather than a bare
+        # shutil.which — Hermes-managed-Node-only setups resolve agent-browser
+        # / npx only through the extended fallback path, which a bare
+        # shutil.which("npx") lookup misses.
+        try:
+            browser_cmd = _find_agent_browser(validate=False)
+        except FileNotFoundError:
+            _print_warning(
+                "    npx not found - browser tools require Node.js: https://nodejs.org"
+            )
+            return
+
+        # Step 1: only the local browser provider actually needs Chromium on
+        # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host
+        # their own Chromium and don't need the local install.
+        if post_setup_key != "agent_browser":
+            return
+
+        # Step 2: ensure the Chromium / headless-shell build agent-browser
+        # drives is actually installed. Without it the CLI hangs on first
+        # use until the command timeout fires. Skip inside Docker — the
+        # image bakes Chromium in at build time, and runtime users usually
+        # can't write to PLAYWRIGHT_BROWSERS_PATH anyway.
         if _chromium_installed():
             _print_success("    Chromium browser already installed, nothing to do")
             return
@@ -1299,27 +1284,27 @@ def _run_post_setup(post_setup_key: str):
             )
             return
 
-        if not npx_bin:
-            _print_warning(
-                "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
-            )
-            return
+        # browser_cmd was already resolved above (same PATH -> Homebrew ->
+        # Hermes-managed-node -> npx cascade _find_agent_browser uses at
+        # runtime), so this can't diverge from what actually gets invoked.
+        if browser_cmd == "npx agent-browser":
+            # Re-resolve via the same PATH + extended-PATH cascade
+            # _find_agent_browser used, rather than a bare shutil.which("npx")
+            # — Hermes-managed-Node-only setups resolve npx only through the
+            # extended fallback path, and a bare lookup here would silently
+            # diverge and hand subprocess.run a None argument.
+            npx_bin = _resolve_npx_bin()
+            if not npx_bin:
+                _print_warning(
+                    "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
+                )
+                return
+            install_cmd = [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
+        else:
+            install_cmd = [browser_cmd, "install", "--with-deps"]
 
         _print_info("    Installing Chromium (~170MB one-time download)...")
         import subprocess
-        # Prefer the bundled agent-browser install subcommand so the
-        # version of Chromium matches the CLI. Fall back to npx shim on
-        # setups where the local bin stub isn't present.
-        local_ab = PROJECT_ROOT / "node_modules" / ".bin" / "agent-browser"
-        if sys.platform == "win32":
-            local_ab_win = local_ab.with_suffix(".cmd")
-            if local_ab_win.exists():
-                local_ab = local_ab_win
-        install_cmd = (
-            [str(local_ab), "install", "--with-deps"]
-            if local_ab.exists()
-            else [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
-        )
         try:
             result = subprocess.run(
                 install_cmd,

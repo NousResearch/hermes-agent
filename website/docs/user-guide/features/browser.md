@@ -412,10 +412,12 @@ AGENT_BROWSER_ARGS=--no-sandbox
 
 ### Install agent-browser CLI
 
+You don't need to install anything — `agent-browser` resolves automatically via
+`npx agent-browser` on first browser-tool use. To avoid the one-time npx fetch,
+you can install it globally ahead of time (optional):
+
 ```bash
 npm install -g agent-browser
-# Or install locally in the repo:
-npm install
 ```
 
 :::info

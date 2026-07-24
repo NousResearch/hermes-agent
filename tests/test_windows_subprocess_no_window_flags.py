@@ -628,6 +628,24 @@ def test_skills_hub_gh_token_hides_windows(monkeypatch):
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
 
 
+def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
+    from tools import browser_tool
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="1.2.3\n")
+
+    monkeypatch.setattr(browser_tool.shutil, "which", lambda name: "/usr/bin/npx")
+    monkeypatch.setattr(browser_tool, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(browser_tool.subprocess, "run", fake_run)
+
+    assert browser_tool.warm_agent_browser_npx_cache() is True
+    assert captured[0][0][0] == "/usr/bin/npx"
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
 def test_tui_slash_worker_hides_python_window(monkeypatch):
     from tui_gateway import server
 

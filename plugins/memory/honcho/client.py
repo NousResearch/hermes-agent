@@ -454,6 +454,8 @@ class HonchoClientConfig:
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
+    # Custom HTTP headers to send with every Honcho request (e.g. CF Access)
+    default_headers: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
     # True when Honcho was explicitly configured for this host (hosts.hermes
@@ -730,6 +732,7 @@ class HonchoClientConfig:
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
+            default_headers=_parse_string_map(host_block, raw, "defaultHeaders"),
             raw=raw,
             explicitly_configured=_explicitly_configured,
         )
@@ -1096,6 +1099,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             kwargs["base_url"] = resolved_base_url
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
+        if config.default_headers:
+            kwargs["default_headers"] = config.default_headers
 
         global _cached_timeout
         _cached_timeout = resolved_timeout

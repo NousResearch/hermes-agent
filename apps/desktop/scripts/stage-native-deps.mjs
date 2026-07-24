@@ -195,14 +195,14 @@ function validateStagedBinaries(destRoot, targetPlatform) {
     if (!existsSync(dir)) return
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        scan(join(dir, entry.name), `${relPrefix}${entry.name}/`)
+        scan(join(dir, entry.name), \`\${relPrefix}\${entry.name}/\`)
         continue
       }
       if (!entry.name.endsWith('.node')) continue
       const fullPath = join(dir, entry.name)
       const classified = classifyNativeBinary(fullPath)
       if (classified !== targetPlatform) {
-        mismatches.push({ file: `${relPrefix}${entry.name}`, classified, expected: targetPlatform })
+        mismatches.push({ file: \`\${relPrefix}\${entry.name}\`, classified, expected: targetPlatform })
       }
     }
   }
@@ -210,32 +210,32 @@ function validateStagedBinaries(destRoot, targetPlatform) {
   scan(join(destRoot, 'build', 'Release'), 'build/Release/')
   if (mismatches.length > 0) {
     throw new Error(
-      `[stage-native-deps] native binary platform mismatch (target=${targetPlatform}):\n` +
+      \`[stage-native-deps] native binary platform mismatch (target=\${targetPlatform}):\n\` +
         mismatches
-          .map((m) => `  ${m.file}: expected ${m.expected}, got ${m.classified ?? 'unknown'}`)
+          .map((m) => \`  \${m.file}: expected \${m.expected}, got \${m.classified ?? 'unknown'}\`)
           .join('\n') +
-        `\nRefusing to stage a binary compiled for the wrong platform.`
+        \`\nRefusing to stage a binary compiled for the wrong platform.\`
     )
   }
 }
 
 /**
- * Stage node-pty's native runtime dependencies into `destRoot`.
+ * Stage node-pty's native runtime dependencies into \`destRoot\`.
  *
- * Exported separately from `stageNodePty` so tests can supply a fake
+ * Exported separately from \`stageNodePty\` so tests can supply a fake
  * node-pty source tree without going through real module resolution.
  *
  * Strategy (fail-closed):
  *
- * 1. Copy the matching prebuild (`prebuilds/<platform>-<arch>/`) if present.
- * 2. Copy `build/Release/` **only when the target matches the host** —
+ * 1. Copy the matching prebuild (\`prebuilds/<platform>-<arch>/\`) if present.
+ * 2. Copy \`build/Release/\` **only when the target matches the host** —
  *    build/Release contains a binary compiled for the host's platform/arch,
  *    so staging it for a different target ships a broken app.
  * 3. If no native binary was staged:
- *    - Same platform as host, different arch → run `electron-rebuild --arch`.
+ *    - Same platform as host, different arch → run \`electron-rebuild --arch\`.
  *    - Different platform from host → throw (cannot cross-compile native
  *      modules; build on the target platform or provide a prebuild).
- * 4. Validate every staged `.node` file's binary platform matches the target.
+ * 4. Validate every staged \`.node\` file's binary platform matches the target.
  */
 export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch } = {}) {
   const hostMatch = platform === process.platform && arch === process.arch
@@ -243,11 +243,11 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
   rmSync(destRoot, { recursive: true, force: true })
   mkdirSync(destRoot, { recursive: true })
 
-  // package.json — needed so `require('node-pty')` resolves the package
+  // package.json — needed so \`require('node-pty')\` resolves the package
   // (reads "main") rather than treating it as a directory with no entry.
   cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
 
-  // lib/**/*.js — the JS surface node-pty's `main` points into.
+  // lib/**/*.js — the JS surface node-pty's \`main\` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
   patchUnixTerminalAsarPaths(destRoot)
 
@@ -255,16 +255,16 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
   // *target* we're packaging, not necessarily the host running this script.
   // Explicit extensions only, to skip the ~25MB of Windows .pdb symbols
   // prebuild-install bundles alongside the .node/.dll.
-  const prebuildDir = join(srcRoot, 'prebuilds', `${platform}-${arch}`)
+  const prebuildDir = join(srcRoot, 'prebuilds', \`\${platform}-\${arch}\`)
   if (existsSync(prebuildDir)) {
-    const destPrebuild = join(destRoot, 'prebuilds', `${platform}-${arch}`)
+    const destPrebuild = join(destRoot, 'prebuilds', \`\${platform}-\${arch}\`)
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
         cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
         continue
       }
-      if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {
+      if (entry.isFile() && /\\.(node|dll|exe)$/.test(entry.name)) {
         cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
         continue
       }
@@ -290,7 +290,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
 
   // Check whether a native binary for this target was staged.
   const stagedDirs = [
-    join(destRoot, 'prebuilds', `${platform}-${arch}`),
+    join(destRoot, 'prebuilds', \`\${platform}-\${arch}\`),
     join(destRoot, 'build/Release')
   ]
   const hasNativeBinary = stagedDirs.some((dir) => {
@@ -301,17 +301,17 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
   if (!hasNativeBinary) {
     if (platform !== process.platform) {
       throw new Error(
-        `[stage-native-deps] no prebuilt binary for ${platform}-${arch} and ` +
-          `cannot cross-compile native modules from ${process.platform}-${process.arch}. ` +
-          `Build on the target platform or provide a prebuild.`
+        \`[stage-native-deps] no prebuilt binary for \${platform}-\${arch} and \` +
+          \`cannot cross-compile native modules from \${process.platform}-\${process.arch}. \` +
+          \`Build on the target platform or provide a prebuild.\`
       )
     }
     // Same platform, possibly different arch — rebuild from source with
     // the target architecture so electron-rebuild produces the correct
     // binary rather than defaulting to the host's arch.
     console.log(
-      `[stage-native-deps] no native binary for ${platform}-${arch}; ` +
-        `running electron-rebuild (target arch: ${arch})...`
+      \`[stage-native-deps] no native binary for \${platform}-\${arch}; \` +
+        \`running electron-rebuild (target arch: \${arch})...\`
     )
     const rebuildArgs = [
       '../../node_modules/.bin/electron-rebuild',
@@ -327,8 +327,8 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     })
     if (result.status !== 0) {
       throw new Error(
-        `electron-rebuild failed for ${platform}-${arch} (exit ${result.status}). ` +
-          `Cannot stage node-pty without a native binary.`
+        \`electron-rebuild failed for \${platform}-\${arch} (exit \${result.status}). \` +
+          \`Cannot stage node-pty without a native binary.\`
       )
     }
     // Re-copy build/Release after electron-rebuild populated it.
@@ -339,7 +339,18 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
   // Validate every staged .node binary matches the target platform.
   validateStagedBinaries(destRoot, platform)
 
-  console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}) -> ${destRoot}`)
+  // #69179: Enforce architecture matching for Windows AMD64.
+  // Cross-packaging from x64 to arm64 (or vice-versa) on Windows must not
+  // silently stage the host arch binary when a specific target was requested.
+  if (platform === 'win32' && arch === 'x64') {
+    const stagedBinaries = readdirSync(join(destRoot, 'prebuilds', 'win32-x64'), { recursive: true })
+      .filter(f => f.endsWith('.node'));
+    if (stagedBinaries.length === 0) {
+       throw new Error(\`[stage-native-deps] Architecture enforcement failed: No x64 binaries found for win32-x64 target.\`);
+    }
+  }
+
+  console.log(\`[stage-native-deps] staged node-pty (\${platform}-\${arch}) -> \${destRoot}\`)
   return destRoot
 }
 

@@ -19,13 +19,20 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
-    """Return the model's wire-compatible reasoning config."""
+    """Return the model's wire-compatible reasoning config.
+
+    Clamps ``"ultra"`` to ``"max"`` for *all* models.  ``"ultra"`` is an
+    internal convenience label used by the desktop model picker and the
+    ``/reasoning ultra`` command, but no upstream provider API accepts it
+    verbatim.  GPT-5.6 already rejected it (handled before this change) and
+    GLM models return HTTP 400 as well (see #70058).  Normalising once,
+    regardless of the target model, avoids per-provider breakage and silent
+    fallback activations.
+    """
     if not isinstance(reasoning_config, dict):
         return reasoning_config
-    if (
-        "gpt-5.6" in (model or "").lower()
-        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
-    ):
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if effort == "ultra":
         normalized = dict(reasoning_config)
         normalized["effort"] = "max"
         return normalized

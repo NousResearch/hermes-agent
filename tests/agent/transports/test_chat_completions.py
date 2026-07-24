@@ -38,6 +38,35 @@ class TestChatCompletionsBasic:
         )
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
 
+    def test_glm_ultra_clamped_to_max(self, transport):
+        """GLM models reject 'ultra' with HTTP 400; must clamp to 'max' (#70058)."""
+        from agent.transports.chat_completions import _reasoning_config_for_model
+
+        result = _reasoning_config_for_model(
+            "z-ai/glm-5.2",
+            {"enabled": True, "effort": "ultra"},
+        )
+        assert result == {"enabled": True, "effort": "max"}
+
+    def test_ultra_clamped_for_arbitrary_model(self, transport):
+        """'ultra' is not a valid wire value for any provider; always clamp."""
+        from agent.transports.chat_completions import _reasoning_config_for_model
+
+        for model in ("anthropic/claude-sonnet-5", "openai/gpt-5", "zhipu/glm-4"):
+            result = _reasoning_config_for_model(
+                model, {"enabled": True, "effort": "ultra"},
+            )
+            assert result is not None
+            assert result["effort"] == "max", f"failed for {model}"
+
+    def test_non_ultra_effort_unchanged(self, transport):
+        """Legitimate effort values pass through without modification."""
+        from agent.transports.chat_completions import _reasoning_config_for_model
+
+        for effort in ("max", "xhigh", "high", "medium", "low", "minimal", "none"):
+            cfg = {"enabled": True, "effort": effort}
+            assert _reasoning_config_for_model("z-ai/glm-5.2", cfg) == cfg
+
     def test_convert_tools_identity(self, transport):
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
         assert transport.convert_tools(tools) is tools

@@ -48,8 +48,23 @@ _EXTENDED_PROMPT_CACHE_MODEL_RE = re.compile(
 )
 
 
-def _prompt_cache_retention_for_model(model: str) -> Optional[str]:
-    """Return ``24h`` for models documented to support extended retention."""
+def _default_prompt_cache_retention_for_request(
+    model: str,
+    base_url: Any,
+) -> Optional[str]:
+    """Return ``24h`` for supported models on Amazon Bedrock Mantle."""
+    from utils import base_url_hostname
+
+    hostname_parts = base_url_hostname(str(base_url or "")).split(".")
+    is_bedrock_mantle = (
+        len(hostname_parts) == 4
+        and hostname_parts[0] == "bedrock-mantle"
+        and bool(hostname_parts[1])
+        and hostname_parts[2:] == ["api", "aws"]
+    )
+    if not is_bedrock_mantle:
+        return None
+
     normalized = str(model or "").strip().lower().replace("_", "-")
     if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized):
         return "24h"
@@ -313,13 +328,11 @@ class ResponsesApiTransport(ProviderTransport):
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
 
-        cache_retention = _prompt_cache_retention_for_model(model)
-        if (
-            cache_retention
-            and not is_github_responses
-            and not is_xai_responses
-            and not is_codex_backend
-        ):
+        cache_retention = _default_prompt_cache_retention_for_request(
+            model,
+            params.get("base_url"),
+        )
+        if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)
 
         if reasoning_enabled and is_xai_responses:

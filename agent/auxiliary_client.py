@@ -1060,7 +1060,7 @@ class _CodexCompletionsAdapter:
         try:
             from agent.transports.codex import (
                 _content_cache_key,
-                _prompt_cache_retention_for_model,
+                _default_prompt_cache_retention_for_request,
             )
             from utils import base_url_host_matches
 
@@ -1070,21 +1070,15 @@ class _CodexCompletionsAdapter:
                 base_url_host_matches(_host_src, "githubcopilot.com")
                 or base_url_host_matches(_host_src, "models.github.ai")
             )
-            _is_codex_backend = (
-                base_url_host_matches(_host_src, "chatgpt.com")
-                and "/backend-api/codex" in _host_src.lower()
-            )
             if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
                 _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"))
                 if _cache_key:
                     resp_kwargs["prompt_cache_key"] = _cache_key
-            if (
-                not _is_xai
-                and not _is_github
-                and not _is_codex_backend
-                and "prompt_cache_retention" not in resp_kwargs
-            ):
-                _cache_retention = _prompt_cache_retention_for_model(model)
+            if "prompt_cache_retention" not in resp_kwargs:
+                _cache_retention = _default_prompt_cache_retention_for_request(
+                    model,
+                    _host_src,
+                )
                 if _cache_retention:
                     resp_kwargs["prompt_cache_retention"] = _cache_retention
         except Exception:

@@ -1,14 +1,14 @@
 ---
-title: "Gitnexus Explorer"
+title: "Gitnexus Explorer — Serve an interactive codebase knowledge graph web UI"
 sidebar_label: "Gitnexus Explorer"
-description: "Index a codebase with GitNexus and serve an interactive knowledge graph via web UI + Cloudflare tunnel"
+description: "Serve an interactive codebase knowledge graph web UI"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Gitnexus Explorer
 
-Index a codebase with GitNexus and serve an interactive knowledge graph via web UI + Cloudflare tunnel.
+Serve an interactive codebase knowledge graph web UI.
 
 ## Skill metadata
 

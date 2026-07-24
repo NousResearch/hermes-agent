@@ -1,14 +1,14 @@
 ---
-title: "Huggingface Accelerate — Simplest distributed training API"
+title: "Huggingface Accelerate — Run PyTorch training across GPUs with minimal changes"
 sidebar_label: "Huggingface Accelerate"
-description: "Simplest distributed training API"
+description: "Run PyTorch training across GPUs with minimal changes"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Huggingface Accelerate
 
-Simplest distributed training API. 4 lines to add distributed support to any PyTorch script. Unified API for DeepSpeed/FSDP/Megatron/DDP. Automatic device placement, mixed precision (FP16/BF16/FP8). Interactive config, single launch command. HuggingFace ecosystem standard.
+Run PyTorch training across GPUs with minimal changes.
 
 ## Skill metadata
 

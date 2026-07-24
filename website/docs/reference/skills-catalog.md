@@ -40,17 +40,17 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video) | ASCII video: convert video/audio to colored ASCII MP4/GIF. | `creative/ascii-video` |
 | [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic) | Infographics: 21 layouts x 21 styles (信息图, 可视化). | `creative/baoyu-infographic` |
 | [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design) | Design one-off HTML artifacts (landing, deck, prototype). | `creative/claude-design` |
-| [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui) | Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution. | `creative/comfyui` |
+| [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui) | Generate images, video, and audio via diffusion workflows. | `creative/comfyui` |
 | [`design-md`](/docs/user-guide/skills/bundled/creative/creative-design-md) | Author/validate/export Google's DESIGN.md token spec files. | `creative/design-md` |
 | [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). | `creative/excalidraw` |
 | [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) | Humanize text: strip AI-isms and add real voice. | `creative/humanizer` |
 | [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video) | Manim CE animations: 3Blue1Brown math/algo videos. | `creative/manim-video` |
 | [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js) | p5.js sketches: gen art, shaders, interactive, 3D. | `creative/p5js` |
 | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) | 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS. | `creative/popular-web-designs` |
-| [`pretext`](/docs/user-guide/skills/bundled/creative/creative-pretext) | Use when building creative browser demos with @chenglou/pretext — DOM-free text layout for ASCII art, typographic flow around obstacles, text-as-geometry games, kinetic typography, and text-powered generative art. Produces single-file HT... | `creative/pretext` |
+| [`pretext`](/docs/user-guide/skills/bundled/creative/creative-pretext) | Build creative browser demos with DOM-free text layout. | `creative/pretext` |
 | [`sketch`](/docs/user-guide/skills/bundled/creative/creative-sketch) | Throwaway HTML mockups: 2-3 design variants to compare. | `creative/sketch` |
 | [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) | Songwriting craft and Suno AI music prompts. | `creative/songwriting-and-ai-music` |
-| [`touchdesigner-mcp`](/docs/user-guide/skills/bundled/creative/creative-touchdesigner-mcp) | Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools. | `creative/touchdesigner-mcp` |
+| [`touchdesigner-mcp`](/docs/user-guide/skills/bundled/creative/creative-touchdesigner-mcp) | Control TouchDesigner via twozero MCP. | `creative/touchdesigner-mcp` |
 
 ## email
 
@@ -106,7 +106,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) | Extract text from PDFs/scans (pymupdf, marker-pdf). | `productivity/ocr-and-documents` |
 | [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf) | Create, merge, split, fill, and secure PDF files. | `productivity/pdf` |
 | [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) | Create, read, edit .pptx decks, slides, notes, templates. | `productivity/powerpoint` |
-| [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline) | Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions. | `productivity/teams-meeting-pipeline` |
+| [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline) | Teams meeting summaries, job replay, Graph subscriptions. | `productivity/teams-meeting-pipeline` |
 | [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx) | Create, read, edit Excel .xlsx spreadsheets and CSVs. | `productivity/xlsx` |
 
 ## research
@@ -129,16 +129,16 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: post, search, DM, media, v2 API. | `social-media/xurl` |
+| [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: raw post search, posting, DM, media. | `social-media/xurl` |
 
 ## software-development
 
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`dogfood`](/docs/user-guide/skills/bundled/software-development/software-development-dogfood) | Exploratory QA of web apps: find bugs, evidence, reports. | `software-development/dogfood` |
-| [`hermes-agent-skill-authoring`](/docs/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring) | Author in-repo SKILL.md: frontmatter, validator, structure, and writing-quality principles. | `software-development/hermes-agent-skill-authoring` |
+| [`hermes-agent-skill-authoring`](/docs/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring) | Author in-repo SKILL.md files: frontmatter and structure. | `software-development/hermes-agent-skill-authoring` |
 | [`node-inspect-debugger`](/docs/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger) | Debug Node.js via --inspect + Chrome DevTools Protocol CLI. | `software-development/node-inspect-debugger` |
-| [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) | Plan mode: write an actionable markdown plan to .hermes/plans/, no execution. Bite-sized tasks, exact paths, complete code. | `software-development/plan` |
+| [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) | Write a markdown plan to .hermes/plans/; no execution. | `software-development/plan` |
 | [`python-debugpy`](/docs/user-guide/skills/bundled/software-development/software-development-python-debugpy) | Debug Python: pdb REPL + debugpy remote (DAP). | `software-development/python-debugpy` |
 | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) | Pre-commit review: security scan, quality gates, auto-fix. | `software-development/requesting-code-review` |
 | [`simplify-code`](/docs/user-guide/skills/bundled/software-development/software-development-simplify-code) | Parallel 4-agent cleanup of recent code changes. | `software-development/simplify-code` |

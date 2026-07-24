@@ -690,6 +690,8 @@ hermes kanban unblock <id>...
 hermes kanban archive <id>...
 
 hermes kanban tail <id>                                # follow a single task's event stream
+hermes kanban timeline [--since 30m|2h|2d]             # chronological events across the board
+        [--status S] [--assignee P] [--limit N] [--json]
 hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events to the terminal
         [--kinds completed,blocked,…] [--interval SECS]
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
@@ -712,6 +714,8 @@ hermes kanban specify [<id> | --all] [--tenant T]      # flesh out a triage-colu
 hermes kanban gc [--event-retention-days N]            # workspaces + old events + old logs
         [--log-retention-days N]
 ```
+
+`timeline` is a read-only, cross-task audit feed. It joins each event to the task's current title, status, and assignee without embedding task bodies. By default it selects the newest 100 matching events and prints them in chronological order; use `--limit` to change that bound and `--json` for automation. Equal timestamps are ordered deterministically by event ID. `--since` uses the same relative duration syntax as `hermes logs --since` (`30m`, `2h`, `2d`).
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 

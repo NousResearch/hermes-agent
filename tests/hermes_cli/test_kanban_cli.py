@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -565,3 +566,130 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# Board-level event timeline (CLI)
+# ---------------------------------------------------------------------------
+
+
+class TestTimelineCLI:
+    """CLI-level tests for ``hermes kanban --board <slug> timeline``."""
+
+    def test_timeline_basic_output(self, kanban_home):
+        """Default view shows chronological events with task metadata."""
+        with kb.connect() as conn:
+            kb.create_task(conn, title="one", assignee="alice")
+            kb.create_task(conn, title="two", assignee="bob")
+
+        out = kc.run_slash("timeline")
+        assert "one" in out
+        assert "two" in out
+
+    def test_timeline_json_output(self, kanban_home):
+        """--json returns valid JSON array of event dicts."""
+        with kb.connect() as conn:
+            t = kb.create_task(conn, title="json test", assignee="alice")
+            kb.complete_task(conn, t, result="ok")
+
+        out = kc.run_slash("timeline --json")
+        parsed = json.loads(out)
+        assert isinstance(parsed, list)
+        assert len(parsed) >= 2
+        for entry in parsed:
+            assert "task_id" in entry
+            assert "task_title" in entry
+            assert "kind" in entry
+            assert "created_at" in entry
+
+    def test_timeline_since_filter(self, kanban_home):
+        """--since 1h filters to recent events."""
+        now = int(time.time())
+        with kb.connect() as conn:
+            old = kb.create_task(conn, title="two hours ago")
+            recent = kb.create_task(conn, title="thirty minutes ago")
+            conn.execute(
+                "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+                (now - 7200, old),
+            )
+            conn.execute(
+                "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+                (now - 1800, recent),
+            )
+            conn.commit()
+
+        out = kc.run_slash("timeline --since 1h")
+
+        assert "thirty minutes ago" in out
+        assert "two hours ago" not in out
+
+    def test_timeline_empty_board(self, kanban_home):
+        """Timeline on an empty board returns 'No events' without error."""
+        out = kc.run_slash("timeline")
+        assert isinstance(out, str)
+        # Should not crash, should indicate emptiness
+        assert "No events" in out or "no events" in out.lower() or out == ""
+
+    def test_timeline_board_selection(self, kanban_home):
+        """--board flag scopes timeline to that board."""
+        kb.create_board("project-a")
+        with kb.connect_closing(board="project-a") as conn:
+            kb.create_task(conn, title="project a task")
+        with kb.connect() as conn:
+            kb.create_task(conn, title="default task")
+
+        out = kc.run_slash("--board project-a timeline")
+        assert "project a task" in out
+        assert "default task" not in out
+
+    def test_timeline_status_filter(self, kanban_home):
+        """--status filters timeline to tasks currently in that status."""
+        with kb.connect() as conn:
+            t1 = kb.create_task(conn, title="done task", assignee="alice")
+            kb.complete_task(conn, t1, result="ok")
+            kb.create_task(conn, title="todo task")
+
+        out = kc.run_slash("timeline --status done")
+        assert "done task" in out
+        assert "todo task" not in out
+
+    def test_timeline_assignee_filter(self, kanban_home):
+        """--assignee filters timeline to tasks assigned to that profile."""
+        with kb.connect() as conn:
+            kb.create_task(conn, title="alice task", assignee="alice")
+            kb.create_task(conn, title="bob task", assignee="bob")
+
+        out = kc.run_slash("timeline --assignee alice")
+        assert "alice task" in out
+        assert "bob task" not in out
+
+    def test_timeline_limit_and_validation(self, kanban_home):
+        with kb.connect() as conn:
+            for index in range(3):
+                kb.create_task(conn, title=f"limited {index}")
+
+        parsed = json.loads(kc.run_slash("timeline --limit 2 --json"))
+        assert len(parsed) == 2
+        assert [entry["task_title"] for entry in parsed] == [
+            "limited 1",
+            "limited 2",
+        ]
+
+        assert "must be greater than zero" in kc.run_slash("timeline --limit 0")
+
+    def test_timeline_human_output_bounds_long_titles(self, kanban_home):
+        long_title = "x" * 150
+        with kb.connect() as conn:
+            kb.create_task(conn, title=long_title)
+
+        output = kc.run_slash("timeline")
+
+        assert f"{'x' * 97}..." in output
+        assert long_title not in output
+
+    def test_timeline_no_args_no_board_uses_default(self, kanban_home):
+        """Timeline with no --board uses whichever board is current."""
+        with kb.connect() as conn:
+            kb.create_task(conn, title="default board event")
+        out = kc.run_slash("timeline")
+        assert "default board event" in out

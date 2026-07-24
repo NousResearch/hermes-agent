@@ -370,6 +370,11 @@ class WebSocketRelayTransport:
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
         self._descriptor: Optional[CapabilityDescriptor] = None
+        # Phase 1.5 multi-platform: descriptors keyed by the underlying platform
+        # (one per hello'd identity). `_descriptor` above stays the FIRST
+        # (primary-identity) descriptor for back-compat; this map is the
+        # per-platform capability surface read via `descriptor_for_platform`.
+        self._descriptors_by_platform: Dict[str, CapabilityDescriptor] = {}
         self._descriptor_ready: asyncio.Future[CapabilityDescriptor] | None = None
         # requestId -> future awaiting the matching outbound_result.
         self._pending: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
@@ -399,8 +404,10 @@ class WebSocketRelayTransport:
         loop = asyncio.get_running_loop()
         self._descriptor_ready = loop.create_future()
         # A fresh handshake is coming; clear any stale descriptor so handshake()
-        # awaits the new one (matters on a re-dial).
+        # awaits the new one (matters on a re-dial). The per-platform map resets
+        # with it — a reconnected connector re-sends one descriptor per hello.
         self._descriptor = None
+        self._descriptors_by_platform = {}
         # scale-to-zero (D12): a successful (re-)dial ends any dormant state — we
         # are live again, so a subsequent UNEXPECTED close should reconnect on the
         # normal fast backoff, not the dormant cadence.
@@ -472,6 +479,18 @@ class WebSocketRelayTransport:
         if self._descriptor_ready is None:
             raise RuntimeError("handshake() called before connect()")
         return await asyncio.wait_for(self._descriptor_ready, timeout=self._connect_timeout_s)
+
+    def descriptor_for_platform(self, platform: str) -> Optional[CapabilityDescriptor]:
+        """The negotiated descriptor for one fronted platform, or None.
+
+        Phase 1.5 multi-platform: the connector replies one descriptor per
+        hello'd identity; they accumulate here keyed by the descriptor's own
+        ``platform`` field. Callers (RelayAdapter) use this to resolve PER-CHAT
+        capabilities — e.g. Discord's 2000-char max_message_length vs
+        Telegram's 4096 — instead of applying the primary identity's scalar
+        descriptor to every platform this gateway fronts.
+        """
+        return self._descriptors_by_platform.get(platform)
 
     @property
     def auth_revoked(self) -> bool:
@@ -748,7 +767,19 @@ class WebSocketRelayTransport:
         ftype = frame.get("type")
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
-            self._descriptor = descriptor
+            # Phase 1.5 multi-platform: one descriptor frame arrives per hello'd
+            # identity. Accumulate them keyed by the descriptor's own platform so
+            # the adapter can resolve PER-CHAT capabilities (e.g. Discord's 2000
+            # vs Telegram's 4096 max_message_length) instead of collapsing N
+            # platforms onto whichever descriptor arrived last.
+            if descriptor.platform:
+                self._descriptors_by_platform[descriptor.platform] = descriptor
+            # The FIRST descriptor of this connection generation is the session
+            # default (the primary identity's) — later arrivals must NOT
+            # overwrite it, or the scalar capability surface silently becomes
+            # last-writer-wins across platforms.
+            if self._descriptor is None:
+                self._descriptor = descriptor
             # Phase 7 Unit 7d-B: a received descriptor means the WS upgrade auth
             # passed and the connector accepted us — record that we've handshaked
             # at least once, so a LATER 4401 close is read as a revocation

@@ -85,6 +85,29 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     assert captured["port"] == 0
 
 
+def test_maybe_open_browser_brackets_ipv6_loopback(monkeypatch):
+    """A browser URL needs brackets around an IPv6 literal authority."""
+    import webbrowser
+
+    opened = []
+
+    class _ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(web_server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(web_server.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    web_server._maybe_open_browser("::1", 9119, True, "worker_x")
+
+    assert opened == ["http://[::1]:9119/?profile=worker_x"]
+
+
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     """Loopback binds (the Desktop case) MUST disable uvicorn's protocol-level
     keepalive ping so an event-loop stall can never trigger a false disconnect.
@@ -105,6 +128,15 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
 
     assert captured["ws_ping_interval"] is None
     assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_prints_bracketed_ipv6_dashboard_url(monkeypatch, capsys):
+    """The no-browser startup banner must still show a valid IPv6 URL."""
+    _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="::1", port=9119, open_browser=False)
+
+    assert "Hermes Web UI → http://[::1]:9119" in capsys.readouterr().out
 
 
 def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):

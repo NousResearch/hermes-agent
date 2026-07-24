@@ -1,7 +1,7 @@
 ---
 name: tensorrt-llm
 description: High-throughput LLM inference on NVIDIA GPUs.
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [tensorrt-llm, torch]
@@ -40,13 +40,15 @@ NVIDIA's open-source library for optimizing LLM inference with state-of-the-art 
 ### Installation
 
 ```bash
-# Docker (recommended)
-docker pull nvidia/tensorrt_llm:latest
+# Docker (recommended) — images are on NGC (nvcr.io), not Docker Hub.
+# Replace x.y.z with the desired version (e.g. 1.2.1). Browse tags on NGC:
+# https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release/tags
+docker pull nvcr.io/nvidia/tensorrt-llm/release:x.y.z
 
-# pip install
-pip install tensorrt_llm==1.2.0rc3
+# pip install (current stable GA)
+pip install tensorrt_llm
 
-# Requires CUDA 13.0.0, TensorRT 10.13.2, Python 3.10-3.12
+# Requires CUDA 13.2.1, TensorRT 10.x, Python 3.10-3.12
 ```
 
 ### Basic inference

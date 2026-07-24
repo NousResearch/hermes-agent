@@ -1,7 +1,7 @@
 ---
 name: distributed-llm-pretraining-torchtitan
 description: Pretrain LLMs at scale with PyTorch 4D parallelism.
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [torch>=2.6.0, torchtitan>=0.2.0, torchao>=0.5.0]
@@ -37,7 +37,9 @@ python scripts/download_hf_assets.py --repo_id meta-llama/Llama-3.1-8B --assets 
 
 **Start training on 8 GPUs**:
 ```bash
-CONFIG_FILE="./torchtitan/models/llama3/train_configs/llama3_8b.toml" ./run_train.sh
+# Configs are selected by name from the Python config registry
+# (torchtitan/models/llama3/config_registry.py), not by TOML path
+MODULE=llama3 CONFIG=llama3_8b ./run_train.sh
 ```
 
 ## Common workflows
@@ -65,10 +67,16 @@ python scripts/download_hf_assets.py \
 
 **Step 2: Configure training**
 
-Edit or create a TOML config file:
+In torchtitan's current layout, run configs are defined in a Python **config registry**
+(`torchtitan/models/llama3/config_registry.py`) and selected by name via `CONFIG=<name>`
+(or `--config <name>`). To customize, register your own config in the registry, or override
+individual fields on the command line (e.g. `--optimizer.lr 3e-4 --training.steps 1000`).
+
+The equivalent settings for an 8B run look like this (shown as fields; set them in the
+registry entry or as `--section.key value` overrides):
 
 ```toml
-# llama3_8b_custom.toml
+# fields for a llama3 8B run (register in config_registry.py or pass as --overrides)
 [job]
 dump_folder = "./outputs"
 description = "Llama 3.1 8B training"
@@ -108,13 +116,16 @@ interval = 500
 **Step 3: Launch training**
 
 ```bash
-# 8 GPUs on single node
-CONFIG_FILE="./llama3_8b_custom.toml" ./run_train.sh
+# 8 GPUs on single node (config selected by name from the registry)
+MODULE=llama3 CONFIG=llama3_8b ./run_train.sh
 
-# Or explicitly with torchrun
+# Override individual fields on the command line
+MODULE=llama3 CONFIG=llama3_8b ./run_train.sh --optimizer.lr 3e-4 --training.steps 1000
+
+# Or explicitly with torchrun (run_train.sh wraps this)
 torchrun --nproc_per_node=8 \
   -m torchtitan.train \
-  --job.config_file ./llama3_8b_custom.toml
+  --module llama3 --config llama3_8b
 ```
 
 **Step 4: Monitor and checkpoint**
@@ -160,7 +171,7 @@ srun torchrun \
   --rdzv_backend=c10d \
   --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
   -m torchtitan.train \
-  --job.config_file ./llama3_70b.toml
+  --module llama3 --config llama3_70b
 ```
 
 **Step 3: Submit job**
@@ -192,16 +203,28 @@ USE_CPP=0 pip install git+https://github.com/pytorch/ao.git
 
 **Step 2: Configure Float8**
 
-Add to your TOML config:
+In the current torchtitan, Float8 is applied at config time via the `quantization`
+parameter in your `model_registry()` call inside the config registry (not via a
+`[quantize.linear.float8]` TOML section). Add a `Float8LinearConverter.Config`:
+
+```python
+# in torchtitan/models/llama3/config_registry.py (your model_registry(...) call)
+from torchtitan.components.quantization import Float8LinearConverter
+
+model_spec = model_registry(
+    "8B",
+    quantization=[
+        Float8LinearConverter.Config(
+            recipe_name="rowwise",          # or "rowwise_with_gw_hp"
+            filter_fqns=["output"],          # skip layers too small to benefit
+            model_compile_enabled=True,      # requires torch.compile for competitive perf
+        ),
+    ],
+)
+```
+
+Enable `torch.compile` in your run config too:
 ```toml
-[model]
-converters = ["quantize.linear.float8"]
-
-[quantize.linear.float8]
-enable_fsdp_float8_all_gather = true
-precompute_float8_dynamic_scale_for_fsdp = true
-filter_fqns = ["output"]  # Exclude output layer
-
 [compile]
 enable = true
 components = ["model", "loss"]
@@ -210,10 +233,8 @@ components = ["model", "loss"]
 **Step 3: Launch with compile**
 
 ```bash
-CONFIG_FILE="./llama3_8b.toml" ./run_train.sh \
-  --model.converters="quantize.linear.float8" \
-  --quantize.linear.float8.enable_fsdp_float8_all_gather \
-  --compile.enable
+# Float8 config is baked into the registered config; just select it and enable compile
+MODULE=llama3 CONFIG=llama3_8b ./run_train.sh --compile.enable
 ```
 
 ### Workflow 4: 4D parallelism for 405B models
@@ -229,7 +250,7 @@ CONFIG_FILE="./llama3_8b.toml" ./run_train.sh \
 
 Required for consistent initialization across PP stages:
 ```bash
-NGPU=1 CONFIG_FILE=./llama3_405b.toml ./run_train.sh \
+NGPU=1 MODULE=llama3 CONFIG=llama3_405b ./run_train.sh \
   --checkpoint.enable \
   --checkpoint.create_seed_checkpoint \
   --parallelism.data_parallel_shard_degree 1 \
@@ -257,7 +278,7 @@ seq_len = 8192
 # 64 nodes x 8 GPUs = 512 GPUs
 srun torchrun --nnodes=64 --nproc_per_node=8 \
   -m torchtitan.train \
-  --job.config_file ./llama3_405b.toml
+  --module llama3 --config llama3_405b
 ```
 
 ## When to use vs alternatives
@@ -304,10 +325,15 @@ export TORCH_NCCL_AVOID_RECORD_STREAMS=1
 
 **Issue: Float8 training not faster**
 
-Float8 only benefits large GEMMs. Filter small layers:
-```toml
-[quantize.linear.float8]
-filter_fqns = ["attention.wk", "attention.wv", "output", "auto_filter_small_kn"]
+Float8 only benefits large GEMMs. Filter small layers via the converter's `filter_fqns`:
+```python
+from torchtitan.components.quantization import Float8LinearConverter
+
+Float8LinearConverter.Config(
+    # add "auto_filter_small_kn" to auto-skip layers too small to benefit
+    filter_fqns=["attention.wk", "attention.wv", "output", "auto_filter_small_kn"],
+    model_compile_enabled=True,
+)
 ```
 
 **Issue: Checkpoint loading fails after parallelism change**

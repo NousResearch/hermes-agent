@@ -334,7 +334,9 @@ def cmd_setup(args) -> None:
                 # Prompt for secret
                 existing = os.environ.get(env_var, "") if env_var else ""
                 if existing:
-                    masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
+                    from agent.redact import mask_secret
+
+                    masked = mask_secret(existing, empty="set")
                     val = _prompt(f"{desc} (current: {masked}, blank to keep)", secret=True)
                 else:
                     hint = f"  Get yours at {url}" if url else ""

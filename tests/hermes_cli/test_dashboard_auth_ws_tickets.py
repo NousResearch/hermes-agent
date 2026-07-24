@@ -116,14 +116,26 @@ class TestTTL:
 
 
 class TestErrorMessages:
-    def test_unknown_ticket_error_truncates_value(self):
-        long_value = "a" * 100
+    def test_unknown_long_ticket_does_not_echo_raw_value_or_prefix(self):
+        long_value = "ticket-ABCDEFGH-private-middle-SECRET99"
         with pytest.raises(TicketInvalid) as exc_info:
             consume_ticket(long_value)
-        # Never log more than the first 8 chars of an opaque ticket.
+
         message = str(exc_info.value)
+        assert "unknown ticket" in message.lower()
         assert long_value not in message
-        assert long_value[:8] in message
+        assert long_value[:8] not in message
+        assert "private-middle" not in message
+
+    @pytest.mark.parametrize("value", ["", "short"])
+    def test_unknown_empty_or_short_ticket_is_safe(self, value):
+        with pytest.raises(TicketInvalid) as exc_info:
+            consume_ticket(value)
+
+        message = str(exc_info.value)
+        assert "unknown ticket" in message.lower()
+        if value:
+            assert value not in message
 
 
 # ---------------------------------------------------------------------------

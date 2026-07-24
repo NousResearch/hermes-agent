@@ -286,6 +286,9 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print()
     print_success("  QR scan authorization successful!")
     print_success(f"  Client ID:     {client_id}")
-    print_success(f"  Client Secret: {client_secret[:8]}{'*' * (len(client_secret) - 8)}")
+    from agent.redact import mask_secret
+
+    # print() bypasses RedactingFormatter — use mask_secret.
+    print_success(f"  Client Secret: {mask_secret(client_secret)}")
 
     return client_id, client_secret

@@ -1056,11 +1056,13 @@ def init_agent(
                 # that mints a fresh JWT per request — we never
                 # invoke or inspect the callable in the banner.
                 from agent.azure_identity_adapter import is_token_provider
+                from agent.redact import mask_secret
 
                 if is_token_provider(effective_key):
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                    # print() bypasses RedactingFormatter — never slice secrets raw.
+                    print(f"🔑 Using token: {mask_secret(effective_key)}")
     elif agent.provider == "moa":
         from agent.moa_loop import build_moa_facade
         agent.api_mode = "chat_completions"
@@ -1331,12 +1333,14 @@ def init_agent(
                 # fresh JWT per request internally — the banner
                 # never invokes or inspects the callable.
                 from agent.azure_identity_adapter import is_token_provider
+                from agent.redact import mask_secret
 
                 key_used = client_kwargs.get("api_key", "none")
                 if is_token_provider(key_used):
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
-                    print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    # print() bypasses RedactingFormatter — never slice secrets raw.
+                    print(f"🔑 Using API key: {mask_secret(key_used)}")
                 else:
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:

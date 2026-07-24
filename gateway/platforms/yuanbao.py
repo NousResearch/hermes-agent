@@ -892,7 +892,12 @@ class SignManager:
         route_env: str = "",
     ) -> dict[str, Any]:
         """Force refresh token (clear cache and re-sign)."""
-        logger.warning("[force-refresh] Clearing cache and re-signing token: app_key=****%s", app_key[-4:])
+        from agent.redact import mask_secret
+
+        logger.warning(
+            "[force-refresh] Clearing cache and re-signing token: app_key=%s",
+            mask_secret(app_key, empty="***"),
+        )
         async with cls.get_refresh_lock(app_key):
             cls._cache.pop(app_key, None)
             data = await cls.fetch(app_key, app_secret, api_domain, route_env)

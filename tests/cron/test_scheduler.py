@@ -153,6 +153,28 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    def test_webui_origin_platform_returns_none(self):
+        """WebUI reads from local session DB — no gateway delivery needed (#45360)."""
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "webui",
+                "chat_id": "session-abc",
+            },
+        }
+        assert _resolve_delivery_target(job) is None
+
+    def test_webui_origin_platform_case_insensitive(self):
+        """Platform name comparison should be case-insensitive."""
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "WebUI",
+                "chat_id": "session-abc",
+            },
+        }
+        assert _resolve_delivery_target(job) is None
+
     @pytest.mark.parametrize(
         ("platform", "env_var", "chat_id"),
         [

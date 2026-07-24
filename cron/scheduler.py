@@ -1143,8 +1143,15 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if deliver_value == "origin":
         if origin:
+            platform = origin["platform"]
+            # WebUI surfaces cron runs by reading the local session DB —
+            # no external gateway delivery is needed. Returning None
+            # treats it like "local", avoiding "unknown platform 'webui'"
+            # errors (#45360).
+            if platform.lower() == "webui":
+                return None
             return {
-                "platform": origin["platform"],
+                "platform": platform,
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }

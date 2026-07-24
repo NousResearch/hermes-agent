@@ -1,14 +1,22 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
+import {
+  forceRedraw,
+  type ScrollBoxHandle,
+  useApp,
+  useHasSelection,
+  useSelection,
+  useStdout,
+  useTerminalTitle
+} from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { STARTUP_RESUME_ID } from '../config/env.js'
+import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
-import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -30,6 +38,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
@@ -43,6 +52,7 @@ import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { useInputHandlers } from './useInputHandlers.js'
@@ -184,6 +194,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
+  const [dashboardFreshSessionId, setDashboardFreshSessionId] = useState<null | string>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
   // Bumped by the gateway `reaction` event (core-detected affection).
@@ -425,6 +436,26 @@ export function useMainApp(gw: GatewayClient) {
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
 
+  // Hot-loaded user widgets announce themselves — a silently-registered
+  // widget is indistinguishable from a failed one. Errors surface too.
+  useEffect(
+    () =>
+      onUserWidgets(({ added, errors, removed }) => {
+        for (const id of added) {
+          sys(`widget /${id} is live — type /${id} to open`)
+        }
+
+        for (const id of removed) {
+          sys(`widget /${id} removed (file deleted)`)
+        }
+
+        for (const err of errors) {
+          sys(`widget ${err.file} failed to load: ${err.message}`)
+        }
+      }),
+    [sys]
+  )
+
   const page = useCallback(
     (text: string, title?: string) => patchOverlayState({ pager: { lines: text.split('\n'), offset: 0, title } }),
     []
@@ -496,6 +527,7 @@ export function useMainApp(gw: GatewayClient) {
     colsRef,
     composerActions,
     gw,
+    onFreshSessionStarted: DASHBOARD_TUI_MODE ? setDashboardFreshSessionId : undefined,
     panel,
     rpc,
     scrollRef,
@@ -507,6 +539,12 @@ export function useMainApp(gw: GatewayClient) {
     setVoiceRecording,
     sys
   })
+
+  useEffect(() => {
+    if (dashboardFreshSessionId) {
+      forceRedraw(stdout ?? process.stdout)
+    }
+  }, [dashboardFreshSessionId, stdout])
 
   useEffect(() => {
     if (ui.busy) {
@@ -521,6 +559,7 @@ export function useMainApp(gw: GatewayClient) {
   }, [ui.busy, turnStartedAt])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useBatteryPoll(gw)
 
   useEffect(() => {
     if (!ui.sid) {
@@ -1018,16 +1057,21 @@ export function useMainApp(gw: GatewayClient) {
           state.streamSegments.some(segment => {
             const hasThinking = Boolean(segment.thinking?.trim())
             const hasTrailTools = Boolean(segment.tools?.length)
+            // A MoA reference segment (segment.isMoaReference) is the
+            // user-facing mixture-of-agents process the user opted into, not
+            // private model reasoning — it must keep the live progress area
+            // (and therefore StreamingAssistant) up even when the thinking
+            // panel is hidden, matching shouldShowThinkingTrail's settled-
+            // transcript override in messageLine.tsx (#64657/#64701).
+            const thinkingVisible = thinkingPanelVisible || Boolean(segment.isMoaReference)
 
             if (segment.kind === 'trail' && !segment.text) {
-              return (
-                (thinkingPanelVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
-              )
+              return (thinkingVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
             }
 
             return (
               Boolean(segment.text?.trim()) ||
-              (thinkingPanelVisible && hasThinking) ||
+              (thinkingVisible && hasThinking) ||
               ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
             )
           }) ||
@@ -1111,7 +1155,7 @@ export function useMainApp(gw: GatewayClient) {
       // Cap the status-bar cwd/branch label tighter than the shared default so
       // it doesn't dominate the bar; the status rule reserves the left-side
       // essentials and truncates this further on narrow terminals.
-      cwdLabel: fmtCwdBranch(cwd, gitBranch, 28),
+      cwdLabel: fmtProjectCwdBranch(cwd, gitBranch, ui.info?.project?.name, 28),
       goodVibesTick,
       lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,

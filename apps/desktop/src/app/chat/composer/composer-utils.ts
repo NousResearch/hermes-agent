@@ -6,6 +6,12 @@ import { setSessionPickerOpen } from '@/store/session'
 
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
 
+// Above the stack breakpoint but still cramped: the model pill sheds its label
+// for its chevron icon (freeing ~120px) so the controls stop crowding the input
+// before the whole row has to stack. Progressive collapse: full pill → icon
+// pill → stacked.
+export const COMPOSER_COMPACT_PILL_PX = 440
+
 // A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
 // vertical padding). Anything taller means the text wrapped to a second line,
 // which is when the composer should expand to the stacked layout.
@@ -79,7 +85,5 @@ export function isPendingDraftPersistCurrent(
   pending: PendingDraftPersist | null,
   expected: PendingDraftPersist | null
 ): boolean {
-  return (
-    pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
-  )
+  return pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
 }

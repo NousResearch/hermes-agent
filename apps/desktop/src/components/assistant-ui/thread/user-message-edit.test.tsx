@@ -1,4 +1,4 @@
-import { ExportedMessageRepository } from '@assistant-ui/core/internal'
+import { ExportedMessageRepository } from '@assistant-ui/react'
 // Clicking a user bubble must open the inline edit composer — through the
 // app's incremental external-store runtime (which reimplements capability
 // resolution, incl. `edit: onEdit !== undefined`) and the stock runtime.
@@ -8,8 +8,8 @@ import { ExportedMessageRepository } from '@assistant-ui/core/internal'
 // bubbles) is not reproducible in jsdom — see USER_BUBBLE_BASE_CLASS's no-drag
 // carve-out in thread.tsx.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
@@ -32,6 +32,10 @@ vi.stubGlobal('CSS', { escape: (str: string) => str })
 
 Element.prototype.scrollTo = function scrollTo() {}
 
+afterEach(() => {
+  cleanup()
+})
+
 function stubOffsetDimension(
   prop: 'offsetHeight' | 'offsetWidth',
   clientProp: 'clientHeight' | 'clientWidth',
@@ -49,6 +53,19 @@ function stubOffsetDimension(
 
 stubOffsetDimension('offsetWidth', 'clientWidth', 800)
 stubOffsetDimension('offsetHeight', 'clientHeight', 600)
+
+async function moveFocusOutside(editor: HTMLElement) {
+  const outside = window.document.createElement('button')
+  window.document.body.append(outside)
+  editor.focus()
+
+  await act(async () => {
+    outside.focus()
+    await new Promise(resolve => window.setTimeout(resolve, 120))
+  })
+
+  outside.remove()
+}
 
 function userMessage(): ThreadMessage {
   return {
@@ -126,6 +143,33 @@ describe('click-to-edit user message', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
+  })
+
+  it('keeps a dirty inline edit open when focus leaves the composer', async () => {
+    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const editedText = 'edited draft that must not be discarded'
+
+    editor.textContent = editedText
+    fireEvent.input(editor)
+    await moveFocusOutside(editor)
+
+    expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
+    expect((await screen.findByRole('textbox', { name: 'Edit message' })).textContent).toBe(editedText)
+  })
+
+  it('still cancels an untouched inline edit when focus leaves the composer', async () => {
+    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+
+    await moveFocusOutside(editor)
+
+    expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeFalsy()
   })
 
   it('opens the edit composer with the stock runtime', async () => {

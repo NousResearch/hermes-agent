@@ -43,11 +43,19 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml, returning None on any error."""
-    try:
-        from hermes_cli.config import load_config
+    """Load config.yaml read-only, returning None on any error.
 
-        return load_config()
+    Uses ``load_config_readonly()``: every consumer in this module only reads
+    (``get_pool_strategy``, ``_iter_custom_providers``, the model-config seed),
+    and the deepcopy that ``load_config()`` pays per call is what made
+    credential-pool checks the dominant cost of ``model.options`` — the picker
+    calls ``load_pool()`` once per provider row, each of which loaded (and
+    deep-copied) the full config again.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return load_config_readonly()
     except Exception:
         return None
 
@@ -113,6 +121,20 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+
+# Throttle window for the "no available entries" INFO line. Credential
+# selection runs on a hot path (every model call, plus auxiliary tasks like
+# compression/moa/titles), so when a pool is empty or fully exhausted the
+# un-throttled log fires on *every* selection. On Windows several Hermes
+# processes share one rotating log guarded by concurrent-log-handler's
+# cross-process lock; that per-selection volume storms the lock
+# (``RuntimeError: Cannot acquire lock after 20 attempts``), pegs a core, and
+# stalls the asyncio event loop long enough to fail the Desktop backend
+# readiness handshake ("Timed out connecting to Hermes backend after
+# 15000ms"). Logging the condition at most once per window preserves the
+# signal while removing the storm — same class of fix as the warn-once
+# dedup in #58265.
+NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS = 60.0
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -543,14 +565,12 @@ def _write_through_provider_state_to_global_root(
             except Exception:
                 return
     try:
-        if global_path.exists():
-            global_store = _load_auth_store(global_path)
-        else:
-            global_store = {}
-        if not isinstance(global_store, dict):
-            return
-        _store_provider_state(global_store, provider_id, dict(state), set_active=False)
-        auth_mod._save_auth_store(global_store, global_path)
+        auth_mod._persist_provider_state_to_store(
+            provider_id,
+            state,
+            global_path,
+            set_active=False,
+        )
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug(
             "%s pool refresh: write-through to global root failed: %s",
@@ -568,21 +588,39 @@ class CredentialPool:
         self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
+        # Monotonic timestamp of the last "no available entries" log, used to
+        # throttle that message so an empty/exhausted pool cannot storm the
+        # shared rotating log (see NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS).
+        # Re-armed to None on every successful selection so a recover→re-exhaust
+        # transition logs promptly instead of being swallowed by a stale window.
+        self._last_no_entries_log_at: Optional[float] = None
 
     def has_credentials(self) -> bool:
-        return bool(self._entries)
+        with self._lock:
+            return bool(self._entries)
 
     def has_available(self) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown."""
-        return bool(self._available_entries())
+        # ``_available_entries`` is not read-only: it prunes aged-out DEAD
+        # manual entries (rebinding ``self._entries``) and persists.  It must
+        # run under ``self._lock`` like every other caller (``select`` etc.),
+        # otherwise a status probe here can race a concurrent ``select`` /
+        # rotation and tear ``self._entries`` or double-write auth.json.
+        with self._lock:
+            return bool(self._available_entries())
 
     def entries(self) -> List[PooledCredential]:
-        return list(self._entries)
+        with self._lock:
+            return list(self._entries)
 
-    def current(self) -> Optional[PooledCredential]:
+    def _current_unlocked(self) -> Optional[PooledCredential]:
         if not self._current_id:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
+
+    def current(self) -> Optional[PooledCredential]:
+        with self._lock:
+            return self._current_unlocked()
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""
@@ -626,6 +664,8 @@ class CredentialPool:
         entry: PooledCredential,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        *,
+        persist: bool = True,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
@@ -649,7 +689,8 @@ class CredentialPool:
             last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
-        self._persist()
+        if persist:
+            self._persist()
         return updated
 
     def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
@@ -824,6 +865,45 @@ class CredentialPool:
                 return updated
         except Exception as exc:
             logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
+        return entry
+
+    def _sync_xai_oauth_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt a token pair rotated by another pool instance.
+
+        Direct xAI integrations load a fresh ``CredentialPool`` for each
+        request. Their in-memory locks therefore cannot protect xAI's
+        single-use refresh token across concurrent requests or processes.
+        This helper is called while the shared auth-store lock is held and
+        re-reads the exact persisted row before a refresh POST is attempted.
+        """
+        if self.provider != "xai-oauth":
+            return entry
+        try:
+            persisted = next(
+                (
+                    payload
+                    for payload in read_credential_pool(self.provider)
+                    if isinstance(payload, dict) and payload.get("id") == entry.id
+                ),
+                None,
+            )
+            if not isinstance(persisted, dict):
+                return entry
+            stored = PooledCredential.from_dict(self.provider, persisted)
+            if (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            ):
+                logger.debug(
+                    "Pool entry %s: adopting xAI OAuth tokens rotated by another pool instance",
+                    entry.id,
+                )
+                self._replace_entry(entry, stored)
+                return stored
+        except Exception as exc:
+            logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
         return entry
 
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1019,30 +1099,57 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
-        # Codex OAuth refresh tokens are single-use.  The sync→POST→write-back
-        # sequence below must run atomically across Hermes processes: otherwise
-        # two processes can both adopt the same on-disk token, both POST it, and
-        # the loser gets ``refresh_token_reused``.  Serialize the whole sequence
-        # through the shared cross-process auth-store flock (the same lock and
-        # extended-timeout pattern used by resolve_codex_runtime_credentials()).
-        # When a waiter finally acquires the lock, the in-lock re-sync below
-        # picks up the rotated token the winner persisted and skips the POST.
-        if self.provider == "openai-codex":
-            refresh_timeout_seconds = auth_mod.env_float(
-                "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20
+        # Codex and xAI OAuth refresh tokens are single-use.  The
+        # sync→POST→write-back sequence below must run atomically across Hermes
+        # processes: otherwise two processes can both adopt the same on-disk
+        # token, both POST it, and the loser gets ``refresh_token_reused``.
+        # Serialize the whole sequence through the shared cross-process
+        # auth-store flock (the same lock and extended-timeout pattern used by
+        # resolve_codex_runtime_credentials()).  When a waiter finally acquires
+        # the lock, the in-lock re-sync below picks up the rotated token the
+        # winner persisted and skips the POST.
+        if self.provider in ("openai-codex", "xai-oauth"):
+            sync_entry = (
+                self._sync_codex_entry_from_auth_store
+                if self.provider == "openai-codex"
+                else self._sync_xai_oauth_entry_from_pool_store
             )
-            lock_timeout = max(
-                float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
-                float(refresh_timeout_seconds) + 5.0,
-            )
-            with _auth_store_lock(timeout_seconds=lock_timeout):
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    if not force and not self._entry_needs_refresh(entry):
-                        return entry
-                return self._refresh_entry_impl(entry, force=force)
+            with _auth_store_lock(
+                timeout_seconds=self._single_use_refresh_lock_timeout()
+            ):
+                synced = sync_entry(entry)
+                if self.provider == "openai-codex":
+                    if synced is not entry:
+                        entry = synced
+                        if not force and not self._entry_needs_refresh(entry):
+                            return entry
+                    return self._refresh_entry_impl(entry, force=force)
+                if (
+                    synced.access_token != entry.access_token
+                    or synced.refresh_token != entry.refresh_token
+                ):
+                    return synced
+                return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _single_use_refresh_lock_timeout(self) -> float:
+        """Lock timeout for single-use-refresh-token providers.
+
+        Covers the configured refresh POST timeout plus a margin so a slow
+        token endpoint cannot make the flock give up before the refresh
+        resolves.  Reads the provider's ``HERMES_*_REFRESH_TIMEOUT_SECONDS``
+        override.
+        """
+        env_var = (
+            "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS"
+            if self.provider == "openai-codex"
+            else "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+        )
+        refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
+        return max(
+            float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
+            float(refresh_timeout_seconds) + 5.0,
+        )
 
     def _refresh_entry_impl(
         self, entry: PooledCredential, *, force: bool
@@ -1392,6 +1499,43 @@ class CredentialPool:
         self._sync_device_code_entry_to_auth_store(updated)
         return updated
 
+    def _codex_quota_restored_upstream(self, entry: PooledCredential) -> bool:
+        """Live-check whether an exhausted Codex entry's quota reset early.
+
+        A Codex 429 persists a ``last_error_reset_at`` that can be days in
+        the future (weekly windows), but the upstream window can reopen
+        before then — the user redeems a banked rate-limit reset via the
+        Codex CLI / ChatGPT UI, upgrades their plan, or OpenAI resets the
+        window.  Without this check the pool keeps the credential frozen
+        until the stale timestamp elapses even though the account is
+        usable (issue #43747).
+
+        Only fires for openai-codex entries frozen by a 429/quota-shaped
+        error.  The underlying probe is throttled per token (5 min) so this
+        is safe on the hot selection path.
+        """
+        if self.provider != "openai-codex" or entry.last_status != STATUS_EXHAUSTED:
+            return False
+        if not auth_mod._is_codex_rate_limit_shaped(
+            entry.last_error_code,
+            entry.last_error_reason,
+            entry.last_error_message,
+        ):
+            return False
+        token = entry.access_token or ""
+        if not token:
+            return False
+        try:
+            return bool(
+                auth_mod._probe_codex_quota_restored(
+                    token,
+                    base_url=entry.base_url,
+                )
+            )
+        except Exception:
+            logger.debug("Codex quota-restored probe failed", exc_info=True)
+            return False
+
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
@@ -1513,7 +1657,18 @@ class CredentialPool:
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry)
                 if exhausted_until is not None and now < exhausted_until:
-                    continue
+                    # Codex quota windows can reopen EARLY: the user redeems a
+                    # banked rate-limit reset (Codex CLI / ChatGPT UI), upgrades
+                    # their plan, or OpenAI resets the window.  The persisted
+                    # ``last_error_reset_at`` can then be days in the future
+                    # while the account is already usable again — a throttled
+                    # live probe of the Codex usage endpoint detects that and
+                    # lifts the stale cooldown (issue #43747).
+                    if not (
+                        clear_expired
+                        and self._codex_quota_restored_upstream(entry)
+                    ):
+                        continue
                 if clear_expired:
                     cleared = replace(
                         entry,
@@ -1540,12 +1695,31 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _log_no_available_entries(self) -> None:
+        """Emit the empty-pool INFO line at most once per throttle window.
+
+        Called on every selection while the pool is empty/exhausted. Without
+        throttling this storms the Windows cross-process log lock and stalls the
+        event loop (see NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS).
+        """
+        now = time.monotonic()
+        last = self._last_no_entries_log_at
+        if last is not None and (now - last) < NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS:
+            return
+        self._last_no_entries_log_at = now
+        logger.info("credential pool: no available entries (all exhausted or empty)")
+
+    def _select_unlocked(self, *, refresh: bool = True) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
-            logger.info("credential pool: no available entries (all exhausted or empty)")
+            self._log_no_available_entries()
             return None
+
+        # A successful selection means the pool recovered; re-arm the throttle
+        # so a later re-exhaustion logs immediately rather than being silenced
+        # by a window opened during the previous empty stretch.
+        self._last_no_entries_log_at = None
 
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)
@@ -1567,18 +1741,21 @@ class CredentialPool:
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
             self._persist()
             self._current_id = entry.id
-            return self.current() or entry
+            return self._current_unlocked() or entry
 
         entry = available[0]
         self._current_id = entry.id
         return entry
 
     def peek(self) -> Optional[PooledCredential]:
-        current = self.current()
-        if current is not None:
-            return current
-        available = self._available_entries()
-        return available[0] if available else None
+        # Single lock acquisition for the whole read; call the unlocked
+        # helpers so we don't re-enter the non-reentrant ``self._lock``.
+        with self._lock:
+            current = self._current_unlocked()
+            if current is not None:
+                return current
+            available = self._available_entries()
+            return available[0] if available else None
 
     def mark_exhausted_and_rotate(
         self,
@@ -1598,12 +1775,49 @@ class CredentialPool:
                     (e for e in self._entries if e.runtime_api_key == api_key_hint),
                     None,
                 )
+                if entry is None:
+                    # The failed key is identifiable but matches no entry
+                    # (rotated away, or a wrapper whose runtime key differs).
+                    # Falling through to current()/_select_unlocked() would
+                    # mark an INNOCENT healthy key exhausted for the full
+                    # cooldown TTL.  Don't guess — just hand back a fresh
+                    # selection so the caller can retry.
+                    logger.info(
+                        "credential pool: failed key hint matched no %s entry; "
+                        "rotating without marking any credential exhausted",
+                        self.provider,
+                    )
+                    self._current_id = None
+                    return self._select_unlocked()
             if entry is None:
-                entry = self.current() or self._select_unlocked()
+                entry = self._current_unlocked() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
             self._mark_exhausted(entry, status_code, error_context)
+            # A 402/429/401 is an API-key–level failure: the account is out of
+            # balance, rate-limited, or its key is rejected.  The same key can
+            # back more than one pool entry (e.g. an explicit pool entry plus a
+            # ``model_config`` entry auto-seeded from ``model.api_key`` — both
+            # carry the identical ``runtime_api_key``).  Marking only the first
+            # match leaves the sibling entries OK, so ``_select_unlocked()``
+            # keeps handing back the same depleted key and rotation never
+            # converges — the caller ``continue``s forever until the client
+            # disconnects (a ~2.5min hang with no error surfaced to the user).
+            # Mark every entry sharing the failed key so the pool can reach the
+            # "no available entries" state and let the error propagate.
+            if api_key_hint:
+                siblings_marked = False
+                for sibling in self._entries:
+                    if sibling.id == entry.id:
+                        continue
+                    if sibling.runtime_api_key == api_key_hint:
+                        self._mark_exhausted(
+                            sibling, status_code, error_context, persist=False
+                        )
+                        siblings_marked = True
+                if siblings_marked:
+                    self._persist()
             # Re-read the updated entry to log the correct terminal state.
             updated_entry = next(
                 (e for e in self._entries if e.id == entry.id), entry,
@@ -1670,8 +1884,37 @@ class CredentialPool:
         with self._lock:
             return self._try_refresh_current_unlocked()
 
+    def try_refresh_matching(
+        self, api_key_hint: Optional[str] = None
+    ) -> Optional[PooledCredential]:
+        """Force-refresh the entry that supplied ``api_key_hint``.
+
+        Direct provider integrations may reload the pool after a request has
+        already failed, so they cannot rely on ``current_id`` identifying the
+        issuing credential. With no hint, select an entry without first doing
+        the normal proactive refresh; the forced refresh below must consume a
+        rotating refresh token exactly once.
+        """
+        with self._lock:
+            entry = None
+            if api_key_hint:
+                entry = next(
+                    (
+                        candidate
+                        for candidate in self._entries
+                        if candidate.runtime_api_key == api_key_hint
+                    ),
+                    None,
+                )
+            else:
+                entry = self._current_unlocked() or self._select_unlocked(refresh=False)
+            if entry is None:
+                return None
+            self._current_id = entry.id
+            return self._try_refresh_current_unlocked()
+
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
-        entry = self.current()
+        entry = self._current_unlocked()
         if entry is None:
             return None
         refreshed = self._refresh_entry(entry, force=True)
@@ -1680,76 +1923,80 @@ class CredentialPool:
         return refreshed
 
     def reset_statuses(self) -> int:
-        count = 0
-        new_entries = []
-        for entry in self._entries:
-            if entry.last_status or entry.last_status_at or entry.last_error_code:
-                new_entries.append(
-                    replace(
-                        entry,
-                        last_status=None,
-                        last_status_at=None,
-                        last_error_code=None,
-                        last_error_reason=None,
-                        last_error_message=None,
-                        last_error_reset_at=None,
+        with self._lock:
+            count = 0
+            new_entries = []
+            for entry in self._entries:
+                if entry.last_status or entry.last_status_at or entry.last_error_code:
+                    new_entries.append(
+                        replace(
+                            entry,
+                            last_status=None,
+                            last_status_at=None,
+                            last_error_code=None,
+                            last_error_reason=None,
+                            last_error_message=None,
+                            last_error_reset_at=None,
+                        )
                     )
-                )
-                count += 1
-            else:
-                new_entries.append(entry)
-        if count:
-            self._entries = new_entries
-            self._persist()
-        return count
+                    count += 1
+                else:
+                    new_entries.append(entry)
+            if count:
+                self._entries = new_entries
+                self._persist()
+            return count
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:
-        if index < 1 or index > len(self._entries):
-            return None
-        removed = self._entries.pop(index - 1)
-        self._entries = [
-            replace(entry, priority=new_priority)
-            for new_priority, entry in enumerate(self._entries)
-        ]
-        write_credential_pool(
-            self.provider,
-            [entry.to_dict() for entry in self._entries],
-            removed_ids=[removed.id],
-        )
-        if self._current_id == removed.id:
-            self._current_id = None
-        return removed
+        with self._lock:
+            if index < 1 or index > len(self._entries):
+                return None
+            removed = self._entries.pop(index - 1)
+            self._entries = [
+                replace(entry, priority=new_priority)
+                for new_priority, entry in enumerate(self._entries)
+            ]
+            write_credential_pool(
+                self.provider,
+                [entry.to_dict() for entry in self._entries],
+                removed_ids=[removed.id],
+            )
+            if self._current_id == removed.id:
+                self._current_id = None
+            return removed
 
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:
             return None, None, "No credential target provided."
 
-        for idx, entry in enumerate(self._entries, start=1):
-            if entry.id == raw:
-                return idx, entry, None
+        with self._lock:
+            for idx, entry in enumerate(self._entries, start=1):
+                if entry.id == raw:
+                    return idx, entry, None
 
-        label_matches = [
-            (idx, entry)
-            for idx, entry in enumerate(self._entries, start=1)
-            if entry.label.strip().lower() == raw.lower()
-        ]
-        if len(label_matches) == 1:
-            return label_matches[0][0], label_matches[0][1], None
-        if len(label_matches) > 1:
-            return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
-        if raw.isdigit():
-            index = int(raw)
-            if 1 <= index <= len(self._entries):
-                return index, self._entries[index - 1], None
-            return None, None, f"No credential #{index}."
-        return None, None, f'No credential matching "{raw}".'
+            label_matches = [
+                (idx, entry)
+                for idx, entry in enumerate(self._entries, start=1)
+                if entry.label.strip().lower() == raw.lower()
+            ]
+            if len(label_matches) == 1:
+                return label_matches[0][0], label_matches[0][1], None
+            if len(label_matches) > 1:
+                return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
+            if raw.isdigit():
+                index = int(raw)
+                if 1 <= index <= len(self._entries):
+                    return index, self._entries[index - 1], None
+                return None, None, f"No credential #{index}."
+            return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        entry = replace(entry, priority=_next_priority(self._entries))
-        self._entries.append(entry)
-        self._persist()
-        return entry
+        with self._lock:
+            entry = replace(entry, priority=_next_priority(self._entries))
+            self._entries.append(entry)
+            self._persist()
+            return entry
 
 
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
@@ -2169,9 +2416,10 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
         raw = env_file.get(key, "").strip()
-        env_val = os.environ.get(key, "").strip()
+        scoped_value = (_get_secret(key, "") or "").strip()
         # If .env contains an unresolved op:// reference, prefer the
-        # already-resolved value from os.environ (set by
+        # already-resolved value supplied by the active secret scope (or by
+        # os.environ in legacy single-profile mode), set by
         # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
         # "op://Vault/Item/field" string would otherwise win and every
         # provider auth attempt would receive a URL instead of a key.  This
@@ -2179,9 +2427,9 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         # references straight into .env rather than the secrets.onepassword
         # config block.  For every non-op:// value the original
         # .env-takes-precedence behaviour is preserved unchanged.
-        if raw.startswith("op://") and env_val:
-            return env_val
-        return raw or _get_secret(key, "") or env_val
+        if raw.startswith("op://") and scoped_value:
+            return scoped_value
+        return raw or scoped_value
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it

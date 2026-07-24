@@ -34,7 +34,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -91,6 +91,80 @@ def _ws_dial_url(url: str) -> str:
     return raw
 
 
+def _render_relay_context(context: Any) -> Optional[str]:
+    """Render the connector's read-only surrounding-context array into the string
+    ``MessageEvent.channel_context`` field.
+
+    The connector attaches ``context`` as a list of normalized message objects
+    (oldest→newest, same channel) for an addressed turn on a context-capable
+    platform (design relay-channel-context). We flatten each to a
+    ``<author>: <text>`` line so it rides the SAME read-only injection path that
+    history-backfill already uses (run.py prepends ``channel_context`` ahead of
+    the trigger message). This is REFERENCE context only — it never triggers the
+    agent; the trigger decision was already made connector-side on the addressed
+    event alone.
+
+    Returns None when there is no usable context (absent/empty list, or a
+    connector that doesn't send the field), so ``channel_context`` stays unset
+    and behaviour is byte-identical to today. Never raises — a malformed context
+    payload must not break inbound delivery of the (already-admitted) turn.
+    """
+    if not context or not isinstance(context, list):
+        return None
+    lines: List[str] = []
+    for item in context:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not text:
+            continue
+        src = item.get("source") or {}
+        author = ""
+        if isinstance(src, dict):
+            author = src.get("user_name") or src.get("user_id") or ""
+        lines.append(f"{author}: {text}" if author else str(text))
+    if not lines:
+        return None
+    body = "\n".join(lines)
+    return f"[Recent channel messages]\n{body}"
+
+
+def _normalize_slack_parent_command(
+    text: str,
+    message_type: MessageType,
+) -> tuple[str, MessageType]:
+    """Mirror native Slack ``/hermes`` routing for authenticated relay text."""
+    stripped = text.strip()
+    parent_parts = stripped.split(maxsplit=1)
+    if not parent_parts or parent_parts[0] != "/hermes":
+        return text, message_type
+
+    from hermes_cli.commands import slack_subcommand_map
+
+    payload = parent_parts[1].strip() if len(parent_parts) > 1 else ""
+    subcommand_map = slack_subcommand_map()
+    subcommand_map["compact"] = "/compress"
+    payload_parts = payload.split() if payload else []
+    first_word = payload_parts[0] if payload_parts else ""
+
+    if first_word in subcommand_map:
+        rest = payload[len(first_word) :].strip()
+        normalized = (
+            f"{subcommand_map[first_word]} {rest}".strip()
+            if rest
+            else subcommand_map[first_word]
+        )
+    elif payload:
+        normalized = payload
+    else:
+        normalized = "/help"
+
+    normalized_type = (
+        MessageType.COMMAND if normalized.startswith("/") else MessageType.TEXT
+    )
+    return normalized, normalized_type
+
+
 def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
@@ -143,13 +217,30 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     except ValueError:
         msg_type = MessageType.TEXT
 
+    text = raw.get("text", "")
+    if platform_enum == Platform.SLACK:
+        # Team Gateway carries Slack slash text over the authenticated message
+        # relay, bypassing Hermes' native Slack command callback. Normalize at
+        # the wire boundary so adapter-level active-session gates see the real
+        # gateway command rather than the legacy `hermes` parent name.
+        text, msg_type = _normalize_slack_parent_command(text, msg_type)
+
     return MessageEvent(
-        text=raw.get("text", ""),
+        text=text,
         message_type=msg_type,
         source=source,
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         media_urls=raw.get("media_urls") or [],
+        # Surrounding channel/group CONTEXT the connector attached for this
+        # addressed turn (design relay-channel-context): a read-only, oldest→
+        # newest list of nearby non-addressed messages (Model A pull / Model B
+        # buffer). Rendered into the existing ``channel_context`` field — the
+        # same read-only injection path history-backfill already uses
+        # (run.py prepends it ahead of the trigger message). Absent / empty on a
+        # connector that doesn't send it, a dm, or a no-context platform, so
+        # this is purely additive and byte-identical to today when unset.
+        channel_context=_render_relay_context(raw.get("context")),
     )
 
 

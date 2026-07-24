@@ -62,6 +62,33 @@ def _profile_has_kanban_toolset() -> bool:
         return False
 
 
+def _is_delegated_child_context() -> bool:
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        return is_delegated_child_context()
+    except Exception:
+        return False
+
+
+def _reject_delegated_child_mutation(tool_name: str) -> Optional[str]:
+    """Deny Kanban mutations from delegate_task children.
+
+    A delegate_task child runs in the same process as its parent, so stale or
+    inherited HERMES_KANBAN_* env vars are not proof of dispatcher ownership.
+    The child may summarize findings to its parent, but it must not complete,
+    block, heartbeat, comment, create, link, or unblock board tasks directly.
+    """
+    if not _is_delegated_child_context():
+        return None
+    return tool_error(
+        f"{tool_name} refused: delegate_task child agents are not Kanban "
+        "run owners. Return findings to the parent agent; the dispatcher "
+        "worker or an explicitly configured Kanban orchestrator must perform "
+        "board mutations."
+    )
+
+
 def _check_kanban_mode() -> bool:
     """Task-lifecycle tools are available when:
 
@@ -74,6 +101,8 @@ def _check_kanban_mode() -> bool:
     embedded by default) and orchestrator profiles with the kanban
     toolset enabled see the Kanban lifecycle tool surface.
     """
+    if _is_delegated_child_context():
+        return False
     if os.environ.get("HERMES_KANBAN_TASK"):
         return True
     return _profile_has_kanban_toolset()
@@ -88,6 +117,8 @@ def _check_kanban_orchestrator_mode() -> bool:
     board state. Profiles that explicitly opt into the kanban toolset
     and are NOT scoped to a single task are the orchestrator surface.
     """
+    if _is_delegated_child_context():
+        return False
     if os.environ.get("HERMES_KANBAN_TASK"):
         return False
     return _profile_has_kanban_toolset()
@@ -101,6 +132,8 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
     if arg:
         return arg
+    if _is_delegated_child_context():
+        return None
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     return env_tid or None
 
@@ -353,6 +386,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "completed_at": task.completed_at,
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
+        "provider_override": task.provider_override,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -398,6 +432,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "provider_override": t.provider_override,
                 }
 
             def _run_dict(r):
@@ -503,6 +538,9 @@ def _handle_list(args: dict, **kw) -> str:
 
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
+    delegated_err = _reject_delegated_child_mutation("kanban_complete")
+    if delegated_err:
+        return delegated_err
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -602,7 +640,12 @@ def _handle_complete(args: dict, **kw) -> str:
                 verdict = "done"
                 reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
+                    # judge_goal returns (verdict, reason, parse_failed,
+                    # wait_directive, transport_failed) — see
+                    # hermes_cli/goals.py. Unpacking fewer raises ValueError,
+                    # which the defensive handler below swallows, leaving
+                    # verdict="done" and silently disabling the gate.
+                    verdict, reason, _, _, _ = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )
@@ -674,6 +717,9 @@ def _handle_complete(args: dict, **kw) -> str:
 
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
+    delegated_err = _reject_delegated_child_mutation("kanban_block")
+    if delegated_err:
+        return delegated_err
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -760,6 +806,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     by ``release_stale_claims`` — which is exactly the trap that
     ``heartbeat_claim``'s docstring warns against.
     """
+    delegated_err = _reject_delegated_child_mutation("kanban_heartbeat")
+    if delegated_err:
+        return delegated_err
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -803,6 +852,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
 
 def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
+    delegated_err = _reject_delegated_child_mutation("kanban_comment")
+    if delegated_err:
+        return delegated_err
     tid = args.get("task_id")
     if not tid:
         return tool_error(
@@ -838,12 +890,240 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _handle_attach(args: dict, **kw) -> str:
+    """Attach an inline (base64) file to a task.
+
+    Mirrors the dashboard's upload endpoint for the agent surface: decode
+    the payload, enforce the shared size cap, write it under the per-task
+    attachments dir, and record the metadata row — all via
+    ``kanban_db.store_attachment_bytes`` so the three surfaces stay in lockstep.
+    """
+    from hermes_cli import kanban_db as kb
+
+    delegated_err = _reject_delegated_child_mutation("kanban_attach")
+    if delegated_err:
+        return delegated_err
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    filename = args.get("filename")
+    if not filename or not str(filename).strip():
+        return tool_error("filename is required")
+    content_b64 = args.get("content_base64")
+    if not content_b64 or not str(content_b64).strip():
+        return tool_error("content_base64 is required")
+    import base64
+    import binascii
+    try:
+        data = base64.b64decode(str(content_b64), validate=True)
+    except (binascii.Error, ValueError) as e:
+        return tool_error(f"content_base64 is not valid base64: {e}")
+    content_type = args.get("content_type")
+    board = args.get("board")
+    try:
+        _, conn = _connect(board=board)
+        try:
+            att_id = kb.store_attachment_bytes(
+                conn,
+                tid,
+                str(filename),
+                data,
+                content_type=content_type,
+                uploaded_by="agent",
+                board=board,
+            )
+            return _ok(task_id=tid, attachment_id=att_id, size=len(data))
+        finally:
+            conn.close()
+    except kb.AttachmentTooLarge as e:
+        return tool_error(f"kanban_attach: {e}")
+    except ValueError as e:
+        return tool_error(f"kanban_attach: {e}")
+    except Exception as e:
+        logger.exception("kanban_attach failed")
+        return tool_error(f"kanban_attach: {e}")
+
+
+_MAX_ATTACH_URL_REDIRECTS = 5
+
+
+def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[str]]:
+    """Fetch ``url`` over http(s) with SSRF guarding, capped at ``max_bytes``.
+
+    Every hop — the initial URL and each redirect target — is validated with
+    ``tools.url_safety.is_safe_url`` before it is fetched, so a
+    model-controlled URL (or a public host 302ing to one) cannot reach
+    loopback, private/CGNAT ranges, or cloud metadata endpoints. Redirects
+    are followed manually (``follow_redirects=False``) so each Location is
+    re-checked, mirroring ``tools.skills_hub._guarded_http_get``.
+
+    Returns ``(data, content_type)``. Raises ``ValueError`` for a non-http(s)
+    scheme, an SSRF-blocked target, too many redirects, or a body that
+    overruns the cap (the caller maps it to a clean tool error). Reads in
+    chunks so an oversize response is rejected without buffering the whole
+    thing.
+    """
+    from urllib.parse import urljoin, urlparse
+
+    import httpx
+
+    from tools.url_safety import is_safe_url
+
+    current_url = url
+    for _ in range(_MAX_ATTACH_URL_REDIRECTS + 1):
+        scheme = (urlparse(current_url).scheme or "").lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(
+                f"unsupported URL scheme {scheme!r}; only http/https are allowed"
+            )
+        if not is_safe_url(current_url):
+            raise ValueError(
+                f"URL blocked by SSRF protection (private/internal address): {current_url}"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        with httpx.stream(
+            "GET",
+            current_url,
+            headers={"User-Agent": "hermes-kanban/attach"},
+            timeout=30,
+            follow_redirects=False,
+        ) as resp:
+            if resp.is_redirect:
+                location = resp.headers.get("location")
+                if not location:
+                    raise ValueError(f"redirect without Location header from {current_url}")
+                current_url = urljoin(current_url, location)
+                continue
+            resp.raise_for_status()
+            content_type = (resp.headers.get("content-type") or "").split(";")[0].strip() or None
+            for chunk in resp.iter_bytes(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(
+                        f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit"
+                    )
+                chunks.append(chunk)
+        return b"".join(chunks), content_type
+    raise ValueError(f"too many redirects fetching {url}")
+
+
+def _handle_attach_url(args: dict, **kw) -> str:
+    """Attach a file fetched server-side from a URL.
+
+    The agent passes a URL; Hermes downloads it (with the shared size cap)
+    and stores it as a real attachment. Useful when the agent has a link
+    rather than the bytes. Only http/https URLs are accepted.
+    """
+    from hermes_cli import kanban_db as kb
+
+    delegated_err = _reject_delegated_child_mutation("kanban_attach_url")
+    if delegated_err:
+        return delegated_err
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    url = args.get("url")
+    if not url or not str(url).strip():
+        return tool_error("url is required")
+    url = str(url).strip()
+    filename = args.get("filename") or args.get("title")
+    if not filename or not str(filename).strip():
+        # Derive a name from the URL path's leaf component.
+        from urllib.parse import unquote, urlparse
+        leaf = unquote(urlparse(url).path.rsplit("/", 1)[-1]).strip()
+        filename = leaf or "download"
+    content_type = args.get("content_type")
+    board = args.get("board")
+    try:
+        data, fetched_ct = _download_url_with_cap(url, kb.KANBAN_ATTACHMENT_MAX_BYTES)
+    except ValueError as e:
+        return tool_error(f"kanban_attach_url: {e}")
+    except Exception as e:
+        logger.exception("kanban_attach_url download failed")
+        return tool_error(f"kanban_attach_url: failed to fetch {url}: {e}")
+    try:
+        _, conn = _connect(board=board)
+        try:
+            att_id = kb.store_attachment_bytes(
+                conn,
+                tid,
+                str(filename),
+                data,
+                content_type=content_type or fetched_ct,
+                uploaded_by="agent",
+                board=board,
+            )
+            return _ok(task_id=tid, attachment_id=att_id, size=len(data))
+        finally:
+            conn.close()
+    except kb.AttachmentTooLarge as e:
+        return tool_error(f"kanban_attach_url: {e}")
+    except ValueError as e:
+        return tool_error(f"kanban_attach_url: {e}")
+    except Exception as e:
+        logger.exception("kanban_attach_url failed")
+        return tool_error(f"kanban_attach_url: {e}")
+
+
+def _handle_attachments(args: dict, **kw) -> str:
+    """List a task's attachments (read-only; no ownership restriction)."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            if kb.get_task(conn, tid) is None:
+                return tool_error(f"task {tid} not found")
+            atts = kb.list_attachments(conn, tid)
+            return json.dumps({
+                "ok": True,
+                "task_id": tid,
+                "attachments": [
+                    {
+                        "id": a.id,
+                        "filename": a.filename,
+                        "content_type": a.content_type,
+                        "size": a.size,
+                        "uploaded_by": a.uploaded_by,
+                        "stored_path": a.stored_path,
+                        "created_at": a.created_at,
+                    }
+                    for a in atts
+                ],
+            })
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_attachments: {e}")
+    except Exception as e:
+        logger.exception("kanban_attachments failed")
+        return tool_error(f"kanban_attachments: {e}")
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
     ``parents`` can be a list of task ids; dependency-gated promotion
     works as usual.
     """
+    delegated_err = _reject_delegated_child_mutation("kanban_create")
+    if delegated_err:
+        return delegated_err
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
@@ -859,19 +1139,31 @@ def _handle_create(args: dict, **kw) -> str:
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
     # CLI / dashboard paths and on legacy hosts that don't set the env.
-    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    # Prefer the request-scoped api_server origin binding: HERMES_SESSION_ID
+    # is clobbered with a subagent's internal id whenever a child agent is
+    # constructed in-process (agent_init calls set_current_session_id), which
+    # would stamp — and later wake — the wrong session.
+    from tools.async_delegation import _current_origin_session_id
+
+    session_id = (
+        args.get("session_id")
+        or _current_origin_session_id()
+        or os.environ.get("HERMES_SESSION_ID")
+    )
     priority = args.get("priority")
-    # Resolve workspace. If the caller passed one explicitly, honor it.
-    # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
-    # inherits its own running task's workspace, so a worker editing a
-    # dir:/worktree project that spawns a follow-up child keeps the child
-    # in that project instead of a throwaway scratch dir. Orchestrators
-    # (kanban toolset, no HERMES_KANBAN_TASK) and CLI/dashboard callers
-    # fall back to scratch as before. Explicit None path stays None.
+    # Resolve workspace. Workspace sharing is always explicit: omitted fields
+    # mean a fresh scratch workspace, even when a dispatcher-spawned worker
+    # creates the task. Reusing a parent's literal path would let a child
+    # mutate review evidence or race the parent's checkout (#67567).
+    #
+    # Project identity is the one safe context to inherit implicitly. The DB
+    # resolves a project-linked scratch request into a fresh per-task worktree,
+    # preserving the repository/branch convention without sharing a checkout.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
     project_id = args.get("project") or args.get("project_id")
-    _inherit_workspace = workspace_kind is None and workspace_path is None
+    project_source_task_id = None
+    _inherit_project = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
@@ -892,6 +1184,10 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    model_override = args.get("model")
+    provider_override = args.get("provider")
+    if provider_override and not model_override:
+        return tool_error("'provider' requires 'model' to be set as well")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -902,19 +1198,16 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            # Inherit the spawning worker's own task workspace when the
-            # caller didn't specify one (see resolution note above).
-            if _inherit_workspace:
+            # A project link is safe to inherit because ``create_task`` turns
+            # it into a fresh per-task worktree. Never inherit the parent's
+            # literal workspace kind/path; directory sharing must be explicit.
+            if _inherit_project and project_id is None:
                 _self_tid = os.environ.get("HERMES_KANBAN_TASK")
                 if _self_tid:
                     _self_task = kb.get_task(conn, _self_tid)
-                    if _self_task is not None and _self_task.workspace_kind:
-                        workspace_kind = _self_task.workspace_kind
-                        workspace_path = _self_task.workspace_path
-                        # Keep follow-up children inside the same project so the
-                        # whole subtree shares one repo + branch convention.
-                        if project_id is None and _self_task.project_id:
-                            project_id = _self_task.project_id
+                    if _self_task is not None and _self_task.project_id:
+                        project_id = _self_task.project_id
+                        project_source_task_id = _self_task.id
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -926,6 +1219,7 @@ def _handle_create(args: dict, **kw) -> str:
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
                 project_id=project_id,
+                project_source_task_id=project_source_task_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
                 max_runtime_seconds=(
@@ -933,6 +1227,8 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=model_override,
+                provider_override=provider_override,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -946,6 +1242,9 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                workspace_kind=new_task.workspace_kind if new_task else None,
+                workspace_path=new_task.workspace_path if new_task else None,
+                project_id=new_task.project_id if new_task else None,
                 subscribed=subscribed,
             )
         finally:
@@ -1057,7 +1356,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
 
 def _handle_unblock(args: dict, **kw) -> str:
-    """Transition a blocked task back to ready."""
+    """Transition a blocked task to ready, or todo while parents remain open."""
+    delegated_err = _reject_delegated_child_mutation("kanban_unblock")
+    if delegated_err:
+        return delegated_err
     guard = _require_orchestrator_tool("kanban_unblock")
     if guard:
         return guard
@@ -1074,7 +1376,8 @@ def _handle_unblock(args: dict, **kw) -> str:
             ok = kb.unblock_task(conn, str(tid))
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
-            return _ok(task_id=str(tid), status="ready")
+            task = kb.get_task(conn, str(tid))
+            return _ok(task_id=str(tid), status=task.status if task else None)
         finally:
             conn.close()
     except ValueError as e:
@@ -1086,6 +1389,9 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
+    delegated_err = _reject_delegated_child_mutation("kanban_link")
+    if delegated_err:
+        return delegated_err
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     if not parent_id or not child_id:
@@ -1396,6 +1702,102 @@ KANBAN_COMMENT_SCHEMA = {
     },
 }
 
+KANBAN_ATTACH_SCHEMA = {
+    "name": "kanban_attach",
+    "description": (
+        "Attach a file to a task by passing its bytes inline (base64). "
+        "Use for genuine file artifacts the next worker or a human should "
+        "be able to download — generated reports, images, exports. The "
+        "file is stored as a real attachment (not a comment link) under "
+        "the task's attachments dir, capped at 25 MB. Prefer "
+        "kanban_attach_url when you only have a URL."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "filename": {
+                "type": "string",
+                "description": (
+                    "File name to store it under (e.g. 'report.pdf'). "
+                    "Directory components are stripped; only the leaf is kept."
+                ),
+            },
+            "content_base64": {
+                "type": "string",
+                "description": "The file contents, base64-encoded. Max 25 MB decoded.",
+            },
+            "content_type": {
+                "type": "string",
+                "description": "Optional MIME type (e.g. 'application/pdf').",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["filename", "content_base64"],
+    },
+}
+
+KANBAN_ATTACH_URL_SCHEMA = {
+    "name": "kanban_attach_url",
+    "description": (
+        "Attach a file to a task by URL — Hermes downloads it server-side "
+        "and stores it as a real attachment (capped at 25 MB). Use when "
+        "you have a link rather than the bytes. Only http/https URLs are "
+        "accepted."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "url": {
+                "type": "string",
+                "description": "http(s) URL to fetch and store.",
+            },
+            "filename": {
+                "type": "string",
+                "description": (
+                    "Optional name to store it under. Defaults to the URL "
+                    "path's leaf component."
+                ),
+            },
+            "content_type": {
+                "type": "string",
+                "description": (
+                    "Optional MIME type override. Defaults to the "
+                    "Content-Type the server returns."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["url"],
+    },
+}
+
+KANBAN_ATTACHMENTS_SCHEMA = {
+    "name": "kanban_attachments",
+    "description": (
+        "List the files attached to a task: id, filename, content_type, "
+        "size, who uploaded it, and the absolute on-disk path you can read."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [],
+    },
+}
+
 KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
@@ -1550,6 +1952,26 @@ KANBAN_CREATE_SCHEMA = {
                     "true. Defaults to the goal-engine default (20)."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Pin the dispatched worker to this model instead of "
+                    "the assignee profile's configured model. Use the "
+                    "exact model name the target provider expects. Omit "
+                    "to use the profile default."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider the 'model' belongs to (e.g. 'openrouter', "
+                    "'anthropic', 'nous'). Set this whenever the model "
+                    "is not from the assignee profile's configured "
+                    "provider — a model name alone is resolved against "
+                    "the profile's provider and will fail if it belongs "
+                    "to a different one. Requires 'model'."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["title", "assignee"],
@@ -1559,7 +1981,8 @@ KANBAN_CREATE_SCHEMA = {
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
-        "Move a blocked Kanban task back to ready. Orchestrator-only — only "
+        "Unblock a Kanban task. It moves to ready when all parents are done, "
+        "or todo while any parent remains open. Orchestrator-only — only "
         "profiles with the kanban toolset can unblock routed work; "
         "dispatcher-spawned task workers never see this tool."
     ),
@@ -1568,7 +1991,7 @@ KANBAN_UNBLOCK_SCHEMA = {
         "properties": {
             "task_id": {
                 "type": "string",
-                "description": "Blocked task id to return to ready.",
+                "description": "Blocked task id to move to ready or parent-gated todo.",
             },
             "board": _board_schema_prop(),
         },
@@ -1651,6 +2074,33 @@ registry.register(
     handler=_handle_comment,
     check_fn=_check_kanban_mode,
     emoji="💬",
+)
+
+registry.register(
+    name="kanban_attach",
+    toolset="kanban",
+    schema=KANBAN_ATTACH_SCHEMA,
+    handler=_handle_attach,
+    check_fn=_check_kanban_mode,
+    emoji="📎",
+)
+
+registry.register(
+    name="kanban_attach_url",
+    toolset="kanban",
+    schema=KANBAN_ATTACH_URL_SCHEMA,
+    handler=_handle_attach_url,
+    check_fn=_check_kanban_mode,
+    emoji="📎",
+)
+
+registry.register(
+    name="kanban_attachments",
+    toolset="kanban",
+    schema=KANBAN_ATTACHMENTS_SCHEMA,
+    handler=_handle_attachments,
+    check_fn=_check_kanban_mode,
+    emoji="📎",
 )
 
 registry.register(

@@ -44,6 +44,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "set_value",
                     "wait",
                     "list_apps",
+                    "list_windows",
                     "focus_app",
                 ],
                 "description": (
@@ -79,6 +80,21 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "capture is per-window; a single image cannot span "
                     "multiple monitors, so on a multi-screen setup capture "
                     "one window or display at a time."
+                ),
+            },
+            "pid": {
+                "type": "integer",
+                "description": (
+                    "Optional exact process target for action='capture'. Pair "
+                    "with window_id when discovery cannot resolve an X11 app."
+                ),
+            },
+            "window_id": {
+                "type": "integer",
+                "description": (
+                    "Optional exact native window target for action='capture'. "
+                    "Pair with pid when an external cua-driver list_windows "
+                    "lookup has already identified the window."
                 ),
             },
             "max_elements": {
@@ -118,9 +134,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "minItems": 2,
                 "maxItems": 2,
                 "description": (
-                    "Pixel coordinates [x, y] in logical screen space (as "
-                    "returned by capture width/height). Only use this if "
-                    "no element index is available."
+                    "Pixel coordinates [x, y] relative to the captured window "
+                    "screenshot (top-left origin). Only use this if no element "
+                    "index is available."
                 ),
             },
             "button": {
@@ -200,6 +216,35 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "window to front (DISRUPTS the user). Default false "
                     "— input is routed to the app without raising, "
                     "matching the background co-work model."
+                ),
+            },
+            # ── delivery (verify → escalate ladder) ────────────────
+            "delivery_mode": {
+                "type": "string",
+                "enum": ["background", "foreground"],
+                "description": (
+                    "How input is delivered, for the input actions (click, "
+                    "double_click, right_click, drag, scroll, type, key). "
+                    "`background` (DEFAULT) routes input to the target without "
+                    "raising it or stealing focus — the co-work model. "
+                    "`foreground` briefly fronts the window, acts, then "
+                    "restores the prior frontmost app. Only escalate to "
+                    "`foreground` when a background attempt did NOT land — i.e. "
+                    "a prior result had `effect: 'suspected_noop'`, "
+                    "`code: 'background_unavailable'`, or "
+                    "`escalation.recommended: 'foreground'`. Do not predict it "
+                    "from the app being Electron/Chromium; react to the "
+                    "returned signal. Foreground is a visible focus change and "
+                    "needs its own approval."
+                ),
+            },
+            "bring_to_front": {
+                "type": "boolean",
+                "description": (
+                    "Optional, pairs with delivery_mode='foreground'. Keep the "
+                    "target fronted after the action instead of restoring the "
+                    "previous app, to avoid a per-call flash across a short "
+                    "sequence of foreground actions. Default false."
                 ),
             },
             # ── return shape ───────────────────────────────────────

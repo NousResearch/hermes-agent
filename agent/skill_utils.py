@@ -126,10 +126,22 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     Uses yaml with CSafeLoader for full YAML support (nested metadata, lists)
     with a fallback to simple key:value splitting for robustness.
 
+    A single leading UTF-8 BOM (U+FEFF) is stripped before parsing. Windows
+    GUI editors (Notepad, PowerShell ``>``) prepend one when saving a SKILL.md
+    as UTF-8, and ``read_text(encoding="utf-8")`` preserves it (only
+    ``utf-8-sig`` strips it). Left in place, the BOM defeats the ``---`` fence
+    check below and the whole frontmatter is silently discarded — name,
+    description, ``platforms`` gating, env-var setup, and conditional
+    activation all vanish. See CONTRIBUTING.md "File encoding".
+
     Returns:
         (frontmatter_dict, remaining_body)
     """
     frontmatter: Dict[str, Any] = {}
+
+    # Strip only a leading BOM; a BOM mid-content is data, not a marker.
+    if content.startswith("\ufeff"):
+        content = content[1:]
     body = content
 
     if not content.startswith("---"):
@@ -767,16 +779,29 @@ def resolve_skill_config_values(
 
 # ── Description extraction ────────────────────────────────────────────────
 
+SKILL_PROMPT_DESC_LIMIT = 60
+
+
+def _normalize_skill_description(frontmatter: Dict[str, Any]) -> str:
+    """Normalize a skill's description field for comparison/truncation."""
+    raw_desc = frontmatter.get("description", "")
+    return str(raw_desc).strip().strip("'\"") if raw_desc else ""
+
 
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
-    raw_desc = frontmatter.get("description", "")
-    if not raw_desc:
+    """Extract a system-prompt-length description from parsed frontmatter."""
+    desc = _normalize_skill_description(frontmatter)
+    if not desc:
         return ""
-    desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
+    if len(desc) > SKILL_PROMPT_DESC_LIMIT:
+        return desc[:SKILL_PROMPT_DESC_LIMIT - 3] + "..."
     return desc
+
+
+def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bool:
+    """True when the description will be truncated in the system prompt skill index."""
+    desc = _normalize_skill_description(frontmatter)
+    return len(desc) > SKILL_PROMPT_DESC_LIMIT
 
 
 # ── File iteration ────────────────────────────────────────────────────────

@@ -1,0 +1,95 @@
+name: Lockfile diff
+
+# Advisory PR comment showing the *semantic* diff of package-lock.json
+# changes — which packages were added/removed/updated and their versions.
+# The raw textual diff of a lockfile is unreadable (npm reorders entries
+# and rewrites integrity hashes), so scripts/ci/lockfile_diff.py parses
+# the ``packages`` map at the merge base and at HEAD and set-diffs the
+# {install path: version} maps instead.
+#
+# The semantic diff is exposed as a workflow_call output ``review_status``
+# (a JSON array in the unified status format) and an artifact
+# (``lockfile-diff`` containing the markdown fragment) for the step
+# summary.
+#
+# Never blocking — this is review signal, not enforcement.
+
+on:
+  workflow_call:
+    outputs:
+      changed:
+        description: Whether package-lock.json changed relative to the target branch.
+        value: ${{ jobs.diff.outputs.changed }}
+      review_status:
+        description: JSON array of review status objects for the unified PR comment.
+        value: ${{ jobs.diff.outputs.review_status }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lockfile-diff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    name: package-lock.json semantic diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+      review_status: ${{ steps.emit-status.outputs.review_status }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need history for the merge base
+
+      - name: Generate semantic lockfile diff
+        id: diff
+        run: |
+          set -euo pipefail
+          # Three-dot semantics by hand: diff from the merge base with the
+          # target branch to the PR head, so changes that landed on main
+          # after the branch point don't show up as this PR's doing.
+          BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          echo "Merge base: ${BASE_SHA}"
+          python3 scripts/ci/lockfile_diff.py \
+            --base "$BASE_SHA" \
+            --head HEAD \
+            --output /tmp/lockfile-diff.md
+          if [ -s /tmp/lockfile-diff.md ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## package-lock.json semantic diff"
+              echo ""
+              cat /tmp/lockfile-diff.md
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            : > /tmp/lockfile-diff.md
+          fi
+
+      - name: Emit review_status
+        id: emit-status
+        run: |
+          set -euo pipefail
+          CHANGED="${{ steps.diff.outputs.changed }}"
+          STATUS="[]"
+
+          if [ "$CHANGED" = "true" ]; then
+            CONTENT=$(cat /tmp/lockfile-diff.md | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+            STATUS="[{\"source\":\"lockfile-diff\",\"results\":[{\"kind\":\"action_required\",\"title\":\"package-lock.json\",\"summary\":\"Locked npm dependency versions changed.\",\"detail\":${CONTENT},\"how_to_fix\":\"Add the \`ci-reviewed\` label after verifying the version changes are expected.\"}]}"
+          else
+            STATUS="[]"
+          fi
+
+          echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload diff artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lockfile-diff
+          path: /tmp/lockfile-diff.md
+          retention-days: 1
+          overwrite: true

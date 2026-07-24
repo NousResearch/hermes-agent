@@ -82,7 +82,10 @@ class TestFetchOpenRouterModels:
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
+        # Pin the remote manifest out too — otherwise the fallback silently
+        # depends on whatever the deployed catalog currently contains.
+        with patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=None), \
+             patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == OPENROUTER_MODELS
@@ -973,3 +976,20 @@ class TestCodexSoftAcceptPlausibilityGate:
         r = validate_requested_model("gpt-5.5", "openai-codex")
         assert r["accepted"] is True
         assert r["recognized"] is True
+
+
+class TestClaudeSonnet5InCuratedLists:
+    """Regression: Claude Sonnet 5 must appear in curated model lists (#55846)."""
+
+    def test_anthropic_native_list_includes_sonnet_5(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "claude-sonnet-5" in _PROVIDER_MODELS["anthropic"]
+
+    def test_openrouter_fallback_includes_sonnet_5(self):
+        from hermes_cli.models import OPENROUTER_MODELS
+        ids = [mid for mid, _ in OPENROUTER_MODELS]
+        assert "anthropic/claude-sonnet-5" in ids
+
+    def test_nous_list_includes_sonnet_5(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "anthropic/claude-sonnet-5" in _PROVIDER_MODELS["nous"]

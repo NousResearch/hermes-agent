@@ -8,6 +8,7 @@ const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
 const startManualProviderOAuth = vi.fn()
+const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
 vi.mock('@/hermes', () => ({
@@ -18,7 +19,8 @@ vi.mock('@/hermes', () => ({
 
 vi.mock('@/store/onboarding', () => ({
   $desktopOnboarding: onboarding,
-  startManualProviderOAuth: (providerId: string) => startManualProviderOAuth(providerId)
+  startManualProviderOAuth: (providerId: string) => startManualProviderOAuth(providerId),
+  startManualLocalEndpoint: (reason: null | string) => startManualLocalEndpoint(reason)
 }))
 
 function provider(id: string, loggedIn: boolean, patch: Partial<OAuthProvider> = {}): OAuthProvider {
@@ -181,5 +183,24 @@ describe('ProvidersSettings', () => {
       fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
     })
     expect(await screen.findByText('No providers match your search.')).toBeTruthy()
+  })
+
+  it('offers a Local / custom endpoint entry in the API-keys tab that opens the custom-endpoint flow', async () => {
+    // Regression: the composer pill and the providers "have an API key"
+    // affordance both dead-end on the env-var-driven key catalog, which never
+    // lists a custom endpoint — so without this row there is no reachable
+    // Desktop GUI path to add one. See issue #62817.
+    getEnvVars.mockResolvedValue({})
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    const row = await screen.findByText('Local / custom endpoint')
+    expect(screen.getByText(/OpenAI-compatible endpoint/)).toBeTruthy()
+
+    fireEvent.click(row)
+
+    await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
   })
 })

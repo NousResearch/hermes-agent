@@ -108,6 +108,93 @@ class TestSanitizeGeminiSchema:
         assert sanitize_gemini_schema([1, 2, 3]) == {}
 
 
+class TestRequiredPropertyPruning:
+    """Gemini rejects ``required`` names missing from the node's ``properties``.
+
+    Regression for the Kilo-Org/kilocode#11955 bug class: MCP servers (e.g.
+    the GitHub remote MCP) emit array item schemas whose ``required`` lists
+    reference properties that don't exist in the same node — Google fails the
+    entire GenerateContentRequest with HTTP 400 "property is not defined".
+    """
+
+    def test_drops_required_when_node_has_no_properties(self):
+        schema = {"type": "object", "required": ["a", "b"]}
+        cleaned = sanitize_gemini_schema(schema)
+        assert "required" not in cleaned
+
+    def test_filters_ghost_required_entries(self):
+        schema = {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x", "ghost"],
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["required"] == ["x"]
+
+    def test_prunes_inside_array_items(self):
+        """The exact shape from the GitHub MCP report — nested in items."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "issue_fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["field_id", "value"],
+                    },
+                },
+            },
+            "required": ["issue_fields"],
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        items = cleaned["properties"]["issue_fields"]["items"]
+        assert "required" not in items
+        # Top-level required is valid and survives.
+        assert cleaned["required"] == ["issue_fields"]
+
+    def test_prunes_node_without_explicit_type(self):
+        """Nodes carrying properties+required but no ``type`` key still prune."""
+        schema = {
+            "properties": {"x": {"type": "string"}},
+            "required": ["x", "ghost"],
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["required"] == ["x"]
+
+    def test_valid_required_untouched(self):
+        schema = {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+            "required": ["a", "b"],
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["required"] == ["a", "b"]
+
+    def test_drops_non_string_required_entries(self):
+        schema = {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a", 42, None],
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["required"] == ["a"]
+
+    def test_prunes_inside_anyof_branches(self):
+        schema = {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x", "ghost"],
+                },
+                {"type": "object", "required": ["orphan"]},
+            ]
+        }
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["anyOf"][0]["required"] == ["x"]
+        assert "required" not in cleaned["anyOf"][1]
+
+
 class TestSanitizeGeminiToolParameters:
     def test_empty_parameters_return_valid_object_schema(self):
         """Gemini requires ``parameters`` to be a valid object schema."""

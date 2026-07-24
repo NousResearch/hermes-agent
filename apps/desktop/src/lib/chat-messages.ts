@@ -1,4 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
+import type { BillingBlock } from '@hermes/shared'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
@@ -17,6 +18,10 @@ export type ChatMessage = {
   error?: string
   branchGroupId?: string
   hidden?: boolean
+  /** Sealed mid-turn commentary (`message.interim`) — rendered without the
+   *  action footer so only the turn's final reply carries copy/refresh, and
+   *  the live view matches rehydration (which merges the turn into one bubble). */
+  interim?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
 }
@@ -76,13 +81,30 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
+  pane?: string
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
+  // session.info — the stored (durable) session id for this runtime session.
+  // Lets the desktop app map runtime→stored for background sessions it hasn't
+  // opened, so the sidebar working indicator updates without opening the chat.
+  stored_session_id?: string
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string
   index?: number
   aggregator?: string
+  // moa.progress / moa.phase (Mixture of Agents fan-out progress relay)
+  refs_done?: number
+  refs_total?: number
+  phase?: string
+  // message.complete — signals the final text was already previewed via
+  // interim_assistant_callback, so the UI can settle instead of duplicating.
+  response_previewed?: boolean
+  // Structured billing wall forwarded on message.complete when a turn fails
+  // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).
+  billing?: BillingBlock
+  failure_reason?: string
 }
 
 export function textPart(text: string): ChatMessagePart {
@@ -130,6 +152,99 @@ export function chatMessageText(message: ChatMessage): string {
     .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
     .map(part => part.text)
     .join('')
+}
+
+export interface UnspokenTurnSpeech {
+  /** First unspoken assistant bubble — stable for the turn, the live speech session binds to it. */
+  id: string
+  /** Whether the newest assistant bubble is still streaming. */
+  pending: boolean
+  /** All unspoken assistant text in message order, bubbles joined on a blank line. */
+  text: string
+}
+
+/**
+ * Collect every unspoken assistant bubble after `lastSpokenId`, in order.
+ *
+ * A turn with tool calls produces several assistant bubbles — narration
+ * ("Let me check…") sealed as interims, then the final answer as a fresh
+ * bubble. Voice conversation speaks a turn through ONE live session bound to
+ * one response id, so it needs all of that text as a single growing string;
+ * selecting only one bubble silently drops everything after it. The blank-line
+ * join is a sentence boundary for the server's cutter, so a sealed bubble's
+ * tail is flushed as soon as the next bubble starts.
+ */
+export function collectUnspokenTurnSpeech(
+  messages: ChatMessage[],
+  lastSpokenId: string | null
+): UnspokenTurnSpeech | null {
+  const spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
+
+  let id: string | null = null
+  let pending = false
+  const parts: string[] = []
+
+  for (const message of messages.slice(spokenIndex + 1)) {
+    if (message.role !== 'assistant' || message.hidden) {
+      continue
+    }
+
+    pending = Boolean(message.pending)
+    const text = chatMessageText(message).trim()
+
+    if (!text) {
+      continue
+    }
+
+    id ??= message.id
+    parts.push(text)
+  }
+
+  if (!id) {
+    return null
+  }
+
+  return { id, pending, text: parts.join('\n\n') }
+}
+
+const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+/**
+ * Merge the final assistant text into a message's parts.
+ *
+ * - Removes all existing `text` parts (they were streamed deltas, now superseded
+ *   by the authoritative final response).
+ * - Keeps `reasoning` parts, but drops one that the final text fully covers
+ *   (reasoning ⊆ final) — the final restates it. A short final ("Done.") must
+ *   NOT swallow a longer reasoning block that merely starts with it (#61447).
+ * - Keeps all other part types (tool-call, image, etc.).
+ * - Appends the final text as a new text part.
+ */
+export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+  const dedupeReference = normalizeWs(finalText)
+
+  const kept = parts.filter(part => {
+    if (part.type === 'text') {
+      // Sealed text parts were already finalized into their own bubbles —
+      // this filter only runs on the LAST streaming bubble, so there are no
+      // sealed parts here. All text parts are streamed deltas that get
+      // replaced by the authoritative final text.
+      return false
+    }
+
+    if (part.type !== 'reasoning' || !dedupeReference) {
+      return true
+    }
+
+    // Reasoning is a restatement only when the final FULLY covers it.
+    // The reverse direction is not considered — a short final must not
+    // swallow a longer reasoning block (#61447).
+    const r = normalizeWs(part.text)
+
+    return !(r && dedupeReference.startsWith(r))
+  })
+
+  return finalText ? [...kept, assistantTextPart(finalText)] : kept
 }
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
@@ -190,6 +305,29 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   const refs = [...new Set(Array.from(attachedContext.matchAll(CONTEXT_REF_RE)).map(match => match[0]))]
 
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
+}
+
+function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
+  return displayKind === 'hidden' ? null : content
+}
+
+function timelineDisplayContent(message: SessionMessage, content: string): string {
+  if (message.display_kind === 'model_switch') {
+    return 'model changed'
+  }
+
+  if (message.display_kind === 'async_delegation_complete') {
+    const count =
+      message.display_metadata && 'task_count' in message.display_metadata
+        ? message.display_metadata.task_count
+        : undefined
+
+    return count === undefined
+      ? 'background agent work finished'
+      : `${count} background agent${count === 1 ? '' : 's'} finished`
+  }
+
+  return content
 }
 
 const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
@@ -298,7 +436,11 @@ function collectToolMatchValues(query: string, context: string, preview: string)
 
 function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): string[] {
   const payloadArgs = liveToolArgs(payload)
-  const query = firstStringField(payloadArgs, ['search_term', 'query'])
+  // `question` is clarify's identifying arg: a synthetic row hydrated from
+  // `clarify.request` (a fresh request id) must correlate with the `tool.start`
+  // row (the model's tool_call_id) so the two ids don't produce a duplicate
+  // clarify card — same correlation ClarifyToolPending uses for request↔args.
+  const query = firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path'])
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
   const preview = typeof payload?.preview === 'string' ? payload.preview.trim() : ''
 
@@ -311,7 +453,7 @@ function toolPartMatchValues(part: ChatMessagePart): string[] {
   }
 
   const args = part.args as Record<string, unknown>
-  const query = firstStringField(args, ['search_term', 'query'])
+  const query = firstStringField(args, ['search_term', 'query', 'question', 'command', 'code', 'path'])
   const context = typeof args.context === 'string' ? args.context.trim() : ''
   const preview = typeof args.preview === 'string' ? args.preview.trim() : ''
 
@@ -769,7 +911,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const content = message.content || message.text || message.context || message.name
-    const displayContent = displayContentForMessage(message.role, content)
+
+    const displayContent = transcriptContent(
+      message.display_kind,
+      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+    )
+
+    const displayRole =
+      message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
+        ? 'system'
+        : message.role
+
     const parts: ChatMessagePart[] = []
 
     const reasoning =
@@ -782,7 +934,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (displayContent) {
-      parts.push(message.role === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
+      parts.push(displayRole === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
@@ -836,8 +988,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
-      role: message.role,
+      id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      role: displayRole,
       parts,
       timestamp: message.timestamp
     })

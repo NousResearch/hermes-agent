@@ -134,17 +134,25 @@ def _make_hermes_provider_class() -> Optional[type]:
             *args: Any,
             server_name: str = "",
             preregistered: bool = False,
+            scope_ceiling: Optional[str] = None,
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
             self._hermes_server_name = server_name
             self._hermes_home = ""
+            self._hermes_scope_ceiling = scope_ceiling
             # When the client_id comes from config.yaml (pre-registered), an
             # invalid_client rejection means the *config* is wrong — deleting
             # client.json would just be re-seeded from config and re-running
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+
+        async def _perform_authorization(self) -> Any:
+            """Prevent SDK discovery or step-up from widening configured scopes."""
+            if self._hermes_scope_ceiling:
+                self.context.client_metadata.scope = self._hermes_scope_ceiling
+            return await super()._perform_authorization()
 
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
@@ -574,6 +582,7 @@ class MCPOAuthManager:
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
             preregistered=bool(cfg.get("client_id")),
+            scope_ceiling=cfg.get("scope"),
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,

@@ -68,6 +68,21 @@ class TestWeixinFormatting:
         assert all(len(line) <= weixin.WEIXIN_COPY_LINE_WIDTH for line in formatted.splitlines())
         assert " ".join(formatted.split()) == " ".join(content.split())
 
+    def test_format_message_does_not_wrap_long_markdown_links(self):
+        adapter = _make_adapter()
+
+        content = (
+            "Read [Designcenter NX中的分析载荷]"
+            "(https://example.com/articles/"
+            + "a" * weixin.WEIXIN_COPY_LINE_WIDTH
+            + ")"
+        )
+
+        formatted = adapter.format_message(content)
+
+        assert formatted == content
+        assert "\n" not in formatted
+
     def test_format_message_does_not_wrap_long_code_block_lines(self):
         adapter = _make_adapter()
 

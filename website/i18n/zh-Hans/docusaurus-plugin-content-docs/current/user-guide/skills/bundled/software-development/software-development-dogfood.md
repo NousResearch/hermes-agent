@@ -15,7 +15,7 @@ description: "网页应用探索性 QA：发现缺陷、收集证据、生成报
 | | |
 |---|---|
 | 来源 | 内置（默认安装） |
-| 路径 | `skills/dogfood` |
+| 路径 | `skills/software-development/dogfood` |
 | 版本 | `1.0.0` |
 | 平台 | linux, macos, windows |
 | 标签 | `qa`, `testing`, `browser`, `web`, `dogfood` |

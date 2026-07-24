@@ -33,8 +33,10 @@ already understand the host config don't have to learn anything new.
 The host owns provider routing, auth resolution, timeouts, and
 fallback. The plugin never sees raw OAuth tokens or API keys. All
 override knobs (``provider=``, ``model=``, ``agent_id=``,
-``profile=``) are gated behind explicit per-plugin trust flags in
-``config.yaml``::
+``profile=`` — a credential-pool entry id/label/index for the
+active or overridden provider, same target syntax as
+``hermes auth remove``) are gated behind explicit per-plugin trust
+flags in ``config.yaml``::
 
     plugins:
       entries:
@@ -327,6 +329,95 @@ def _check_overrides(
         final_profile = requested_profile.strip()
 
     return final_provider, final_model, requested_agent_id, final_profile
+
+
+def _pool_provider_for_profile(provider_override: Optional[str]) -> str:
+    """Resolve which credential-pool provider key ``profile=`` should target.
+
+    Prefer an explicit trusted ``provider=`` override. Otherwise use the
+    host's configured / auto-detected active provider — the same identity
+    ``call_llm`` would pick when no provider is passed.
+    """
+    explicit = (provider_override or "").strip().lower()
+    if explicit and explicit != "auto":
+        return explicit
+
+    try:
+        from hermes_cli.runtime_provider import resolve_requested_provider
+
+        requested = resolve_requested_provider(None)
+        if isinstance(requested, str) and requested.strip():
+            requested = requested.strip().lower()
+            if requested and requested != "auto":
+                return requested
+    except Exception:
+        pass
+
+    try:
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        resolved, *_rest = _resolve_task_provider_model(
+            None, None, None, None, None
+        )
+        resolved_name = str(resolved or "").strip().lower()
+        if resolved_name and resolved_name != "auto":
+            return resolved_name
+    except Exception:
+        pass
+
+    raise ValueError(
+        "Cannot resolve an active provider for profile= credential lookup. "
+        "Pass an explicit provider= override, or configure model.provider."
+    )
+
+
+def _resolve_profile_credentials(
+    provider_override: Optional[str],
+    profile: str,
+) -> tuple[str, str, Optional[str]]:
+    """Map ``profile=`` to ``(provider, api_key, base_url)`` via the pool.
+
+    ``profile`` uses the same target syntax as
+    ``hermes auth remove <provider> <target>``: entry id, unique label, or
+    1-based index. Uses ``resolve_target`` (read-only) rather than
+    ``select()`` so a plugin call does not mutate global rotation state.
+    """
+    from agent.credential_pool import load_pool
+
+    pool_provider = _pool_provider_for_profile(provider_override)
+    try:
+        pool = load_pool(pool_provider)
+    except Exception as exc:
+        raise ValueError(
+            f"Could not load credential pool for provider {pool_provider!r}: {exc}"
+        ) from exc
+
+    _idx, entry, err = pool.resolve_target(profile)
+    if entry is None:
+        raise ValueError(
+            err or f"No credential matching {profile!r} for provider {pool_provider}."
+        )
+
+    api_key = str(
+        getattr(entry, "runtime_api_key", None)
+        or getattr(entry, "access_token", None)
+        or ""
+    ).strip()
+    if not api_key:
+        raise ValueError(
+            f"Credential {profile!r} for provider {pool_provider!r} has no "
+            f"usable runtime API key."
+        )
+
+    base_url = getattr(entry, "runtime_base_url", None) or getattr(
+        entry, "base_url", None
+    )
+    if isinstance(base_url, str):
+        base_url = base_url.strip() or None
+    else:
+        base_url = None
+
+    return pool_provider, api_key, base_url
 
 
 # ---------------------------------------------------------------------------
@@ -943,21 +1034,28 @@ class PluginLlm:
                 extra_body=extra_body,
             )
         from agent.auxiliary_client import call_llm
-        merged_extra = dict(extra_body or {})
+
+        call_provider = provider_override
+        call_api_key = None
+        call_base_url = None
         if profile_override:
-            merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+            call_provider, call_api_key, call_base_url = _resolve_profile_credentials(
+                provider_override, profile_override
+            )
         response = call_llm(
             task=None,
-            provider=provider_override,
+            provider=call_provider,
             model=model_override,
+            api_key=call_api_key,
+            base_url=call_base_url,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
-            extra_body=merged_extra or None,
+            extra_body=extra_body or None,
         )
         provider, model = _resolve_attribution(
-            provider_override=provider_override,
+            provider_override=call_provider,
             model_override=model_override,
             response=response,
         )
@@ -987,21 +1085,28 @@ class PluginLlm:
                 extra_body=extra_body,
             )
         from agent.auxiliary_client import async_call_llm
-        merged_extra = dict(extra_body or {})
+
+        call_provider = provider_override
+        call_api_key = None
+        call_base_url = None
         if profile_override:
-            merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+            call_provider, call_api_key, call_base_url = _resolve_profile_credentials(
+                provider_override, profile_override
+            )
         response = await async_call_llm(
             task=None,
-            provider=provider_override,
+            provider=call_provider,
             model=model_override,
+            api_key=call_api_key,
+            base_url=call_base_url,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
-            extra_body=merged_extra or None,
+            extra_body=extra_body or None,
         )
         provider, model = _resolve_attribution(
-            provider_override=provider_override,
+            provider_override=call_provider,
             model_override=model_override,
             response=response,
         )

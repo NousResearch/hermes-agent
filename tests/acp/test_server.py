@@ -1518,18 +1518,28 @@ class TestPrompt:
         assert info_updates[0].session_update == "session_info_update"
         assert info_updates[0].title == "Fix Zed titles"
 
+    @pytest.mark.parametrize(
+        ("last_prompt_tokens", "expected_input_tokens"),
+        [(123, 123), (None, 0), (-1, 0)],
+    )
     @pytest.mark.asyncio
-    async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):
-        """ACP should map top-level token fields into PromptResponse.usage."""
+    async def test_prompt_uses_bounded_latest_prompt_tokens_for_usage(
+        self,
+        agent,
+        last_prompt_tokens,
+        expected_input_tokens,
+    ):
+        """ACP inputTokens should describe current context, never lifetime usage."""
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
 
         state.agent.run_conversation = MagicMock(return_value={
             "final_response": "usage attached",
             "messages": [],
-            "prompt_tokens": 123,
+            "prompt_tokens": 12_345,
+            "last_prompt_tokens": last_prompt_tokens,
             "completion_tokens": 45,
-            "total_tokens": 168,
+            "total_tokens": 12_390,
             "reasoning_tokens": 7,
             "cache_read_tokens": 11,
         })
@@ -1543,9 +1553,10 @@ class TestPrompt:
 
         assert isinstance(resp, PromptResponse)
         assert resp.usage is not None
-        assert resp.usage.input_tokens == 123
+        assert resp.usage.input_tokens == expected_input_tokens
+        assert resp.model_dump(by_alias=True)["usage"]["inputTokens"] == expected_input_tokens
         assert resp.usage.output_tokens == 45
-        assert resp.usage.total_tokens == 168
+        assert resp.usage.total_tokens == 12_390
         assert resp.usage.thought_tokens == 7
         assert resp.usage.cached_read_tokens == 11
 

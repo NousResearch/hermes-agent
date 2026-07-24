@@ -16,7 +16,9 @@ The verification step:
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -37,6 +39,7 @@ def temp_pyproject(tmp_path, monkeypatch):
         name = "fake"
         version = "0.0.0"
         dependencies = [
+          "certifi==2026.5.20",
           "pathspec==1.1.1",
           "pydantic==2.13.4",
           "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
@@ -104,6 +107,75 @@ class TestVerifyCoreDependencies:
             args = first_repair[0][0]  # positional: install_cmd
             assert "--reinstall" in args, f"repair install should pass --reinstall, got {args}"
             assert "-e" in args and "." in args, "first repair should be base group reinstall"
+
+    def test_verifies_certifi_bundle_when_certifi_is_declared(
+        self, temp_pyproject, fake_venv_python
+    ):
+        """A stale certifi dist-info record must not hide a missing cacert.pem."""
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+        captured_commands: list[list[str]] = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            captured_commands.append(list(cmd))
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("hermes_cli.main._run_install_with_heartbeat"):
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+        probe = next(
+            cmd for cmd in captured_commands if any("certifi.where" in str(arg) for arg in cmd)
+        )
+        assert "certifi" in probe
+        assert "ssl.create_default_context(cafile=bundle)" in probe[2]
+
+    def test_corrupt_large_certifi_bundle_triggers_reinstall(self, temp_pyproject):
+        """A regular-but-invalid CA bundle must enter the repair path."""
+        (temp_pyproject / "pyproject.toml").write_text(textwrap.dedent("""\
+            [project]
+            name = "fake"
+            version = "0.0.0"
+            dependencies = ["certifi==2026.5.20"]
+        """))
+        bundle = temp_pyproject / "cacert.pem"
+        bundle.write_bytes(b"x" * 2_193)
+        assert bundle.stat().st_size == 2_193
+
+        fake_certifi = temp_pyproject / "certifi"
+        fake_certifi.mkdir()
+        (fake_certifi / "__init__.py").write_text(
+            f"def where():\n    return {str(bundle)!r}\n"
+        )
+        dist_info = temp_pyproject / "certifi-2026.5.20.dist-info"
+        dist_info.mkdir()
+        (dist_info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: certifi\nVersion: 2026.5.20\n"
+        )
+
+        env = {**os.environ, "PYTHONPATH": str(temp_pyproject)}
+        real_subprocess_run = subprocess.run
+        probe_results = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if "ssl.create_default_context(cafile=bundle)" in cmd[2]:
+                if not probe_results:
+                    result = real_subprocess_run(cmd, **kwargs)
+                    probe_results.append(result)
+                    return result
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=Path(sys.executable)), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("hermes_cli.main._run_install_with_heartbeat") as mock_install:
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed([sys.executable, "-m", "pip"], env=env)
+
+        assert probe_results[0].stdout.strip() == "certifi"
+        assert mock_install.called, "a corrupt bundle must trigger a repair install"
+        assert "--reinstall" in mock_install.call_args_list[0].args[0]
 
     def test_falls_back_to_per_package_install_when_reinstall_did_not_help(
         self, temp_pyproject, fake_venv_python

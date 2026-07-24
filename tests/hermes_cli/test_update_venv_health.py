@@ -95,6 +95,20 @@ def test_venv_health_healthy_when_probe_clean(tmp_path):
     assert healthy is True
 
 
+def test_venv_health_probe_includes_certifi(tmp_path):
+    """A current checkout must repair a venv that lost its TLS bundle."""
+    _fake_venv_python(tmp_path)
+    fake = SimpleNamespace(returncode=0, stdout="", stderr="")
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main.subprocess, "run", return_value=fake
+    ) as run:
+        cli_main._venv_core_imports_healthy()
+
+    check_script = run.call_args.args[0][2]
+    assert "certifi.where()" in check_script
+    assert "ssl.create_default_context(cafile=bundle)" in check_script
+
+
 def test_venv_health_broken_interpreter_is_unhealthy(tmp_path):
     """Nonzero exit with no module list = interpreter itself is broken."""
     _fake_venv_python(tmp_path)

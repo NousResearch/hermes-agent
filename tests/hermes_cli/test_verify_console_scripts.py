@@ -87,12 +87,13 @@ class TestVerifyConsoleScriptsInstalled:
         names = _load_console_script_names()
         assert names == ["hermes", "hermes-agent", "hermes-acp"]
 
-    def test_primary_install_success_still_verifies_scripts(self):
+    def test_primary_install_success_still_verifies_core_dependencies(self):
         import hermes_cli.main as main_mod
 
         with patch("hermes_cli.main._is_windows", return_value=False), \
              patch("hermes_cli.main._run_quarantined_install") as mock_install, \
-             patch("hermes_cli.main._verify_console_scripts_installed") as mock_verify:
+             patch("hermes_cli.main._verify_console_scripts_installed") as mock_scripts, \
+             patch("hermes_cli.main._verify_core_dependencies_installed") as mock_deps:
             main_mod._install_python_dependencies_with_optional_fallback(
                 ["uv", "pip"], env={"VIRTUAL_ENV": "x"}
             )
@@ -102,7 +103,10 @@ class TestVerifyConsoleScriptsInstalled:
             env={"VIRTUAL_ENV": "x"},
             scripts_dir=None,
         )
-        mock_verify.assert_called_once_with(["uv", "pip"], env={"VIRTUAL_ENV": "x"})
+        mock_scripts.assert_called_once_with(["uv", "pip"], env={"VIRTUAL_ENV": "x"})
+        mock_deps.assert_called_once_with(
+            ["uv", "pip"], env={"VIRTUAL_ENV": "x"}, group="all"
+        )
 
     def test_quarantine_shims_include_declared_console_scripts(
         self, temp_pyproject, fake_scripts_dir

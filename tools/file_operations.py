@@ -1156,8 +1156,11 @@ class ShellFileOperations(FileOperations):
         if offset == 1:
             read_output, _ = _strip_bom(read_output)
         
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
+        # Get total line count.
+        # grep -c '' counts lines correctly regardless of trailing newline.
+        # wc -l counts newline characters, undercounting by 1 for files that
+        # do not end with a newline.
+        wc_cmd = f"grep -c '' {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
         wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
         try:

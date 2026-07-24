@@ -645,6 +645,40 @@ class TestWeixinMarkdownLinks:
         assert "[link](https://example.com)" in result
 
 
+class TestWeixinDirectSend:
+    @patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock)
+    def test_send_weixin_direct_ignores_live_adapter_from_different_loop(
+        self,
+        api_post_mock,
+        tmp_path,
+    ):
+        """Cron/direct sends must not reuse an aiohttp session from another event loop."""
+
+        class _OtherLoopSession:
+            closed = False
+            _loop = object()
+
+        api_post_mock.return_value = {"ret": 0}
+        live_adapter = _make_adapter()
+        live_adapter._send_session = _OtherLoopSession()
+        live_adapter.send = AsyncMock(side_effect=AssertionError("cross-loop live adapter reused"))
+
+        with patch.dict(weixin._LIVE_ADAPTERS, {"test-token": live_adapter}, clear=True), \
+             patch("gateway.platforms.weixin.get_hermes_home", return_value=tmp_path):
+            result = asyncio.run(
+                weixin.send_weixin_direct(
+                    extra={"account_id": "test-account", "base_url": "https://weixin.example.com"},
+                    token="test-token",
+                    chat_id="wxid_test123",
+                    message="hello from cron",
+                )
+            )
+
+        assert result["success"] is True
+        live_adapter.send.assert_not_awaited()
+        api_post_mock.assert_awaited_once()
+
+
 class TestWeixinBlankMessagePrevention:
     """Regression tests for the blank-bubble bugs.
 

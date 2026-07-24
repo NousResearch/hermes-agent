@@ -3465,7 +3465,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+                event_name = (
+                    "tool.failed"
+                    if event_type == "tool.completed" and kwargs.get("is_error")
+                    else event_type
+                )
+                events.enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         def _commentary(text: str, *, already_streamed: bool = False) -> None:
             # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)

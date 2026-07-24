@@ -377,6 +377,38 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
 
 
 @pytest.mark.asyncio
+async def test_session_chat_stream_classifies_failed_tool_completions(adapter, session_db):
+    session_id = session_db.create_session("tool-status-stream", "api_server")
+
+    async def fake_run(**kwargs):
+        progress = kwargs["tool_progress_callback"]
+        progress("tool.completed", tool_name="read_file", is_error=False)
+        progress("tool.completed", tool_name="terminal", is_error=True)
+        progress("tool.failed", tool_name="web_search")
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "run tools"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    blocks = body.split("\n\n")
+    assert any("event: tool.completed" in b and '"tool_name": "read_file"' in b for b in blocks)
+    assert any("event: tool.failed" in b and '"tool_name": "terminal"' in b for b in blocks)
+    assert any("event: tool.failed" in b and '"tool_name": "web_search"' in b for b in blocks)
+    assert body.count("event: tool.completed") == 1
+    assert body.count("event: tool.failed") == 2
+    assert '"tool_name": "read_file"' in body
+    assert '"tool_name": "terminal"' in body
+    assert '"tool_name": "web_search"' in body
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live

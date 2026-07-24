@@ -336,7 +336,7 @@ export const api = {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
+      window.location.assign(`${BASE}/login`);
       return r;
     }),
   getSessions: (

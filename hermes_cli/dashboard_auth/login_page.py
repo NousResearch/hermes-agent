@@ -409,9 +409,16 @@ auth gate (not recommended on untrusted networks).</p>
 # Plain string (NOT run through ``str.format``), so braces are literal —
 # do not double them. A single delegated submit handler covers all forms;
 # the provider name is read from the form's ``data-provider`` attribute.
+#
+# Reverse-proxy prefix support: the script reads ``data-prefix`` from the
+# ``<main>`` element (set by :func:`render_login_html`) and prepends it
+# to the POST target and the post-login landing path so the login flow
+# works behind ``X-Forwarded-Prefix`` proxies.
 _PASSWORD_FORM_SCRIPT = """\
 <script>
 (function () {
+  var mainEl = document.querySelector('main');
+  var prefix = (mainEl && mainEl.getAttribute('data-prefix')) || '';
   function handle(form) {
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
@@ -425,7 +432,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch(prefix + '/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -433,7 +440,7 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            window.location.assign((data && data.next) || (prefix + '/'));
           });
         }
         var msg = resp.status === 429
@@ -455,7 +462,7 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` — when set, the post-login landing path the user
@@ -464,6 +471,12 @@ def render_login_html(*, next_path: str = "") -> str:
     end-to-end. The caller (``routes.login_page``) is responsible for
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
+
+    ``prefix`` — when set, the path prefix from ``X-Forwarded-Prefix``
+    (e.g. ``"/hermes"``). Prepended to all auth URLs so the login page
+    works behind a reverse proxy that mounts the dashboard at a
+    sub-path. Empty string (default) means no prefix — bare-root
+    deploys are unaffected.
     """
     providers = list_session_providers()
     if not providers:
@@ -484,21 +497,28 @@ def render_login_html(*, next_path: str = "") -> str:
     for p in providers:
         if getattr(p, "supports_password", False):
             needs_password_script = True
-            buttons.append(_render_password_form(p, next_path))
+            buttons.append(_render_password_form(p, next_path, prefix=prefix))
         else:
             buttons.append(
                 f'      <a class="provider-btn" '
-                f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+                f'href="{prefix}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
                 f'Sign in with {html.escape(p.display_name)}</a>'
             )
     script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""
-    return _LOGIN_HTML_TEMPLATE.format(
+    html_out = _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=script,
     )
+    # Inject the reverse-proxy prefix so the password-login JS can read
+    # it from the <main> element's data attribute.  ``str.replace``
+    # after ``str.format`` avoids interfering with the CSS ``{{ }}``
+    # doubling in the template.
+    if prefix:
+        html_out = html_out.replace("<main>", f'<main data-prefix="{prefix}">', 1)
+    return html_out
 
 
-def _render_password_form(provider, next_path: str) -> str:
+def _render_password_form(provider, next_path: str, *, prefix: str = "") -> str:
     """Render a username/password form for a ``supports_password`` provider.
 
     The form is wired by :data:`_PASSWORD_FORM_SCRIPT` (a single delegated
@@ -508,6 +528,10 @@ def _render_password_form(provider, next_path: str) -> str:
     defence in depth. The provider ``name`` is emitted in a ``data-``
     attribute (not a hidden input) so the script reads it without trusting
     form-field ordering.
+
+    ``prefix`` — reverse-proxy path prefix (e.g. ``"/hermes"``). Prepended
+    to the ``data-action`` attribute so the JS submit handler POSTs to the
+    correct URL behind a path-prefixed reverse proxy.
     """
     pname = html.escape(provider.name, quote=True)
     plabel = html.escape(provider.display_name)

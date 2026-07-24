@@ -461,7 +461,7 @@ class TestHtmlRedirectNext:
         assert r.status_code == 200
 
     def test_auth_loop_avoided(self, gated_app):
-        """A failed cookie on /auth/me (auth-required path) must drop
+        """A failed cookie on /api/auth/me (auth-required path) must drop
         the next= rather than risk a /login?next=/api/auth/me loop."""
         # /api/auth/me requires auth. Without cookie → 401 with login_url
         # but next= must NOT point at /api/auth/.
@@ -469,6 +469,28 @@ class TestHtmlRedirectNext:
         assert r.status_code == 401
         body = r.json()
         assert "next=" not in body["login_url"]
+
+    def test_login_page_prefixed_urls_behind_proxy(self, gated_app):
+        """When X-Forwarded-Prefix is set, the login page must render
+        all auth URLs with the prefix so the flow works behind a
+        reverse proxy that mounts the dashboard at a sub-path."""
+        r = gated_app.get(
+            "/login",
+            headers={"X-Forwarded-Prefix": "/hermes"},
+        )
+        assert r.status_code == 200
+        html = r.text
+        assert 'href="/hermes/auth/login?provider=' in html
+        assert 'data-prefix="/hermes"' in html
+
+    def test_login_page_bare_urls_without_proxy_header(self, gated_app):
+        """Without X-Forwarded-Prefix the login page must use
+        root-relative URLs (no prefix injection)."""
+        r = gated_app.get("/login")
+        assert r.status_code == 200
+        html = r.text
+        assert 'href="/auth/login?provider=' in html
+        assert "data-prefix" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +607,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path, query=""):
                 self.url = type("URL", (), {"path": path, "query": query})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("/sessions")) == "%2Fsessions"
         assert (
@@ -598,6 +621,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path):
                 self.url = type("URL", (), {"path": path, "query": ""})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("//evil.com")) == ""
 
@@ -607,6 +631,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path):
                 self.url = type("URL", (), {"path": path, "query": ""})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("/login")) == ""
         assert _safe_next_target(FakeRequest("/auth/login")) == ""
@@ -624,6 +649,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path, query=""):
                 self.url = type("URL", (), {"path": path, "query": query})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("/api/analytics/models")) == ""
         assert (
@@ -646,12 +672,68 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path):
                 self.url = type("URL", (), {"path": path, "query": ""})()
+                self.headers = {}
 
         # ``/apidocs`` or ``/api-keys`` lookalike SPA routes — we must
         # only match the ``/api/`` prefix or exact ``/api``.
         assert _safe_next_target(FakeRequest("/apidocs")) == "%2Fapidocs"
         assert _safe_next_target(FakeRequest("/api-keys")) == "%2Fapi-keys"
 
+
+
+    def test_safe_next_validator_respects_prefix(self):
+        """When ``X-Forwarded-Prefix`` is set, the ``next`` target must
+        include the prefix so the post-login redirect lands within the
+        reverse-proxy sub-path."""
+        from hermes_cli.dashboard_auth.middleware import _safe_next_target
+
+        class FakeRequest:
+            def __init__(self, path, query="", prefix=""):
+                self.url = type("URL", (), {"path": path, "query": query})()
+                self.headers = {"x-forwarded-prefix": prefix} if prefix else {}
+
+        # Without prefix: behaves as before
+        assert _safe_next_target(FakeRequest("/sessions")) == "%2Fsessions"
+        assert (
+            _safe_next_target(FakeRequest("/sessions", "page=2"))
+            == "%2Fsessions%3Fpage%3D2"
+        )
+
+        # With prefix: path is prefixed
+        assert (
+            _safe_next_target(FakeRequest("/sessions", prefix="/hermes"))
+            == "%2Fhermes%2Fsessions"
+        )
+        assert (
+            _safe_next_target(FakeRequest("/sessions", "page=2", prefix="/hermes"))
+            == "%2Fhermes%2Fsessions%3Fpage%3D2"
+        )
+
+        # With multi-level prefix like /profile/nati
+        assert (
+            _safe_next_target(FakeRequest("/sessions", prefix="/profile/nati"))
+            == "%2Fprofile%2Fnati%2Fsessions"
+        )
+
+        # Auth rejection paths still work with prefix
+        assert (
+            _safe_next_target(FakeRequest("/login", prefix="/hermes"))
+            == ""
+        )
+        assert (
+            _safe_next_target(FakeRequest("/auth/login", prefix="/hermes"))
+            == ""
+        )
+        assert (
+            _safe_next_target(FakeRequest("/api/auth/me", prefix="/hermes"))
+            == ""
+        )
+
+        # API paths rejected even with prefix
+        assert (
+            _safe_next_target(FakeRequest("/api/analytics/models", prefix="/hermes"))
+            == ""
+        )
 
 # ---------------------------------------------------------------------------
 # /auth/callback honours next= and validates it
@@ -924,6 +1006,38 @@ class TestRenderLoginHtmlNext:
         html_out = render_login_html(next_path='/x"injected')
         assert '"injected' not in html_out
         assert "%22injected" in html_out
+
+    def test_prefix_prepended_to_provider_button_href(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="/hermes")
+        assert 'href="/hermes/auth/login?provider=stub"' in html_out
+
+    def test_prefix_with_next_threaded(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(next_path="/sessions", prefix="/hermes")
+        assert 'href="/hermes/auth/login?provider=stub' in html_out
+        assert "next=" in html_out
+
+    def test_empty_prefix_produces_bare_root_urls(self):
+        """Explicitly passing prefix='' (the default) must NOT inject a
+        ``data-prefix`` attribute or alter the hrefs."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="")
+        assert 'href="/auth/login?provider=stub"' in html_out
+        assert "data-prefix" not in html_out
+
+    def test_prefix_injected_as_data_attribute(self):
+        """The <main> element must carry data-prefix so the password-login
+        JS can read it."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="/hermes")
+        assert 'data-prefix="/hermes"' in html_out
+
+    def test_prefix_does_not_appear_without_explicit_prefix(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html()
+        assert "<main>" in html_out
+        assert "data-prefix" not in html_out
 
 
 # ---------------------------------------------------------------------------

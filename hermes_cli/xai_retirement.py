@@ -63,7 +63,8 @@ def find_retired_xai_refs(config: Dict[str, Any]) -> List[RetirementIssue]:
     """Walk all model slots in a Hermes config and return retirement issues.
 
     Slots scanned:
-      - ``principal.model``
+      - ``model.default`` / ``model.model`` (current primary config shape)
+      - ``principal.model`` (legacy config shape)
       - ``auxiliary.<any>.model`` (introspective — covers future aux slots)
       - ``delegation.model``
       - ``tts.xai.model``
@@ -88,6 +89,13 @@ def find_retired_xai_refs(config: Dict[str, Any]) -> List[RetirementIssue]:
 
     if not isinstance(config, dict):
         return issues
+
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        _check("model.default", model_cfg.get("default"))
+        _check("model.model", model_cfg.get("model"))
+    elif isinstance(model_cfg, str):
+        _check("model", model_cfg)
 
     principal = config.get("principal")
     if isinstance(principal, dict):
@@ -155,17 +163,37 @@ def _walk_to_parent(yaml_doc: Any, dotted_path: str) -> "tuple[Any, str]":
     """Resolve a dotted slot path to (parent_mapping, leaf_key).
 
     Example: "auxiliary.vision.model" -> (yaml_doc["auxiliary"]["vision"], "model").
+    A root key such as "model" resolves to (yaml_doc, "model").
     Raises KeyError if any intermediate node is missing or not a mapping.
     """
     parts = dotted_path.split(".")
-    if len(parts) < 2:
-        raise ValueError(f"Path must have at least one parent: {dotted_path!r}")
+    if not parts or not parts[0]:
+        raise ValueError(f"Path must not be empty: {dotted_path!r}")
+    if len(parts) == 1:
+        if not isinstance(yaml_doc, dict):
+            raise KeyError(f"Root document is not a mapping: {dotted_path!r}")
+        return yaml_doc, parts[0]
     node = yaml_doc
     for segment in parts[:-1]:
         if not isinstance(node, dict) or segment not in node:
             raise KeyError(f"Path segment {segment!r} missing in {dotted_path!r}")
         node = node[segment]
     return node, parts[-1]
+
+
+def _replacement_preserving_prefix(current_model: str, replacement: str) -> str:
+    """Return replacement while preserving explicit provider prefixes.
+
+    OpenRouter users commonly store xAI model ids as ``x-ai/grok-*``. Detection
+    normalizes that prefix away, but applying the migration must not rewrite an
+    OpenRouter-routable value into a bare xAI model id.
+    """
+    stripped = current_model.strip()
+    lowered = stripped.lower()
+    for prefix in ("x-ai/", "xai/"):
+        if lowered.startswith(prefix):
+            return f"{stripped[:len(prefix)]}{replacement}"
+    return replacement
 
 
 def apply_migration(
@@ -221,7 +249,10 @@ def apply_migration(
         except KeyError:
             # Slot vanished between scan and apply — skip silently
             continue
-        parent[leaf] = issue.replacement
+        parent[leaf] = _replacement_preserving_prefix(
+            issue.current_model,
+            issue.replacement,
+        )
         if issue.reasoning_effort:
             parent["reasoning_effort"] = issue.reasoning_effort
         resolved.append(issue)

@@ -110,6 +110,18 @@ team-design JSON. See **[references/kanban-setup.md](references/kanban-setup.md)
 for the setup script structure, profile config patterns, and the critical
 "shared workspace" rule.
 
+Before trusting a generated pipeline for a real project, run the deterministic
+fixture validator from the skill directory:
+
+```bash
+python scripts/validate_fixture.py --check-determinism
+```
+
+This exercises the skill-local templates/scripts with `fixtures/sample-plan.json`,
+checks for safety-critical invariants (`dir:` workspace, tenant propagation, no
+approval bypass), and writes a sample artifact bundle plus `validation.log` under
+`samples/fixture-run/`.
+
 ### Step 5 — Execute
 
 Run `setup.sh`. Then provide the user with monitoring commands:
@@ -202,7 +214,12 @@ assets/
   brief.md.tmpl                     ← brief skeleton
   setup.sh.tmpl                     ← setup script skeleton
   soul.md.tmpl                      ← profile personality skeleton
+fixtures/
+  sample-plan.json                  ← deterministic plan used by readiness validation
+samples/
+  fixture-run/                      ← checked-in sample artifact bundle + validation log
 scripts/
   bootstrap_pipeline.py             ← generate setup.sh from brief + team JSON
+  validate_fixture.py               ← deterministic fixture validator for templates/scripts
   monitor.py                        ← polling + intervention helpers
 ```

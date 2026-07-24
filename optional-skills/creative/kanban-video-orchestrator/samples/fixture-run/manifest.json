@@ -1,0 +1,27 @@
+{
+  "artifacts": {
+    "TEAM.md": {
+      "bytes": 1010,
+      "path": "TEAM.md",
+      "sha256": "349dfe20e884717b7595b76e8533431f26620e62162477608a9193cff0f1e42e"
+    },
+    "brief.md": {
+      "bytes": 2232,
+      "path": "brief.md",
+      "sha256": "f31cb736b139220e5dd350431728d973c5a5721a1c2b767141603904d464a40b"
+    },
+    "setup.sh": {
+      "bytes": 18825,
+      "path": "setup.sh",
+      "sha256": "ab1c193c51f8d45e8f21c1494b231fb22c6f9a3bc5d1fcb5044c092a943bc227"
+    },
+    "validation.log": {
+      "bytes": 314,
+      "path": "validation.log",
+      "sha256": "748e1e9b614b1fa7d99d82a0f4f82942097f615a9f799c9890d8ff2b321c0bdc"
+    }
+  },
+  "plan": "fixtures/sample-plan.json",
+  "plan_sha256": "15cc6dfa263147a6e4bcabad5b88e9d071bde048975139ad0b98ad2907703952",
+  "validator": "kanban-video-orchestrator fixture validator"
+}

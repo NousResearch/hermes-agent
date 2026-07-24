@@ -456,7 +456,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // Blueprint instantiation is a distinct backend path (fills typed slots, then
   // creates the job) so it can't share the raw-cron onSave contract. Merge the
   // created job into $cronJobs like every other create path.
-  async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>, profile: string) {
+  async function handleBlueprintCreate(
+    blueprint: AutomationBlueprint,
+    values: Record<string, string>,
+    profile: string
+  ) {
     const job = await instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile)
 
     updateCronJobs(rows => {
@@ -481,7 +485,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   return (
     <Panel closeLabel={c.close} onClose={onClose}>
-      <PanelHeader actions={tabToggle} subtitle={tab === 'jobs' ? c.count(totalCount) : c.blueprints.subtitle} title={c.title} />
+      <PanelHeader
+        actions={tabToggle}
+        subtitle={tab === 'jobs' ? c.count(totalCount) : c.blueprints.subtitle}
+        title={c.title}
+      />
 
       {tab === 'blueprints' ? (
         // A blueprint instantiates a real per-profile job, and "all" is not a
@@ -1057,127 +1065,127 @@ function CronEditorDialog({
           </form>
         ) : (
           <form className="grid gap-4" onSubmit={handleSubmit}>
-          {scriptOnlyJob && initial && (
-            <FieldHint>
-              {c.scriptOnlyEditHint} <span className="font-mono">{initial.id}</span>
-            </FieldHint>
-          )}
+            {scriptOnlyJob && initial && (
+              <FieldHint>
+                {c.scriptOnlyEditHint} <span className="font-mono">{initial.id}</span>
+              </FieldHint>
+            )}
 
-          <Field htmlFor="cron-name" label={c.nameLabel} optional optionalLabel={c.optional}>
-            <Input
-              autoFocus
-              id="cron-name"
-              onChange={event => setName(event.target.value)}
-              placeholder={c.namePlaceholder}
-              value={name}
-            />
-          </Field>
-
-          <Field htmlFor="cron-prompt" label={c.promptLabel} optional={scriptOnlyJob} optionalLabel={c.optional}>
-            <Textarea
-              className="min-h-24 font-mono"
-              id="cron-prompt"
-              onChange={event => setPrompt(event.target.value)}
-              placeholder={c.promptPlaceholder}
-              value={prompt}
-            />
-          </Field>
-
-          <div className="grid items-start gap-4 sm:grid-cols-2">
-            <Field htmlFor="cron-frequency" label={c.frequencyLabel}>
-              <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-frequency">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SCHEDULE_OPTIONS.map(option => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {c.scheduleLabels[option.value]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <Field htmlFor="cron-deliver" label={c.deliverLabel}>
-              <DeliverSelect
-                c={c}
-                id="cron-deliver"
-                onChange={setDeliver}
-                targets={deliveryTargets.data ?? []}
-                value={deliver}
-              />
-            </Field>
-          </div>
-
-          {!scriptOnlyJob && (
-            <Field htmlFor="cron-model" label={c.modelLabel} optional optionalLabel={c.optional}>
-              <Select onValueChange={setModelChoice} value={modelChoice}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-model">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
-                  {!modelChoiceKnown && (
-                    <SelectItem className="font-mono" value={modelChoice}>
-                      {modelChoice.slice(modelChoice.indexOf(':') + 1)}
-                    </SelectItem>
-                  )}
-                  {modelProviders.map(provider => (
-                    <SelectGroup key={provider.slug}>
-                      <SelectLabel>{provider.name}</SelectLabel>
-                      {(provider.models ?? []).map(model => (
-                        <SelectItem
-                          className="font-mono"
-                          key={`${provider.slug}:${model}`}
-                          value={`${provider.slug}:${model}`}
-                        >
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          )}
-
-          {schedulePreset === 'custom' ? (
-            <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
+            <Field htmlFor="cron-name" label={c.nameLabel} optional optionalLabel={c.optional}>
               <Input
-                className="font-mono"
-                id="cron-schedule"
-                onChange={event => setSchedule(event.target.value)}
-                placeholder={c.customPlaceholder}
-                value={schedule}
+                autoFocus
+                id="cron-name"
+                onChange={event => setName(event.target.value)}
+                placeholder={c.namePlaceholder}
+                value={name}
               />
-              <FieldHint>{c.customHint}</FieldHint>
             </Field>
-          ) : (
-            <div className="rounded-md bg-(--ui-bg-quinary) px-3 py-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="font-medium text-foreground">{scheduleHint}</span>
-                <span className="font-mono text-muted-foreground">{schedule}</span>
+
+            <Field htmlFor="cron-prompt" label={c.promptLabel} optional={scriptOnlyJob} optionalLabel={c.optional}>
+              <Textarea
+                className="min-h-24 font-mono"
+                id="cron-prompt"
+                onChange={event => setPrompt(event.target.value)}
+                placeholder={c.promptPlaceholder}
+                value={prompt}
+              />
+            </Field>
+
+            <div className="grid items-start gap-4 sm:grid-cols-2">
+              <Field htmlFor="cron-frequency" label={c.frequencyLabel}>
+                <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
+                  <SelectTrigger className="h-9 rounded-md" id="cron-frequency">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SCHEDULE_OPTIONS.map(option => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {c.scheduleLabels[option.value]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Field htmlFor="cron-deliver" label={c.deliverLabel}>
+                <DeliverSelect
+                  c={c}
+                  id="cron-deliver"
+                  onChange={setDeliver}
+                  targets={deliveryTargets.data ?? []}
+                  value={deliver}
+                />
+              </Field>
+            </div>
+
+            {!scriptOnlyJob && (
+              <Field htmlFor="cron-model" label={c.modelLabel} optional optionalLabel={c.optional}>
+                <Select onValueChange={setModelChoice} value={modelChoice}>
+                  <SelectTrigger className="h-9 rounded-md" id="cron-model">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
+                    {!modelChoiceKnown && (
+                      <SelectItem className="font-mono" value={modelChoice}>
+                        {modelChoice.slice(modelChoice.indexOf(':') + 1)}
+                      </SelectItem>
+                    )}
+                    {modelProviders.map(provider => (
+                      <SelectGroup key={provider.slug}>
+                        <SelectLabel>{provider.name}</SelectLabel>
+                        {(provider.models ?? []).map(model => (
+                          <SelectItem
+                            className="font-mono"
+                            key={`${provider.slug}:${model}`}
+                            value={`${provider.slug}:${model}`}
+                          >
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
+
+            {schedulePreset === 'custom' ? (
+              <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
+                <Input
+                  className="font-mono"
+                  id="cron-schedule"
+                  onChange={event => setSchedule(event.target.value)}
+                  placeholder={c.customPlaceholder}
+                  value={schedule}
+                />
+                <FieldHint>{c.customHint}</FieldHint>
+              </Field>
+            ) : (
+              <div className="rounded-md bg-(--ui-bg-quinary) px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-medium text-foreground">{scheduleHint}</span>
+                  <span className="font-mono text-muted-foreground">{schedule}</span>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {error && (
-            <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
+            {error && (
+              <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
 
-          <DialogFooter>
-            <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={saving} type="submit">
-              {saving ? t.common.saving : isEdit ? c.saveChanges : c.createAction}
-            </Button>
-          </DialogFooter>
-        </form>
+            <DialogFooter>
+              <Button disabled={saving} onClick={onClose} type="button" variant="outline">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={saving} type="submit">
+                {saving ? t.common.saving : isEdit ? c.saveChanges : c.createAction}
+              </Button>
+            </DialogFooter>
+          </form>
         )}
       </DialogContent>
     </Dialog>

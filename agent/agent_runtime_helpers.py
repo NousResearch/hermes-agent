@@ -793,6 +793,13 @@ def strip_think_blocks(agent, content: str) -> str:
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
+
+
+    # Catch-all: strip unclosed think/reasoning blocks from
+    # token-truncated output that has no closing tag.
+    content = re.sub(r'<thinking>.*', '', content, flags=re.DOTALL)
+    content = re.sub(r'<reasoning>.*', '', content, flags=re.DOTALL)
+    content = re.sub(r'<think>.*', '', content, flags=re.DOTALL)
     content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the

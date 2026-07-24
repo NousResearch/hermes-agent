@@ -1178,19 +1178,23 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             chat_id, thread_id = rest, None
 
         # Resolve human-friendly labels like "Alice (dm)" to real IDs.
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_key, chat_id)
-            if resolved:
-                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
-                if resolved_is_explicit:
-                    chat_id = parsed_chat_id
-                    if parsed_thread_id is not None:
-                        thread_id = parsed_thread_id
-                else:
-                    chat_id = resolved
-        except Exception:
-            pass
+        # Do NOT run raw explicit IDs (e.g. telegram:-100123:16) through
+        # the channel directory: session-derived topic labels can prefix-match
+        # the bare chat id and overwrite the explicitly requested thread.
+        if not is_explicit and chat_id:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_key, str(chat_id))
+                if resolved:
+                    parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
+                    if resolved_is_explicit:
+                        chat_id = parsed_chat_id
+                        if parsed_thread_id is not None:
+                            thread_id = parsed_thread_id
+                    else:
+                        chat_id = resolved
+            except Exception:
+                pass
 
         if (
             thread_id is None

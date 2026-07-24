@@ -6,6 +6,7 @@ import types
 import io
 import contextlib
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,157 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+
+
+class TestDoctorVolatileStateDirectory:
+    PERSISTENT_AND_VOLATILE_MOUNTS = "\n".join(
+        [
+            "22 1 0:21 / / rw,relatime - ext4 /dev/sda1 rw",
+            "30 22 0:30 / /home rw,relatime - ext4 /dev/sda2 rw",
+            "35 30 0:35 / /home/user/.hermes rw - tmpfs tmpfs rw,size=1048576k",
+        ]
+    )
+
+    @pytest.mark.parametrize("fs_type", ["tmpfs", "ramfs"])
+    def test_detects_volatile_linux_state_mount(self, fs_type):
+        mount_info = "\n".join(
+            [
+                "22 1 0:21 / / rw,relatime - ext4 /dev/sda1 rw",
+                f"35 22 0:35 / /home/user/.hermes rw - {fs_type} {fs_type} rw",
+            ]
+        )
+
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/home/user/.hermes"),
+            platform="linux",
+            mount_info=mount_info,
+            resolve_state_dir=lambda path: path.as_posix(),
+        ) == ("/home/user/.hermes", fs_type)
+
+    def test_uses_most_specific_matching_mount(self):
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/home/user/.hermes/profiles/coder"),
+            platform="linux",
+            mount_info=self.PERSISTENT_AND_VOLATILE_MOUNTS,
+            resolve_state_dir=lambda path: path.as_posix(),
+        ) == ("/home/user/.hermes", "tmpfs")
+
+    def test_uses_topmost_mount_at_same_path(self):
+        mount_info = "\n".join(
+            [
+                "22 22 0:21 / / rw - ext4 /dev/sda1 rw",
+                "30 22 0:30 / /data rw - ext4 /dev/sda2 rw",
+                "35 30 0:35 / /data rw - tmpfs tmpfs rw",
+            ]
+        )
+
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/data/hermes"),
+            platform="linux",
+            mount_info=mount_info,
+            resolve_state_dir=lambda path: path.as_posix(),
+        ) == ("/data", "tmpfs")
+
+    def test_ignores_tmpfs_hidden_by_persistent_overmount(self):
+        mount_info = "\n".join(
+            [
+                "22 22 0:21 / / rw - ext4 /dev/sda1 rw",
+                "30 22 0:30 / /data rw - tmpfs tmpfs rw",
+                "35 30 0:35 / /data rw - ext4 /dev/sda2 rw",
+            ]
+        )
+
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/data/hermes"),
+            platform="linux",
+            mount_info=mount_info,
+            resolve_state_dir=lambda path: path.as_posix(),
+        ) is None
+
+    def test_ignores_nested_mount_beneath_hidden_parent(self):
+        mount_info = "\n".join(
+            [
+                "22 22 0:21 / / rw - ext4 /dev/sda1 rw",
+                "30 22 0:30 / /data rw - ext4 /dev/sda2 rw",
+                "31 30 0:31 / /data/cache rw - tmpfs tmpfs rw",
+                "35 30 0:35 / /data rw - ext4 /dev/sda3 rw",
+            ]
+        )
+
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/data/cache/hermes"),
+            platform="linux",
+            mount_info=mount_info,
+            resolve_state_dir=lambda path: path.as_posix(),
+        ) is None
+
+    def test_resolves_missing_child_through_existing_symlink(self, tmp_path):
+        if sys.platform == "win32":
+            pytest.skip("creating directory symlinks requires elevated privileges on Windows")
+
+        volatile_target = tmp_path / "volatile"
+        volatile_target.mkdir()
+        state_link = tmp_path / "state"
+        state_link.symlink_to(volatile_target, target_is_directory=True)
+        resolved_target = volatile_target.resolve()
+        missing_state_dir = state_link / "profiles" / "coder"
+        mount_info = "\n".join(
+            [
+                "22 1 0:21 / / rw,relatime - ext4 /dev/sda1 rw",
+                f"35 22 0:35 / {resolved_target} rw - tmpfs tmpfs rw",
+            ]
+        )
+
+        assert doctor._detect_linux_volatile_state_dir(
+            missing_state_dir,
+            platform="linux",
+            mount_info=mount_info,
+        ) == (resolved_target.as_posix(), "tmpfs")
+
+    @pytest.mark.parametrize(
+        "platform,mount_info",
+        [
+            ("win32", PERSISTENT_AND_VOLATILE_MOUNTS),
+            ("darwin", PERSISTENT_AND_VOLATILE_MOUNTS),
+            ("linux", "22 1 0:21 / / rw - ext4 /dev/sda1 rw"),
+            ("linux", "22 1 0:21 / / rw - overlay overlay rw"),
+            ("linux", "malformed mountinfo"),
+        ],
+    )
+    def test_does_not_flag_nonvolatile_or_unsupported_mounts(
+        self,
+        platform,
+        mount_info,
+    ):
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/home/user/.hermes"),
+            platform=platform,
+            mount_info=mount_info,
+            resolve_state_dir=lambda path: path.as_posix(),
+        ) is None
+
+    def test_decodes_mountinfo_escaped_spaces(self):
+        mount_info = (
+            "35 22 0:35 / /run/hermes\\040state rw - tmpfs tmpfs rw"
+        )
+
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/run/hermes state/profile"),
+            platform="linux",
+            mount_info=mount_info,
+            resolve_state_dir=lambda path: path.as_posix(),
+        ) == ("/run/hermes state", "tmpfs")
+
+    def test_symlink_loop_resolution_failure_does_not_abort_doctor(self):
+        def raise_symlink_loop(_path):
+            raise RuntimeError("Symlink loop from '/state' path")
+
+        assert doctor._detect_linux_volatile_state_dir(
+            Path("/state"),
+            platform="linux",
+            mount_info="malformed mountinfo",
+            resolve_state_dir=raise_symlink_loop,
+        ) is None
 
 
 class TestDoctorPlatformHints:

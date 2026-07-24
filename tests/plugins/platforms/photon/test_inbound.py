@@ -6,6 +6,7 @@ sidecar-event parsing without spawning the Node sidecar or binding ports.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from pathlib import Path
@@ -362,3 +363,220 @@ def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(adapter_mod.shutil, "which", lambda _name: None)
     assert adapter_mod.check_requirements() is False
+
+
+# ---------------------------------------------------------------------------
+# CAF attachment promotion + U+FFFC placeholder tests
+# ---------------------------------------------------------------------------
+
+_CAF_BYTES = b"caff" + b"\x00" * 60  # Minimal CAF header magic
+
+
+def _caf_attachment_event(
+    content: Dict[str, Any], msg_id: str = "spc-msg-caf"
+) -> Dict[str, Any]:
+    return {
+        "messageId": msg_id,
+        "space": {"id": "+155****4567", "type": "dm", "phone": "+155****4567"},
+        "sender": {"id": "+155****4567"},
+        "content": {"type": "attachment", **content},
+        "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+
+
+@pytest.mark.asyncio
+async def test_caf_attachment_named_promoted_to_voice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A named .caf attachment is promoted to VOICE for STT routing."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    raw = _CAF_BYTES
+    event = _caf_attachment_event(
+        {
+            "name": "voice_note.caf",
+            "mimeType": "audio/x-caf",
+            "size": len(raw),
+            "data": base64.b64encode(raw).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.VOICE
+    assert ev.media_types == ["audio/x-caf"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == raw
+        assert ev.text == "(voice)"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_caf_attachment_unnamed_promoted_via_mime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unnamed attachment with mimeType audio/x-caf is promoted to VOICE.
+
+    The sidecar sends "(unnamed)" when no filename is supplied, so the MIME
+    type must be the fallback signal for CAF promotion.
+    """
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    raw = _CAF_BYTES
+    event = _caf_attachment_event(
+        {
+            "name": "(unnamed)",
+            "mimeType": "audio/x-caf",
+            "size": len(raw),
+            "data": base64.b64encode(raw).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.VOICE
+    assert ev.media_types == ["audio/x-caf"]
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.suffix == ".caf"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_fffc_placeholder_no_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A U+FFFC placeholder text does not trigger a message dispatch."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("\ufffc", msg_id="spc-msg-fffc")
+    chat_key = event["space"]["id"]
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 0
+    assert chat_key in adapter._pending_fffc
+
+
+@pytest.mark.asyncio
+async def test_fffc_placeholder_not_recorded_as_last_inbound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The U+FFFC placeholder must not be recorded as the reaction target.
+
+    _record_last_inbound runs after the U+FFFC early-return, so the placeholder
+    message id is never stored. A subsequent real message will be recorded.
+    """
+    adapter = _make_adapter(monkeypatch)
+    _capture(adapter, monkeypatch)
+
+    fffc_event = _dm_event("\ufffc", msg_id="spc-msg-fffc")
+    chat_key = fffc_event["space"]["id"]
+    await adapter._dispatch_inbound(fffc_event)
+    assert chat_key not in adapter._last_inbound_by_chat
+
+    real_event = _dm_event("hello", msg_id="spc-msg-real")
+    await adapter._dispatch_inbound(real_event)
+    assert adapter._last_inbound_by_chat.get(chat_key) == "spc-msg-real"
+
+
+@pytest.mark.asyncio
+async def test_fffc_then_attachment_cancels_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When an attachment arrives after a U+FFFC placeholder, the pending
+    timeout task is cancelled and the attachment is dispatched normally."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    fffc_event = _dm_event("\ufffc", msg_id="spc-msg-fffc")
+    chat_key = fffc_event["space"]["id"]
+    await adapter._dispatch_inbound(fffc_event)
+    assert len(captured) == 0
+    assert chat_key in adapter._pending_fffc
+
+    raw = _CAF_BYTES
+    att_event = _caf_attachment_event(
+        {
+            "name": "voice.caf",
+            "mimeType": "audio/x-caf",
+            "size": len(raw),
+            "data": base64.b64encode(raw).decode("ascii"),
+            "encoding": "base64",
+        },
+        msg_id="spc-msg-att",
+    )
+    att_event["space"]["id"] = chat_key
+    await adapter._dispatch_inbound(att_event)
+
+    assert len(captured) == 1
+    assert captured[0].message_type == MessageType.VOICE
+    assert chat_key not in adapter._pending_fffc
+    assert adapter._last_inbound_by_chat.get(chat_key) == "spc-msg-att"
+
+    cached = Path(captured[0].media_urls[0])
+    try:
+        assert cached.is_file()
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_fffc_timeout_fires_when_no_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When no attachment arrives within the timeout, the pending entry is
+    cleaned up and a warning is logged."""
+    import plugins.platforms.photon.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "_FFFC_WAIT_SECONDS", 0.1)
+
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    fffc_event = _dm_event("\ufffc", msg_id="spc-msg-fffc")
+    chat_key = fffc_event["space"]["id"]
+    await adapter._dispatch_inbound(fffc_event)
+    assert chat_key in adapter._pending_fffc
+
+    await asyncio.sleep(0.3)
+
+    assert chat_key not in adapter._pending_fffc
+    assert len(captured) == 0
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_pending_fffc_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """disconnect() cancels any pending U+FFFC placeholder tasks."""
+    adapter = _make_adapter(monkeypatch)
+    _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_dm_event("\ufffc", msg_id="spc-msg-fffc"))
+    assert len(adapter._pending_fffc) == 1
+
+    async def _noop_stop_sidecar():
+        pass
+
+    monkeypatch.setattr(adapter, "_stop_sidecar", _noop_stop_sidecar)
+    monkeypatch.setattr(adapter, "_inbound_running", False)
+    monkeypatch.setattr(adapter, "_inbound_task", None)
+    monkeypatch.setattr(adapter, "_sidecar_health_task", None)
+    monkeypatch.setattr(adapter, "_http_client", None)
+
+    await adapter.disconnect()
+
+    assert len(adapter._pending_fffc) == 0

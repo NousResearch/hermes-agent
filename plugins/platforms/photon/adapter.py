@@ -83,6 +83,8 @@ _MAX_MESSAGE_LENGTH = 8000
 _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
+_FFFC_WAIT_SECONDS = 15.0  # Timeout for waiting on an attachment after a U+FFFC placeholder.
+
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
@@ -340,6 +342,8 @@ class PhotonAdapter(BasePlatformAdapter):
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
 
+        self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
+
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
         # group messages are ignored unless they match a wake word; DMs are
         # always processed. Config key wins, then env var.
@@ -492,6 +496,11 @@ class PhotonAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             self._inbound_task = None
+        # Cancel any pending U+FFFC placeholder tasks.
+        for chat_key, (_, fffc_task) in list(self._pending_fffc.items()):
+            if fffc_task and not fffc_task.done():
+                fffc_task.cancel()
+        self._pending_fffc.clear()
         await self._stop_sidecar()
         if self._http_client is not None:
             try:
@@ -617,6 +626,14 @@ class PhotonAdapter(BasePlatformAdapter):
                 del seen[old]
         return False
 
+    async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
+        await asyncio.sleep(_FFFC_WAIT_SECONDS)
+        if self._pending_fffc.pop(chat_key, None):
+            logger.warning(
+                "[photon] wait for attachment was too long, can't retrieve attachment data "
+                "(message %s, chat %s)", message_id, chat_key,
+            )
+
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
         """Normalize a sidecar inbound event and dispatch it to the gateway.
 
@@ -677,6 +694,11 @@ class PhotonAdapter(BasePlatformAdapter):
             is_voice = payload.get("type") == "voice"
             name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
             mime = payload.get("mimeType") or ""
+            # Promote CAF attachments to VOICE (iMessage voice notes use CAF).
+            # Check both filename and MIME: the sidecar may send "(unnamed)"
+            # when no name is supplied, so the MIME type is the reliable signal.
+            if not is_voice and (name.lower().endswith(".caf") or mime == "audio/x-caf"):
+                is_voice = True
             mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
             cached = _cache_inbound_attachment(
                 payload, name, mime, force_audio=is_voice
@@ -747,6 +769,28 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
             )
             return
+        # U+FFFC placeholder — wait for the real attachment instead of
+        # dispatching. Detected before _record_last_inbound so the placeholder
+        # is not recorded as the reaction target — the real attachment will be.
+        if ctype == "text" and (content.get("text") or "").strip() == "\ufffc":
+            chat_key = space_id
+            prev = self._pending_fffc.pop(chat_key, None)
+            if prev and prev[1] and not prev[1].done():
+                prev[1].cancel()
+            task = asyncio.create_task(
+                self._fffc_timeout_handler(chat_key, event.get("messageId") or "")
+            )
+            self._pending_fffc[chat_key] = (time.monotonic(), task)
+            logger.debug("[photon] U+FFFC placeholder received — waiting for attachment")
+            return
+
+        # Cancel any pending U+FFFC timeout — the real message arrived.
+        if ctype in {"attachment", "voice"}:
+            prev = self._pending_fffc.pop(space_id, None)
+            if prev and prev[1] and not prev[1].done():
+                prev[1].cancel()
+                logger.debug("[photon] attachment arrived — cancelling U+FFFC timeout")
+
         # Anything past here is a real (reactable) message — remember it as
         # the chat's latest inbound so `add_reaction` can target it when the
         # caller doesn't pass an explicit message id. Recorded before the
@@ -1610,7 +1654,7 @@ _AUDIO_EXT_BY_MIME = {
     "audio/mpeg": ".mp3",
     "audio/ogg": ".ogg",
     "audio/wav": ".wav",
-    "audio/x-caf": ".mp3",
+    "audio/x-caf": ".caf",
     "audio/mp4": ".m4a",
     "audio/aac": ".m4a",
 }

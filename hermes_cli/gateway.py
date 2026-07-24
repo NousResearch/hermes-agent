@@ -4780,6 +4780,69 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
+def _default_gateway_multiplex_enabled(default_root: Path) -> bool:
+    """Return whether the default root is configured to multiplex profiles."""
+    try:
+        from gateway.config import _env_multiplex_profiles_override
+
+        env_multiplex = _env_multiplex_profiles_override()
+        if env_multiplex is not None:
+            return env_multiplex
+
+        import yaml as _yaml
+
+        cfg_path = default_root / "config.yaml"
+        if not cfg_path.exists():
+            return False
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = _yaml.safe_load(f) or {}
+        return bool(
+            cfg.get("multiplex_profiles")
+            or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+        )
+    except Exception:
+        logger.debug("Default gateway multiplex probe failed", exc_info=True)
+        return False
+
+
+def _warn_default_gateway_with_named_profiles(quiet: bool = False) -> None:
+    """Warn when a default-root gateway may be a mistaken profile launch."""
+    if quiet:
+        return
+
+    try:
+        from hermes_constants import display_hermes_home, get_default_hermes_root
+
+        hermes_home = get_hermes_home().resolve()
+        default_root = get_default_hermes_root().resolve()
+    except Exception:
+        return
+
+    if hermes_home != default_root:
+        return
+    if _default_gateway_multiplex_enabled(default_root):
+        return
+
+    profiles_dir = default_root / "profiles"
+    try:
+        profiles = sorted(p.name for p in profiles_dir.iterdir() if p.is_dir())
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return
+    if not profiles:
+        return
+
+    rendered_home = display_hermes_home()
+    print(
+        f"\nWarning: starting gateway with the default config ({rendered_home}/config.yaml).\n"
+        f"   Profiles detected: {', '.join(profiles)}\n"
+        f"   If you meant to run a profile gateway, use:\n"
+        f"     hermes --profile <name> gateway run\n"
+        f"   or set a default profile with:\n"
+        f"     hermes profile use <name>\n",
+        file=sys.stderr,
+    )
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground.
 
@@ -4796,6 +4859,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_named_profile_under_multiplexer(force=force)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
+    _warn_default_gateway_with_named_profiles(quiet=quiet)
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Detached Windows gateway runs must ignore console-control broadcasts

@@ -33,6 +33,9 @@ import urllib.request
 from typing import Optional
 
 
+_DASHBOARD_REGISTER_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
 # Docker-style name generator. Same vibe as Docker's adjective_surname, but
 # adjective_noun with a space-free underscore join so it drops cleanly into a
 # label field. There is NO uniqueness constraint on the portal side (the row
@@ -60,6 +63,23 @@ _NAME_NOUNS = (
 def _generate_dashboard_name() -> str:
     """Return a human-readable ``adjective_noun`` name (Docker-style)."""
     return f"{random.choice(_NAME_ADJECTIVES)}_{random.choice(_NAME_NOUNS)}"
+
+
+def _read_portal_json_response(resp) -> dict:
+    """Read a bounded JSON object response from the portal."""
+    raw = resp.read(_DASHBOARD_REGISTER_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _DASHBOARD_REGISTER_RESPONSE_BODY_MAX_BYTES:
+        raise RuntimeError(
+            "Portal response exceeded "
+            f"{_DASHBOARD_REGISTER_RESPONSE_BODY_MAX_BYTES} bytes."
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Portal returned an invalid JSON response.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Portal returned an unexpected JSON response.")
+    return payload
 
 
 def _resolve_portal_base_url(override: Optional[str] = None) -> str:
@@ -139,12 +159,12 @@ def _register_self_hosted_client(
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_portal_json_response(resp)
     except urllib.error.HTTPError as exc:
         # The endpoint returns structured JSON errors ({error, error_description}).
         detail = ""
         try:
-            err_body = json.loads(exc.read().decode())
+            err_body = _read_portal_json_response(exc)
             detail = (
                 err_body.get("error_description")
                 or err_body.get("error")

@@ -612,3 +612,62 @@ class TestPortalErrors:
         )
         assert code == 1
         assert "Not permitted here." in capsys.readouterr().out
+
+    def test_success_response_read_is_bounded(self):
+        reads: list[int] = []
+
+        class Body(BytesIO):
+            def read(self, size=-1):
+                reads.append(size)
+                return super().read(size)
+
+        body = Body(b'{"client_id":"agent:selfhost-1"}')
+        cm = MagicMock()
+        cm.__enter__.return_value = body
+
+        with patch.object(dr.urllib.request, "urlopen", return_value=cm):
+            payload = dr._register_self_hosted_client(
+                access_token="tok",
+                portal_base_url="https://portal.nousresearch.com",
+                name="dash",
+                custom_redirect_uri=None,
+            )
+
+        assert payload["client_id"] == "agent:selfhost-1"
+        assert reads == [dr._DASHBOARD_REGISTER_RESPONSE_BODY_MAX_BYTES + 1]
+
+    def test_oversized_success_response_is_rejected(self):
+        body = BytesIO(b"x" * (dr._DASHBOARD_REGISTER_RESPONSE_BODY_MAX_BYTES + 1))
+        cm = MagicMock()
+        cm.__enter__.return_value = body
+
+        with patch.object(dr.urllib.request, "urlopen", return_value=cm):
+            with pytest.raises(RuntimeError, match="exceeded"):
+                dr._register_self_hosted_client(
+                    access_token="tok",
+                    portal_base_url="https://portal.nousresearch.com",
+                    name="dash",
+                    custom_redirect_uri=None,
+                )
+
+    def test_oversized_error_response_falls_back_to_http_status(self):
+        err = urllib.error.HTTPError(
+            url="https://portal.nousresearch.com/api/oauth/self-hosted-client",
+            code=500,
+            msg="err",
+            hdrs=None,
+            fp=BytesIO(
+                b"x" * (dr._DASHBOARD_REGISTER_RESPONSE_BODY_MAX_BYTES + 1)
+            ),
+        )
+
+        with patch.object(dr.urllib.request, "urlopen", side_effect=err):
+            with pytest.raises(RuntimeError, match="Portal returned HTTP 500") as exc:
+                dr._register_self_hosted_client(
+                    access_token="tok",
+                    portal_base_url="https://portal.nousresearch.com",
+                    name="dash",
+                    custom_redirect_uri=None,
+                )
+
+        assert "xxx" not in str(exc.value)

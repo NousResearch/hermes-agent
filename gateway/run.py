@@ -2360,6 +2360,11 @@ def _try_resolve_fallback_provider() -> dict | None:
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        initial_fallback_from = {
+            "provider": str(model_cfg.get("provider") or cfg.get("provider") or ""),
+            "model": str(_resolve_gateway_model(cfg) or ""),
+        }
         for entry in fb_list:
             try:
                 from hermes_cli.fallback_config import resolve_entry_api_key
@@ -2388,6 +2393,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
                     "model": entry.get("model"),
+                    "initial_fallback_from": initial_fallback_from,
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -4504,6 +4510,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
+            "initial_fallback_from": runtime_kwargs.get("initial_fallback_from"),
         }
         route = {
             "model": model,

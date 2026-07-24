@@ -217,6 +217,10 @@ fallback_providers:
     assert model == "minimax/minimax-m2.7"
     assert runtime_kwargs["provider"] == "openrouter"
     assert runtime_kwargs["api_key"] == "sk-openrouter"
+    assert runtime_kwargs["initial_fallback_from"] == {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+    }
 
 
 def test_gateway_auth_fallback_resolves_key_env_for_custom_provider(tmp_path, monkeypatch):
@@ -260,4 +264,3 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "env-secret"
     assert runtime_kwargs["base_url"] == "https://fallback.example/v1"
     assert runtime_kwargs["model"] == "fallback-model"
-

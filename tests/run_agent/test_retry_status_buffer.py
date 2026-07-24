@@ -19,6 +19,7 @@ def _make_bare_agent():
     agent = object.__new__(AIAgent)
     agent.log_prefix = ""
     agent.status_callback = None
+    agent.notice_callback = None
     agent.suppress_status_output = False
     agent._mute_post_response = False
     agent._executing_tools = False
@@ -161,6 +162,24 @@ def test_pending_fallback_notice_emitted_once_on_success():
     # A second success path with no new fallback emits nothing.
     agent._emit_pending_fallback_notice()
     assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+
+
+def test_pending_fallback_notice_uses_structured_notice_when_supported():
+    agent = _make_bare_agent()
+    statuses = []
+    notices = []
+    agent._emit_status = statuses.append
+    agent.notice_callback = notices.append
+    agent._pending_fallback_notice = "fallback selected"
+
+    agent._emit_pending_fallback_notice()
+
+    assert statuses == []
+    assert len(notices) == 1
+    assert notices[0].text == "fallback selected"
+    assert notices[0].level == "warn"
+    assert notices[0].kind == "ttl"
+    assert notices[0].key == "model.fallback"
 
 
 def test_pending_fallback_notice_noop_when_unset():

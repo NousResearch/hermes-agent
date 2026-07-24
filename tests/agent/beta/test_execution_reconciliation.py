@@ -64,3 +64,33 @@ def test_failed_execution_reports_failure_without_claiming_success():
     assert response.partial_failures == (
         "execution:Terminate PostgreSQL session 42: executor error: connection refused",
     )
+
+
+def test_partial_failure_preserves_authorization_for_pending_operation():
+    failed_operation = _operation()
+    pending_operation = Operation(
+        target="postgresql/db-1",
+        action="Restart PostgreSQL service",
+        impact="Brief database outage",
+        rollback="Start the previous service state",
+        risk=RiskLevel.HIGH,
+    )
+    failed_action = ExecutedAction(
+        operation_fingerprint=failed_operation.fingerprint,
+        action=failed_operation.action,
+        status="failed",
+        evidence="executor error: connection refused",
+    )
+
+    response = _reconcile_execution_response(
+        _response(),
+        (failed_operation, pending_operation),
+        (failed_action,),
+    )
+
+    assert response.authorization_required is True
+    assert response.result == "Approved execution partially failed validation"
+    assert "authorize remaining operations" in response.next_step
+    assert response.partial_failures == (
+        "execution:Terminate PostgreSQL session 42: executor error: connection refused",
+    )

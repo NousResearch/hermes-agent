@@ -143,14 +143,27 @@ def _reconcile_execution_response(
     completed = tuple(action for action in executed if action.status == "completed")
     failed = tuple(action for action in executed if action.status == "failed")
     executed_fingerprints = {action.operation_fingerprint for action in executed}
-    all_operations_executed = all(
-        operation.fingerprint in executed_fingerprints for operation in operations
+    pending = tuple(
+        operation
+        for operation in operations
+        if operation.fingerprint not in executed_fingerprints
     )
+    all_operations_executed = not pending
 
     if failed:
         failure_details = tuple(
             f"execution:{action.action}: {action.evidence}" for action in failed
         )
+        if pending:
+            return response.model_copy(update={
+                "result": "Approved execution partially failed validation",
+                "authorization_required": True,
+                "next_step": (
+                    "Review executor failure evidence, replan failed actions, and authorize "
+                    "remaining operations before execution"
+                ),
+                "partial_failures": response.partial_failures + failure_details,
+            })
         return response.model_copy(update={
             "result": "Approved execution failed validation",
             "authorization_required": False,

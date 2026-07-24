@@ -146,3 +146,52 @@ class TestContentHydration:
         assert asst, "expected an assistant message"
         # tool_calls should be a list after hydration, not a string
         assert isinstance(asst[0].get("tool_calls"), list)
+
+
+class TestSearchVisibility:
+    """Window loads must match search_messages discoverability.
+
+    - Rewind/undo: active=0, compacted=0 → hidden
+    - Compaction archive: active=0, compacted=1 → still discoverable
+    """
+
+    def test_rewound_rows_excluded_from_window(self, db):
+        ids = _seed(db, n=10)
+        # Soft-delete from ids[6] inclusive (undo/rewind).
+        db.rewind_to_message("s1", ids[6])
+        view = db.get_messages_around("s1", ids[4], window=5)
+        window_ids = [m["id"] for m in view["window"]]
+        assert ids[4] in window_ids
+        for hidden in ids[6:]:
+            assert hidden not in window_ids
+        # Boundary count must not count rewound rows as "after".
+        assert view["messages_after"] == 1  # only ids[5] remains after anchor
+
+    def test_inactive_rewind_anchor_returns_empty(self, db):
+        ids = _seed(db, n=8)
+        # rewind_to_message requires a user-role target (even indices in _seed).
+        db.rewind_to_message("s1", ids[4])
+        # Anchor on a rewound (now inactive) row — must fail closed.
+        view = db.get_messages_around("s1", ids[5], window=3)
+        assert view["window"] == []
+        assert view["messages_before"] == 0
+        assert view["messages_after"] == 0
+
+    def test_compacted_rows_remain_discoverable(self, db):
+        ids = _seed(db, n=8)
+        # Archive live turns as compacted history; insert a summary head.
+        db.archive_and_compact(
+            "s1",
+            [{"role": "user", "content": "summary of earlier turns"}],
+        )
+        # Pre-compaction rows are active=0, compacted=1 and must still load.
+        view = db.get_messages_around("s1", ids[3], window=2)
+        window_ids = [m["id"] for m in view["window"]]
+        assert ids[3] in window_ids
+        assert ids[1] in window_ids
+        assert ids[5] in window_ids
+        # Fresh summary row is also search-visible (active=1).
+        summary_id = max(m["id"] for m in db.get_messages("s1", include_inactive=True))
+        assert summary_id not in ids
+        view_tail = db.get_messages_around("s1", summary_id, window=2)
+        assert any(m["id"] == summary_id for m in view_tail["window"])

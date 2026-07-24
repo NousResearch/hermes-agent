@@ -311,6 +311,46 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
+    def test_add_stdio_server_with_repeated_env_flags(self, tmp_path, capsys, monkeypatch):
+        """Multiple --env flags accumulate (action=append behavior)."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            # This simulates argparse's action=append: each --env appends to list
+            assert config["env"] == {
+                "FOO": "1",
+                "BAR": "2",
+                "BAZ": "3",
+            }
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        # Simulate repeated --env flags: --env FOO=1 --env BAR=2 --env BAZ=3
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["@mcp/github"],
+            env=["FOO=1", "BAR=2", "BAZ=3"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["github"]
+        assert srv["env"] == {
+            "FOO": "1",
+            "BAR": "2",
+            "BAZ": "3",
+        }
+
     def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
         """Invalid environment variable names are rejected up front."""
         from hermes_cli.mcp_config import cmd_mcp_add

@@ -1549,7 +1549,11 @@ def _target_file_identity(
     inputs: Mapping[str, Any],
     pre: Mapping[str, Any],
 ) -> tuple[int, int, int]:
-    if name.endswith("_unit") or name == "gateway_connector_drop_in":
+    if (
+        name.endswith("_unit")
+        or name.startswith("operational_edge_unit_")
+        or name == "gateway_connector_drop_in"
+    ):
         return 0, 0, 0o644
     if name == "gateway_config":
         mode = pre["mode"] if pre["state"] == "present" else 0o640

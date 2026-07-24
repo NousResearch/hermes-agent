@@ -42,6 +42,36 @@ def test_every_fixed_target_has_exactly_one_producer_source() -> None:
     }
 
 
+def test_every_fixed_target_has_an_install_identity() -> None:
+    inputs = _unit_inputs()
+    pre = {"state": "absent", "uid": None, "gid": None, "mode": None}
+
+    identities = {
+        name: producer._target_file_identity(
+            name,
+            inputs=inputs,
+            pre=pre,
+        )
+        for name in package.HOST_ARTIFACT_TARGETS
+    }
+
+    assert set(identities) == set(package.HOST_ARTIFACT_TARGETS)
+    assert all(
+        type(uid) is int
+        and type(gid) is int
+        and type(mode) is int
+        and uid >= 0
+        and gid >= 0
+        and 0 < mode <= 0o777
+        for uid, gid, mode in identities.values()
+    )
+    assert {
+        identity
+        for name, identity in identities.items()
+        if name.startswith("operational_edge_unit_")
+    } == {(0, 0, 0o644)}
+
+
 def test_release_sealed_payloads_reproduce_the_manifest(tmp_path: Path) -> None:
     release = _release(tmp_path)
     inputs = _unit_inputs()

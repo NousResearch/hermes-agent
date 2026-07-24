@@ -1,7 +1,7 @@
 ---
 name: pdf
 description: "Create, merge, split, fill, and secure PDF files."
-version: 1.0.0
+version: 1.1.0
 author: Anthropic (adapted by Nous Research)
 license: Proprietary. LICENSE.txt has complete terms
 platforms: [linux, macos, windows]
@@ -22,13 +22,19 @@ Use this skill whenever the user wants to do anything with PDF files: reading or
 
 ## Prerequisites
 
+On Hermes's Windows venv, `pypdf`, `pdfplumber`, `pdfminer.six`, and `pymupdf` are **already installed** — do not reinstall. `pdftotext`/`qpdf` (poppler/qpdf) are on PATH. Only install `reportlab` (for creation) or OCR extras (`pytesseract`, `pdf2image`, `tesseract-ocr`) if a task needs them.
+
+Other platforms: `pip install pypdf pdfplumber reportlab`; `apt install -y poppler-utils qpdf` (Linux) or `brew install poppler qpdf` (macOS).
+
+## Windows paths — critical
+
+Hermes's shell reports paths in MSYS form (`/c/Users/...`). Native tools (`pdftotext`, `qpdf`, Python `open()`, `pdfplumber`, `pypdf`) **cannot open `/c/...` paths** — they fail with "I/O Error: Couldn't open file". This is a path-format bug, not a sandbox block; the file is readable. Convert first:
+
 ```bash
-pip install pypdf pdfplumber reportlab
-which pdftotext || sudo apt install -y poppler-utils   # pdftotext, pdftoppm, pdfimages
-which qpdf || sudo apt install -y qpdf                 # CLI merge/split/decrypt
+winpath=$(cygpath -w "/c/Users/David/Downloads/file.pdf")   # -> C:\Users\David\Downloads\file.pdf
 ```
 
-macOS: `brew install poppler qpdf`. OCR extras: `pip install pytesseract pdf2image` + `sudo apt install -y tesseract-ocr`.
+In Python use a native path (`r"C:\Users\..."` or `"C:/Users/..."`), never `/c/...`. If a path still won't open, fall back to the bytes from `read_file`: `pdfplumber.open(io.BytesIO(data))` / `pypdf.PdfReader(io.BytesIO(data))`.
 
 > Script paths below are relative to this skill's directory. Form filling has its own workflow — read [forms.md](forms.md) and follow it. Advanced library usage (pypdfium2, pdf-lib) and troubleshooting: [reference.md](reference.md).
 
@@ -78,7 +84,7 @@ page.rotate(90)  # clockwise
 ```python
 import pdfplumber, pandas as pd
 
-with pdfplumber.open("document.pdf") as pdf:
+with pdfplumber.open(r"C:/Users/David/Downloads/document.pdf") as pdf:   # native path, NOT /c/Users/...
     text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     tables = [pd.DataFrame(t[1:], columns=t[0])
               for page in pdf.pages

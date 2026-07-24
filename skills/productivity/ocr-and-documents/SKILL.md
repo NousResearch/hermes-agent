@@ -1,7 +1,7 @@
 ---
 name: ocr-and-documents
 description: "Extract text from PDFs/scans (pymupdf, marker-pdf)."
-version: 2.3.0
+version: 2.4.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -17,6 +17,32 @@ For DOCX: see the `docx` skill (create/edit) or use `python-docx` for structured
 For PPTX: see the `powerpoint` skill (full create/read/edit support).
 For PDF manipulation (merge, split, forms, watermarks, creation): see the `pdf` skill.
 This skill covers **text extraction from PDFs and scanned documents**.
+
+## Hermes on Windows — read this first
+
+Hermes's shell reports paths in MSYS form (`/c/Users/David/Downloads/file.pdf`). Native tools — `pdftotext`, Python's `open()`, `pymupdf`, `pdfplumber`, `pypdf` — **cannot open `/c/...` paths** and fail with "I/O Error: Couldn't open file" or `FileNotFoundError`. This is NOT a sandbox restriction; the file is readable, the path form is wrong.
+
+**Rule:** before handing any path to Python or a native PDF tool, convert it to a native Windows path.
+
+```bash
+winpath=$(cygpath -w "/c/Users/David/Downloads/Valicen brandbook.pdf")   # -> C:\Users\David\Downloads\Valicen brandbook.pdf
+```
+
+In Python, use a raw Windows path or forward-slash drive form; never `/c/...`:
+
+```python
+path = r"C:\Users\David\Downloads\Valicen brandbook.pdf"   # or "C:/Users/David/Downloads/Valicen brandbook.pdf"
+```
+
+Bulletproof fallback: you already have `read_file`, which reads the bytes regardless of path form. Parse those bytes directly and skip the filesystem entirely:
+
+```python
+import io, pypdf                       # pre-installed
+data = <bytes from read_file>
+text = "\n".join(p.extract_text() or "" for p in pypdf.PdfReader(io.BytesIO(data)).pages)
+```
+
+**Pre-installed in Hermes's venv (do NOT pip install):** `pymupdf` (import as `fitz` or `pymupdf`), `pypdf`, `pdfplumber`, `pdfminer.six`. If `import fitz` raises `ModuleNotFoundError`, you are in the wrong interpreter — use the venv Python at `venv\Scripts\python.exe`, not a system Python.
 
 ## Step 1: Remote URL Available?
 
@@ -77,7 +103,7 @@ python scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
 ```bash
 python3 -c "
 import pymupdf
-doc = pymupdf.open('document.pdf')
+doc = pymupdf.open(r'C:/Users/David/Downloads/document.pdf')   # native Windows path, NOT /c/Users/...
 for page in doc:
     print(page.get_text())
 "

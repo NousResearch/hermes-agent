@@ -300,7 +300,7 @@ def _scroll_for_cursor(
 
 
 def _handle_active_search_key(
-    curses_mod, key: int, search: _SearchState
+    curses_mod, key: "int | str", search: _SearchState
 ) -> tuple[bool, bool, bool]:
     """Handle a key while the search prompt is active.
 
@@ -310,7 +310,7 @@ def _handle_active_search_key(
     if not search.active:
         return False, False, False
 
-    if key == 27:
+    if key in {27, "\x1b"}:
         # Esc stops search AND clears the query, restoring the full list (so a
         # no-match filter can't strand the user on an empty list). Signals
         # `changed` when there was a query so the driver resets scroll/cursor.
@@ -319,18 +319,22 @@ def _handle_active_search_key(
         search.query = ""
         return True, False, had_query
 
-    if key in (curses_mod.KEY_BACKSPACE, 127, 8):
+    if key in {curses_mod.KEY_BACKSPACE, 127, 8, "\x7f"}:
         search.query = search.query[:-1]
         return True, False, True
 
-    if key == 21:  # Ctrl+U
+    if key in {21, "\x15"}:  # Ctrl+U
         search.query = ""
         return True, False, True
 
-    if key in (curses_mod.KEY_ENTER, 10, 13):
+    if key in {curses_mod.KEY_ENTER, 10, 13, "\n", "\r"}:
         return True, True, False
 
-    if 32 <= key < 127:  # printable ASCII; avoids Latin-1 mojibake from 128-255
+    if isinstance(key, str) and key.isprintable():
+        search.query += key
+        return True, False, True
+
+    if isinstance(key, int) and 32 <= key < 127:  # printable ASCII fallback for getch()
         search.query += chr(key)
         return True, False, True
 
@@ -571,7 +575,10 @@ def _run_curses_menu(
                 stdscr.refresh()
 
                 if use_search:
-                    key = stdscr.getch()
+                    try:
+                        key = stdscr.get_wch()
+                    except AttributeError:
+                        key = stdscr.getch()
 
                     if search.active:
                         # Active search consumes query-editing keys; nav keys

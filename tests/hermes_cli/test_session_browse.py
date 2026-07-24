@@ -252,8 +252,9 @@ class TestCursesBrowse:
         mock_stdscr = MagicMock()
         mock_stdscr.getmaxyx.return_value = (30, 120)
         mock_stdscr.getch.side_effect = key_sequence
+        mock_stdscr.get_wch.side_effect = key_sequence
 
-        # Capture what curses.wrapper receives and call it with our mock
+        # Capture what curses.wrapper receives and call it with our mock stdscr
         with patch("curses.wrapper") as mock_wrapper:
             # When wrapper is called, invoke the function with our mock stdscr
             def run_inner(func):

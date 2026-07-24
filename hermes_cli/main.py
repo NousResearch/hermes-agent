@@ -1229,7 +1229,12 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                # Use get_wch() for Unicode (CJK/emoji) support; fall back
+                # to getch() on platforms/curses builds that lack it.
+                try:
+                    key = stdscr.get_wch()
+                except AttributeError:
+                    key = stdscr.getch()
 
                 if key in {curses.KEY_UP,}:
                     if filtered:
@@ -1237,11 +1242,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 elif key in {curses.KEY_DOWN,}:
                     if filtered:
                         cursor = (cursor + 1) % len(filtered)
-                elif key in {curses.KEY_ENTER, 10, 13}:
+                elif key in {curses.KEY_ENTER, 10, 13, "\n", "\r"}:
                     if filtered:
                         result_holder[0] = filtered[cursor]["id"]
                     return
-                elif key == 27:  # Esc
+                elif key in {27, "\x1b"}:  # Esc
                     if search_text:
                         # First Esc clears the search
                         search_text = ""
@@ -1251,7 +1256,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     else:
                         # Second Esc exits
                         return
-                elif key in {curses.KEY_BACKSPACE, 127, 8}:
+                elif key in {curses.KEY_BACKSPACE, 127, 8, "\x7f"}:
                     if search_text:
                         search_text = search_text[:-1]
                         if search_text:
@@ -1260,10 +1265,16 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                             filtered = list(sessions)
                         cursor = 0
                         scroll_offset = 0
-                elif key == ord("q") and not search_text:
+                elif key in {ord("q"), "q"} and not search_text:
                     return
-                elif 32 <= key <= 126:
-                    # Printable character → add to search filter
+                elif isinstance(key, str) and key.isprintable():
+                    # Printable character (including CJK/emoji) → add to filter
+                    search_text += key
+                    filtered = [s for s in sessions if _match(s, search_text)]
+                    cursor = 0
+                    scroll_offset = 0
+                elif isinstance(key, int) and 32 <= key <= 126:
+                    # Fallback: getch() returned printable ASCII
                     search_text += chr(key)
                     filtered = [s for s in sessions if _match(s, search_text)]
                     cursor = 0

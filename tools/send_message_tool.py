@@ -13,6 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from typing import Any, Awaitable, Callable
 
 from agent.redact import redact_sensitive_text
 from agent.secret_scope import get_secret
@@ -84,6 +85,53 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
 # more generous, so a conservative shared ceiling keeps behavior predictable.
 _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
+
+# ---------------------------------------------------------------------------
+# Plugin enricher registry for send_message
+# ---------------------------------------------------------------------------
+
+SendMessageEnricher = Callable[[dict, str, str, Any], Awaitable[dict] | dict]
+"""Callable receiving (args, chat_id, platform_name, pconfig) -> dict result.
+
+May be sync or async — the dispatcher detects coroutine functions via
+``inspect.iscoroutinefunction`` and awaits as needed.
+"""
+
+_SEND_MESSAGE_ENRICHERS: dict[str, SendMessageEnricher] = {}
+"""platform_name -> enricher handler."""
+
+_SEND_MESSAGE_SCHEMA_FRAGMENTS: dict[str, dict] = {}
+"""platform_name -> schema fragment dict (JSON Schema properties)."""
+
+
+def register_send_message_enricher(
+    platform_name: str,
+    handler: SendMessageEnricher,
+    schema_fragment: dict | None = None,
+) -> None:
+    """Register a platform-specific enricher for the send_message tool.
+
+    Enrichers let plugin platforms extend send_message with custom target
+    parsing, schema fields, and send logic without modifying core code.
+    """
+    _SEND_MESSAGE_ENRICHERS[platform_name] = handler
+    if schema_fragment:
+        _SEND_MESSAGE_SCHEMA_FRAGMENTS[platform_name] = schema_fragment
+
+
+def get_send_message_schema() -> dict:
+    """Return a fresh copy of the send_message schema with plugin fragments merged.
+
+    Fragments are assembled on demand so deferred plugin registration never
+    mutates the shared ``SEND_MESSAGE_SCHEMA`` dict. Callers that need the
+    current wire schema (e.g. tool-search builders, MCP catalogues) should use
+    this instead of reading ``SEND_MESSAGE_SCHEMA`` directly.
+    """
+    import copy
+    schema = copy.deepcopy(SEND_MESSAGE_SCHEMA)
+    for fragment in _SEND_MESSAGE_SCHEMA_FRAGMENTS.values():
+        schema["parameters"]["properties"].update(fragment)
+    return schema
 
 
 def _media_caption_split(text, media_files, *, max_caption_len):
@@ -375,21 +423,45 @@ def _handle_send(args):
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
+        resolution_failed = False
         try:
             from gateway.channel_directory import resolve_channel_name
             resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                parsed_chat_id, parsed_thread_id, _ = _parse_target_ref(
+                    platform_name, resolved
+                )
+                # Directory entries are trusted platform IDs.  Preserve an
+                # opaque plugin ID even when no built-in parser recognizes it.
+                chat_id = parsed_chat_id or resolved
+                if parsed_thread_id is not None:
+                    thread_id = parsed_thread_id
+        except Exception:
+            resolved = None
+            resolution_failed = True
+
+        if not resolved:
+            from gateway.config import Platform
+            from gateway.platform_registry import platform_registry
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            entry = platform_registry.get(platform_name)
+            is_builtin = platform_name in {member.value for member in Platform}
+            if entry is not None and entry.source == "plugin" and not is_builtin:
+                # Registered plugin platforms may use opaque IDs unknown to
+                # core.  Their adapter owns final target validation.
+                chat_id = target_ref
+            elif resolution_failed:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Try using a numeric channel ID instead."
+                })
             else:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
                     f"Use send_message(action='list') to see available targets."
                 })
-        except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -406,7 +478,10 @@ def _handle_send(args):
     try:
         platform = Platform(platform_name)
     except (ValueError, KeyError):
-        return tool_error(f"Unknown platform: {platform_name}")
+        if platform_name in _SEND_MESSAGE_ENRICHERS:
+            platform = platform_name
+        else:
+            return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
@@ -496,6 +571,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                args=args,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -611,6 +687,26 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # XMPP JIDs (user@server or room@conference.server) are explicit
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
+
+    # Plugin platforms may register a custom target parser via PlatformEntry.
+    # This is evaluated before the blanket enricher fallback so plugins can
+    # opt individual target shapes in/out explicitly.
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_name)
+        if entry is not None and entry.parse_target_ref_fn is not None:
+            parsed = entry.parse_target_ref_fn(target_ref)
+            if parsed is not None:
+                chat_id, thread_id = parsed
+                return chat_id, thread_id, True
+    except Exception:
+        pass
+
+    # Plugin-enriched platforms (legacy blanket fallback)
+    if platform_name in _SEND_MESSAGE_ENRICHERS:
+        if target_ref:
+            return target_ref, None, True
+        return None, None, False
     return None, None, False
 
 
@@ -774,7 +870,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -782,6 +878,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
 
     media_files = media_files or []
 
@@ -1135,6 +1233,19 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
+            enricher = _SEND_MESSAGE_ENRICHERS.get(platform_name)
+            if enricher:
+                if args is None:
+                    args = {}
+                try:
+                    import inspect
+                    if inspect.iscoroutinefunction(enricher):
+                        result = await enricher(args, chat_id, platform_name, pconfig)
+                    else:
+                        result = enricher(args, chat_id, platform_name, pconfig)
+                    return result
+                except Exception as e:
+                    return {"error": f"Enricher send failed: {e}"}
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
             result = await _send_via_adapter(

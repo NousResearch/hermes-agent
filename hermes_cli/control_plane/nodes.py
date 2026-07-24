@@ -704,8 +704,32 @@ class NodeRegistry:
 
     def reconcile(self, node_id: str) -> ReconciliationResult:
         """Compare desired policy with the latest report without taking action."""
-        policy = self.get_policy(node_id)
-        observation = self.latest_observation(node_id)
+        node_id = _required_text(node_id, "node_id")
+        with self.connect() as conn:
+            conn.execute("BEGIN")
+            if (
+                conn.execute(
+                    "SELECT 1 FROM managed_nodes WHERE id = ?", (node_id,)
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(node_id)
+            policy_row = conn.execute(
+                "SELECT * FROM managed_node_policies WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            observation_row = conn.execute(
+                """
+                SELECT * FROM managed_node_observations
+                WHERE node_id = ? ORDER BY report_sequence DESC LIMIT 1
+                """,
+                (node_id,),
+            ).fetchone()
+            policy = self._policy(policy_row) if policy_row is not None else None
+            observation = (
+                self._observation(observation_row)
+                if observation_row is not None
+                else None
+            )
         drift: list[dict[str, Any]] = []
         if policy is None:
             drift.append({"path": "policy", "reason": "missing_policy"})

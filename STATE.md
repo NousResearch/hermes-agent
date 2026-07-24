@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 04:52 PDT (UTC-07:00)
+Last verification time: 2026-07-24 04:56 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -61,8 +61,8 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 - Root: `/home/len/hermes-agent`
 - Branch: `main`
-- Current HEAD: `3b97f1e9da64c`
-- Upstream relation at this verification: 20 commits ahead of `origin/main`
+- Current HEAD: `fa4dee2a6`
+- Upstream relation at this verification: 21 commits ahead of `origin/main`
 - `DESIRED.md` is an untracked user file and was left untouched
 - Python environment: repository-local `.venv`
 - Repository-local generated state: `.tmp`, `.cache`, `.tools`, and `.venv`
@@ -140,7 +140,9 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 - Added revisioned declarative desired policy for health and required
   capabilities plus read-only reconciliation. Reconciliation reports
   deterministic field-level drift and never dispatches work, runs commands, or
-  remediates state.
+  remediates state. Policy and latest observation are read from one explicit
+  SQLite snapshot so concurrent writes cannot create a mixed reconciliation
+  result that never existed.
 - Added consistent API and `hermes harness nodes` views for report submission,
   latest observation, policy updates/views, and reconciliation over the same
   `control-plane.db`. Accepted observations and policy changes extend the
@@ -154,7 +156,7 @@ the snapshot is stale; reconcile any discovered drift back into this file.
   misleading-length handling. Unknown-node observations now return the same
   authentication failure as invalid credentials, while operator routes remain
   dashboard-auth protected.
-- Verified the review fixes with 36 control-plane tests, production-app
+- Verified the review fixes with 37 control-plane tests, production-app
   OpenAPI/auth/body-stream assertions, repository-wide Ruff, touched-file Ruff
   formatting checks, and `git diff --check`.
 

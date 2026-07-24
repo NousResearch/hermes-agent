@@ -559,3 +559,74 @@ def test_policy_revision_and_reconciliation_drift_then_convergence(registry):
         "node.observation_accepted",
     ]
     assert registry.verify_audit_chain()
+
+
+def test_reconcile_reads_policy_and_observation_from_one_snapshot(
+    registry, monkeypatch
+):
+    monkeypatch.setattr("hermes_state.is_sqlite_wal_reset_vulnerable", lambda: False)
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    registry.set_policy(
+        "node-1",
+        actor="operator:alice",
+        schema_version=1,
+        desired_health_state="healthy",
+        capabilities={},
+        expected_revision=0,
+    )
+    registry.submit_observation(
+        "node-1",
+        credential=issuance.credential,
+        schema_version=1,
+        report_sequence=1,
+        observed_at=900,
+        health_state="healthy",
+        capabilities={},
+    )
+
+    original_policy = registry._policy
+    write_completed = False
+
+    def update_both_after_policy_read(row):
+        nonlocal write_completed
+        policy = original_policy(row)
+        if write_completed:
+            return policy
+        with sqlite3.connect(registry.db_path) as writer:
+            writer.execute("PRAGMA foreign_keys=ON")
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                """
+                UPDATE managed_node_policies
+                SET desired_health_state = 'degraded', revision = 2, updated_at = 1001
+                WHERE node_id = 'node-1'
+                """
+            )
+            writer.execute(
+                """
+                INSERT INTO managed_node_observations (
+                    node_id, report_sequence, schema_version, observed_at,
+                    received_at, health_state, capabilities_json
+                ) VALUES ('node-1', 2, 1, 901, 1001, 'degraded', '{}')
+                """
+            )
+        write_completed = True
+        return policy
+
+    monkeypatch.setattr(registry, "_policy", update_both_after_policy_read)
+
+    result = registry.reconcile("node-1")
+
+    assert write_completed
+    assert result.policy.desired_health_state == "healthy"
+    assert result.observation.health_state == "healthy"
+    assert result.in_sync
+    assert result.drift == []
+    assert registry.get_policy("node-1").desired_health_state == "degraded"
+    assert registry.latest_observation("node-1").health_state == "degraded"

@@ -32,7 +32,7 @@ def transform_from_pdf_coords(bbox, pdf_height):
 
 def fill_pdf_form(input_pdf_path, fields_json_path, output_pdf_path):
     
-    with open(fields_json_path, "r") as f:
+    with open(fields_json_path, "r", encoding="utf-8") as f:
         fields_data = json.load(f)
     
     reader = PdfReader(input_pdf_path)

@@ -6,7 +6,14 @@ has its own ``.env`` with its own provider keys and platform tokens, so we
 profile A's keys to profile B's turns, and to every subprocess spawned with
 ``env=dict(os.environ)``).
 
-This module provides a fail-closed, context-local secret scope:
+Instead each profile turn gets a fail-closed, context-local secret scope
+(``build_profile_secret_scope``). A profile's scope is **layered**: it starts
+from the global/default home's ``.env`` (a shared credential baseline so a
+deployment-common key like ``OPENROUTER_API_KEY`` doesn't have to be copied
+into every profile), then overlays the profile's own ``.env``. Only this
+context-local dict is affected — nothing is written to ``os.environ`` — so
+sibling profiles stay isolated from each other (each sees the global baseline
+plus its own secrets, never another profile's):
 
 - ``set_secret_scope(mapping)`` installs the active profile's secrets for the
   current task (a contextvar, so it propagates into the agent's worker thread
@@ -211,25 +218,66 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
-def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from its ``<home>/.env``.
+def _resolve_global_home(profile_home: Path) -> Optional[Path]:
+    """Return the global/default HERMES_HOME a profile inherits from, or None.
 
-    Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
-    global vars are intentionally NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` directly, so the scope holds only profile secrets.
+    Profiles live at ``<hermes_home>/profiles/<name>``; their shared baseline is
+    ``<hermes_home>`` (the ``default`` profile's home). This is resolved by path
+    shape (``parent.name == "profiles"``) rather than via ``get_hermes_home()``,
+    because inside a multiplex turn ``HERMES_HOME`` is overridden to the active
+    profile's home — a lookup there would return the profile, not the global
+    root. Returns ``None`` for the ``default`` profile itself (it IS the global
+    home) and for any non-standard layout, preserving legacy behavior.
+    """
+    home = Path(profile_home).resolve()
+    if home.parent.name == "profiles":
+        return home.parent.parent
+    return None
+
+
+def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
+    """Build a profile's secret mapping, inheriting the global default home.
+
+    The scope is layered (each later layer overrides the previous):
+
+    1. The global/default home's ``.env`` and external-secret snapshot — a
+       shared credential baseline so profiles don't each have to duplicate
+       deployment-common keys (e.g. a shared ``OPENROUTER_API_KEY``).
+    2. The profile's own ``.env`` and external-secret snapshot — profile-specific
+       values override the global baseline.
+
+    Genuinely global vars (``_is_global_env``) are skipped from the external
+    snapshots; ``get_secret`` reads those from ``os.environ`` directly. The
+    result is a fresh dict, safe for ``set_secret_scope``. Only this
+    context-local scope dict is affected — nothing is written to ``os.environ``,
+    and sibling profiles stay isolated (each sees only the global baseline plus
+    its own secrets, never another profile's).
     """
     home = Path(hermes_home)
-    secrets = load_env_file(home / ".env")
+    secrets: Dict[str, str] = {}
 
     try:
         from hermes_cli.env_loader import get_secret_source_values
-        external_secrets = get_secret_source_values(home)
     except Exception:
-        external_secrets = {}
+        get_secret_source_values = None  # type: ignore[assignment]
 
-    for key, value in external_secrets.items():
-        if _is_global_env(key):
-            continue
-        secrets[key] = value
+    def _merge_external(scope_home: Path) -> None:
+        if get_secret_source_values is None:
+            return
+        try:
+            for key, value in get_secret_source_values(scope_home).items():
+                if _is_global_env(key):
+                    continue
+                secrets[key] = value
+        except Exception:
+            pass
+
+    global_home = _resolve_global_home(home)
+    if global_home is not None:
+        secrets.update(load_env_file(global_home / ".env"))
+        _merge_external(global_home)
+
+    secrets.update(load_env_file(home / ".env"))
+    _merge_external(home)
 
     return secrets

@@ -96,18 +96,115 @@ Quality bar:
   templates in `templates/`."""
 
 
+def parse_learn_request(user_request: str) -> tuple[str | None, str]:
+    """Split a ``/learn`` argument into ``(update_target, remaining_text)``.
+
+    ``/learn`` accepts exactly one flag — ``--update <skill>`` — and only when
+    it leads the argument. This is the single source of truth for that parsing
+    so the CLI, gateway, and TUI surfaces never re-implement it.
+
+    Returns:
+        ``(None, stripped_request)`` for an ordinary create-mode request, so
+        the create path stays byte-identical to the pre-``--update`` behavior.
+        ``(skill_name, notes)`` when ``--update`` leads the argument;
+        ``skill_name`` is ``""`` when the user typed ``--update`` without
+        naming a skill (still update mode — never create).
+    """
+    req = (user_request or "").strip()
+    if not req:
+        return None, ""
+
+    tokens = req.split(None, 1)
+    first = tokens[0]
+    rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+    if first == "--update":
+        if not rest:
+            return "", ""
+        name_parts = rest.split(None, 1)
+        target = name_parts[0]
+        notes = name_parts[1].strip() if len(name_parts) > 1 else ""
+        return target, notes
+
+    return None, req
+
+
+def _build_update_prompt(skill_name: str, notes: str) -> str:
+    """Build the agent prompt for ``/learn --update <skill> [notes]``.
+
+    Update mode edits an EXISTING skill in place: read it with ``skill_view``,
+    then apply ``skill_manage`` ``patch`` (small fixes) or ``edit`` (major
+    rewrite). It never authors a new skill. Carries the same authoring
+    standards so an edited skill still matches house style.
+    """
+    name = (skill_name or "").strip()
+    notes = (notes or "").strip()
+
+    if name:
+        target_line = f"SKILL TO UPDATE: {name}\n\n"
+        read_step = (
+            f"1. Read the current skill first with `skill_view(\"{name}\")` so "
+            "you edit the real content rather than a guess. If no skill by "
+            "that name exists, say so and use `skills_list` to help the user "
+            "pick the right one — do not author a brand-new skill.\n"
+        )
+    else:
+        target_line = "SKILL TO UPDATE: (the user did not name one)\n\n"
+        read_step = (
+            "1. The user ran `/learn --update` without naming a skill. Use "
+            "`skills_list` to find the one they mean (ask if it is ambiguous), "
+            "then read it with `skill_view` — do not author a brand-new "
+            "skill.\n"
+        )
+
+    if notes:
+        change_line = f"WHAT TO CHANGE:\n{notes}\n\n"
+    else:
+        change_line = (
+            "WHAT TO CHANGE:\nThe user did not spell out the change — infer the "
+            "stale, missing, or incorrect parts from the current skill and the "
+            "conversation so far (errors hit, steps that were wrong or "
+            "missing) and improve those.\n\n"
+        )
+
+    return (
+        "[/learn --update] The user wants you to update an EXISTING skill in "
+        "place, not author a new one.\n\n"
+        f"{target_line}"
+        f"{change_line}"
+        "Do this:\n"
+        f"{read_step}"
+        "2. Apply the change with the `skill_manage` tool. Prefer "
+        "action=\"patch\" (old_string/new_string) for small, targeted fixes — "
+        "a typo, an added pitfall, a corrected command, a tightened trigger. "
+        "Use action=\"edit\" (full SKILL.md rewrite) ONLY for a major "
+        "overhaul. Never author a brand-new skill in update mode, and do not "
+        "change the skill's name or directory.\n\n"
+        f"{_AUTHORING_STANDARDS}\n\n"
+        "When done, tell the user the skill name and a one-line summary of "
+        "what you changed."
+    )
+
+
 def build_learn_prompt(user_request: str) -> str:
     """Build the agent prompt for an open-ended ``/learn`` request.
 
     Args:
         user_request: the free-text the user gave after ``/learn`` — a
             description of the workflow, paths, URLs, or "what I just did".
+            A leading ``--update <skill>`` switches to in-place update mode
+            (edit an existing skill via ``skill_manage`` patch/edit) instead
+            of authoring a new one.
 
     Returns:
         A complete instruction the agent runs as a normal turn. The agent
         gathers the described sources with its existing tools and authors the
         skill via ``skill_manage``.
     """
+    update_target, notes = parse_learn_request(user_request)
+    if update_target is not None:
+        return _build_update_prompt(update_target, notes)
+
     req = (user_request or "").strip()
     if not req:
         req = (

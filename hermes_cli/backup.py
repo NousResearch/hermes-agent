@@ -336,28 +336,31 @@ def verify_sqlite_integrity(
         result["message"] = f"too small ({st.st_size} bytes) to be a valid SQLite database"
         return result
 
-    if max_bytes > 0 and st.st_size > max_bytes:
-        result["message"] = (
-            f"size {st.st_size:,} bytes exceeds max_bytes {max_bytes:,}; "
-            "skipping PRAGMA integrity_check to avoid reading a very large file"
-        )
-        result["valid"] = True
-        result["message"] += " (size-only check passed)"
+    oversized = max_bytes > 0 and st.st_size > max_bytes
 
     if check_header:
         try:
             with open(path, "rb") as f:
                 head = f.read(len(_SQLITE_HEADER))
             if head != _SQLITE_HEADER:
+                result["valid"] = False
                 result["message"] = (
                     f"missing SQLite header magic (got {head[:16].hex()!r})"
                 )
                 return result
         except OSError as exc:
+            result["valid"] = False
             result["message"] = f"cannot read header: {exc}"
             return result
 
-    if run_pragma and max_bytes > 0 and st.st_size > max_bytes:
+    if oversized:
+        # Too large to page through PRAGMA integrity_check; the header check
+        # above (which catches the #68474 zeroed signature) is the gate.
+        result["valid"] = True
+        result["message"] = (
+            f"size {st.st_size:,} bytes exceeds max_bytes {max_bytes:,}; "
+            "skipped PRAGMA integrity_check (header check passed)"
+        )
         run_pragma = False
 
     if run_pragma:

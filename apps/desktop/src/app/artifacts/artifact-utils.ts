@@ -70,6 +70,32 @@ function looksLikeArtifact(value: string): boolean {
   return value.startsWith('/') && value.includes('.')
 }
 
+function normalizedArtifactPathForFiltering(value: string): string {
+  if (/^file:\/\//i.test(value)) {
+    try {
+      return decodeURIComponent(new URL(value).pathname).replace(/\\/g, '/').toLowerCase()
+    } catch {
+      // Fall through to string normalization for malformed file URLs.
+    }
+  }
+
+  return value.replace(/\\/g, '/').toLowerCase()
+}
+
+function isDependencyCacheArtifact(value: string): boolean {
+  const normalizedPath = normalizedArtifactPathForFiltering(value)
+
+  return (
+    normalizedPath.includes('/.cache/pip/') ||
+    normalizedPath.includes('/library/caches/pip/') ||
+    normalizedPath.includes('/appdata/local/pip/cache/')
+  )
+}
+
+function shouldIndexArtifact(value: string): boolean {
+  return looksLikeArtifact(value) && !isDependencyCacheArtifact(value)
+}
+
 function artifactKind(value: string): ArtifactKind {
   if (value.startsWith('data:image/') || IMAGE_EXT_RE.test(value)) {
     return 'image'
@@ -236,7 +262,7 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
         return
       }
 
-      if ((KEY_HINT_RE.test(keyPath) || looksLikePathOrUrl(normalized)) && looksLikeArtifact(normalized)) {
+      if ((KEY_HINT_RE.test(keyPath) || looksLikePathOrUrl(normalized)) && shouldIndexArtifact(normalized)) {
         pushValue(normalized)
       }
     })
@@ -255,7 +281,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
     collectArtifactsFromMessage(message, candidate => {
       const value = normalizeValue(candidate)
 
-      if (!value || !looksLikeArtifact(value)) {
+      if (!value || !shouldIndexArtifact(value)) {
         return
       }
 

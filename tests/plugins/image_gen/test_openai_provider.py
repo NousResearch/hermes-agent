@@ -225,6 +225,60 @@ class TestGenerate:
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
 
+    def test_base_url_unset_keeps_noarg_openai_constructor(self, provider, monkeypatch, tmp_path):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {"openai": {}}}))
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.args == ()
+        assert fake_openai.OpenAI.call_args.kwargs == {}
+
+    def test_base_url_is_passed_to_openai_client_for_generate(self, provider, monkeypatch, tmp_path):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"base_url": "https://example.test/v1/"}}})
+        )
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.kwargs["base_url"] == "https://example.test/v1"
+        assert fake_client.images.generate.called
+
+    def test_base_url_is_passed_to_openai_client_for_edit(self, provider, monkeypatch, tmp_path):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"base_url": "https://example.test/v1"}}})
+        )
+        image_path = tmp_path / "source.png"
+        image_path.write_bytes(bytes.fromhex(_PNG_HEX))
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat", image_url=str(image_path))
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.kwargs["base_url"] == "https://example.test/v1"
+        assert fake_client.images.edit.called
+
     @pytest.mark.parametrize("tier,expected_quality", [
         ("gpt-image-2-low", "low"),
         ("gpt-image-2-medium", "medium"),

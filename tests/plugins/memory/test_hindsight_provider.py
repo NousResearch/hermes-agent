@@ -25,6 +25,7 @@ from plugins.memory.hindsight import (
     _build_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
+    _parse_float_setting,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
 )
@@ -252,6 +253,49 @@ def test_normalize_observation_scopes_list_of_lists():
         ["user:alice"],
         ["team:eng"],
     ]
+
+
+# ---------------------------------------------------------------------------
+# _parse_float_setting tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseFloatSetting:
+    """Validate guarded float parsing mirrors _parse_float_setting contract."""
+
+    def test_valid_float(self):
+        assert _parse_float_setting(3.5, 5.0) == 3.5
+
+    def test_valid_string(self):
+        assert _parse_float_setting("2.5", 5.0) == 2.5
+
+    def test_valid_int(self):
+        assert _parse_float_setting(3, 5.0) == 3.0
+
+    def test_zero_is_valid(self):
+        assert _parse_float_setting(0, 5.0) == 0.0
+
+    def test_none_returns_default(self):
+        assert _parse_float_setting(None, 5.0) == 5.0
+
+    def test_empty_string_returns_default(self):
+        assert _parse_float_setting("", 5.0) == 5.0
+
+    def test_invalid_string_returns_default(self):
+        assert _parse_float_setting("not-a-number", 5.0) == 5.0
+
+    def test_negative_returns_default(self):
+        assert _parse_float_setting(-1.0, 5.0) == 5.0
+
+    def test_negative_string_returns_default(self):
+        assert _parse_float_setting("-3", 5.0) == 5.0
+
+    @pytest.mark.parametrize("value", ["nan", "NaN", "inf", "Infinity", "1e309"])
+    def test_non_finite_value_returns_default(self, value):
+        assert _parse_float_setting(value, 5.0) == 5.0
+
+    def test_excessively_large_value_returns_default(self):
+        assert _parse_float_setting("1e20", 5.0) == 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -1241,6 +1285,87 @@ class TestSessionSwitchBufferFlush:
         provider._client.aretain_batch.assert_not_called()
         assert provider._session_id == "new-sid"
 
+    def test_prefetch_join_timeout_default(self, provider_with_config):
+        """Default prefetch_join_timeout should be 5.0."""
+        p = provider_with_config()
+        assert p._prefetch_join_timeout == 5.0
+
+    def test_prefetch_join_timeout_from_config(self, provider_with_config):
+        """Config value should be respected."""
+        p = provider_with_config(prefetch_join_timeout=10.0)
+        assert p._prefetch_join_timeout == 10.0
+
+    def test_prefetch_join_timeout_zero(self, provider_with_config):
+        """Zero is a valid non-blocking timeout."""
+        p = provider_with_config(prefetch_join_timeout=0)
+        assert p._prefetch_join_timeout == 0.0
+
+    def test_prefetch_join_timeout_invalid_uses_default(self, provider_with_config):
+        """Invalid config value should fall back to default."""
+        p = provider_with_config(prefetch_join_timeout="garbage")
+        assert p._prefetch_join_timeout == 5.0
+
+    def test_prefetch_join_timeout_negative_uses_default(self, provider_with_config):
+        """Negative value should fall back to default."""
+        p = provider_with_config(prefetch_join_timeout=-5)
+        assert p._prefetch_join_timeout == 5.0
+
+    def test_prefetch_uses_configured_timeout(self, provider_with_config):
+        """prefetch() passes the configured timeout to the worker join."""
+        p = provider_with_config(prefetch_join_timeout=0.1)
+        p._prefetch_thread = MagicMock()
+        p._prefetch_thread.is_alive.return_value = True
+
+        p.prefetch("test")
+
+        p._prefetch_thread.join.assert_called_once_with(timeout=0.1)
+
+    def test_session_switch_uses_configured_timeout(self, provider_with_config):
+        """Session switch uses the configured timeout while draining work."""
+        p = provider_with_config(prefetch_join_timeout=0.1)
+        p._prefetch_thread = MagicMock()
+        p._prefetch_thread.is_alive.return_value = True
+
+        p.on_session_switch("new-sid")
+
+        p._prefetch_thread.join.assert_called_once_with(timeout=0.1)
+
+    def test_shutdown_uses_fixed_prefetch_grace_timeout(self, provider_with_config):
+        """Shutdown keeps a bounded cleanup grace period independent of latency tuning."""
+        p = provider_with_config(prefetch_join_timeout=0)
+        p._prefetch_thread = MagicMock()
+        p._prefetch_thread.is_alive.return_value = True
+        p._client.aclose = AsyncMock()
+
+        p.shutdown()
+
+        p._prefetch_thread.join.assert_called_once_with(timeout=5.0)
+
+    def test_late_old_session_prefetch_cannot_write_after_session_switch(
+        self, provider_with_config, monkeypatch
+    ):
+        """A zero-wait switch must discard a late result from the old session."""
+        import threading
+
+        p = provider_with_config(prefetch_join_timeout=0)
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocked_operation(_operation):
+            started.set()
+            assert release.wait(timeout=2.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="old-session memory")])
+
+        monkeypatch.setattr(p, "_run_hindsight_operation", _blocked_operation)
+        p.queue_prefetch("old-session query")
+        assert started.wait(timeout=1.0)
+
+        p.on_session_switch("new-session")
+        release.set()
+        p._prefetch_thread.join(timeout=1.0)
+
+        assert p._prefetch_result == ""
+
     def test_prefetch_result_cleared_on_switch(self, provider):
         """Stale recall text from the old session must not leak into the
         next session's first prefetch read."""
@@ -1250,30 +1375,12 @@ class TestSessionSwitchBufferFlush:
         # And subsequent prefetch() should now report empty, not the leftover.
         assert provider.prefetch("anything") == ""
 
-    def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
-        """on_session_switch must wait for an in-flight prefetch from the
-        old session to settle before clearing _prefetch_result, otherwise
-        the thread can race and re-populate the field after the clear."""
-        import threading
+    def test_session_switch_clears_completed_prefetch_result(self, provider):
+        """A completed old-session prefetch result must not enter the new session."""
+        provider._prefetch_result = "old-session recall"
 
-        gate = threading.Event()
-        finished = threading.Event()
-
-        def _slow_prefetch():
-            gate.wait(timeout=5.0)
-            with provider._prefetch_lock:
-                provider._prefetch_result = "old-session recall"
-            finished.set()
-
-        provider._prefetch_thread = threading.Thread(target=_slow_prefetch, daemon=True)
-        provider._prefetch_thread.start()
-
-        # Release the prefetch worker so it writes _prefetch_result, then
-        # call on_session_switch — it must join the thread before clearing.
-        gate.set()
         provider.on_session_switch("new-sid")
 
-        assert finished.is_set(), "switch returned before prefetch thread settled"
         assert provider._prefetch_result == ""
 
     def test_flush_serializes_behind_pending_retains_via_writer_queue(

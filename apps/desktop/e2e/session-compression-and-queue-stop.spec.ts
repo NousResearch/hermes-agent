@@ -122,11 +122,21 @@ auxiliary:
     // A normal message crosses the tiny configured context budget. The mock
     // blocks only the resulting summary request, so these assertions run
     // during automatic compaction rather than a slash-command path.
+    //
+    // The repeat count must overshoot the 22k threshold decisively: the
+    // request estimate includes the system prompt, whose bundled-skills
+    // listing shrinks/grows as skills are added, moved to optional-skills/,
+    // or absorbed. At 500 repeats the margin over threshold was <250 tokens
+    // and a skills-tree cleanup (July 2026) pushed the request under the
+    // threshold, so compaction never fired and this test timed out. 1500
+    // repeats (~12k tokens) gives an ~8k-token cushion while staying well
+    // under the 64k mock context and leaving the two small history turns
+    // below threshold.
     await pasteAndSend(page, 'E2E_COMPACTION_HISTORY_ONE '.repeat(5))
     await waitForTranscript(page, MOCK_REPLY)
     await pasteAndSend(page, 'E2E_COMPACTION_HISTORY_TWO '.repeat(5))
     await waitForTranscript(page, MOCK_REPLY)
-    await pasteAndSend(page, 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(500))
+    await pasteAndSend(page, 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(1500))
     await fixture.mock.waitForHeldCompletion()
     await expect(page.getByRole('status', { name: 'Summarizing thread' }).last()).toBeVisible()
 

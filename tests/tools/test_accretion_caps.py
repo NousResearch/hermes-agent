@@ -7,6 +7,7 @@ unbounded in long-running CLI / gateway sessions:
   file_tools._read_tracker[task_id]
     ├─ read_history (set)      — one entry per unique (path, offset, limit)
     ├─ dedup (dict)            — one entry per unique (path, offset, limit)
+    ├─ path_coverage (dict)    — one entry per unique resolved path
     └─ read_timestamps (dict)  — one entry per unique resolved path
   process_registry._completion_consumed (set) — one entry per session_id
     ever polled / waited / logged
@@ -78,26 +79,66 @@ class TestReadTrackerCaps:
         assert "/path/7" in task_data["read_timestamps"]
         assert "/path/0" not in task_data["read_timestamps"]
 
+    def test_path_coverage_capped_oldest_first(self, monkeypatch):
+        """path_coverage dict is bounded; oldest path entries are evicted first."""
+        from tools import file_tools as ft
+
+        monkeypatch.setattr(ft, "_PATH_COVERAGE_CAP", 4)
+        task_data = {
+            "read_history": set(),
+            "dedup": {},
+            "path_coverage": {
+                f"/path/{i}": {"mtime": float(i), "intervals": [(1, 10)]}
+                for i in range(10)
+            },
+            "read_timestamps": {},
+        }
+        ft._cap_read_tracker_data(task_data)
+        assert len(task_data["path_coverage"]) == 4
+        assert "/path/9" in task_data["path_coverage"]
+        assert "/path/6" in task_data["path_coverage"]
+        assert "/path/0" not in task_data["path_coverage"]
+
+    def test_path_coverage_interval_cap_bounds_one_file(self, monkeypatch):
+        """One highly fragmented file cannot grow coverage intervals forever."""
+        from tools import file_tools as ft
+        from tools.read_coverage import record_path_coverage
+
+        monkeypatch.setattr(ft, "_PATH_COVERAGE_INTERVAL_CAP", 3)
+        task_data = {"path_coverage": {}}
+        for line in range(1, 101, 10):
+            record_path_coverage(
+                task_data, "/big", 1.0, line, 1,
+                ft._PATH_COVERAGE_INTERVAL_CAP,
+            )
+
+        intervals = task_data["path_coverage"]["/big"]["intervals"]
+        assert len(intervals) <= 3
+
     def test_cap_is_idempotent_under_cap(self, monkeypatch):
         """When containers are under cap, _cap_read_tracker_data is a no-op."""
         from tools import file_tools as ft
 
         monkeypatch.setattr(ft, "_READ_HISTORY_CAP", 100)
         monkeypatch.setattr(ft, "_DEDUP_CAP", 100)
+        monkeypatch.setattr(ft, "_PATH_COVERAGE_CAP", 100)
         monkeypatch.setattr(ft, "_READ_TIMESTAMPS_CAP", 100)
         task_data = {
             "read_history": {("/a", 0, 500), ("/b", 0, 500)},
             "dedup": {("/a", 0, 500): 1.0},
+            "path_coverage": {"/a": {"mtime": 1.0, "intervals": [(1, 500)]}},
             "read_timestamps": {"/a": 1.0},
         }
         rh_before = set(task_data["read_history"])
         dedup_before = dict(task_data["dedup"])
+        coverage_before = dict(task_data["path_coverage"])
         ts_before = dict(task_data["read_timestamps"])
 
         ft._cap_read_tracker_data(task_data)
 
         assert task_data["read_history"] == rh_before
         assert task_data["dedup"] == dedup_before
+        assert task_data["path_coverage"] == coverage_before
         assert task_data["read_timestamps"] == ts_before
 
     def test_cap_handles_missing_containers(self):
@@ -114,6 +155,7 @@ class TestReadTrackerCaps:
 
         monkeypatch.setattr(ft, "_READ_HISTORY_CAP", 3)
         monkeypatch.setattr(ft, "_DEDUP_CAP", 3)
+        monkeypatch.setattr(ft, "_PATH_COVERAGE_CAP", 3)
         monkeypatch.setattr(ft, "_READ_TIMESTAMPS_CAP", 3)
 
         # Create 10 distinct files and read each once.
@@ -126,6 +168,7 @@ class TestReadTrackerCaps:
             td = ft._read_tracker["long-session"]
             assert len(td["read_history"]) <= 3
             assert len(td["dedup"]) <= 3
+            assert len(td.get("path_coverage", {})) <= 3
             # read_timestamps is populated lazily (via setdefault) only
             # when os.path.getmtime() succeeds. On some CI filesystems
             # that stat can race with file creation — skip rather than

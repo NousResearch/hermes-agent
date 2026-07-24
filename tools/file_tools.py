@@ -17,6 +17,12 @@ from tools.file_operations import (
     normalize_read_pagination,
     normalize_search_pagination,
 )
+from tools.read_coverage import (
+    cap_path_coverage,
+    first_uncovered_interval,
+    get_path_coverage,
+    record_path_coverage,
+)
 from tools import file_state
 from agent.redact import redact_sensitive_text
 
@@ -738,6 +744,9 @@ _file_ops_cache: dict = {}
 #                   Used to skip re-reads of unchanged files.  Reset on
 #                   context compression (the original content is summarised
 #                   away so the model needs the full content again).
+#   "path_coverage": dict mapping resolved_path → {mtime, intervals}.
+#                    Used to skip or narrow re-reads of unchanged line ranges
+#                    even when the model changes offset/limit.
 #   "read_timestamps": dict mapping resolved_path → modification-time float
 #                      recorded when the file was last read (or written) by
 #                      this task.  Used by write_file and patch to detect
@@ -792,12 +801,37 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
 # accretion to a few hundred KB regardless of session length.
 _READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
 _DEDUP_CAP = 1000             # dict; skip-identical-reread guard
+_PATH_COVERAGE_CAP = 1000     # dict; skip/narrow overlapping re-read guard
+_PATH_COVERAGE_INTERVAL_CAP = 128  # intervals retained for any one path
 _READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
 _READ_DEDUP_STATUS_MESSAGE = (
     "File unchanged since last read. The content from "
     "the earlier read_file result in this conversation is "
     "still current — refer to that instead of re-reading."
 )
+_READ_ALREADY_LOADED_STATUS_MESSAGE = (
+    "Requested lines were already returned by an earlier read_file result for "
+    "this unchanged file. Use that prior output instead of re-reading; use "
+    "search_files to locate a specific string or request only uncovered lines."
+)
+_READ_STATUS_MESSAGES = (
+    _READ_DEDUP_STATUS_MESSAGE,
+    _READ_ALREADY_LOADED_STATUS_MESSAGE,
+)
+
+
+def _ensure_read_tracker_fields(task_data: dict) -> None:
+    """Backfill per-task read tracker keys after live upgrades.
+
+    Must be called with ``_read_tracker_lock`` held.
+    """
+    task_data.setdefault("last_key", None)
+    task_data.setdefault("consecutive", 0)
+    task_data.setdefault("read_history", set())
+    task_data.setdefault("dedup", {})
+    task_data.setdefault("dedup_hits", {})
+    task_data.setdefault("path_coverage", {})
+    task_data.setdefault("read_timestamps", {})
 
 
 def _cap_read_tracker_data(task_data: dict) -> None:
@@ -808,11 +842,12 @@ def _cap_read_tracker_data(task_data: dict) -> None:
       * ``read_history`` (set): pop arbitrary entries on overflow.  This
         is fine because the set only feeds diagnostic summaries; losing
         old entries just trims the summary's tail.
-      * ``dedup`` / ``read_timestamps`` (dict): pop oldest by insertion
-        order (Python 3.7+ dicts).  Evicted entries lose their dedup
-        skip on a future re-read (the file gets re-sent once) and
-        external-edit mtime comparison (the write/patch falls back to
-        a non-mtime check).  Both are graceful degradations, not bugs.
+      * ``dedup`` / ``path_coverage`` / ``read_timestamps`` (dict): pop
+        oldest path/key by insertion order (Python 3.7+ dicts). Evicted
+        entries lose their dedup/coverage skip on a future re-read (the
+        file gets re-sent once) and external-edit mtime comparison (the
+        write/patch falls back to a non-mtime check). These are graceful
+        degradations, not bugs.
     """
     rh = task_data.get("read_history")
     if rh is not None and len(rh) > _READ_HISTORY_CAP:
@@ -840,6 +875,8 @@ def _cap_read_tracker_data(task_data: dict) -> None:
                 dedup_hits.pop(next(iter(dedup_hits)))
             except (StopIteration, KeyError):
                 break
+
+    cap_path_coverage(task_data, _PATH_COVERAGE_CAP)
 
     ts = task_data.get("read_timestamps")
     if ts is not None and len(ts) > _READ_TIMESTAMPS_CAP:
@@ -874,11 +911,11 @@ def _is_internal_file_status_text(content: str) -> bool:
     stripped = content.strip()
     if not stripped:
         return False
-    if stripped == _READ_DEDUP_STATUS_MESSAGE:
-        return True
-    if _READ_DEDUP_STATUS_MESSAGE in stripped and \
-            len(stripped) <= 2 * len(_READ_DEDUP_STATUS_MESSAGE):
-        return True
+    for message in _READ_STATUS_MESSAGES:
+        if stripped == message:
+            return True
+        if message in stripped and len(stripped) <= 2 * len(message):
+            return True
     return False
 
 
@@ -1206,31 +1243,45 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         if block_error:
             return json.dumps({"error": block_error})
 
-        # ── Dedup check ───────────────────────────────────────────────
-        # If we already read this exact (path, offset, limit) and the
-        # file hasn't been modified since, return a lightweight stub
-        # instead of re-sending the same content.  Saves context tokens.
+        # ── Dedup / coverage check ────────────────────────────────────
+        # Exact-window dedup preserves the existing lightweight stub for
+        # identical (path, offset, limit) reads. Path-level interval coverage
+        # supplements it by skipping or narrowing overlapping re-reads where
+        # the model changes offset/limit to bypass the exact key.
         resolved_str = str(_resolved)
+        requested_offset, requested_limit = offset, limit
+        requested_start, requested_end = offset, offset + limit - 1
+        current_mtime = None
+        try:
+            current_mtime = os.path.getmtime(resolved_str)
+        except OSError:
+            pass
+
         dedup_key = (resolved_str, offset, limit)
+        uncovered_interval = None
+        coverage_hint = None
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
-                "dedup_hits": {}, "read_timestamps": {},
+                "dedup_hits": {}, "path_coverage": {},
+                "read_timestamps": {},
             })
-            # Backward-compat for pre-existing tracker entries that predate
-            # dedup_hits/read_timestamps (long-lived task or crossed an
-            # upgrade boundary).
-            if "dedup_hits" not in task_data:
-                task_data["dedup_hits"] = {}
-            if "read_timestamps" not in task_data:
-                task_data["read_timestamps"] = {}
+            _ensure_read_tracker_fields(task_data)
+            if current_mtime is not None:
+                coverage = get_path_coverage(task_data, resolved_str, current_mtime)
+                uncovered_interval = first_uncovered_interval(
+                    coverage.get("intervals", []), requested_start, requested_end,
+                )
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            _cap_read_tracker_data(task_data)
 
         if cached_mtime is not None:
             try:
-                current_mtime = os.path.getmtime(resolved_str)
-                if current_mtime == cached_mtime:
+                mtime_for_dedup = current_mtime
+                if mtime_for_dedup is None:
+                    mtime_for_dedup = os.path.getmtime(resolved_str)
+                if mtime_for_dedup == cached_mtime:
                     # Count repeated stub returns so weak tool-followers that
                     # ignore the "refer to earlier result" hint don't burn
                     # their iteration budget in an infinite read loop.  After
@@ -1265,6 +1316,47 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     }, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
+
+        if current_mtime is not None:
+            if uncovered_interval is None:
+                coverage_hit_key = (resolved_str, "coverage")
+                with _read_tracker_lock:
+                    hits = task_data["dedup_hits"].get(coverage_hit_key, 0) + 1
+                    task_data["dedup_hits"][coverage_hit_key] = hits
+                    _cap_read_tracker_data(task_data)
+
+                if hits >= 2:
+                    return json.dumps({
+                        "error": (
+                            f"BLOCKED: You have re-read lines that were "
+                            f"already returned for '{path}' {hits + 1} times. "
+                            "STOP calling read_file for this path and use the "
+                            "content already in context."
+                        ),
+                        "path": path,
+                        "already_read": hits + 1,
+                    }, ensure_ascii=False)
+
+                return json.dumps({
+                    "status": "already_loaded",
+                    "message": _READ_ALREADY_LOADED_STATUS_MESSAGE,
+                    "path": path,
+                    "offset": requested_offset,
+                    "limit": requested_limit,
+                    "dedup": True,
+                    "content_returned": False,
+                }, ensure_ascii=False)
+
+            first_missing_start, first_missing_end = uncovered_interval
+            if uncovered_interval != (requested_start, requested_end):
+                offset = first_missing_start
+                limit = first_missing_end - first_missing_start + 1
+                dedup_key = (resolved_str, offset, limit)
+                coverage_hint = (
+                    f"Requested lines {requested_start}-{requested_end} partly "
+                    f"overlapped prior read_file output for this unchanged file; "
+                    f"returning only new lines {first_missing_start}-{first_missing_end}."
+                )
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
@@ -1329,19 +1421,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "to keep context usage efficient."
             ))
 
+        if coverage_hint is not None:
+            result_dict.setdefault("_hint", coverage_hint)
+
         # ── Track for consecutive-loop detection ──────────────────────
         read_key = ("read", path, offset, limit)
         with _read_tracker_lock:
-            # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
-            # old tracker state from pre-dedup-guard sessions).
-            if "dedup" not in task_data:
-                task_data["dedup"] = {}
-            if "dedup_hits" not in task_data:
-                task_data["dedup_hits"] = {}
+            _ensure_read_tracker_fields(task_data)
             # Real read succeeded — this key is no longer in a stub-loop, so
             # reset its hit counter.  (File either changed or stat failed
             # earlier and we fell through.)
             task_data["dedup_hits"].pop(dedup_key, None)
+            task_data["dedup_hits"].pop((resolved_str, "coverage"), None)
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -1350,14 +1441,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["consecutive"] = 1
             count = task_data["consecutive"]
 
-            # Store mtime at read time for two purposes:
+            # Store mtime at read time for three purposes:
             # 1. Dedup: skip identical re-reads of unchanged files.
-            # 2. Staleness: warn on write/patch if the file changed since
+            # 2. Coverage: skip/narrow overlapping reads of unchanged files.
+            # 3. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
             try:
                 _mtime_now = os.path.getmtime(resolved_str)
                 task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                task_data["read_timestamps"][resolved_str] = _mtime_now
+                if not result_dict.get("error"):
+                    record_path_coverage(
+                        task_data, resolved_str, _mtime_now, offset, limit,
+                        _PATH_COVERAGE_INTERVAL_CAP,
+                    )
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
 
@@ -1409,8 +1506,8 @@ def reset_file_dedup(task_id: str = None):
     Called after context compression — the original read content has been
     summarised away, so the model needs the full content if it reads the
     same file again.  Without this, reads after compression would return
-    a "file unchanged" stub pointing at content that no longer exists in
-    context.
+    a "file unchanged" / "already_loaded" stub pointing at content that no
+    longer exists in context.
 
     Call with a task_id to clear just that task, or without to clear all.
     """
@@ -1422,12 +1519,16 @@ def reset_file_dedup(task_id: str = None):
                     task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                if "path_coverage" in task_data:
+                    task_data["path_coverage"].clear()
         else:
             for task_data in _read_tracker.values():
                 if "dedup" in task_data:
                     task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                if "path_coverage" in task_data:
+                    task_data["path_coverage"].clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -1451,20 +1552,20 @@ def notify_other_tool_call(task_id: str = "default"):
 
 
 def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
-    """Remove all dedup cache entries whose resolved path matches *filepath*.
+    """Remove cached read state whose resolved path matches *filepath*.
 
     Called after write_file and patch so that a subsequent read_file on
     the same path always returns fresh content instead of a stale
-    "File unchanged" stub.  The dedup cache keys are tuples of
-    ``(resolved_path, offset, limit)``; we must evict **all** offset/limit
-    combinations for the written path because any cached range could now
-    be stale.
+    "File unchanged" / "already_loaded" stub. The dedup cache keys are
+    tuples of ``(resolved_path, offset, limit)`` and coverage is keyed by
+    ``resolved_path``; we must evict all entries for the written path
+    because any cached range could now be stale.
 
     Must be called with ``_read_tracker_lock`` **not** held — acquires it
     internally.
     """
     try:
-        resolved = str(_resolve_path(filepath))
+        resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
@@ -1472,12 +1573,14 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
         if task_data is None:
             return
         dedup = task_data.get("dedup")
-        if not dedup:
-            return
-        # Collect keys to remove (can't mutate dict during iteration).
-        stale_keys = [k for k in dedup if k[0] == resolved]
-        for k in stale_keys:
-            del dedup[k]
+        if dedup:
+            # Collect keys to remove (can't mutate dict during iteration).
+            stale_keys = [k for k in dedup if k[0] == resolved]
+            for k in stale_keys:
+                del dedup[k]
+        path_coverage = task_data.get("path_coverage")
+        if path_coverage:
+            path_coverage.pop(resolved, None)
 
 
 def _update_read_timestamp(filepath: str, task_id: str) -> None:

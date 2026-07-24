@@ -21,6 +21,7 @@ from tools.file_tools import (
     _is_blocked_device,
     _invalidate_dedup_for_path,
     _READ_DEDUP_STATUS_MESSAGE,
+    _READ_ALREADY_LOADED_STATUS_MESSAGE,
     _DEFAULT_MAX_READ_CHARS,
     _read_tracker,
     notify_other_tool_call,
@@ -414,6 +415,23 @@ class TestFileDedup(unittest.TestCase):
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
+    def test_write_rejects_already_loaded_status_text(self, mock_ops):
+        """write_file rejects the path-coverage read_file status too."""
+        fake = MagicMock()
+        fake.write_file = MagicMock()
+        mock_ops.return_value = fake
+
+        result = json.loads(write_file_tool(
+            self._tmpfile,
+            _READ_ALREADY_LOADED_STATUS_MESSAGE,
+            task_id="guard",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("internal read_file status text", result["error"])
+        fake.write_file.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_write_rejects_status_text_with_small_framing(self, mock_ops):
         """write_file rejects small wrappers around the status text too.
 
@@ -508,6 +526,154 @@ class TestFileDedup(unittest.TestCase):
 
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="task_b"))
         self.assertNotEqual(r2.get("dedup"), True)
+
+
+# ---------------------------------------------------------------------------
+# Path-level read coverage guard
+# ---------------------------------------------------------------------------
+
+class TestPathReadCoverageGuard(unittest.TestCase):
+    """Overlapping read windows should not resend unchanged lines."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-read-coverage-")
+        self._tmpfile = os.path.join(self._tmpdir, "coverage.txt")
+        with open(self._tmpfile, "w") as f:
+            f.write("\n".join(f"line {i}" for i in range(1, 1001)))
+
+    def tearDown(self):
+        _read_tracker.clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    def _range_fake_ops(self):
+        fake = MagicMock()
+
+        def read_file(path, offset=1, limit=500):
+            end = offset + limit - 1
+            return _FakeReadResult(
+                content=f"lines {offset}-{end}\n",
+                total_lines=1000,
+                file_size=9000,
+            )
+
+        fake.read_file.side_effect = read_file
+        return fake
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_overlapping_superset_returns_only_new_lines(self, mock_ops):
+        fake = self._range_fake_ops()
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, offset=10, limit=10, task_id="coverage")
+        result = json.loads(read_file_tool(
+            self._tmpfile, offset=10, limit=12, task_id="coverage",
+        ))
+
+        self.assertEqual(fake.read_file.call_args_list[-1].args, (self._tmpfile, 20, 2))
+        self.assertEqual(result["content"], "lines 20-21\n")
+        self.assertIn("returning only new lines 20-21", result["_hint"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_fully_covered_different_window_returns_already_loaded(self, mock_ops):
+        fake = self._range_fake_ops()
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="coverage")
+        result = json.loads(read_file_tool(
+            self._tmpfile, offset=20, limit=10, task_id="coverage",
+        ))
+
+        self.assertEqual(result["status"], "already_loaded")
+        self.assertFalse(result["content_returned"])
+        self.assertEqual(fake.read_file.call_count, 1)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_repeated_already_loaded_escalates_to_block(self, mock_ops):
+        fake = self._range_fake_ops()
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="coverage")
+        first_stub = json.loads(read_file_tool(
+            self._tmpfile, offset=20, limit=10, task_id="coverage",
+        ))
+        second_stub = json.loads(read_file_tool(
+            self._tmpfile, offset=30, limit=10, task_id="coverage",
+        ))
+
+        self.assertEqual(first_stub["status"], "already_loaded")
+        self.assertIn("error", second_stub)
+        self.assertIn("BLOCKED", second_stub["error"])
+        self.assertEqual(fake.read_file.call_count, 1)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_coverage_resets_after_mtime_change(self, mock_ops):
+        fake = self._range_fake_ops()
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="coverage")
+        covered = json.loads(read_file_tool(
+            self._tmpfile, offset=20, limit=10, task_id="coverage",
+        ))
+        self.assertEqual(covered["status"], "already_loaded")
+
+        new_mtime = os.path.getmtime(self._tmpfile) + 10
+        os.utime(self._tmpfile, (new_mtime, new_mtime))
+
+        fresh = json.loads(read_file_tool(
+            self._tmpfile, offset=20, limit=10, task_id="coverage",
+        ))
+        self.assertNotEqual(fresh.get("status"), "already_loaded")
+        self.assertIn("content", fresh)
+        self.assertEqual(fake.read_file.call_count, 2)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_other_tool_does_not_reset_path_coverage(self, mock_ops):
+        fake = self._range_fake_ops()
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="coverage")
+        notify_other_tool_call("coverage")
+        result = json.loads(read_file_tool(
+            self._tmpfile, offset=20, limit=10, task_id="coverage",
+        ))
+
+        self.assertEqual(result["status"], "already_loaded")
+        self.assertEqual(fake.read_file.call_count, 1)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_legitimate_paginated_walk_still_succeeds(self, mock_ops):
+        fake = self._range_fake_ops()
+        mock_ops.return_value = fake
+
+        for offset in (1, 101, 201, 301, 401):
+            result = json.loads(read_file_tool(
+                self._tmpfile, offset=offset, limit=100, task_id="coverage",
+            ))
+            self.assertNotEqual(result.get("status"), "already_loaded")
+            self.assertNotIn("error", result)
+            self.assertIn("content", result)
+
+        self.assertEqual(fake.read_file.call_count, 5)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_reset_file_dedup_clears_path_coverage(self, mock_ops):
+        fake = self._range_fake_ops()
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, offset=1, limit=100, task_id="coverage")
+        reset_file_dedup("coverage")
+        result = json.loads(read_file_tool(
+            self._tmpfile, offset=20, limit=10, task_id="coverage",
+        ))
+
+        self.assertNotEqual(result.get("status"), "already_loaded")
+        self.assertIn("content", result)
+        self.assertEqual(fake.read_file.call_count, 2)
 
 
 # ---------------------------------------------------------------------------

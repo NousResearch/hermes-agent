@@ -743,11 +743,6 @@ def build_debug_share(
     # applied inside collect_share_bundle.
     bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
 
-    if redact:
-        logger.info(
-            "hermes debug share: applied force-mode redaction to log snapshots before upload"
-        )
-
     report = bundle["report"]
 
     urls: dict[str, str] = {}
@@ -916,10 +911,6 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     _best_effort_sweep_expired_pastes()
 
     bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
-    if redact:
-        logger.info(
-            "hermes debug share --nous: applied force-mode redaction before upload"
-        )
     blob = build_nous_bundle(bundle, redact=redact)
 
     print("Uploading to Nous diagnostics storage...")

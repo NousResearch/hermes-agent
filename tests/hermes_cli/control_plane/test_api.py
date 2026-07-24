@@ -111,6 +111,26 @@ async def test_api_and_cli_share_the_authoritative_registry(
 
 
 @pytest.mark.asyncio
+async def test_audit_api_reports_corrupt_details_json_as_invalid(
+    tmp_path, monkeypatch, client
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    registry = NodeRegistry()
+    registry.enroll(**_enrollment())
+
+    with registry.connect() as conn:
+        conn.execute(
+            "UPDATE managed_node_events SET details_json = ? WHERE sequence = 1",
+            ("{not-json",),
+        )
+
+    audit = await client.get("/api/control-plane/v1/audit")
+
+    assert audit.status_code == 200
+    assert audit.json() == {"valid": False}
+
+
+@pytest.mark.asyncio
 async def test_api_contracts_and_lifecycle_error_mappings(
     tmp_path, monkeypatch, client
 ):

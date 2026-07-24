@@ -354,6 +354,18 @@ def test_audit_chain_detects_tampering(registry):
     assert registry.verify_audit_chain() is False
 
 
+def test_audit_chain_treats_corrupt_details_json_as_invalid(registry):
+    enroll(registry)
+
+    with sqlite3.connect(registry.db_path) as conn:
+        conn.execute(
+            "UPDATE managed_node_events SET details_json = ? WHERE sequence = 1",
+            ("{not-json",),
+        )
+
+    assert registry.verify_audit_chain() is False
+
+
 def test_state_filter_and_unknown_node(registry):
     enroll(registry)
 

@@ -887,17 +887,20 @@ class NodeRegistry:
             ):
                 if row["previous_hash"] != previous_hash:
                     return False
-                expected = self._event_hash(
-                    previous_hash=previous_hash,
-                    node_id=row["node_id"],
-                    event_type=row["event_type"],
-                    actor=row["actor"],
-                    from_state=row["from_state"],
-                    to_state=row["to_state"],
-                    revision=row["node_revision"],
-                    occurred_at=row["occurred_at"],
-                    details_json=row["details_json"],
-                )
+                try:
+                    expected = self._event_hash(
+                        previous_hash=previous_hash,
+                        node_id=row["node_id"],
+                        event_type=row["event_type"],
+                        actor=row["actor"],
+                        from_state=row["from_state"],
+                        to_state=row["to_state"],
+                        revision=row["node_revision"],
+                        occurred_at=row["occurred_at"],
+                        details_json=row["details_json"],
+                    )
+                except (TypeError, ValueError, UnicodeError):
+                    return False
                 if row["event_hash"] != expected:
                     return False
                 previous_hash = row["event_hash"]

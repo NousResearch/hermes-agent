@@ -1,0 +1,686 @@
+From dede60f5182bea64f54929b93e41b24207f515fa Mon Sep 17 00:00:00 2001
+From: Yong Wook Lee <icerain@jj.ac.kr>
+Date: Fri, 24 Jul 2026 15:31:06 +0900
+Subject: [PATCH HEGI v2 3/3] docs(hegi): add operations and migration guides
+
+---
+ hegi/CHANGELOG.md                  |  11 ++
+ hegi/README.md                     |  13 ++
+ hegi/ROADMAP.md                    |   8 +
+ hegi/__main__.py                   |   4 +
+ hegi/cli.py                        | 267 +++++++++++++++++++++++++++++
+ hegi/docs/architecture.md          |  15 ++
+ hegi/docs/memory_policy.md         |  16 ++
+ hegi/docs/migration.md             |  14 ++
+ hegi/docs/operations.md            |  52 ++++++
+ hegi/docs/repository_assessment.md |  47 +++++
+ hegi/scripts/doctor.sh             |   6 +
+ hegi/scripts/install.sh            |  15 ++
+ hegi/scripts/migrate_v1.sh         |  36 ++++
+ hegi/scripts/start.sh              |  17 ++
+ hegi/scripts/status.sh             |   6 +
+ hegi/scripts/stop.sh               |  20 +++
+ 16 files changed, 547 insertions(+)
+ create mode 100644 hegi/CHANGELOG.md
+ create mode 100644 hegi/README.md
+ create mode 100644 hegi/ROADMAP.md
+ create mode 100644 hegi/__main__.py
+ create mode 100644 hegi/cli.py
+ create mode 100644 hegi/docs/architecture.md
+ create mode 100644 hegi/docs/memory_policy.md
+ create mode 100644 hegi/docs/migration.md
+ create mode 100644 hegi/docs/operations.md
+ create mode 100644 hegi/docs/repository_assessment.md
+ create mode 100755 hegi/scripts/doctor.sh
+ create mode 100755 hegi/scripts/install.sh
+ create mode 100755 hegi/scripts/migrate_v1.sh
+ create mode 100755 hegi/scripts/start.sh
+ create mode 100755 hegi/scripts/status.sh
+ create mode 100755 hegi/scripts/stop.sh
+
+diff --git a/hegi/CHANGELOG.md b/hegi/CHANGELOG.md
+new file mode 100644
+index 000000000..5b7c4cb20
+--- /dev/null
++++ b/hegi/CHANGELOG.md
+@@ -0,0 +1,11 @@
++# Changelog
++
++## 2.0.0
++
++- 세 Hermes SQLite DB의 공진방 메시지를 읽기 전용 범위 쿼리로 수집한다.
++- 중복 user 메시지를 병합하고 assistant identity를 보존한다.
++- 침묵·시간 간격·교수 종료 표현을 이용해 Episode를 감지한다.
++- Hermes 중앙 LLM 경로로 계층형 구조화 회의록을 생성한다.
++- Action Item 중복 방지와 Memory Forest read 평가를 수행한다.
++- 승인된 교수 명령 뒤에만 STM Draft MCP를 호출한다.
++- revision 보존 Markdown/JSON 아카이브와 checkpointed Telegram 전송을 제공한다.
+diff --git a/hegi/README.md b/hegi/README.md
+new file mode 100644
+index 000000000..5eac39f9d
+--- /dev/null
++++ b/hegi/README.md
+@@ -0,0 +1,13 @@
++# HEGI v2 — AI Research Secretary
++
++HEGI는 여러 Hermes 프로필의 공진방 대화를 읽기 전용으로 수집해 연구회의 Episode,
++한국어 구조화 회의록, Action Item, Memory Evaluation, Markdown/JSON 아카이브와
++Telegram 보고로 변환한다.
++
++HEGI는 Hermes 핵심 agent loop나 tool schema를 수정하지 않는 독립 패키지다. LLM,
++Telegram, MCP는 Hermes의 기존 호출 경로를 재사용한다. Memory Forest 자동 쓰기와
++Commit은 구현하지 않으며, STM Draft는 설정된 교수 계정의 명시적 승인 이후에만
++curator draft MCP를 호출한다.
++
++설치와 운영은 [operations.md](docs/operations.md), 안전 경계는
++[memory_policy.md](docs/memory_policy.md)를 참고한다.
+diff --git a/hegi/ROADMAP.md b/hegi/ROADMAP.md
+new file mode 100644
+index 000000000..8fa7e93ec
+--- /dev/null
++++ b/hegi/ROADMAP.md
+@@ -0,0 +1,8 @@
++# HEGI Roadmap
++
++- v2.0: AI Research Secretary
++- v3.0: Research Manager — 별도 feature flag 아래 후속 구현
++- v4.0: Research Operating System — v3 검증 후 후속 구현
++- v5.0: Personal Research Intelligence — v4 검증 후 후속 구현
++
++현재 브랜치는 v2.0만 활성화하며 v3~v5 flag의 기본값은 false다.
+diff --git a/hegi/__main__.py b/hegi/__main__.py
+new file mode 100644
+index 000000000..faaa63bde
+--- /dev/null
++++ b/hegi/__main__.py
+@@ -0,0 +1,4 @@
++from .cli import main
++
++
++raise SystemExit(main())
+diff --git a/hegi/cli.py b/hegi/cli.py
+new file mode 100644
+index 000000000..750ead87f
+--- /dev/null
++++ b/hegi/cli.py
+@@ -0,0 +1,267 @@
++"""HEGI command line interface."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import signal
++import sys
++import tempfile
++import time
++from pathlib import Path
++from typing import Any
++
++from .config import default_config_path, load_config, validate_config
++from .memory import DraftGate, MCPMemoryBackend, MemoryEvaluator
++from .pipeline import HegiPipeline, episode_from_dict, minutes_from_dict
++from .state import StateStore
++
++
++def _json(value: Any) -> None:
++    print(json.dumps(value, ensure_ascii=False, indent=2))
++
++
++def _pipeline(args: argparse.Namespace, *, state: StateStore | None = None) -> HegiPipeline:
++    return HegiPipeline(load_config(args.config), state=state)
++
++
++def cmd_doctor(args: argparse.Namespace) -> int:
++    try:
++        config = load_config(args.config)
++    except Exception as exc:
++        print(f"FAIL config: {exc}")
++        return 2
++    errors = validate_config(config, require_runtime=True)
++    checks = {
++        "config": str(config.path),
++        "enabled": config.enabled,
++        "chat_id_configured": bool(config.chat_id),
++        "state_parent_writable": os.access(config.state_db.parent, os.W_OK)
++        if config.state_db.parent.exists()
++        else os.access(config.state_db.parent.parent, os.W_OK),
++        "agent_databases": {
++            agent.name: agent.db_path.is_file() for agent in config.agents
++        },
++        "telegram_env_present": config.curator_env.is_file(),
++        "auto_commit": False,
++        "approval_required": True,
++        "errors": errors,
++    }
++    _json(checks)
++    return 1 if errors else 0
++
++
++def cmd_collect(args: argparse.Namespace) -> int:
++    messages = _pipeline(args).collect(since=args.since)
++    _json(
++        {
++            "count": len(messages),
++            "messages": [
++                {
++                    "agent": item.source_agent,
++                    "message_id": item.message_id,
++                    "role": item.role,
++                    "timestamp": item.timestamp,
++                }
++                for item in messages
++            ],
++        }
++    )
++    return 0
++
++
++def cmd_run_once(args: argparse.Namespace) -> int:
++    if args.send:
++        results = _pipeline(args).run_once(dry_run=False)
++    else:
++        with tempfile.TemporaryDirectory(prefix="hegi-dry-run-") as temporary:
++            state = StateStore(Path(temporary) / "state.db")
++            results = _pipeline(args, state=state).run_once(dry_run=True)
++    _json(results)
++    return 0 if all(item.get("status") != "failed" for item in results) else 3
++
++
++def cmd_analyze(args: argparse.Namespace) -> int:
++    pipeline = _pipeline(args)
++    row = pipeline.state.episode_by_id(args.meeting_id)
++    if row is None:
++        print(f"meeting_id를 찾을 수 없습니다: {args.meeting_id}")
++        return 2
++    episode = episode_from_dict(json.loads(row["episode_json"]))
++    minutes = pipeline.analyze_episode(episode)
++    _json(minutes.to_dict())
++    return 0
++
++
++def cmd_status(args: argparse.Namespace) -> int:
++    config = load_config(args.config)
++    state = StateStore(config.state_db)
++    with state.connect() as connection:
++        counts = {
++            row["status"]: row["count"]
++            for row in connection.execute(
++                "SELECT status, COUNT(*) AS count FROM processed_episodes GROUP BY status"
++            )
++        }
++        pending = connection.execute(
++            "SELECT COUNT(*) FROM message_buffer WHERE consumed=0"
++        ).fetchone()[0]
++        dead_letters = connection.execute(
++            "SELECT COUNT(*) FROM dead_letter"
++        ).fetchone()[0]
++    _json(
++        {
++            "enabled": config.enabled,
++            "state_db": str(config.state_db),
++            "episode_counts": counts,
++            "pending_messages": pending,
++            "dead_letters": dead_letters,
++        }
++    )
++    return 0
++
++
++def cmd_replay(args: argparse.Namespace) -> int:
++    pipeline = _pipeline(args)
++    row = pipeline.state.episode_by_id(args.meeting_id)
++    if row is None or not row.get("minutes_json"):
++        print("저장된 회의록이 없습니다.")
++        return 2
++    from .notify import TelegramReporter, load_env_value
++
++    minutes = minutes_from_dict(json.loads(row["minutes_json"]))
++    token = load_env_value(pipeline.config.curator_env, "TELEGRAM_BOT_TOKEN")
++    ids = TelegramReporter(
++        pipeline.state, token=token, chat_id=pipeline.config.chat_id
++    ).send(minutes, dry_run=not args.send)
++    _json({"meeting_id": args.meeting_id, "message_ids": ids, "dry_run": not args.send})
++    return 0
++
++
++def cmd_approve(args: argparse.Namespace) -> int:
++    pipeline = _pipeline(args)
++    memory_cfg = pipeline.config.section("memory")
++    backend = MCPMemoryBackend(
++        read_server=str(memory_cfg.get("read_server", "memory-forest-read")),
++        search_tool=str(memory_cfg.get("search_tool", "")),
++        draft_server=str(memory_cfg.get("draft_server", "")),
++        draft_tool=str(memory_cfg.get("draft_tool", "")),
++    )
++    gate = DraftGate(
++        pipeline.state,
++        backend,
++        professor_user_ids=[str(item) for item in memory_cfg.get("professor_user_ids", [])],
++    )
++    command = gate.approve(
++        meeting_id=args.meeting_id,
++        text=args.text,
++        user_id=args.user_id,
++        platform_message_id=args.message_id,
++    )
++    result: dict[str, Any] = {"approved_command": command}
++    if command in {"remember", "draft", "merge"}:
++        row = pipeline.state.episode_by_id(args.meeting_id)
++        if row is None or not row.get("minutes_json"):
++            raise ValueError("승인 대상 회의록이 없습니다.")
++        minutes = minutes_from_dict(json.loads(row["minutes_json"]))
++        evaluation = MemoryEvaluator(backend).evaluate(minutes)
++        result["draft"] = gate.create_draft_after_recheck(
++            minutes, evaluation, project=args.project
++        )
++    _json(result)
++    return 0
++
++
++def _acquire_pidfile(path: Path) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    try:
++        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
++    except FileExistsError:
++        try:
++            pid = int(path.read_text(encoding="ascii"))
++            os.kill(pid, 0)
++        except (ValueError, OSError):
++            path.unlink(missing_ok=True)
++            return _acquire_pidfile(path)
++        raise RuntimeError(f"HEGI daemon이 이미 실행 중입니다: pid={pid}")
++    with os.fdopen(descriptor, "w", encoding="ascii") as stream:
++        stream.write(str(os.getpid()))
++
++
++def cmd_daemon(args: argparse.Namespace) -> int:
++    config = load_config(args.config)
++    pidfile = config.state_db.parent / "daemon.pid"
++    _acquire_pidfile(pidfile)
++    running = True
++
++    def stop(_signum, _frame):
++        nonlocal running
++        running = False
++
++    signal.signal(signal.SIGINT, stop)
++    signal.signal(signal.SIGTERM, stop)
++    try:
++        pipeline = HegiPipeline(config)
++        while running:
++            try:
++                pipeline.run_once(dry_run=not args.send)
++            except Exception as exc:
++                pipeline.state.add_dead_letter("daemon", {}, str(exc))
++            deadline = time.monotonic() + int(
++                config.section("daemon").get("poll_seconds", 60)
++            )
++            while running and time.monotonic() < deadline:
++                time.sleep(min(1, deadline - time.monotonic()))
++    finally:
++        pidfile.unlink(missing_ok=True)
++    return 0
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description="HEGI v2 AI Research Secretary")
++    parser.add_argument("--config", default=str(default_config_path()))
++    subparsers = parser.add_subparsers(dest="command", required=True)
++    subparsers.add_parser("doctor").set_defaults(func=cmd_doctor)
++    collect = subparsers.add_parser("collect")
++    collect.add_argument("--chat-id", help="설정 chat_id와 일치해야 함")
++    collect.add_argument("--since", type=float)
++    collect.set_defaults(func=cmd_collect)
++    analyze = subparsers.add_parser("analyze")
++    analyze.add_argument("--meeting-id", required=True)
++    analyze.set_defaults(func=cmd_analyze)
++    run_once = subparsers.add_parser("run-once")
++    run_once.add_argument("--send", action="store_true", help="실제 Telegram 전송 허용")
++    run_once.set_defaults(func=cmd_run_once)
++    daemon = subparsers.add_parser("daemon")
++    daemon.add_argument("--send", action="store_true", help="실제 Telegram 전송 허용")
++    daemon.set_defaults(func=cmd_daemon)
++    subparsers.add_parser("status").set_defaults(func=cmd_status)
++    replay = subparsers.add_parser("replay")
++    replay.add_argument("--meeting-id", required=True)
++    replay.add_argument("--send", action="store_true")
++    replay.set_defaults(func=cmd_replay)
++    approve = subparsers.add_parser("approve")
++    approve.add_argument("--meeting-id", required=True)
++    approve.add_argument("--text", required=True)
++    approve.add_argument("--user-id", required=True)
++    approve.add_argument("--message-id")
++    approve.add_argument("--project", required=True)
++    approve.set_defaults(func=cmd_approve)
++    return parser
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = build_parser()
++    args = parser.parse_args(argv)
++    if getattr(args, "chat_id", None):
++        config = load_config(args.config)
++        if str(args.chat_id) != config.chat_id:
++            parser.error("--chat-id는 설정된 telegram.chat_id와 일치해야 합니다.")
++    try:
++        return int(args.func(args))
++    except KeyboardInterrupt:
++        return 130
++    except Exception as exc:
++        print(f"HEGI 오류: {exc}", file=sys.stderr)
++        return 1
+diff --git a/hegi/docs/architecture.md b/hegi/docs/architecture.md
+new file mode 100644
+index 000000000..c5b7cbf6d
+--- /dev/null
++++ b/hegi/docs/architecture.md
+@@ -0,0 +1,15 @@
++# Architecture
++
++`HermesSQLiteCollector`는 profile별 DB를 범위 쿼리하고 `StateStore`의 durable buffer에
++넣는다. `EpisodeDetector`는 이 buffer를 시간순으로 분리해 quiet 상태인 회의만
++`HegiPipeline`에 전달한다.
++
++`HierarchicalMeetingAnalyzer`는 발언 경계를 지키며 긴 Episode를 chunk 요약한 뒤
++최종 JSON 회의록을 생성한다. `build_minutes`는 source message ID를 실제 Episode와
++대조하고 근거 없는 Action Item을 제외한다. `MemoryEvaluator`는 read MCP 검색 결과와
++회의의 지속성을 비교한다.
++
++`ArchiveManager`가 local spool에 Markdown/JSON을 atomic write한 뒤 NAS가 접근 가능한
++경우 복제한다. `TelegramReporter`는 네 개의 보고 part를 각각 checkpoint하여 부분
++실패 뒤 이미 성공한 part를 재전송하지 않는다. 성공한 실제 보고 뒤에만 buffer를
++consumed로 전환한다.
+diff --git a/hegi/docs/memory_policy.md b/hegi/docs/memory_policy.md
+new file mode 100644
+index 000000000..267c46b29
+--- /dev/null
++++ b/hegi/docs/memory_policy.md
+@@ -0,0 +1,16 @@
++# Memory Safety Policy
++
++HEGI 자동화 계층은 Memory Forest read와 curator draft만 사용한다. 직접 STM write,
++approval, commit 도구를 등록하거나 호출하지 않는다.
++
++Draft 생성 조건은 모두 충족되어야 한다.
++
++1. 설정된 교수 Telegram user ID가 승인한다.
++2. 승인 문구가 지원하는 네 명령 중 하나다.
++3. platform message ID가 이전에 처리되지 않았다.
++4. 대상 meeting과 저장된 회의록이 존재한다.
++5. Draft 직전에 Memory Forest를 다시 검색한다.
++6. 승인 명령이 기억·초안·병합 중 하나다. “기억하지 마”는 Draft를 차단한다.
++
++생성 결과는 pending draft다. 이후 approve/commit은 HEGI 범위 밖의 별도 인간 검토
++절차다.
+diff --git a/hegi/docs/migration.md b/hegi/docs/migration.md
+new file mode 100644
+index 000000000..0b9baaead
+--- /dev/null
++++ b/hegi/docs/migration.md
+@@ -0,0 +1,14 @@
++# v1 Migration
++
++`migrate_v1.sh`은 기본 실행 시 진단만 출력한다. `--apply`를 주면 기존 v1 loop에
++TERM을 보내고 v1 state를 timestamped backup으로 보존한 뒤 HEGI config를 설치한다.
++기존 파일과 stash는 삭제하거나 변경하지 않는다.
++
++```bash
++hegi/scripts/migrate_v1.sh
++hegi/scripts/migrate_v1.sh --apply
++```
++
++HEGI를 검증한 뒤 daemon을 시작한다. 롤백 시 HEGI daemon을 중지하고 기존
++`~/bin/hegi-memory-watch-loop`를 다시 실행하면 된다. 두 감시기를 동시에 실제
++Telegram 송신 모드로 실행하지 않는다.
+diff --git a/hegi/docs/operations.md b/hegi/docs/operations.md
+new file mode 100644
+index 000000000..7e2c27657
+--- /dev/null
++++ b/hegi/docs/operations.md
+@@ -0,0 +1,52 @@
++# Operations
++
++## 설치
++
++```bash
++cd ~/.hermes/hermes-agent
++hegi/scripts/install.sh
++$EDITOR ~/.hermes/profiles/memory-curator/hegi/config.yaml
++```
++
++Draft MCP를 사용하려면 memory-curator profile의 `HERMES_HOME`에서 실행한다.
++
++```bash
++export HERMES_HOME="$HOME/.hermes/profiles/memory-curator"
++python -m hegi doctor
++python -m hegi run-once
++```
++
++`run-once`와 `daemon`은 기본적으로 Telegram dry-run이다. 실제 송신은 명시적으로
++`--send`를 붙인 경우에만 수행한다.
++
++```bash
++python -m hegi run-once --send
++hegi/scripts/start.sh --send
++python -m hegi status
++```
++
++## 승인과 Draft
++
++Telegram 승인 event의 교수 user ID와 message ID를 gateway integration에서 전달한다.
++수동 운영 시 다음 명령이 같은 gate를 사용한다.
++
++```bash
++python -m hegi approve \
++  --meeting-id HEGI_MEETING_ID \
++  --text '@헤기 초안 만들어' \
++  --user-id TELEGRAM_USER_ID \
++  --message-id TELEGRAM_MESSAGE_ID \
++  --project media_aesthetics
++```
++
++이 명령은 Memory Forest를 다시 검색한 뒤 pending STM Draft만 만든다. Commit은 없다.
++
++## 중지와 롤백
++
++```bash
++hegi/scripts/stop.sh
++git revert HEGI_COMMIT
++```
++
++상태와 archive를 보존한 채 daemon만 중지한다. v1 복귀 절차는
++[migration.md](migration.md)에 있다.
+diff --git a/hegi/docs/repository_assessment.md b/hegi/docs/repository_assessment.md
+new file mode 100644
+index 000000000..e55259b6c
+--- /dev/null
++++ b/hegi/docs/repository_assessment.md
+@@ -0,0 +1,47 @@
++# Repository Assessment
++
++## 조사 기준
++
++2026-07-24의 `feature/hegi-v2` 브랜치와 실제 WSL 런타임을 조사했다. 기준 commit은
++`5ecc07986`이며 작업 시작 시 worktree는 깨끗했다. 기존 stash 6개는 조회만 했고
++적용·삭제·변경하지 않았다.
++
++## 기존 Hermes 확장 지점
++
++- LLM: `agent.auxiliary_client.call_llm`이 provider/model/auth/fallback/retry를 중앙
++  관리한다. HEGI는 새 SDK를 추가하지 않고 이 함수를 호출한다.
++- Telegram: `tools.send_message_tool._send_telegram`이 기존 Telegram formatter,
++  proxy, retry와 Bot API 전송을 제공한다. HEGI는 보고 part별 delivery checkpoint를
++  추가하되 실제 송신은 이 경로를 재사용한다.
++- MCP: `tools.mcp_tool.discover_mcp_tools`가 설정된 server를 연결하고
++  `tools.registry.registry.dispatch`가 동기 handler를 제공한다. 실제 환경에는
++  `memory-forest-read.memory_search`와 memory-curator 프로필의
++  `memory-forest-curator-draft.memory_create_stm_draft`가 존재한다.
++- Config: 행동 설정은 YAML, secret은 `.env`에 둔다. HEGI도 이 경계를 유지하며
++  Telegram token 값은 읽되 로그나 상태 DB에 저장하지 않는다.
++- Profile: Hermes 경로는 `hermes_constants.get_hermes_home()`을 기준으로 계산한다.
++  memory-curator profile에서 실행하면 draft MCP 구성이 해당 profile 범위로 로드된다.
++- Test: 저장소 규칙에 따라 모든 테스트는 `scripts/run_tests.sh`로 실행한다.
++
++## 기존 v1 감시기
++
++`~/bin/hegi-memory-watch.py`와 `~/bin/hegi-memory-watch-loop`는 세 DB에서 최근
++assistant 발언을 모아 두 명 이상이 응답하고 10분 조용하면 단일 기억 제안 메시지를
++보낸다. JSON text 추출, read-only SQLite, 단일 signature 중복 방지는 있으나 전체
++논의 구조, Action Item, Memory 검색, archive, delivery checkpoint는 없다.
++
++## 구현 결정
++
++HEGI는 top-level `hegi` Python package로 분리한다. core agent loop, gateway session,
++Telegram adapter, MCP server와 Memory Forest 파일을 수정하지 않는다. 수집 cursor와
++미처리 message buffer를 별도 SQLite에 유지해 재시작 중 quiet episode가 유실되지
++않게 한다. 실제 Telegram 전송은 CLI의 명시적 `--send`가 있어야 한다.
++
++## 확인된 안전 경계
++
++- source DB는 SQLite URI `mode=ro`와 `query_only=ON`으로 연다.
++- 설정에서 `auto_commit=true`, `auto_draft=true`,
++  `require_professor_approval=false`를 거부한다.
++- HEGI 코드에는 Memory Forest commit/write tool 이름이 없다.
++- Draft gate는 교수 user ID, 중복되지 않은 승인 message ID, 재검색을 모두 요구한다.
++- NAS 미연결 시 local spool을 정본으로 유지하며 기존 archive를 덮어쓰지 않는다.
+diff --git a/hegi/scripts/doctor.sh b/hegi/scripts/doctor.sh
+new file mode 100755
+index 000000000..c9f0e8f4c
+--- /dev/null
++++ b/hegi/scripts/doctor.sh
+@@ -0,0 +1,6 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++cd "$repo_root"
++python -m hegi doctor "$@"
+diff --git a/hegi/scripts/install.sh b/hegi/scripts/install.sh
+new file mode 100755
+index 000000000..fdaaededd
+--- /dev/null
++++ b/hegi/scripts/install.sh
+@@ -0,0 +1,15 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++hermes_home="${HERMES_HOME:-$HOME/.hermes}"
++target="$hermes_home/hegi"
++
++mkdir -p "$target/archive"
++if [[ ! -e "$target/config.yaml" ]]; then
++  cp "$repo_root/hegi/config/default.yaml" "$target/config.yaml"
++  chmod 600 "$target/config.yaml"
++  echo "HEGI config installed: $target/config.yaml"
++else
++  echo "HEGI config already exists; unchanged: $target/config.yaml"
++fi
+diff --git a/hegi/scripts/migrate_v1.sh b/hegi/scripts/migrate_v1.sh
+new file mode 100755
+index 000000000..b85e87e26
+--- /dev/null
++++ b/hegi/scripts/migrate_v1.sh
+@@ -0,0 +1,36 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++hermes_home="${HERMES_HOME:-$HOME/.hermes}"
++v1_state="$HOME/.hermes/hegi-watch"
++apply=false
++if [[ "${1:-}" == "--apply" ]]; then
++  apply=true
++elif [[ $# -gt 0 ]]; then
++  echo "Usage: $0 [--apply]" >&2
++  exit 2
++fi
++
++echo "v1 watcher: $HOME/bin/hegi-memory-watch.py"
++echo "v1 state: $v1_state"
++echo "v2 config: $hermes_home/hegi/config.yaml"
++if [[ "$apply" != true ]]; then
++  echo "Diagnostic only. Re-run with --apply to stop v1 and install v2 config."
++  exit 0
++fi
++
++if [[ -f "$v1_state/loop.pid" ]]; then
++  pid="$(<"$v1_state/loop.pid")"
++  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
++    kill -TERM "$pid"
++    echo "Requested v1 watcher stop: pid=$pid"
++  fi
++fi
++if [[ -d "$v1_state" ]]; then
++  backup="$HOME/.hermes/backups/hegi-watch-$(date +%Y%m%d-%H%M%S)"
++  mkdir -p "$(dirname "$backup")"
++  cp -a "$v1_state" "$backup"
++  echo "Preserved v1 state: $backup"
++fi
++HERMES_HOME="$hermes_home" "$repo_root/hegi/scripts/install.sh"
+diff --git a/hegi/scripts/start.sh b/hegi/scripts/start.sh
+new file mode 100755
+index 000000000..0ff196ef4
+--- /dev/null
++++ b/hegi/scripts/start.sh
+@@ -0,0 +1,17 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++hermes_home="${HERMES_HOME:-$HOME/.hermes}"
++state_dir="$hermes_home/hegi"
++mkdir -p "$state_dir"
++
++cd "$repo_root"
++nohup python -m hegi daemon "$@" >>"$state_dir/daemon.log" 2>&1 &
++launcher_pid=$!
++sleep 1
++if ! kill -0 "$launcher_pid" 2>/dev/null; then
++  echo "HEGI daemon failed to start; inspect $state_dir/daemon.log" >&2
++  exit 1
++fi
++echo "HEGI daemon started: pid=$launcher_pid"
+diff --git a/hegi/scripts/status.sh b/hegi/scripts/status.sh
+new file mode 100755
+index 000000000..706024a92
+--- /dev/null
++++ b/hegi/scripts/status.sh
+@@ -0,0 +1,6 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++cd "$repo_root"
++python -m hegi status "$@"
+diff --git a/hegi/scripts/stop.sh b/hegi/scripts/stop.sh
+new file mode 100755
+index 000000000..363495ead
+--- /dev/null
++++ b/hegi/scripts/stop.sh
+@@ -0,0 +1,20 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++hermes_home="${HERMES_HOME:-$HOME/.hermes}"
++pidfile="$hermes_home/hegi/daemon.pid"
++if [[ ! -f "$pidfile" ]]; then
++  echo "HEGI daemon is not running"
++  exit 0
++fi
++pid="$(<"$pidfile")"
++if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
++  echo "Invalid HEGI pidfile: $pidfile" >&2
++  exit 2
++fi
++if kill -0 "$pid" 2>/dev/null; then
++  kill -TERM "$pid"
++  echo "Stop requested for HEGI daemon: pid=$pid"
++else
++  echo "Stale HEGI pidfile found; daemon is not running"
++fi
+-- 
+2.43.0
+

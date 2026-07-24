@@ -1390,6 +1390,17 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/media", params={"path": str(env)})
         assert resp.status_code == 415
 
+    def test_get_media_rejects_svg(self):
+        from hermes_constants import get_hermes_home
+
+        img_dir = get_hermes_home() / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        svg = img_dir / "active.svg"
+        svg.write_text("<svg><script>alert(1)</script></svg>")
+
+        resp = self.client.get("/api/media", params={"path": str(svg)})
+        assert resp.status_code == 415
+
     def test_get_media_404_for_missing_file(self):
         from hermes_constants import get_hermes_home
 

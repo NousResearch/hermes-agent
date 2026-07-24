@@ -22,6 +22,7 @@ def _can_symlink():
 from tools.skills_guard import (
     Finding,
     ScanResult,
+    scan_result_delta,
     scan_file,
     scan_skill,
     should_allow_install,
@@ -104,6 +105,39 @@ class TestDetermineVerdict:
     def test_low_finding_safe(self):
         f = Finding("x", "low", "obfuscation", "f.py", 1, "m", "d")
         assert _determine_verdict([f]) == "safe"
+
+
+class TestScanResultDelta:
+    @staticmethod
+    def _result(findings):
+        return ScanResult(
+            skill_name="test",
+            source="agent-created",
+            trust_level="agent-created",
+            verdict=_determine_verdict(findings),
+            findings=findings,
+        )
+
+    def test_ignores_line_number_changes_for_existing_finding(self):
+        before = Finding("secret", "critical", "exfil", "SKILL.md", 4, "token", "secret")
+        after = Finding("secret", "critical", "exfil", "SKILL.md", 9, "token", "secret")
+
+        delta = scan_result_delta(self._result([before]), self._result([after]))
+
+        assert delta.verdict == "safe"
+        assert delta.findings == []
+
+    def test_preserves_duplicate_counts(self):
+        existing = Finding("secret", "critical", "exfil", "SKILL.md", 4, "token", "secret")
+        duplicate = Finding("secret", "critical", "exfil", "SKILL.md", 9, "token", "secret")
+
+        delta = scan_result_delta(
+            self._result([existing]),
+            self._result([existing, duplicate]),
+        )
+
+        assert delta.verdict == "dangerous"
+        assert delta.findings == [duplicate]
 
 
 # ---------------------------------------------------------------------------

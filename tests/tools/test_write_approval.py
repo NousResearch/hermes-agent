@@ -211,6 +211,123 @@ def test_skill_gate_on_then_apply_writes_file(hermes_home):
     assert smt._find_skill("applied-skill") is not None
 
 
+def _skill_security_context(name, content=_SKILL):
+    import importlib
+    import hermes_cli.config as cfg
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+
+    created = json.loads(smt.skill_manage("create", name, content=content))
+    assert created["success"] is True
+    config = cfg.load_config()
+    config.setdefault("skills", {})["write_approval"] = True
+    config["skills"]["guard_agent_created"] = True
+    cfg.save_config(config)
+    return smt, wa
+
+
+def _apply_staged(smt, wa, action, name, **kwargs):
+    staged = json.loads(smt.skill_manage(action, name, **kwargs))
+    rec = wa.get_pending("skills", staged["pending_id"])
+    assert rec is not None
+    return json.loads(smt.apply_skill_pending(rec["payload"]))
+
+
+def _content_with_dangerous_finding():
+    return _SKILL.replace(
+        "body",
+        'body\n\n```python\nos.environ.get("OPENAI_API_KEY")\n```',
+    )
+
+
+def test_approved_safe_patch_ignores_preexisting_dangerous_findings(hermes_home):
+    """A safe delta must not be blocked by unchanged findings elsewhere."""
+    smt, wa = _skill_security_context(
+        "existing-findings", _content_with_dangerous_finding()
+    )
+
+    applied = _apply_staged(
+        smt, wa, "patch", "existing-findings",
+        old_string="# Test", new_string="# Safer title\n\nExtra context",
+    )
+
+    assert applied["success"] is True
+    found = smt._find_skill("existing-findings")
+    assert found is not None
+    assert "# Safer title" in (found["path"] / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_approved_patch_blocks_and_rolls_back_new_dangerous_finding(hermes_home):
+    """Approval must not bypass a dangerous finding introduced by the delta."""
+    smt, wa = _skill_security_context("new-finding")
+
+    applied = _apply_staged(
+        smt, wa, "patch", "new-finding",
+        old_string="body",
+        new_string='body\n\n```python\nos.environ.get("OPENAI_API_KEY")\n```',
+    )
+
+    assert applied["success"] is False
+    assert "Security scan blocked" in applied["error"]
+    found = smt._find_skill("new-finding")
+    assert found is not None
+    assert "OPENAI_API_KEY" not in (found["path"] / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_approved_patch_rolls_back_when_scanner_fails(hermes_home):
+    """A post-mutation scanner failure must reject and restore the file."""
+    from unittest.mock import patch
+
+    smt, wa = _skill_security_context("scanner-failure")
+    with patch.object(smt, "_security_scan_snapshot", return_value=(True, None)), \
+         patch.object(smt, "scan_skill", side_effect=RuntimeError("boom")):
+        applied = _apply_staged(
+            smt, wa, "patch", "scanner-failure",
+            old_string="body", new_string="changed body",
+        )
+
+    assert applied["success"] is False
+    assert applied["error"] == "Security scan failed; the skill write was not applied."
+    found = smt._find_skill("scanner-failure")
+    assert found is not None
+    content = (found["path"] / "SKILL.md").read_text(encoding="utf-8")
+    assert "changed body" not in content
+    assert "body" in content
+
+
+def test_approved_safe_write_file_ignores_preexisting_dangerous_findings(hermes_home):
+    """Supporting-file writes evaluate only findings introduced by that write."""
+    smt, wa = _skill_security_context(
+        "safe-supporting-write", _content_with_dangerous_finding()
+    )
+
+    applied = _apply_staged(
+        smt, wa, "write_file", "safe-supporting-write",
+        file_path="references/notes.md", file_content="# Harmless notes\n",
+    )
+
+    assert applied["success"] is True
+    found = smt._find_skill("safe-supporting-write")
+    assert found is not None
+    assert (found["path"] / "references" / "notes.md").exists()
+
+
+def test_approved_edit_blocks_and_rolls_back_new_dangerous_finding(hermes_home):
+    """Full rewrites retain rollback when the new content adds a threat."""
+    smt, wa = _skill_security_context("dangerous-edit")
+
+    applied = _apply_staged(
+        smt, wa, "edit", "dangerous-edit", content=_content_with_dangerous_finding()
+    )
+
+    assert applied["success"] is False
+    assert "Security scan blocked" in applied["error"]
+    found = smt._find_skill("dangerous-edit")
+    assert found is not None
+    assert "OPENAI_API_KEY" not in (found["path"] / "SKILL.md").read_text(encoding="utf-8")
+
+
 def test_skill_create_diff_is_full_content(hermes_home):
     from tools.skill_manager_tool import skill_manage
     from tools import write_approval as wa

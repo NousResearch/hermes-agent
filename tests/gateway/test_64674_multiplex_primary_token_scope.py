@@ -78,6 +78,54 @@ class TestLoadGatewayConfigForRunner:
         assert tg.token == "default-profile-token-123"
         assert tg.enabled is True
 
+    def test_scoped_reload_still_gets_osenv_when_not_in_profile_env(self, tmp_path, monkeypatch):
+        """#69379 — process-env platform config visible inside scoped reload.
+
+        When a profile's ``.env`` has no ``API_SERVER_ENABLED`` but the
+        process ``os.environ`` does, the scoped reload must fall through so
+        container env vars (Docker compose ``environment:`` block) continue
+        to enable platforms like api_server.
+        """
+        from gateway import run as run_mod
+        import hermes_constants as hc
+
+        home = tmp_path / "home"
+        home.mkdir()
+        # Put a TELEGRAM token in the profile .env to exercise the
+        # scope mechanism, but do NOT put any API_SERVER_* var there.
+        (home / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=default-profile-token-123\n", encoding="utf-8"
+        )
+        (home / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # API_SERVER_ENABLED lives ONLY in os.environ, NOT in .env —
+        # this is the Docker compose use case.
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
+        monkeypatch.setenv("API_SERVER_PORT", "8642")
+        # Simulate a clean process env for TELEGRAM_BOT_TOKEN (not exported).
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.setattr(hc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(run_mod, "_hermes_home", home)
+
+        cfg = run_mod.load_gateway_config_for_runner()
+        assert cfg.multiplex_profiles is True
+        # TELEGRAM token still from scope (profile .env)
+        tg = cfg.platforms.get(Platform.TELEGRAM)
+        assert tg is not None
+        assert tg.token == "default-profile-token-123"
+        assert tg.enabled is True
+        # API_SERVER enabled from os.environ fallthrough
+        api = cfg.platforms.get(Platform.API_SERVER)
+        assert api is not None, \
+            "api_server should be enabled from process env even inside scoped reload"
+        assert api.enabled is True
+        assert api.extra.get("host") == "0.0.0.0"
+        assert api.extra.get("port") == 8642
+
 
 class TestPlatformHasBotCredential:
     def test_telegram_empty_token_false(self):

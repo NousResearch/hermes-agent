@@ -762,6 +762,72 @@ class TestUnreadablePairingFile:
         # The warning must fire — otherwise this is the silent-failure bug.
         assert any(rec.levelno == logging.WARNING for rec in caplog.records), \
             "PermissionError on approved.json must produce a WARNING log line"
+
+
+class TestApproveByUserId:
+    """Tests for approve_by_user_id — the fallback approval path when
+    the pairing code DM was not delivered (#70651)."""
+
+    def test_approve_by_user_id_succeeds(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("weixin", "o9cq_user1@im.wechat", "Alice")
+            result = store.approve_by_user_id("weixin", "o9cq_user1@im.wechat")
+        assert isinstance(result, dict)
+        assert result["user_id"] == "o9cq_user1@im.wechat"
+        assert result["user_name"] == "Alice"
+
+    def test_approve_by_user_id_makes_user_approved(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user1", "Bob")
+            store.approve_by_user_id("telegram", "user1")
+            assert store.is_approved("telegram", "user1") is True
+
+    def test_approve_by_user_id_removes_from_pending(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user1")
+            store.approve_by_user_id("telegram", "user1")
+            pending = store.list_pending("telegram")
+        assert len(pending) == 0
+
+    def test_approve_by_user_id_unknown_user_returns_none(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user1")
+            result = store.approve_by_user_id("telegram", "nonexistent")
+        assert result is None
+
+    def test_approve_by_user_id_does_not_count_as_failed_attempt(self, tmp_path):
+        """Unlike approve_code, a missed user_id lookup must not count
+        toward the brute-force lockout — there is no secret to brute-force."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user1")
+            for _ in range(MAX_FAILED_ATTEMPTS + 2):
+                store.approve_by_user_id("telegram", "wrong_user")
+            # Platform must NOT be locked out
+            assert store._is_locked_out("telegram") is False
+            # The real code should still work via approve_code
+            code = store.list_pending("telegram")[0]
+            # ... but we don't have the raw code, so just verify not locked out
+
+    def test_approve_by_user_id_works_without_code_delivery(self, tmp_path):
+        """The core #70651 scenario: code was never delivered to the operator,
+        but user_id is visible in list_pending."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            # User sends a DM; gateway generates a code and tries to send it
+            store.generate_code("weixin", "wx_user_abc", "TestUser")
+            # Code DM was rate-limited / dropped — operator only has list output
+            pending = store.list_pending("weixin")
+            assert len(pending) == 1
+            user_id = pending[0]["user_id"]
+            # Operator approves by user_id
+            result = store.approve_by_user_id("weixin", user_id)
+        assert result is not None
+        assert result["user_id"] == "wx_user_abc"
 # Profile-scoped storage (multiplexing gateway isolation)
 # ---------------------------------------------------------------------------
 

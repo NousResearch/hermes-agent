@@ -1046,7 +1046,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if tool_name == "read_file":
         path = args.get("path", "?")
         offset = args.get("offset", 1)
-        return f"[read_file] read {path} from line {offset} ({content_len:,} chars)"
+        return f"[read_file] read {path} from line {offset} ({line_count} lines, {content_len:,} chars)"
 
     if tool_name == "write_file":
         path = args.get("path", "?")
@@ -1064,7 +1064,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if tool_name == "patch":
         path = args.get("path", "?")
         mode = args.get("mode", "replace")
-        return f"[patch] {mode} in {path} ({content_len:,} chars result)"
+        return f"[patch] {mode} in {path} ({line_count} lines, {content_len:,} chars result)"
 
     if tool_name in {"browser_navigate", "browser_click", "browser_snapshot",
                      "browser_type", "browser_scroll", "browser_vision"}:
@@ -1075,7 +1075,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
 
     if tool_name == "web_search":
         query = args.get("query", "?")
-        return f"[web_search] query='{query}' ({content_len:,} chars result)"
+        return f"[web_search] query='{query}' ({line_count} lines, {content_len:,} chars result)"
 
     if tool_name == "web_extract":
         urls = args.get("urls", [])
@@ -1091,13 +1091,13 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         url_desc = first
         if isinstance(urls, list) and len(urls) > 1:
             url_desc += f" (+{len(urls) - 1} more)"
-        return f"[web_extract] {url_desc} ({content_len:,} chars)"
+        return f"[web_extract] {url_desc} ({line_count} lines, {content_len:,} chars)"
 
     if tool_name == "delegate_task":
         goal = _str_arg(args, "goal")
         if len(goal) > 60:
             goal = goal[:57] + "..."
-        return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
+        return f"[delegate_task] '{goal}' ({line_count} lines, {content_len:,} chars result)"
 
     if tool_name == "execute_code":
         code_str = _str_arg(args, "code")
@@ -1154,7 +1154,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     for k, v in list(args.items())[:2]:
         sv = str(v)[:40]
         first_arg += f" {k}={sv}"
-    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
+    return f"[{tool_name}]{first_arg} ({line_count} lines, {content_len:,} chars result)"
 
 
 def resolve_model_threshold(

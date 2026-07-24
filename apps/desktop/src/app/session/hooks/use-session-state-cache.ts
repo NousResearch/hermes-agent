@@ -33,6 +33,12 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
+  // A focused session with no model clears the composer (the focused-session
+  // cache contract). The empty-model preservation that prevents the backend
+  // falling back to the profile default on send lives in the session.info
+  // gateway event handler, which is the path that fires on a profile switch —
+  // not here, where an explicit user focus on a session legitimately adopts
+  // that session's (possibly empty) model.
   setCurrentModel(state.model ?? '')
   setCurrentProvider(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')

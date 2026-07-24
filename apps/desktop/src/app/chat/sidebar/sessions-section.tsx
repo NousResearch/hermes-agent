@@ -92,6 +92,7 @@ interface SidebarSessionsSectionProps {
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
+  onMoveSessionToProfile?: (sessionId: string, targetProfile: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
@@ -159,6 +160,7 @@ export function SidebarSessionsSection({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
+  onMoveSessionToProfile,
   onBranchSession,
   onTogglePin,
   onNewSessionInWorkspace,
@@ -216,6 +218,9 @@ export function SidebarSessionsSection({
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
+      onMoveToProfile: onMoveSessionToProfile
+        ? (targetProfile: string) => onMoveSessionToProfile(session.id, targetProfile)
+        : undefined,
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
       reorderable: draggable && !branchStem,
@@ -344,6 +349,7 @@ export function SidebarSessionsSection({
         onArchiveSession={onArchiveSession}
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
+        onMoveSessionToProfile={onMoveSessionToProfile}
         onResumeSession={onResumeSession}
         onTogglePin={onTogglePin}
         pinned={pinned}

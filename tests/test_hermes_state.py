@@ -7353,6 +7353,7 @@ class TestLoneSurrogatePersistence:
         assert db.get_session("s1")["title"] == "title \ufffd bad"
 
 
+
 class TestDisplayMetadataPersistence:
     """Round-trip display_kind/display_metadata through every write path."""
 
@@ -7376,8 +7377,6 @@ class TestDisplayMetadataPersistence:
             display_kind="async_delegation_complete",
             display_metadata=meta,
         )
-        # Reload via get_messages_as_conversation (which decodes display fields)
-        # then replace_messages (which re-inserts via _insert_message_rows).
         conv = db.get_messages_as_conversation("s1")
         db.replace_messages("s1", conv)
         reloaded = db.get_messages_as_conversation("s1")
@@ -7400,3 +7399,118 @@ class TestDisplayMetadataPersistence:
         assert len(switched) == 1
         assert switched[0]["display_metadata"] == meta
 
+
+# =========================================================================
+# Move session across profiles (desktop "Move to…")
+# =========================================================================
+
+class TestMoveSessionToProfile:
+    def _seed(self, source_db, sid="s1"):
+        source_db.create_session(
+            session_id=sid, source="cli", model="claude-opus-4-6",
+        )
+        source_db.append_message(sid, role="user", content="hello")
+        source_db.append_message(
+            sid, role="user",
+            content=[{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "x"}}],
+        )
+        source_db.append_message(
+            sid, role="assistant", content="hi there",
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}],
+        )
+        source_db.update_token_counts(
+            sid, input_tokens=10, output_tokens=20, model="claude-opus-4-6",
+            api_call_count=1,
+        )
+        return sid
+
+    def test_moves_row_messages_and_usage(self, tmp_path):
+        from hermes_state import SessionDB
+        source_db = SessionDB(db_path=tmp_path / "source.db")
+        self._seed(source_db)
+        target_db = SessionDB(db_path=tmp_path / "target.db")
+        moved = source_db.move_session_to_profile(
+            "s1", "coder", tmp_path / "target.db",
+        )
+        assert moved is True
+        assert source_db.get_session("s1") is None
+        assert source_db.get_messages("s1") == []
+        target_session = target_db.get_session("s1")
+        assert target_session is not None
+        assert target_session["profile_name"] == "coder"
+        assert target_session["model"] == "claude-opus-4-6"
+        target_msgs = target_db.get_messages("s1")
+        assert [m["role"] for m in target_msgs] == ["user", "user", "assistant"]
+        assert target_msgs[1]["content"] == [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": "x"}},
+        ]
+        assert target_msgs[2]["tool_calls"] == [
+            {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+        ]
+        usage = target_db._conn.execute(
+            "SELECT model, input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
+            ("s1",),
+        ).fetchall()
+        assert len(usage) == 1
+        assert usage[0]["model"] == "claude-opus-4-6"
+        assert usage[0]["input_tokens"] == 10
+        assert usage[0]["output_tokens"] == 20
+        source_db.close()
+        target_db.close()
+
+    def test_preserves_session_id(self, tmp_path):
+        from hermes_state import SessionDB
+        source_db = SessionDB(db_path=tmp_path / "source.db")
+        self._seed(source_db, sid="keep-this-id")
+        target_db = SessionDB(db_path=tmp_path / "target.db")
+        source_db.move_session_to_profile(
+            "keep-this-id", "coder", tmp_path / "target.db",
+        )
+        assert target_db.get_session("keep-this-id") is not None
+        source_db.close()
+        target_db.close()
+
+    def test_missing_session_returns_false(self, tmp_path):
+        from hermes_state import SessionDB
+        source_db = SessionDB(db_path=tmp_path / "source.db")
+        target_db = SessionDB(db_path=tmp_path / "target.db")
+        assert source_db.move_session_to_profile(
+            "ghost", "coder", tmp_path / "target.db",
+        ) is False
+        assert target_db.get_session("ghost") is None
+        source_db.close()
+        target_db.close()
+
+    def test_collision_keeps_both_copies(self, tmp_path):
+        """A session id already present in the target profile is a collision:
+        the move must refuse (False) without clobbering the target's existing
+        row or deleting the source."""
+        from hermes_state import SessionDB
+
+        source_db = SessionDB(db_path=tmp_path / "source.db")
+        self._seed(source_db, sid="dup")
+        # Pre-existing distinct session under the same id in the target.
+        target_db = SessionDB(db_path=tmp_path / "target.db")
+        target_db.create_session(
+            session_id="dup", source="cli", model="existing-target-model",
+        )
+        target_db.append_message("dup", role="user", content="target original")
+
+        moved = source_db.move_session_to_profile(
+            "dup", "coder", tmp_path / "target.db",
+        )
+        assert moved is False
+
+        # Target keeps its original row untouched.
+        target_session = target_db.get_session("dup")
+        assert target_session is not None
+        assert target_session["model"] == "existing-target-model"
+        assert [m["content"] for m in target_db.get_messages("dup")] == ["target original"]
+
+        # Source row + messages survive the refused move.
+        assert source_db.get_session("dup") is not None
+        assert source_db.get_messages("dup") != []
+
+        source_db.close()
+        target_db.close()

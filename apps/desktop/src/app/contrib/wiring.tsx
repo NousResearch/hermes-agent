@@ -419,6 +419,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     branchCurrentSession,
     branchStoredSession,
     createBackendSessionForSend,
+    moveSessionToProfile,
     openNewSessionTile,
     removeSession,
     resumeSession,
@@ -574,6 +575,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     archiveSession,
     branchStoredSession,
     executeSlashCommand,
+    moveSessionToProfile,
     removeSession,
     requestGateway,
     runtimeIdByStoredSessionIdRef,
@@ -767,6 +769,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onAttachImageBlob: composer.attachImageBlob,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
     onBranchSession: sessionId => void branchStoredSession(sessionId),
+    onMoveSessionToProfile: (sessionId: string, targetProfile: string) =>
+      void moveSessionToProfile(sessionId, targetProfile),
     onCancel: cancelRun,
     onDeleteSelectedSession: () => {
       const id = $selectedStoredSessionId.get()

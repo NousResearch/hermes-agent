@@ -1486,6 +1486,8 @@ export interface Translations {
       renameDesc: string
       untitledPlaceholder: string
       untitledChat: (id: string) => string
+      moveTo: string
+      noOtherProfiles: string
       ageNow: string
       ageDay: string
       ageHour: string
@@ -2260,6 +2262,8 @@ export interface Translations {
     deleteFailed: string
     archived: string
     archiveFailed: string
+    movedToProfile: (name: string) => string
+    moveFailed: string
     cwdChangeFailed: string
     cwdStagedTitle: string
     cwdStagedMessage: string

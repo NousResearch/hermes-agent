@@ -58,6 +58,7 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
+import { $profiles } from '@/store/profile'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
@@ -117,6 +118,10 @@ interface SessionActions {
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
+  /** Relocate this session into another profile's state.db (desktop
+   *  "Move to…"). Omitted where the session's profile has no other
+   *  profiles to move to. */
+  onMoveToProfile?: (targetProfile: string) => void
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
    *  rows, the main tab). */
   onClose?: () => void
@@ -158,6 +163,62 @@ const CONTEXT_KIT: MenuKit = {
   SubTrigger: ContextMenuSubTrigger
 }
 
+/**
+ * "Move to…" submenu: lists every profile except the session's current one.
+ * Selecting a profile calls `onMoveToProfile(target)` — the desktop's
+ * optimistic move across the per-profile state.db islands.
+ */
+function MoveSubmenu({
+  currentProfile,
+  kit,
+  onMoveToProfile
+}: {
+  currentProfile: string | undefined
+  kit: MenuKit
+  onMoveToProfile: (targetProfile: string) => void
+}) {
+  const { t } = useI18n()
+  const profiles = useStore($profiles)
+  // Session move relocates the durable row on the SAME local backend; remote
+  // destinations can't be reached by the proposed request (the PATCH routes on
+  // the source profile and strips profile for per-profile remotes), so exclude
+  // any profile whose backend is a remote override.
+  const targets = profiles.filter(
+    (p: { name: string; is_remote?: boolean }) => p.name !== currentProfile && !p.is_remote
+  )
+
+  return (
+    <kit.Sub>
+      <kit.SubTrigger>
+        <Codicon name="fold-up" size="0.875rem" />
+        <span>{t.sidebar.row.moveTo}</span>
+      </kit.SubTrigger>
+      <kit.SubContent className="w-44">
+        {targets.length === 0 ? (
+          <div className="px-2 py-1.5 text-[0.75rem] text-(--ui-text-tertiary)">
+            {t.sidebar.row.noOtherProfiles}
+          </div>
+        ) : (
+          targets.map(profile => (
+            <kit.Item
+              key={profile.name}
+              onSelect={() => {
+                triggerHaptic('selection')
+                onMoveToProfile(profile.name)
+              }}
+            >
+              <span>{profile.name}</span>
+              {profile.is_default && (
+                <span className="ml-auto text-[0.7rem] text-(--ui-text-tertiary)">default</span>
+              )}
+            </kit.Item>
+          ))
+        )}
+      </kit.SubContent>
+    </kit.Sub>
+  )
+}
+
 interface ItemSpec {
   className?: string
   disabled: boolean
@@ -197,6 +258,7 @@ function useSessionActions({
   onBranch,
   onArchive,
   onDelete,
+  onMoveToProfile,
   onClose,
   onHideTabBar,
   surface = 'row',
@@ -404,6 +466,12 @@ function useSessionActions({
       />
       <kit.Separator />
       {workItems.map(item => renderMenuItem(kit.Item, item))}
+      {onMoveToProfile && (
+        <>
+          <kit.Separator />
+          <MoveSubmenu currentProfile={profile} kit={kit} onMoveToProfile={onMoveToProfile} />
+        </>
+      )}
       {tabCloseItems.length > 0 && (
         <>
           <kit.Separator />

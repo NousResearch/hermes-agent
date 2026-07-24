@@ -615,7 +615,14 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
 }
 
 export function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } | undefined) {
-  setCurrentModel(stored?.model || '')
+  // Only adopt the stored session's model when it actually has one. A
+  // runtime-only / brand-new session has no model in state.db, and forcing
+  // '' here would clobber the composer's current selection and make the
+  // backend fall back to the profile default (e.g. gemma-imatrix).
+  if (stored?.model) {
+    setCurrentModel(stored.model)
+  }
+
   setCurrentProvider('')
   setCurrentReasoningEffort('')
   setCurrentServiceTier('')

@@ -3,7 +3,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { deleteSession, getSessionMessages, moveSessionToProfile as moveSessionToProfileApi, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -1388,12 +1388,91 @@ export function useSessionActions({
     [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
   )
 
+  const moveSessionToProfile = useCallback(
+    async (storedSessionId: string, targetProfile: string) => {
+      clearNotifications()
+
+      const session = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+      const previousPinned = $pinnedSessionIds.get()
+      const wasSelected = selectedStoredSessionId === storedSessionId
+      // Close the source runtimes (selected + tiled) before relocating, mirroring
+      // the delete path: a live source runtime must not outlive its durable row,
+      // or it keeps running against a session that now lives under another profile.
+      const closingRuntimeId = wasSelected ? activeSessionId : null
+      const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+      // Optimistically remove from this profile's sidebar; the session now lives
+      // under the target profile and will surface there on its next refresh.
+      setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
+      tombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
+      setSessionsTotal(prev => Math.max(0, prev - 1))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+
+      // Tear down runtimes before awaiting so the route effect can't resume the
+      // relocated session via the stale /<sid> URL.
+      try {
+        if (closingRuntimeId) {
+          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+        }
+
+        if (tiledRuntimeId) {
+          await requestGateway('session.close', { session_id: tiledRuntimeId }).catch(() => undefined)
+        }
+
+        await moveSessionToProfileApi(storedSessionId, targetProfile, session?.profile)
+        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId))
+        closeSessionTile(storedSessionId)
+
+        if (tiledRuntimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
+          dropSessionState(tiledRuntimeId)
+        }
+
+        // Only now (after a confirmed relocation) clear the foreground so
+        // we don't strand the user on an empty draft if the move failed.
+        if (wasSelected) {
+          startFreshSessionDraft(true)
+        }
+
+        notify({ durationMs: 2_000, kind: 'success', message: copy.movedToProfile(targetProfile) })
+      } catch (err) {
+        if (session) {
+          setSessions(prev => [session, ...prev.filter(s => !sessionMatchesStoredId(s, storedSessionId))])
+          setSessionsTotal(prev => prev + 1)
+        }
+
+        untombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
+        $pinnedSessionIds.set(previousPinned)
+
+        // The selected/tiled runtimes were already closed above; drop their
+        // now-stale refs so a failed move can't resurface them.
+        if (tiledRuntimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
+          dropSessionState(tiledRuntimeId)
+        }
+
+        notifyError(err, copy.moveFailed)
+      }
+    },
+    [
+      copy,
+      requestGateway,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft
+    ]
+  )
+
   return {
     archiveSession,
     branchCurrentSession,
     branchStoredSession,
     closeSettings,
     createBackendSessionForSend,
+    moveSessionToProfile,
     openNewSessionTile,
     openSettings,
     removeSession,

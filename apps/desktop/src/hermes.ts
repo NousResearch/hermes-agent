@@ -612,6 +612,19 @@ export function renameSession(
   })
 }
 
+export function moveSessionToProfile(
+  id: string,
+  targetProfile: string,
+  profile?: string | null
+): Promise<{ ok: boolean; moved_to_profile: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; moved_to_profile: string }>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { move_to_profile: targetProfile, ...(profile ? { profile } : {}) }
+  })
+}
+
 export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
     ...profileScoped(),

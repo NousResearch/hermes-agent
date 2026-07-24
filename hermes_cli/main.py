@@ -7022,6 +7022,66 @@ def _update_via_zip(args):
     except Exception as e:
         logger.debug("Model catalog seed during zip update failed: %s", e)
 
+    # ── Post-update state.db integrity guard (#68474) ─────────────────
+    # Same as the git-pull path: verify state.db survived the ZIP update
+    # and auto-restore from the most recent pre-update snapshot if needed.
+    try:
+        from hermes_cli.backup import verify_sqlite_integrity
+
+        _state_path = get_hermes_home() / "state.db"
+        if _state_path.exists():
+            _state_ok = verify_sqlite_integrity(
+                _state_path, check_header=True, run_pragma=True
+            )
+            if not _state_ok.get("valid"):
+                print()
+                print(
+                    "⚠ state.db is corrupted after update: "
+                    + _state_ok.get("message", "unknown error")
+                )
+                _snap_root = _quick_snapshot_root(get_hermes_home())
+                if _snap_root.exists():
+                    _snap_dirs = sorted(
+                        (d for d in _snap_root.iterdir() if d.is_dir()),
+                        reverse=True,
+                    )
+                    for _snap_dir in _snap_dirs:
+                        _snap_state = _snap_dir / "state.db"
+                        if _snap_state.exists():
+                            _snap_ok = verify_sqlite_integrity(
+                                _snap_state, check_header=True, run_pragma=True
+                            )
+                            if _snap_ok.get("valid"):
+                                try:
+                                    import shutil as _shutil
+
+                                    _shutil.copy2(_snap_state, _state_path)
+                                    _restored_ok = verify_sqlite_integrity(
+                                        _state_path,
+                                        check_header=True,
+                                        run_pragma=True,
+                                    )
+                                    if _restored_ok.get("valid"):
+                                        print(
+                                            "  ✓ Auto-restored from snapshot "
+                                            f"{_snap_dir.name}"
+                                        )
+                                    else:
+                                        print(
+                                            "  ✗ Auto-restore FAILED — restored "
+                                            "copy also failed integrity"
+                                        )
+                                    break
+                                except OSError as _exc:
+                                    print(
+                                        f"  ✗ Auto-restore file copy failed: {_exc}"
+                                    )
+                                    break
+    except Exception as exc:
+        logger.debug(
+            "Post-update state.db integrity check (zip path) failed: %s", exc
+        )
+
     print()
     if node_failures:
         print(
@@ -10013,13 +10073,58 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
     snapshot_id = None
     try:
-        from hermes_cli.backup import create_quick_snapshot
+        from hermes_cli.backup import create_quick_snapshot, verify_sqlite_integrity
 
         snapshot_id = create_quick_snapshot(
             label="pre-update",
             keep=_PRE_UPDATE_SNAPSHOT_KEEP,
             max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
         )
+
+        # After the snapshot, verify the source state.db is still intact.
+        # The snapshot was taken via _safe_copy_db (read-only SQLite backup
+        # API), but a concurrent process (antivirus, force-killed gateway
+        # releasing file handles, Windows filter driver) can corrupt the live
+        # file at any point. A silent zeroing at this point would proceed with
+        # the update and exit code 0 — exactly the #68474 symptom.
+        if snapshot_id:
+            _src_path = get_hermes_home() / "state.db"
+            if _src_path.exists():
+                _integrity = verify_sqlite_integrity(
+                    _src_path,
+                    check_header=True,
+                    run_pragma=True,
+                    max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+                )
+                if not _integrity.get("valid"):
+                    _msg = _integrity.get("message", "unknown error")
+                    print(
+                        f"  ⚠ state.db integrity check FAILED after snapshot: {_msg}"
+                    )
+                    # Check if the snapshot itself is valid.
+                    _snap_root = _quick_snapshot_root(get_hermes_home())
+                    _snap_state = _snap_root / snapshot_id / "state.db"
+                    if _snap_state.exists():
+                        _snap_ok = verify_sqlite_integrity(
+                            _snap_state, check_header=True, run_pragma=True
+                        )
+                        if _snap_ok.get("valid"):
+                            print(
+                                "  ✓ Snapshot copy is valid — continuing update."
+                            )
+                            print(
+                                "    If state.db is lost after update it will be auto-restored."
+                            )
+                        else:
+                            print(
+                                "  ✗ Snapshot copy ALSO failed integrity — "
+                                "the source was already corrupted before the backup."
+                            )
+                    else:
+                        print(
+                            "  ⚠ Snapshot does not contain state.db (was skipped or too large)."
+                        )
+                    print()
         if snapshot_id:
             print(f"◆ Pre-update snapshot: {snapshot_id}")
     except Exception as exc:
@@ -11322,6 +11427,82 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Code updated!")
+
+        # ── Post-update state.db integrity guard (#68474) ─────────────────
+        # Verify that state.db survived the update intact.  If the live file
+        # is now corrupted (zeroed, missing header, integrity failure),
+        # automatically restore from the pre-update snapshot rather than
+        # letting the user discover silently that their sessions are gone.
+        try:
+            from hermes_cli.backup import verify_sqlite_integrity
+
+            _state_path = get_hermes_home() / "state.db"
+            if _state_path.exists():
+                _state_ok = verify_sqlite_integrity(
+                    _state_path,
+                    check_header=True,
+                    run_pragma=True,
+                    max_bytes=0,
+                )
+                if _state_ok.get("valid"):
+                    logger.debug(
+                        "Post-update state.db integrity check: %s",
+                        _state_ok.get("message"),
+                    )
+                else:
+                    print()
+                    print(
+                        "⚠ state.db is corrupted after update: "
+                        + _state_ok.get("message", "unknown error")
+                    )
+                    _pre_snap_id = pre_update_snapshot_id
+                    if _pre_snap_id:
+                        _snap_state = (
+                            _quick_snapshot_root(get_hermes_home())
+                            / _pre_snap_id
+                            / "state.db"
+                        )
+                        if _snap_state.exists():
+                            _snap_ok = verify_sqlite_integrity(
+                                _snap_state, check_header=True, run_pragma=True
+                            )
+                            if _snap_ok.get("valid"):
+                                try:
+                                    import shutil as _shutil
+
+                                    _shutil.copy2(_snap_state, _state_path)
+                                    _restored_ok = verify_sqlite_integrity(
+                                        _state_path,
+                                        check_header=True,
+                                        run_pragma=True,
+                                    )
+                                    if _restored_ok.get("valid"):
+                                        print(
+                                            "  ✓ Auto-restored from pre-update "
+                                            f"snapshot ({_pre_snap_id})"
+                                        )
+                                    else:
+                                        print(
+                                            "  ✗ Auto-restore FAILED — restored "
+                                            "copy also failed integrity"
+                                        )
+                                except OSError as _exc:
+                                    print(
+                                        f"  ✗ Auto-restore file copy failed: {_exc}"
+                                    )
+                            else:
+                                print(
+                                    "  ✗ Pre-update snapshot also failed integrity"
+                                )
+                        else:
+                            print(
+                                "  ⚠ Pre-update snapshot does not contain state.db"
+                            )
+                    else:
+                        print("  ⚠ No pre-update snapshot was taken")
+                    print()
+        except Exception as exc:
+            logger.debug("Post-update state.db integrity check failed: %s", exc)
 
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at

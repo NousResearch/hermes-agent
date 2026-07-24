@@ -296,6 +296,44 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
+    def test_current_temp_subtree_allowed(self, tmp_path):
+        from tools.file_tools import _check_sensitive_path
+
+        assert _check_sensitive_path(str(tmp_path / "ordinary.txt")) is None
+
+    def test_symlink_escape_from_temp_stays_blocked(self, tmp_path):
+        from tools.file_tools import _check_sensitive_path
+
+        escape = tmp_path / "escape"
+        escape.symlink_to("/private/var/db/evil.conf")
+        assert _check_sensitive_path(str(escape)) is not None
+
+    def test_non_temp_private_var_still_blocked(self):
+        from tools.file_tools import _check_sensitive_path
+
+        assert _check_sensitive_path("/private/var/db/dslocal/nodes") is not None
+
+    def test_broad_tmpdir_cannot_create_private_var_carveout(self, monkeypatch):
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: "/private/var/tmp")
+        monkeypatch.setattr(file_tools, "_canonical_tempdir", None)
+        monkeypatch.setattr(file_tools, "_canonical_tempdir_loaded", False)
+        assert file_tools._get_canonical_tempdir() is None
+
+    def test_hermes_config_inside_temp_stays_blocked(self, tmp_path, monkeypatch):
+        import tools.file_tools as file_tools
+
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr(
+            file_tools, "_hermes_config_resolved", str(config_path.resolve())
+        )
+        monkeypatch.setattr(file_tools, "_hermes_config_resolved_loaded", True)
+
+        error = file_tools._check_sensitive_path(str(config_path))
+        assert error is not None
+        assert "Hermes config file" in error
+
 
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.

@@ -15,7 +15,7 @@ Both fixed together by:
 
 import threading
 
-
+import pytest
 
 class TestThreadLocalApprovalCallback:
     """GHSA-qg5c-hvr5-hjgr: set_approval_callback must be per-thread so
@@ -201,6 +201,30 @@ class TestAcpExecAskGate:
     (HERMES_EXEC_ASK takes the gateway-queue path which requires a
     notify_cb registered in _gateway_notify_cbs — not applicable to ACP,
     which uses a direct callback shape.)"""
+
+    @pytest.fixture(autouse=True)
+    def _hermetic_approval_caches(self, monkeypatch):
+        """Isolate against approval-bypass caches that populate at import time.
+
+        ``tools.approval`` eagerly loads the developer's real permanent
+        ``command_allowlist`` (e.g. the ``recursive delete`` pattern) into the
+        module-global ``_permanent_approved`` set the first time it is imported
+        — which happens during collection, before the per-test HERMES_HOME
+        isolation fixture can point at an empty profile. A leaked ``recursive
+        delete`` entry makes ``rm -rf`` auto-approve via ``is_approved`` and
+        never reach the interactive callback, silently defeating these tests.
+
+        Swap the three bypass containers for empty ones via monkeypatch (auto
+        restored after each test). Production code reads these names out of the
+        module globals, so it transparently sees the empty sets for the test's
+        duration — no production behavior is altered.
+        """
+        import tools.approval as approval
+
+        monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval, "_permanent_approved", set())
+        monkeypatch.setattr(approval, "_session_approved", {})
+        monkeypatch.setattr(approval, "_session_yolo", set())
 
     def test_interactive_env_var_routes_to_callback(self, monkeypatch):
         """When HERMES_INTERACTIVE is set and an approval callback is

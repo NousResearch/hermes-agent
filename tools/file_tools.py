@@ -7,6 +7,7 @@ import logging
 import os
 import posixpath
 import sys
+import tempfile
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -575,6 +576,63 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
+_canonical_tempdir: str | None = None
+_canonical_tempdir_loaded = False
+
+
+def _get_canonical_tempdir() -> str | None:
+    """Return the process's canonical (symlink-resolved) temp directory.
+
+    On macOS ``tempfile.gettempdir()`` lives under ``/var/folders/...`` which
+    resolves to ``/private/var/folders/...`` — a subtree of the broadly
+    protected ``/private/var/`` prefix. Writes to the current process's own
+    temp tree are legitimate (pytest ``tmp_path``, atomic-write scratch files),
+    so we carve out exactly this real subtree while keeping the rest of
+    ``/private/var`` blocked. Cached because ``realpath`` hits the filesystem.
+    """
+    global _canonical_tempdir, _canonical_tempdir_loaded
+    if _canonical_tempdir_loaded:
+        return _canonical_tempdir
+    _canonical_tempdir_loaded = True
+    try:
+        candidate = os.path.realpath(tempfile.gettempdir())
+    except (OSError, ValueError):
+        _canonical_tempdir = None
+        return _canonical_tempdir
+
+    # The carve-out exists only for macOS's per-user runtime temp shape:
+    # /private/var/folders/<bucket>/<user-hash>/T.  TMPDIR is configurable;
+    # never let a broad value such as /private/var or /private/var/tmp weaken
+    # the protected-prefix guard below.
+    parts = Path(candidate).parts
+    if (
+        sys.platform == "darwin"
+        and len(parts) == 7
+        and parts[:4] == ("/", "private", "var", "folders")
+        and parts[-1] == "T"
+    ):
+        _canonical_tempdir = candidate
+    else:
+        _canonical_tempdir = None
+    return _canonical_tempdir
+
+
+def _is_within_dir(path: str, directory: str) -> bool:
+    """Path-boundary-safe containment: is ``path`` inside ``directory``?
+
+    Uses ``os.path.commonpath`` so a sibling like ``/private/var/foldersX``
+    is NOT treated as inside ``/private/var/folders`` (a plain ``startswith``
+    would wrongly match). Both arguments must be absolute, symlink-resolved
+    paths for the result to be a real-filesystem containment check.
+    """
+    if not path or not directory:
+        return False
+    try:
+        return os.path.commonpath([path, directory]) == directory
+    except ValueError:
+        # Raised for mixed absolute/relative or different drives.
+        return False
+
 
 def _get_hermes_config_resolved() -> str | None:
     """Return the resolved absolute path of the Hermes config file (cached)."""
@@ -604,9 +662,23 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
+    # Allow writes inside THIS process's canonical temp subtree, even though it
+    # lives under a protected prefix (macOS temp is /private/var/folders/...).
+    # ``resolved`` has already followed symlinks (Path.resolve), so a symlink
+    # planted in temp that points at a protected path resolves OUTSIDE the temp
+    # tree and stays blocked by the prefix checks below.
+    canonical_tmp = _get_canonical_tempdir()
+    is_runtime_temp = False
+    if canonical_tmp:
+        try:
+            real_target = os.path.realpath(resolved)
+        except (OSError, ValueError):
+            real_target = resolved
+        is_runtime_temp = _is_within_dir(real_target, canonical_tmp)
+    if not is_runtime_temp:
+        for prefix in _SENSITIVE_PATH_PREFIXES:
+            if resolved.startswith(prefix) or normalized.startswith(prefix):
+                return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
     # Prevent agents from modifying the Hermes config file directly.

@@ -1,7 +1,7 @@
 ---
 name: xurl
 description: "X/Twitter via xurl CLI: raw post search, posting, DM, media."
-version: 1.1.2
+version: 1.1.3
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -27,14 +27,6 @@ Use this skill for:
 - media uploads (images and video)
 - raw access to any X API v2 endpoint
 - multi-app / multi-account workflows
-
-If Hermes also exposes the `x_search` tool, route by intent:
-
-- Use `x_search` for read-only public X discovery: "what are people saying", current reactions, public claims, broad semantic search, and synthesized answers with citations.
-- Use `xurl` for exact or authenticated X API work: post, reply, quote, delete, like, repost, bookmark, follow, block, mute, DM, media upload, timeline, mentions, account-specific reads, or raw v2 endpoints.
-- For mixed workflows, use `x_search` to discover candidate public posts, then use `xurl read` or another exact `xurl` command only after the target post/user/action is clear.
-- Never treat an `x_search` answer as evidence that an X write happened. For state-changing X actions, only the `xurl` command output or the X API response proves the action.
-- Prefer `x_search` over `xurl search` when the user asks for broad public discussion and does not need X API-exact results or authenticated account context.
 
 This skill replaces the older `xitter` skill (which wrapped a third-party Python CLI). `xurl` is maintained by the X developer platform team, supports OAuth 2.0 PKCE with auto-refresh, and covers a substantially larger API surface.
 
@@ -399,13 +391,14 @@ xurl --app staging /2/users/me             # one-off against staging
 ## Agent Workflow
 
 1. Verify prerequisites: `xurl --help` and `xurl auth status`.
-2. Before using `xurl search`, check intent. If the user needs broad public X discovery and the `x_search` tool is available, use `x_search` instead. Continue with `xurl` when the task needs an exact API read, authenticated account context, or any X write action.
+2. Before using `xurl search`, check intent. Reach for it when the task needs actual post objects, authenticated account context, or leads into an X write action — it is the right surface when the user wants posts they can engage with, not just a summary of a topic.
 3. **Check default app has credentials.** Parse the `auth status` output. The default app is marked with `▸`. If the default app shows `oauth2: (none)` but another app has a valid oauth2 user, tell the user to run `xurl auth default <that-app>` to fix it. This is the most common setup mistake — the user added an app with a custom name but never set it as default, so xurl keeps trying the empty `default` profile.
 4. If auth is missing entirely, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
 5. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
 6. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
-7. Use JSON output directly — every response is already structured.
-8. Never paste `~/.xurl` contents back into the conversation.
+7. Only the `xurl` command output (or the raw X API response) proves that a state-changing X action happened. Never report a write as done based on any other source — search results, summaries, or prior context.
+8. Use JSON output directly — every response is already structured.
+9. Never paste `~/.xurl` contents back into the conversation.
 
 ---
 

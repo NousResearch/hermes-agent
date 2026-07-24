@@ -9690,6 +9690,18 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 
+// Renderer console forwarding: the renderer monkey-patches console.* to send
+// each call here. We format and route through rememberLog() so they land in
+// desktop.log alongside the main process's own [hermes] lines.
+ipcMain.on('hermes:console:forward', (_event, { level, message }) => {
+  const tag = level === 'error' ? '[renderer:error]'
+    : level === 'warn' ? '[renderer:warn]'
+    : level === 'info' ? '[renderer:info]'
+    : '[renderer:debug]'
+
+  rememberLog(`${tag} ${message}`)
+})
+
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {
     return false

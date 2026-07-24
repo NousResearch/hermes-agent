@@ -27,6 +27,7 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import { debugTrace } from '@/lib/debug-trace'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 
@@ -189,6 +190,18 @@ export function publishSessionState(runtimeId: string, state: ClientSessionState
   const prev = $sessionStates.get()[runtimeId] ?? null
   $sessionStates.set({ ...$sessionStates.get(), [runtimeId]: state })
   handleTransition(prev, state, runtimeId)
+
+  debugTrace(
+    'session-state',
+    `publish ${runtimeId}`,
+    {
+      prev: prev
+        ? { storedSessionId: prev.storedSessionId, busy: prev.busy, needsInput: prev.needsInput }
+        : null,
+      next: { storedSessionId: state.storedSessionId, busy: state.busy, needsInput: state.needsInput },
+      isActive: runtimeId === $activeSessionId.get()
+    }
+  )
 }
 
 export function dropSessionState(runtimeId: string) {

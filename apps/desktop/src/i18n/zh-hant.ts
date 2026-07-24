@@ -636,7 +636,9 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      debugTraceTitle: '除錯追蹤日誌',
+      debugTraceDesc: '將狀態轉換、工作階段切換、壓縮事件和閘道事件詳細輸出到 devtools 控制台，用於重現 bug。'
     },
     credentials: {
       pasteKey: '貼上金鑰',

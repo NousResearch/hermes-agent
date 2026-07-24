@@ -7,6 +7,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { $debugTraceEnabled, setDebugTraceEnabled } from '@/lib/debug-trace'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
@@ -57,6 +58,7 @@ export function ConfigSettings({
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
+  const debugTraceEnabled = useStore($debugTraceEnabled)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -292,6 +294,9 @@ export function ConfigSettings({
           the machine awake is a power-user knob. */}
       {activeSectionId === 'advanced' && (
         <ToggleRow checked={keepAwake} description={c.keepAwakeDesc} label={c.keepAwakeTitle} onChange={setKeepAwake} />
+      )}
+      {activeSectionId === 'advanced' && (
+        <ToggleRow checked={debugTraceEnabled} description={c.debugTraceDesc} label={c.debugTraceTitle} onChange={setDebugTraceEnabled} />
       )}
       {visibleFields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />

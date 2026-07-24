@@ -748,7 +748,9 @@ export const zh: Translations = {
       imported: '配置已导入',
       invalidJson: '配置 JSON 无效',
       keepAwakeTitle: '保持电脑唤醒',
-      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。'
+      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      debugTraceTitle: '调试追踪日志',
+      debugTraceDesc: '将状态转换、会话切换、压缩事件和网关事件详细输出到 devtools 控制台，用于复现 bug。'
     },
     credentials: {
       pasteKey: '粘贴密钥',

@@ -541,7 +541,9 @@ export const en: Translations = {
       imported: 'Config imported',
       invalidJson: 'Invalid config JSON',
       keepAwakeTitle: 'Keep computer awake',
-      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.'
+      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
+      debugTraceTitle: 'Debug trace logging',
+      debugTraceDesc: 'Log verbose state transitions, session switches, compaction events, and gateway events to the devtools console for bug reproduction.'
     },
     credentials: {
       pasteKey: 'Paste key',

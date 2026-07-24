@@ -42,6 +42,11 @@ export default defineConfig({
     postcss: { plugins: [] }
   },
   build: {
+    // Ship sourcemaps so crash reports and devtools stack traces point at
+    // real TS/TSX source, not minified bundles. Separate .map files (not
+    // inline) keep the executable bundle lean; both electron-builder
+    // (files: ["dist/**"]) and nix (cp -rn dist) carry them through.
+    sourcemap: true,
     // Keep desktop packaging stable: Shiki ships many dynamic chunks by
     // default, and electron-builder can OOM scanning thousands of files.
     // Collapsing to a single chunk is intentional, so the renderer bundle is

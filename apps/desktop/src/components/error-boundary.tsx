@@ -2,6 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
+import { debugTrace } from '@/lib/debug-trace'
 import { useI18n } from '@/i18n'
 
 export interface ErrorBoundaryFallbackProps {
@@ -30,6 +31,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   componentDidCatch(error: Error, info: ErrorInfo) {
     const tag = this.props.label ? `[error-boundary:${this.props.label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
+    debugTrace('error-boundary', `${this.props.label ?? 'root'}: ${error.message}`, {
+      error,
+      componentStack: info.componentStack
+    })
     this.props.onError?.(error, info)
   }
 

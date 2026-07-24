@@ -11,6 +11,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
+import { debugTrace } from '@/lib/debug-trace'
 import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
@@ -34,6 +35,7 @@ import {
   $currentCwd,
   $currentModel,
   $currentProvider,
+  $messages,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
@@ -593,6 +595,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (!sessionId) {
           return
         }
+
+        debugTrace(
+          'message',
+          `complete session=${sessionId}`,
+          {
+            isActive: isActiveEvent,
+            messageCount: $messages.get().length,
+            hasUsage: Boolean(payload?.usage),
+            hasBilling: Boolean(payload?.billing)
+          }
+        )
 
         // Turn ended — drop any blocking prompt still open for THIS session
         // (e.g. interrupted, or the approval already resolved). Scoped to the

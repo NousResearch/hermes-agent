@@ -436,6 +436,25 @@ def _isolate_hermes_home(_hermetic_environment):
 # approvals from one test's session into another's.
 
 
+@pytest.fixture(autouse=True)
+def _reset_skill_dedup_cache():
+    """Per-turn skill-view dedup state must not leak across tests.
+
+    ``tools.skills_tool`` tracks (name, file_path) pairs in a ContextVar-bound
+    set so skill_view can short-circuit within a single turn. pytest runs
+    tests on one thread (one context), so a test that activates the dedup set
+    (via build_turn_context or reset_skill_load_cache) would otherwise leak an
+    active set into later tests. Unbind it so every test starts with dedup
+    inactive, exactly like a fresh process.
+    """
+    try:
+        from tools.skills_tool import clear_skill_load_cache
+
+        clear_skill_load_cache()
+    except Exception:
+        pass
+
+
 @pytest.fixture()
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""

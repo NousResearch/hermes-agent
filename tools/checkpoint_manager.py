@@ -1255,6 +1255,74 @@ def _delete_ref(store: Path, ref: str) -> bool:
     return ok
 
 
+def _workdir_is_observably_gone(workdir: str) -> bool:
+    """True only when we can positively observe that ``workdir`` was removed.
+
+    ``Path.exists()`` returns False for a deleted directory AND for one whose
+    storage simply is not attached right now — an unplugged external drive, a
+    network share behind a downed VPN, a bind-mount absent from this
+    container, an offline Windows mapped drive. Orphan pruning deletes the
+    project's entire checkpoint history, so treating that ambiguity as
+    "deleted" throws away the user's restore points over a transient mount
+    state, unattended, at startup.
+
+    Require corroboration, in two steps.
+
+    First, the parent directory must be present, so the absence of the project
+    inside it is something we actually observed. When the parent is missing
+    too, the volume is not there and we know nothing.
+
+    Second, the present parent must actually carry information. Detaching
+    storage removes the parent outright in some layouts (``/Volumes/Ext/proj``
+    on macOS, ``/media/<user>/<label>/proj``), but in the classic static
+    layout — ``/mnt/volume/proj``, a container bind-mount, an fstab entry —
+    unmounting leaves the mount point behind as an *empty* directory. An empty
+    parent is therefore the signature of a detached volume just as much as of
+    a deleted project, so it corroborates nothing. Prune only when the parent
+    holds something else (we observed a populated directory that does not
+    contain the project) or is itself a live mount point (the volume is
+    demonstrably attached and the project is demonstrably not on it).
+
+    Genuinely abandoned projects are still reclaimed by the retention/stale
+    rule, which runs off ``last_touch`` rather than a filesystem probe.
+    """
+    if not workdir:
+        return False
+    path = Path(workdir)
+    try:
+        if path.exists():
+            return False
+        parent = path.parent
+        # A path whose parent is itself (a filesystem root) gives us nothing
+        # to corroborate against.
+        if parent == path:
+            return False
+        if not parent.is_dir():
+            return False
+        if _dir_has_any_entry(parent):
+            return True
+        # Empty parent: only evidence if that directory is a mount point, i.e.
+        # the volume is attached right now and simply does not hold the
+        # project. An empty plain directory is an unmounted mount point as
+        # readily as an emptied project root.
+        return os.path.ismount(parent)
+    except OSError:
+        # Probe failed (permission, I/O error) — not evidence of deletion.
+        return False
+
+
+def _dir_has_any_entry(directory: Path) -> bool:
+    """True when ``directory`` contains at least one entry.
+
+    Stops after the first entry rather than materializing the listing; a
+    project root can hold a large tree.
+    """
+    with os.scandir(directory) as entries:
+        for _ in entries:
+            return True
+    return False
+
+
 def prune_checkpoints(
     retention_days: int = 7,
     delete_orphans: bool = True,
@@ -1333,13 +1401,19 @@ def prune_checkpoints(
         reason: Optional[str] = None
         if delete_orphans:
             workdir: Optional[str] = None
+            marker_unreadable = False
             wd_marker = child / "HERMES_WORKDIR"
             if wd_marker.exists():
                 try:
                     workdir = wd_marker.read_text(encoding="utf-8").strip()
                 except (OSError, UnicodeDecodeError):
+                    # The marker is there, we just could not read it. That is
+                    # not evidence the project is gone — never delete on it.
                     workdir = None
-            if workdir is None or not Path(workdir).exists():
+                    marker_unreadable = True
+            if not marker_unreadable and (
+                workdir is None or _workdir_is_observably_gone(workdir)
+            ):
                 reason = "orphan"
         if reason is None and retention_days > 0:
             newest = 0.0
@@ -1378,7 +1452,9 @@ def prune_checkpoints(
                 continue
             result["scanned"] += 1
             reason = None
-            if delete_orphans and (not workdir or not Path(workdir).exists()):
+            if delete_orphans and (
+                not workdir or _workdir_is_observably_gone(workdir)
+            ):
                 reason = "orphan"
             elif retention_days > 0:
                 last_touch = float(meta.get("last_touch", 0) or 0)

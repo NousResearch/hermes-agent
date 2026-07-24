@@ -615,7 +615,7 @@ class TestConcurrencyCap:
 
             tasks = [asyncio.create_task(_live_run()) for _ in range(2)]
             adapter._active_run_tasks = {f"r{i}": task for i, task in enumerate(tasks)}
-            adapter._run_streams = {}
+            adapter._run_event_logs = {}
             try:
                 resp = adapter._concurrency_limited_response()
                 assert resp is not None
@@ -919,8 +919,8 @@ class TestHealthDetailedEndpoint:
             "done": {"status": "completed"},
             "failed": {"status": "failed"},
         }
-        # Completed streams may remain attached for replay; they are not work.
-        adapter._run_streams = {"done": object(), "failed": object()}
+        # Completed replay logs may remain attached for resume; they are not work.
+        adapter._run_event_logs = {"done": object(), "failed": object()}
 
         with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=4), \
              patch("tools.async_delegation.active_count", return_value=2):

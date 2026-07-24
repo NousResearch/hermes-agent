@@ -706,7 +706,7 @@ def iron_proxy_version(binary: Path) -> str:
         res = subprocess.run(  # noqa: S603
             [str(binary), "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=_RUN_TIMEOUT,
             env=minimal_env,
         )
@@ -1052,7 +1052,7 @@ def _detect_docker_bridge_ip() -> Optional[str]:
     try:
         res = subprocess.run(  # noqa: S603 — ip is a system binary
             ["ip", "-4", "-o", "addr", "show", "docker0"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
         )
         if res.returncode == 0:
             for line in res.stdout.splitlines():
@@ -1743,7 +1743,7 @@ def _pid_alive(pid: int) -> bool:
     try:
         res = subprocess.run(  # noqa: S603
             ["ps", "-p", str(pid), "-o", "comm="],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
         )
         if res.returncode == 0:
             comm = (res.stdout or "").strip()

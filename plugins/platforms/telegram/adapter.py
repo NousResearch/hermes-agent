@@ -355,7 +355,7 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
             proc = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "default=noprint_wrappers=1:nokey=1", path],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             if proc.returncode == 0:
                 return _coerce_duration_seconds(proc.stdout.strip())

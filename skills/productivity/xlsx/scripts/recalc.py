@@ -189,7 +189,7 @@ def _recalc_with_profile(filename, abs_path, timeout, profile_dir: Path):
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, env=get_soffice_env(), timeout=timeout + 15
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=get_soffice_env(), timeout=timeout + 15
         )
     except subprocess.TimeoutExpired:
         return {"error": timed_out}

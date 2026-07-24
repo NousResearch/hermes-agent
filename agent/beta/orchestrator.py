@@ -86,17 +86,22 @@ def _qa_validator(
 
 def _recommended_operations(request: str, response: ConsolidatedResponse) -> tuple[Operation, ...]:
     operations: list[Operation] = []
+    seen_fingerprints: set[str] = set()
     for action in response.recommendation:
         risk = classify_risk(action)
         if risk != RiskLevel.HIGH:
             continue
-        operations.append(Operation(
+        operation = Operation(
             target=request,
             action=action,
             impact="May change a production system, security posture, data, cost, or active work",
             rollback="Executor must return a concrete rollback plan before changing state",
             risk=risk,
-        ))
+        )
+        if operation.fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(operation.fingerprint)
+        operations.append(operation)
     return tuple(operations)
 
 

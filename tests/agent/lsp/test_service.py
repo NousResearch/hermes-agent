@@ -8,6 +8,7 @@ on.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -172,5 +173,70 @@ def test_service_status_includes_clients(mock_pyright):
         info = svc.get_status()
         assert info["enabled"] is True
         assert any(c["server_id"] == "pyright" for c in info["clients"])
+    finally:
+        svc.shutdown()
+
+
+class _FakeIdleClient:
+    def __init__(self, server_id: str = "pyright", workspace_root: str = "/tmp/repo"):
+        self.server_id = server_id
+        self.workspace_root = workspace_root
+        self.state = "running"
+        self.is_running = True
+        self.shutdown_calls = 0
+
+    async def shutdown(self):
+        self.shutdown_calls += 1
+        self.is_running = False
+        self.state = "stopped"
+
+
+def test_service_reap_idle_clients_shuts_down_stale_lsp_clients():
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=0.1,
+    )
+    client = _FakeIdleClient()
+    key = (client.server_id, client.workspace_root)
+    try:
+        with svc._state_lock:
+            svc._clients[key] = client  # pyright: ignore[reportArgumentType]
+            svc._last_used[key] = time.time() - 5.0
+
+        assert svc.reap_idle_clients() == 1
+        assert client.shutdown_calls == 1
+        assert key not in svc._clients
+        assert key not in svc._last_used
+    finally:
+        svc.shutdown()
+
+
+def test_service_idle_reaper_runs_without_new_lsp_requests():
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=0.05,
+    )
+    client = _FakeIdleClient()
+    key = (client.server_id, client.workspace_root)
+    try:
+        with svc._state_lock:
+            svc._clients[key] = client  # pyright: ignore[reportArgumentType]
+            svc._last_used[key] = time.time() - 5.0
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if client.shutdown_calls:
+                break
+            time.sleep(0.02)
+
+        assert client.shutdown_calls == 1
+        assert key not in svc._clients
+        assert key not in svc._last_used
     finally:
         svc.shutdown()

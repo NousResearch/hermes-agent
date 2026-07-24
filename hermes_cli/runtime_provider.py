@@ -1886,15 +1886,28 @@ def resolve_runtime_provider(
             logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
 
-    if provider == "minimax-oauth":
+    if provider == "minimax-oauth" or provider == "minimax-oauth-openai":
         pconfig = PROVIDER_REGISTRY.get(provider)
         if pconfig and pconfig.auth_type == "oauth_minimax":
             from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
             creds = resolve_minimax_oauth_runtime_credentials()
+            # minimax-oauth uses Anthropic Messages API; minimax-oauth-openai
+            # uses the OpenAI-compatible endpoint which honors prompt caching.
+            api_mode = "chat_completions" if provider == "minimax-oauth-openai" else "anthropic_messages"
+            # ``creds["base_url"]`` reflects the auth.json singleton
+            # (Anthropic-compatible). For the OpenAI-compat provider we
+            # explicitly substitute the /v1 URL from the ProviderConfig so the
+            # base URL matches the transport — using the auth.json URL would
+            # route /chat/completions calls to /anthropic and 404.
+            base_url_override = (
+                pconfig.inference_base_url
+                if provider == "minimax-oauth-openai" and pconfig.inference_base_url
+                else creds["base_url"]
+            )
             return {
                 "provider": provider,
-                "api_mode": "anthropic_messages",
-                "base_url": creds["base_url"],
+                "api_mode": api_mode,
+                "base_url": base_url_override,
                 "api_key": creds["api_key"],
                 "source": creds.get("source", "oauth"),
                 "requested_provider": requested_provider,

@@ -480,7 +480,7 @@ export function StatusRule({
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
   // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
-  const showNotice = !busy && !!notice?.text
+  const showNotice = !busy && bgCount === 0 && !!notice?.text
   // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
   // only a small bounded width for it in the essentials budget — enough that
   // a short notice never gets crushed, but a long one ellipsizes instead of
@@ -494,7 +494,9 @@ export function StatusRule({
   // yields first. The busy face width depends on the active /indicator style
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
-  const slotWidth = busy
+  // Show FaceTicker when LLM is busy OR background tasks are running
+  const indicatorBusy = busy || bgCount > 0
+  const slotWidth = indicatorBusy
     ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
     : showNotice
       ? noticeReserve
@@ -547,7 +549,7 @@ export function StatusRule({
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
   const showIdle =
-    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+    segs.duration && !indicatorBusy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
@@ -598,7 +600,7 @@ export function StatusRule({
               <Text color={t.color.muted}>{' │ '}</Text>
             </Text>
           ) : null}
-          {busy ? (
+          {indicatorBusy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">

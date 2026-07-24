@@ -263,6 +263,69 @@ def test_merge_pending_message_event_promotes_document_followups_over_text():
     assert merged.media_types == ["application/pdf"]
 
 
+def test_merge_pending_message_event_drops_exact_text_duplicates():
+    """A user mashing the same message while a turn is busy must not stack
+    that text repeatedly; exact duplicates are dropped, near-duplicates and
+    genuinely new content are preserved."""
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+
+    def text_event(t):
+        return MessageEvent(text=t, message_type=MessageType.TEXT, source=source)
+
+    merge_pending_message_event(pending, session_key, text_event("status please"), merge_text=True)
+    # exact duplicates — dropped
+    merge_pending_message_event(pending, session_key, text_event("status please"), merge_text=True)
+    merge_pending_message_event(pending, session_key, text_event("status please"), merge_text=True)
+    assert pending[session_key].text == "status please"
+
+    # near-duplicate — preserved (no data loss)
+    merge_pending_message_event(pending, session_key, text_event("Status please"), merge_text=True)
+    assert pending[session_key].text == "status please\nStatus please"
+
+    # new content then a trailing exact duplicate of it — duplicate dropped
+    merge_pending_message_event(pending, session_key, text_event("one more thing"), merge_text=True)
+    merge_pending_message_event(pending, session_key, text_event("one more thing"), merge_text=True)
+    assert pending[session_key].text == (
+        "status please\nStatus please\none more thing"
+    )
+
+
+def test_merge_pending_message_event_drops_whitespace_only_variants():
+    """A rapid re-send that differs from the pending text only by surrounding
+    whitespace is treated as a duplicate and dropped — mobile clients often
+    append a trailing space or newline on those re-sends, so the comparison is
+    whitespace-insensitive by design. Genuine content differences are still
+    appended, so nothing meaningful is lost."""
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+
+    def text_event(t):
+        return MessageEvent(text=t, message_type=MessageType.TEXT, source=source)
+
+    merge_pending_message_event(pending, session_key, text_event("weiter"), merge_text=True)
+    # whitespace-only variants (trailing newline, surrounding spaces) — dropped
+    merge_pending_message_event(pending, session_key, text_event("weiter\n"), merge_text=True)
+    merge_pending_message_event(pending, session_key, text_event("  weiter  "), merge_text=True)
+    assert pending[session_key].text == "weiter"
+
+    # a real content difference is still appended (guards against over-dropping)
+    merge_pending_message_event(pending, session_key, text_event("weiter bitte"), merge_text=True)
+    assert pending[session_key].text == "weiter\nweiter bitte"
+
+
 @pytest.mark.asyncio
 async def test_recent_telegram_text_followup_is_queued_without_interrupt():
     runner = _make_runner()

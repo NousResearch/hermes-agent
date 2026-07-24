@@ -54,6 +54,7 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud`, `local_embedded`, or `local_external` |
 | `api_url` | `https://api.hindsight.vectorize.io` | API URL (cloud and local_external modes) |
+| `embed_database_url` | — | `local_embedded` mode only. Postgres URL for the embedded daemon's database, overriding the default per-profile pg0 instance. Also settable via the `HINDSIGHT_EMBED_API_DATABASE_URL` env var; this config key takes precedence over the env var when both are set. |
 
 ### Memory Bank
 

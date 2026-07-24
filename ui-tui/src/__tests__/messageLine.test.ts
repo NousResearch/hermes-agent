@@ -38,6 +38,7 @@ describe('shouldShowThinkingTrail', () => {
       thinking: '◇ Reference 1/2 — model-a\nadvice-a',
       isMoaReference: true
     } as const
+
     expect(shouldShowThinkingTrail(msg, 'hidden', 'hidden', 'hidden')).toBe(true)
   })
 })

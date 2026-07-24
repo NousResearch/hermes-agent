@@ -83,6 +83,9 @@ GATEWAY_CONNECTOR_DROP_IN = Path(
 )
 GATEWAY_CONFIG = Path("/opt/adventico-ai-platform/hermes-home/config.yaml")
 WRITER_CONFIG = Path("/etc/muncho-canonical-writer/writer.json")
+WRITER_DATABASE_CREDENTIAL = Path(
+    "/etc/muncho/credentials/canonical-writer-db-password"
+)
 CONNECTOR_CONFIG = Path("/etc/muncho/discord-public-connector.json")
 ROUTEBACK_EDGE_CONFIG = Path("/etc/muncho/discord-edge.json")
 MAC_OPS_CONFIG = Path("/etc/muncho/mac-ops-edge/config.json")
@@ -138,6 +141,7 @@ MAX_FILE = 8 * 1024 * 1024
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 ROLE = re.compile(r"^[a-z_][a-z0-9_-]{0,63}$")
+WRITER_DATABASE_SECRET = re.compile(rb"^[A-Za-z0-9_-]{64}$")
 UUID_TEXT = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -1359,6 +1363,67 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
             owner_subject_sha256=str(raw.get("owner_subject_sha256") or ""),
         )
         _validate_cron_continuity_authority(authority, revision=revision)
+        release_validation = authority.get(
+            "isolated_canary_goal_prerequisite"
+        )
+        direct_mvp_waiver_fields = {
+            "schema",
+            "release_revision",
+            "mode",
+            "waived_gate",
+            "rationale_code",
+            "owner_subject_sha256",
+            "owner_public_key_ed25519_hex",
+            "owner_key_id",
+            "retain_live_production_prerequisite",
+            "retain_pre_db_zero_write_observation",
+            "immutable_artifacts_required",
+            "signed_unit_inputs_required",
+            "production_database_mutation_before_apply_allowed",
+            "secret_material_recorded",
+            "secret_digest_recorded",
+            "waiver_sha256",
+        }
+        direct_mvp_waiver_valid = (
+            isinstance(release_validation, Mapping)
+            and set(release_validation) == direct_mvp_waiver_fields
+            and release_validation.get("schema")
+            == "muncho-production-owner-direct-mvp-no-canary-waiver.v1"
+            and release_validation.get("release_revision") == revision
+            and release_validation.get("mode")
+            == "owner_approved_direct_mvp_no_canary"
+            and release_validation.get("waived_gate")
+            == "release_bound_isolated_canary_goal_prerequisite"
+            and release_validation.get("rationale_code")
+            == "owner_explicit_no_repeat_canary"
+            and release_validation.get("owner_subject_sha256")
+            == raw.get("owner_subject_sha256")
+            and release_validation.get("owner_public_key_ed25519_hex")
+            == raw.get("owner_public_key_ed25519_hex")
+            and release_validation.get("owner_key_id")
+            == raw.get("owner_key_id")
+            and release_validation.get("retain_live_production_prerequisite")
+            is True
+            and release_validation.get(
+                "retain_pre_db_zero_write_observation"
+            )
+            is True
+            and release_validation.get("immutable_artifacts_required")
+            is True
+            and release_validation.get("signed_unit_inputs_required") is True
+            and release_validation.get(
+                "production_database_mutation_before_apply_allowed"
+            )
+            is False
+            and release_validation.get("secret_material_recorded") is False
+            and release_validation.get("secret_digest_recorded") is False
+            and release_validation.get("waiver_sha256")
+            == _sha_json({
+                key: item
+                for key, item in release_validation.items()
+                if key != "waiver_sha256"
+            })
+        )
         if (
             authority.get("schema") != "muncho-production-cutover-authority.v4"
             or authority.get("release_revision") != revision
@@ -1369,96 +1434,90 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
                 "database_postflight", "host_activation", "host_rollback",
             }
             or raw.get("observe_artifact") != artifacts.get("observe")
-            or not isinstance(
-                authority.get("isolated_canary_goal_prerequisite"), Mapping
-            )
-            or set(authority["isolated_canary_goal_prerequisite"]) != {
-                "schema", "fixture", "fixture_sha256", "workspace_gateway",
-                "workspace_gateway_receipt_sha256",
-                "cleanup_receipt", "cleanup_receipt_sha256",
-                "goal_continuation_terminal_schema",
-                "goal_continuation_terminal_sha256",
-                "isolation_equivalence_projection",
-                "isolation_equivalence_projection_sha256",
-                "production_diff_sha256", "production_diff",
-                "production_diff_file_sha256", "run_id", "release_revision",
-                "capability_plan_sha256", "full_canary_plan_sha256",
-                "canary_owner_approval_receipt_sha256",
-                "canary_production_mutation_observed",
-                "secret_material_recorded",
-                "secret_digest_recorded", "evidence_sha256",
-            }
-            or authority["isolated_canary_goal_prerequisite"].get("schema")
-            != "muncho-production-isolated-canary-goal-prerequisite.v2"
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "release_revision"
-            ) != revision
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "goal_continuation_terminal_schema"
-            ) != "muncho-production-capability-goal-continuation-terminal.v2"
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "canary_production_mutation_observed"
-            ) is not False
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "secret_material_recorded"
-            ) is not False
-            or authority["isolated_canary_goal_prerequisite"].get(
-                "secret_digest_recorded"
-            ) is not False
-            or any(
-                SHA256.fullmatch(str(
-                    authority["isolated_canary_goal_prerequisite"].get(name)
-                )) is None
-                for name in (
-                    "fixture_sha256", "workspace_gateway_receipt_sha256",
-                    "cleanup_receipt_sha256",
-                    "goal_continuation_terminal_sha256",
-                    "isolation_equivalence_projection_sha256",
-                    "production_diff_sha256", "production_diff_file_sha256",
-                    "capability_plan_sha256",
-                    "full_canary_plan_sha256",
-                    "canary_owner_approval_receipt_sha256", "evidence_sha256",
+            or (
+                not direct_mvp_waiver_valid
+                and (
+                    not isinstance(release_validation, Mapping)
+                    or set(release_validation) != {
+                        "schema", "fixture", "fixture_sha256",
+                        "workspace_gateway",
+                        "workspace_gateway_receipt_sha256",
+                        "cleanup_receipt", "cleanup_receipt_sha256",
+                        "goal_continuation_terminal_schema",
+                        "goal_continuation_terminal_sha256",
+                        "isolation_equivalence_projection",
+                        "isolation_equivalence_projection_sha256",
+                        "production_diff_sha256", "production_diff",
+                        "production_diff_file_sha256", "run_id",
+                        "release_revision", "capability_plan_sha256",
+                        "full_canary_plan_sha256",
+                        "canary_owner_approval_receipt_sha256",
+                        "canary_production_mutation_observed",
+                        "secret_material_recorded",
+                        "secret_digest_recorded", "evidence_sha256",
+                    }
+                    or release_validation.get("schema")
+                    != (
+                        "muncho-production-isolated-canary-goal-"
+                        "prerequisite.v2"
+                    )
+                    or release_validation.get("release_revision") != revision
+                    or release_validation.get(
+                        "goal_continuation_terminal_schema"
+                    )
+                    != (
+                        "muncho-production-capability-goal-continuation-"
+                        "terminal.v2"
+                    )
+                    or release_validation.get(
+                        "canary_production_mutation_observed"
+                    )
+                    is not False
+                    or release_validation.get("secret_material_recorded")
+                    is not False
+                    or release_validation.get("secret_digest_recorded")
+                    is not False
+                    or any(
+                        SHA256.fullmatch(
+                            str(release_validation.get(name))
+                        )
+                        is None
+                        for name in (
+                            "fixture_sha256",
+                            "workspace_gateway_receipt_sha256",
+                            "cleanup_receipt_sha256",
+                            "goal_continuation_terminal_sha256",
+                            "isolation_equivalence_projection_sha256",
+                            "production_diff_sha256",
+                            "production_diff_file_sha256",
+                            "capability_plan_sha256",
+                            "full_canary_plan_sha256",
+                            "canary_owner_approval_receipt_sha256",
+                            "evidence_sha256",
+                        )
+                    )
+                    or not isinstance(
+                        release_validation.get("cleanup_receipt"), Mapping
+                    )
+                    or not isinstance(
+                        release_validation.get("production_diff"), Mapping
+                    )
+                    or release_validation["cleanup_receipt_sha256"]
+                    != _sha_json(release_validation["cleanup_receipt"])
+                    or release_validation["production_diff_file_sha256"]
+                    != _sha_json(release_validation["production_diff"])
+                    or release_validation["production_diff"].get(
+                        "diff_sha256"
+                    )
+                    != release_validation["production_diff_sha256"]
+                    or release_validation["evidence_sha256"]
+                    != _sha_json({
+                        key: item
+                        for key, item in release_validation.items()
+                        if key != "evidence_sha256"
+                    })
                 )
             )
-            or not isinstance(
-                authority["isolated_canary_goal_prerequisite"].get(
-                    "cleanup_receipt"
-                ), Mapping
-            )
-            or not isinstance(
-                authority["isolated_canary_goal_prerequisite"].get(
-                    "production_diff"
-                ), Mapping
-            )
-            or authority["isolated_canary_goal_prerequisite"][
-                "cleanup_receipt_sha256"
-            ] != _sha_json(
-                authority["isolated_canary_goal_prerequisite"][
-                    "cleanup_receipt"
-                ]
-            )
-            or authority["isolated_canary_goal_prerequisite"][
-                "production_diff_file_sha256"
-            ] != _sha_json(
-                authority["isolated_canary_goal_prerequisite"][
-                    "production_diff"
-                ]
-            )
-            or authority["isolated_canary_goal_prerequisite"][
-                "production_diff"
-            ].get("diff_sha256")
-            != authority["isolated_canary_goal_prerequisite"][
-                "production_diff_sha256"
-            ]
-            or authority["isolated_canary_goal_prerequisite"][
-                "evidence_sha256"
-            ] != _sha_json({
-                key: item
-                for key, item in authority[
-                    "isolated_canary_goal_prerequisite"
-                ].items()
-                if key != "evidence_sha256"
-            })
             or not isinstance(authority.get("database_recovery_receipt"), Mapping)
             or raw.get("database_recovery_receipt_sha256")
             != authority["database_recovery_receipt"].get("receipt_sha256")
@@ -2130,7 +2189,7 @@ BEGIN
     ) OR NOT EXISTS (
         SELECT 1 FROM pg_catalog.pg_roles
          WHERE rolname = 'muncho_production_writer_login'
-           AND NOT rolcanlogin AND rolinherit
+           AND rolinherit
            AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
            AND NOT rolreplication AND NOT rolbypassrls
            AND rolconnlimit = -1 AND rolvaliduntil IS NULL
@@ -2200,6 +2259,698 @@ END
 $production_role_bootstrap_contract$;
 COMMIT;
 """
+
+PRODUCTION_WRITER_PASSWORD_SETUP_SQL = r"""
+BEGIN;
+SET LOCAL password_encryption = 'scram-sha-256';
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '2min';
+SELECT pg_catalog.pg_advisory_xact_lock(4841739663211427921);
+
+CREATE TEMPORARY TABLE pg_temp._muncho_production_writer_password_input (
+    secret_value text NOT NULL
+) ON COMMIT DROP;
+REVOKE ALL ON TABLE
+    pg_temp._muncho_production_writer_password_input FROM PUBLIC;
+
+CREATE FUNCTION pg_temp._muncho_install_production_writer_password()
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+PARALLEL UNSAFE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $password_statement$
+DECLARE
+    secret_value text;
+    secret_count bigint;
+    input_relation oid := pg_catalog.to_regclass(
+        'pg_temp._muncho_production_writer_password_input'
+    );
+BEGIN
+    SELECT pg_catalog.count(*), min(input.secret_value)
+      INTO secret_count, secret_value
+      FROM pg_temp._muncho_production_writer_password_input AS input;
+    IF pg_catalog.current_database() <> 'ai_platform_brain'
+       OR pg_catalog.current_setting('server_version_num')::integer / 10000 <> 18
+       OR SESSION_USER <> PRODUCTION_SIGNED_SOURCE_OWNER_LITERAL
+       OR CURRENT_USER <> SESSION_USER
+       OR input_relation IS NULL
+       OR secret_count <> 1
+       OR secret_value !~ '^[A-Za-z0-9_-]{64}$'
+       OR NOT EXISTS (
+            SELECT 1
+              FROM pg_catalog.pg_class AS relation
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = relation.relnamespace
+             WHERE relation.oid = input_relation
+               AND relation.relkind = 'r'
+               AND relation.relpersistence = 't'
+               AND relation.relowner = (
+                    SELECT oid FROM pg_catalog.pg_roles
+                     WHERE rolname = SESSION_USER
+               )
+               AND namespace.oid = pg_catalog.pg_my_temp_schema()
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_catalog.aclexplode(COALESCE(
+                          relation.relacl,
+                          pg_catalog.acldefault('r', relation.relowner)
+                      )) AS acl
+                     WHERE acl.grantee <> relation.relowner
+               )
+       )
+       OR (
+            SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_attribute AS attribute
+              LEFT JOIN pg_catalog.pg_attrdef AS default_row
+                ON default_row.adrelid = attribute.attrelid
+               AND default_row.adnum = attribute.attnum
+             WHERE attribute.attrelid = input_relation
+               AND attribute.attnum > 0 AND NOT attribute.attisdropped
+               AND attribute.attname = 'secret_value'
+               AND attribute.atttypid = 'pg_catalog.text'::regtype
+               AND attribute.attnotnull
+               AND default_row.oid IS NULL
+               AND attribute.attidentity = ''
+               AND attribute.attgenerated = ''
+               AND NOT attribute.atthasmissing
+       ) <> 1
+       OR EXISTS (
+            SELECT 1 FROM pg_catalog.pg_constraint
+             WHERE conrelid = input_relation AND contype <> 'n'
+       )
+       OR EXISTS (
+            SELECT 1 FROM pg_catalog.pg_trigger
+             WHERE tgrelid = input_relation AND NOT tgisinternal
+       )
+       OR EXISTS (
+            SELECT 1 FROM pg_catalog.pg_rewrite
+             WHERE ev_class = input_relation
+       )
+       OR EXISTS (
+            SELECT 1 FROM pg_catalog.pg_policy
+             WHERE polrelid = input_relation
+       )
+       OR NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles AS role
+             WHERE role.rolname = 'muncho_production_writer_login'
+               AND role.rolinherit
+               AND NOT role.rolsuper AND NOT role.rolcreatedb
+               AND NOT role.rolcreaterole AND NOT role.rolreplication
+               AND NOT role.rolbypassrls AND role.rolconnlimit = -1
+               AND role.rolvaliduntil IS NULL AND role.rolconfig IS NULL
+       )
+       OR EXISTS (
+            SELECT 1
+              FROM pg_catalog.pg_auth_members AS membership
+              JOIN pg_catalog.pg_roles AS granted
+                ON granted.oid = membership.roleid
+              JOIN pg_catalog.pg_roles AS member
+                ON member.oid = membership.member
+             WHERE granted.rolname = 'muncho_production_writer_login'
+                OR member.rolname = 'muncho_production_writer_login'
+       ) THEN
+        TRUNCATE TABLE pg_temp._muncho_production_writer_password_input;
+        secret_value := NULL;
+        RAISE EXCEPTION USING
+            ERRCODE = 'P0001',
+            MESSAGE = 'production writer password prerequisite failed';
+    END IF;
+    BEGIN
+        EXECUTE pg_catalog.format(
+            'ALTER ROLE muncho_production_writer_login LOGIN PASSWORD %L',
+            secret_value
+        );
+    EXCEPTION WHEN OTHERS THEN
+        TRUNCATE TABLE pg_temp._muncho_production_writer_password_input;
+        secret_value := NULL;
+        RAISE EXCEPTION USING
+            ERRCODE = 'P0001',
+            MESSAGE = 'production writer password statement failed';
+    END;
+    TRUNCATE TABLE pg_temp._muncho_production_writer_password_input;
+    secret_value := NULL;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+         WHERE rolname = 'muncho_production_writer_login'
+           AND rolcanlogin AND rolinherit
+           AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+           AND NOT rolreplication AND NOT rolbypassrls
+           AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+           AND rolconfig IS NULL
+    ) THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'P0001',
+            MESSAGE = 'production writer password statement unconfirmed';
+    END IF;
+END
+$password_statement$;
+
+REVOKE ALL ON FUNCTION
+    pg_temp._muncho_install_production_writer_password()
+    FROM PUBLIC;
+
+DO $password_statement_identity$
+DECLARE
+    function_oid oid := pg_catalog.to_regprocedure(
+        'pg_temp._muncho_install_production_writer_password()'
+    );
+    function_row record;
+BEGIN
+    SELECT routine.prosecdef,
+           routine.proleakproof,
+           routine.provolatile,
+           routine.proparallel,
+           routine.proconfig,
+           routine.pronargs,
+           routine.proargtypes,
+           language.lanname,
+           pg_catalog.pg_get_userbyid(routine.proowner) AS owner_name
+      INTO STRICT function_row
+      FROM pg_catalog.pg_proc AS routine
+      JOIN pg_catalog.pg_language AS language
+        ON language.oid = routine.prolang
+     WHERE routine.oid = function_oid;
+    IF NOT function_row.prosecdef
+       OR function_row.proleakproof
+       OR function_row.provolatile <> 'v'
+       OR function_row.proparallel <> 'u'
+       OR function_row.proconfig <> ARRAY['search_path=pg_catalog']::text[]
+       OR function_row.pronargs <> 0
+       OR function_row.proargtypes <> ''::pg_catalog.oidvector
+       OR function_row.lanname <> 'plpgsql'
+       OR function_row.owner_name <> SESSION_USER
+       OR EXISTS (
+            SELECT 1
+              FROM pg_catalog.pg_proc AS routine
+              CROSS JOIN LATERAL pg_catalog.aclexplode(routine.proacl) AS acl
+             WHERE routine.oid = function_oid
+               AND acl.grantee = 0
+               AND acl.privilege_type = 'EXECUTE'
+       ) THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'P0001',
+            MESSAGE = 'production writer password identity failed';
+    END IF;
+END
+$password_statement_identity$;
+"""
+
+PRODUCTION_WRITER_PASSWORD_COPY_SQL = (
+    "COPY pg_temp._muncho_production_writer_password_input (secret_value) "
+    "FROM STDIN WITH (FORMAT text)"
+)
+PRODUCTION_WRITER_PASSWORD_APPLY_SQL = (
+    "SELECT pg_temp._muncho_install_production_writer_password() "
+    "AS password_statement_applied"
+)
+PRODUCTION_WRITER_PASSWORD_CLEANUP_SQL = """
+DROP FUNCTION pg_temp._muncho_install_production_writer_password();
+DROP TABLE pg_temp._muncho_production_writer_password_input;
+COMMIT;
+""".strip()
+
+
+def _writer_credential_identity(plan: Mapping[str, Any]) -> tuple[int, int]:
+    foundation = _identity_foundation(_host_manifest(plan))
+    expected = _expected_identity_target(foundation)
+    observed = _identity_snapshot(foundation)
+    if (
+        observed["users"]["writer"] != expected["users"]["writer"]
+        or observed["groups"]["writer"] != expected["groups"]["writer"]
+    ):
+        raise ArtifactError("artifact_writer_credential_identity_invalid")
+    return (
+        int(foundation["users"]["writer"]["uid"]),
+        int(foundation["groups"]["writer"]["gid"]),
+    )
+
+
+def _validate_writer_credential_directory(
+    path: Path,
+    *,
+    final_mode: int | None,
+) -> None:
+    if not path.is_absolute():
+        raise ArtifactError("artifact_writer_credential_directory_invalid")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path.anchor, flags)
+        cursor = Path(path.anchor)
+        for component in path.parts[1:]:
+            cursor /= component
+            before = os.lstat(cursor)
+            child = os.open(component, flags, dir_fd=descriptor)
+            opened = os.fstat(child)
+            reachable = os.lstat(cursor)
+            os.close(descriptor)
+            descriptor = child
+            identity = lambda item: (
+                item.st_dev,
+                item.st_ino,
+                item.st_mode,
+                item.st_uid,
+                item.st_gid,
+            )
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or not stat.S_ISDIR(opened.st_mode)
+                or not stat.S_ISDIR(reachable.st_mode)
+                or identity(before) != identity(opened)
+                or identity(before) != identity(reachable)
+                or opened.st_uid != 0
+                or stat.S_IMODE(opened.st_mode) & 0o022
+            ):
+                raise ArtifactError(
+                    "artifact_writer_credential_directory_invalid"
+                )
+        if final_mode is not None:
+            item = os.fstat(descriptor)
+            if item.st_gid != 0 or stat.S_IMODE(item.st_mode) != final_mode:
+                raise ArtifactError(
+                    "artifact_writer_credential_directory_invalid"
+                )
+    except ArtifactError:
+        raise
+    except OSError as exc:
+        raise ArtifactError(
+            "artifact_writer_credential_directory_invalid"
+        ) from exc
+    finally:
+        if "descriptor" in locals():
+            os.close(descriptor)
+
+
+def _prepare_writer_credential_directory() -> None:
+    parent = WRITER_DATABASE_CREDENTIAL.parent
+    if not os.path.lexists(parent):
+        _validate_writer_credential_directory(
+            parent.parent,
+            final_mode=None,
+        )
+        try:
+            os.mkdir(parent, 0o755)
+            os.chown(parent, 0, 0)
+            os.chmod(parent, 0o755)
+            _fsync_parent(parent)
+        except OSError as exc:
+            raise ArtifactError(
+                "artifact_writer_credential_directory_create_failed"
+            ) from exc
+    _validate_writer_credential_directory(parent, final_mode=0o755)
+
+
+def _writer_secret_stat(
+    item: os.stat_result,
+    *,
+    uid: int,
+    gid: int,
+    allowed_links: set[int],
+) -> None:
+    if (
+        not stat.S_ISREG(item.st_mode)
+        or stat.S_ISLNK(item.st_mode)
+        or item.st_uid != uid
+        or item.st_gid != gid
+        or stat.S_IMODE(item.st_mode) != 0o400
+        or item.st_nlink not in allowed_links
+        or item.st_size != 64
+    ):
+        raise ArtifactError("artifact_writer_credential_identity_invalid")
+
+
+def _writer_secret_binding(item: os.stat_result) -> tuple[int, ...]:
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+def _read_writer_database_secret(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    allowed_links: set[int],
+) -> bytearray:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    payload = bytearray()
+    try:
+        before = os.lstat(path)
+        _writer_secret_stat(
+            before, uid=uid, gid=gid, allowed_links=allowed_links
+        )
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            _writer_secret_stat(
+                opened, uid=uid, gid=gid, allowed_links=allowed_links
+            )
+            while len(payload) <= 64:
+                chunk = os.read(descriptor, 65)
+                if not chunk:
+                    break
+                payload.extend(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        reachable = os.lstat(path)
+        for item in (opened, after, reachable):
+            _writer_secret_stat(
+                item, uid=uid, gid=gid, allowed_links=allowed_links
+            )
+            if _writer_secret_binding(item) != _writer_secret_binding(before):
+                raise ArtifactError(
+                    "artifact_writer_credential_identity_changed"
+                )
+    except ArtifactError:
+        payload[:] = b"\x00" * len(payload)
+        raise
+    except OSError as exc:
+        payload[:] = b"\x00" * len(payload)
+        raise ArtifactError("artifact_writer_credential_read_failed") from exc
+    if len(payload) != 64 or WRITER_DATABASE_SECRET.fullmatch(payload) is None:
+        payload[:] = b"\x00" * len(payload)
+        raise ArtifactError("artifact_writer_credential_material_invalid")
+    return payload
+
+
+def _writer_secret_stage_path(plan: Mapping[str, Any]) -> Path:
+    digest = plan.get("plan_sha256")
+    if not isinstance(digest, str) or SHA256.fullmatch(digest) is None:
+        raise ArtifactError("artifact_writer_credential_plan_invalid")
+    return WRITER_DATABASE_CREDENTIAL.with_name(
+        f".{WRITER_DATABASE_CREDENTIAL.name}.cutover.{digest[:24]}"
+    )
+
+
+def _remove_incomplete_writer_secret_stage(
+    stage: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> None:
+    try:
+        item = os.lstat(stage)
+        if (
+            not stat.S_ISREG(item.st_mode)
+            or stat.S_ISLNK(item.st_mode)
+            or item.st_nlink != 1
+            or item.st_uid not in {0, uid}
+            or item.st_gid not in {0, gid}
+            or stat.S_IMODE(item.st_mode) not in {0o400, 0o600}
+            or not 0 <= item.st_size < 64
+        ):
+            raise ArtifactError("artifact_writer_credential_stage_invalid")
+        stage.unlink()
+        _fsync_parent(stage)
+    except ArtifactError:
+        raise
+    except OSError as exc:
+        raise ArtifactError("artifact_writer_credential_stage_invalid") from exc
+
+
+def _create_writer_secret_stage(
+    stage: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> bytearray:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    secret = bytearray()
+    raw = bytearray()
+    descriptor = -1
+    try:
+        descriptor = os.open(stage, flags, 0o600)
+        os.fchown(descriptor, uid, gid)
+        os.fchmod(descriptor, 0o400)
+        raw.extend(os.urandom(48))
+        secret.extend(base64.urlsafe_b64encode(raw))
+        raw[:] = b"\x00" * len(raw)
+        if (
+            len(secret) != 64
+            or WRITER_DATABASE_SECRET.fullmatch(secret) is None
+        ):
+            raise ArtifactError("artifact_writer_credential_generation_failed")
+        offset = 0
+        while offset < len(secret):
+            written = os.write(descriptor, secret[offset:])
+            if written <= 0:
+                raise OSError("writer credential write stalled")
+            offset += written
+        os.fsync(descriptor)
+        item = os.fstat(descriptor)
+        _writer_secret_stat(item, uid=uid, gid=gid, allowed_links={1})
+        os.close(descriptor)
+        descriptor = -1
+        _fsync_parent(stage)
+        observed = _read_writer_database_secret(
+            stage, uid=uid, gid=gid, allowed_links={1}
+        )
+        if not hmac.compare_digest(secret, observed):
+            observed[:] = b"\x00" * len(observed)
+            raise ArtifactError("artifact_writer_credential_write_unconfirmed")
+        secret[:] = b"\x00" * len(secret)
+        return observed
+    except ArtifactError:
+        secret[:] = b"\x00" * len(secret)
+        raw[:] = b"\x00" * len(raw)
+        raise
+    except OSError as exc:
+        secret[:] = b"\x00" * len(secret)
+        raw[:] = b"\x00" * len(raw)
+        raise ArtifactError("artifact_writer_credential_create_failed") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _writer_secret_stage_candidates() -> tuple[Path, ...]:
+    prefix = f".{WRITER_DATABASE_CREDENTIAL.name}.cutover."
+    try:
+        return tuple(
+            sorted(
+                item
+                for item in WRITER_DATABASE_CREDENTIAL.parent.iterdir()
+                if item.name.startswith(prefix)
+            )
+        )
+    except OSError as exc:
+        raise ArtifactError("artifact_writer_credential_stage_invalid") from exc
+
+
+def _ensure_writer_database_credential(
+    plan: Mapping[str, Any],
+    *,
+    create: bool,
+) -> bytearray:
+    uid, gid = _writer_credential_identity(plan)
+    _prepare_writer_credential_directory()
+    stage = _writer_secret_stage_path(plan)
+    candidates = _writer_secret_stage_candidates()
+    if any(candidate != stage for candidate in candidates):
+        raise ArtifactError("artifact_writer_credential_cross_plan_residue")
+    target_exists = os.path.lexists(WRITER_DATABASE_CREDENTIAL)
+    stage_exists = os.path.lexists(stage)
+    if target_exists:
+        target = _read_writer_database_secret(
+            WRITER_DATABASE_CREDENTIAL,
+            uid=uid,
+            gid=gid,
+            allowed_links={1, 2} if stage_exists else {1},
+        )
+        if stage_exists:
+            staged = _read_writer_database_secret(
+                stage, uid=uid, gid=gid, allowed_links={2}
+            )
+            try:
+                target_stat = os.lstat(WRITER_DATABASE_CREDENTIAL)
+                stage_stat = os.lstat(stage)
+                if (
+                    (target_stat.st_dev, target_stat.st_ino)
+                    != (stage_stat.st_dev, stage_stat.st_ino)
+                    or not hmac.compare_digest(target, staged)
+                ):
+                    raise ArtifactError(
+                        "artifact_writer_credential_publish_ambiguous"
+                    )
+                stage.unlink()
+                _fsync_parent(stage)
+            finally:
+                staged[:] = b"\x00" * len(staged)
+            confirmed = _read_writer_database_secret(
+                WRITER_DATABASE_CREDENTIAL,
+                uid=uid,
+                gid=gid,
+                allowed_links={1},
+            )
+            target[:] = b"\x00" * len(target)
+            return confirmed
+        return target
+    if not create:
+        raise ArtifactError("artifact_writer_credential_unavailable")
+    if stage_exists:
+        try:
+            staged = _read_writer_database_secret(
+                stage, uid=uid, gid=gid, allowed_links={1}
+            )
+        except ArtifactError:
+            _remove_incomplete_writer_secret_stage(stage, uid=uid, gid=gid)
+            staged = _create_writer_secret_stage(stage, uid=uid, gid=gid)
+    else:
+        staged = _create_writer_secret_stage(stage, uid=uid, gid=gid)
+    try:
+        try:
+            os.link(
+                stage,
+                WRITER_DATABASE_CREDENTIAL,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            existing = _read_writer_database_secret(
+                WRITER_DATABASE_CREDENTIAL,
+                uid=uid,
+                gid=gid,
+                allowed_links={1},
+            )
+            try:
+                if not hmac.compare_digest(existing, staged):
+                    raise ArtifactError(
+                        "artifact_writer_credential_publish_ambiguous"
+                    )
+            finally:
+                existing[:] = b"\x00" * len(existing)
+            stage.unlink()
+            _fsync_parent(stage)
+        else:
+            _fsync_parent(WRITER_DATABASE_CREDENTIAL)
+            linked = os.lstat(WRITER_DATABASE_CREDENTIAL)
+            source = os.lstat(stage)
+            if (
+                (linked.st_dev, linked.st_ino)
+                != (source.st_dev, source.st_ino)
+                or linked.st_nlink != 2
+                or source.st_nlink != 2
+            ):
+                raise ArtifactError(
+                    "artifact_writer_credential_publish_unconfirmed"
+                )
+            stage.unlink()
+            _fsync_parent(stage)
+        installed = _read_writer_database_secret(
+            WRITER_DATABASE_CREDENTIAL,
+            uid=uid,
+            gid=gid,
+            allowed_links={1},
+        )
+        if not hmac.compare_digest(installed, staged):
+            installed[:] = b"\x00" * len(installed)
+            raise ArtifactError(
+                "artifact_writer_credential_publish_unconfirmed"
+            )
+        return installed
+    finally:
+        staged[:] = b"\x00" * len(staged)
+
+
+def _writer_password_setup_sql(plan: Mapping[str, Any]) -> str:
+    owner = str(_final_snapshot(plan)["source_owner"])
+    if ROLE.fullmatch(owner) is None:
+        raise ArtifactError("artifact_writer_password_owner_invalid")
+    placeholder = "PRODUCTION_SIGNED_SOURCE_OWNER_LITERAL"
+    if PRODUCTION_WRITER_PASSWORD_SETUP_SQL.count(placeholder) != 1:
+        raise ArtifactError("artifact_writer_password_sql_invalid")
+    return PRODUCTION_WRITER_PASSWORD_SETUP_SQL.replace(
+        placeholder,
+        _sql_literal(owner),
+    )
+
+
+def _run_writer_password_copy(
+    plan: Mapping[str, Any],
+    password: bytearray,
+) -> None:
+    if (
+        not isinstance(password, bytearray)
+        or len(password) != 64
+        or WRITER_DATABASE_SECRET.fullmatch(password) is None
+    ):
+        raise ArtifactError("artifact_writer_credential_material_invalid")
+    head = (
+        "SET default_transaction_read_only = off;\n"
+        + _writer_password_setup_sql(plan)
+        + "\n"
+        + PRODUCTION_WRITER_PASSWORD_COPY_SQL
+        + ";\n"
+    ).encode("utf-8")
+    tail = (
+        "\n\\.\n"
+        + PRODUCTION_WRITER_PASSWORD_APPLY_SQL
+        + ";\n"
+        + PRODUCTION_WRITER_PASSWORD_CLEANUP_SQL
+        + "\n"
+    ).encode("utf-8")
+    payload = bytearray(head)
+    payload.extend(password)
+    payload.extend(tail)
+    try:
+        result = subprocess.run(
+            (PSQL, "-X", "-qAt", "--no-password", "--set=ON_ERROR_STOP=1"),
+            input=payload,
+            capture_output=True,
+            check=False,
+            timeout=840,
+            env=_postgres_env(plan),
+            cwd="/",
+            close_fds=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ArtifactError("artifact_writer_password_copy_failed") from exc
+    finally:
+        payload[:] = b"\x00" * len(payload)
+    if (
+        result.returncode != 0
+        or result.stderr
+        or len(result.stdout) > MAX_JSON + 1
+        or result.stdout.find(password) >= 0
+    ):
+        raise ArtifactError("artifact_writer_password_copy_failed")
+
+
+def _bootstrap_writer_login(plan: Mapping[str, Any]) -> None:
+    password = _ensure_writer_database_credential(plan, create=True)
+    try:
+        _run_writer_password_copy(plan, password)
+    finally:
+        password[:] = b"\x00" * len(password)
+
+
+def _validate_existing_writer_credential(plan: Mapping[str, Any]) -> None:
+    password = _ensure_writer_database_credential(plan, create=False)
+    password[:] = b"\x00" * len(password)
 
 
 def _database_state(plan: Mapping[str, Any]) -> str:
@@ -3284,6 +4035,7 @@ def _database_apply(plan: Mapping[str, Any]) -> Mapping[str, Any]:
     state = _database_state(plan)
     snapshot = _final_snapshot(plan)
     if state == "target":
+        _validate_existing_writer_credential(plan)
         _database_projection(plan, legacy=False)
         return _database_receipt(
             plan,
@@ -3296,6 +4048,8 @@ def _database_apply(plan: Mapping[str, Any]) -> Mapping[str, Any]:
         if target["writer_login"] != "muncho_production_writer_login":
             raise ArtifactError("artifact_writer_login_invalid")
         _run_psql(plan, PRODUCTION_ROLE_BOOTSTRAP_SQL, read_only=False)
+    if state in {"legacy", "reconciled", "migrated"}:
+        _bootstrap_writer_login(plan)
     if state == "legacy":
         _database_projection(plan, legacy=True)
         reconcile_settings = {

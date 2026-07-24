@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_writer_production_cutover as cutover
@@ -56,8 +57,26 @@ def test_root_detection_fails_closed_without_posix_api(
     assert caddy._running_as_root() is False
 
 
-def _authority() -> caddy._Authority:
-    plan = _cutover_plan(Ed25519PrivateKey.generate(), Services())
+def _authority(*, direct_mvp: bool = False) -> caddy._Authority:
+    private = Ed25519PrivateKey.generate()
+    release_validation_authority = None
+    if direct_mvp:
+        public = private.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        ).hex()
+        release_validation_authority = (
+            cutover.build_owner_direct_mvp_no_canary_waiver(
+                release_revision="a" * 40,
+                owner_subject_sha256="a" * 64,
+                owner_public_key_ed25519_hex=public,
+            )
+        )
+    plan = _cutover_plan(
+        private,
+        Services(),
+        release_validation_authority=release_validation_authority,
+    )
     freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
     claim = {
         "schema": "muncho-production-cutover-passkey-claim.v1",
@@ -1955,6 +1974,145 @@ def test_legacy_terminal_requires_full_schema_self_hash_and_intent_order(
         match="legacy_terminal_invalid",
     ):
         caddy._legacy_commit_lineage(authority, journal=Journal())
+
+
+def test_legacy_lineage_accepts_exact_direct_mvp_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = _authority(direct_mvp=True)
+    waiver = authority.freeze.value["cutover_authority"][
+        "isolated_canary_goal_prerequisite"
+    ]
+    intent = {
+        "approval_sha256": "a" * 64,
+        "receipt_sha256": "b" * 64,
+    }
+    capability = {
+        "schema": cutover.CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA,
+        "prerequisite_receipt_sha256": "c" * 64,
+        "prerequisite_file_sha256": "d" * 64,
+        "release_validation_mode": cutover.OWNER_DIRECT_MVP_VALIDATION_MODE,
+        "release_validation_authority_sha256": waiver["waiver_sha256"],
+        "pre_db_zero_write_observation_sha256": "1" * 64,
+    }
+    database = {"receipt_sha256": "2" * 64}
+    host = {"receipt_sha256": "3" * 64}
+    database_terminal = {"receipt_sha256": "4" * 64}
+    boot = {"receipt_sha256": "5" * 64}
+    gateway = {
+        "gateway_observation_sha256": "6" * 64,
+        "writer_observation_sha256": "7" * 64,
+        "connector_observation_sha256": "8" * 64,
+    }
+    terminal: dict[str, Any] = {
+        field: "9" * 64
+        for field in caddy._DIRECT_MVP_LEGACY_TERMINAL_FIELDS
+    }
+    terminal.update({
+        "schema": cutover.DIRECT_MVP_TERMINAL_SCHEMA,
+        "plan_sha256": authority.plan.sha256,
+        "freeze_plan_sha256": authority.freeze.sha256,
+        "freeze_approval_sha256": authority.approval_sha256,
+        "approval_sha256": intent["approval_sha256"],
+        "final_tail_receipt_sha256": authority.plan.value[
+            "final_tail_receipt_sha256"
+        ],
+        "capability_prerequisite_receipt_sha256": capability[
+            "prerequisite_receipt_sha256"
+        ],
+        "capability_prerequisite_file_sha256": capability[
+            "prerequisite_file_sha256"
+        ],
+        "release_validation_mode": capability["release_validation_mode"],
+        "release_validation_authority_sha256": capability[
+            "release_validation_authority_sha256"
+        ],
+        "isolated_canary_proof_present": False,
+        "owner_approved_direct_mvp_no_canary": True,
+        "live_production_prerequisite_validated": True,
+        "zero_canonical_database_mutation_observed": True,
+        "pre_db_zero_write_observation_sha256": capability[
+            "pre_db_zero_write_observation_sha256"
+        ],
+        "capability_topology_identity_sha256": "a" * 64,
+        "database_apply_receipt_sha256": database["receipt_sha256"],
+        "host_apply_receipt_sha256": host["receipt_sha256"],
+        "host_boot_commit_receipt_sha256": boot["receipt_sha256"],
+        "activation_commit_intent_receipt_sha256": intent["receipt_sha256"],
+        "database_postflight_receipt_sha256": database_terminal[
+            "receipt_sha256"
+        ],
+        **gateway,
+        "direct_discord_disabled": True,
+        "discord_dm_allowed": False,
+        "rollback_used": False,
+        "secret_material_recorded": False,
+        "completed_at_unix": NOW + 1,
+    })
+    terminal["receipt_sha256"] = caddy._sha256(caddy._canonical({
+        key: item
+        for key, item in terminal.items()
+        if key != "receipt_sha256"
+    }))
+    intent_entry = SimpleNamespace(value={
+        "event": "activation_commit_intent",
+        "evidence": intent,
+        "sequence": 1,
+        "recorded_at_unix": NOW,
+    })
+    terminal_entry = SimpleNamespace(value={
+        "event": "terminal",
+        "evidence": terminal,
+        "sequence": 3,
+        "recorded_at_unix": NOW + 1,
+    })
+    entries = [
+        SimpleNamespace(value={
+            "event": "capability_prerequisites_validated",
+            "evidence": {"accepted": True},
+            "sequence": 0,
+            "recorded_at_unix": NOW - 1,
+        }),
+        intent_entry,
+        SimpleNamespace(value={
+            "event": "gateway_started",
+            "evidence": gateway,
+            "sequence": 2,
+            "recorded_at_unix": NOW + 1,
+        }),
+        terminal_entry,
+    ]
+
+    class Journal:
+        def load(self, _plan_sha256: str) -> list[Any]:
+            return entries
+
+    monkeypatch.setattr(
+        cutover, "_accepted_activation_commit_intent", lambda *_a: intent
+    )
+    monkeypatch.setattr(cutover, "_accepted_database_apply", lambda *_a: database)
+    monkeypatch.setattr(cutover, "_accepted_host_apply", lambda *_a: host)
+    monkeypatch.setattr(
+        cutover, "_accepted_database_terminal", lambda *_a: database_terminal
+    )
+    monkeypatch.setattr(
+        cutover, "_accepted_host_boot_commit", lambda *_a: boot
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_require_capability_prerequisite_acceptance",
+        lambda *_a, **_k: capability,
+    )
+    monkeypatch.setattr(
+        cutover,
+        "production_capability_topology_identity_sha256",
+        lambda *_a: "a" * 64,
+    )
+
+    assert caddy._legacy_commit_lineage(
+        authority,
+        journal=Journal(),
+    ) == (intent, terminal)
 
 
 def test_bridge_input_requires_exact_lowercase_sha256_request_id() -> None:

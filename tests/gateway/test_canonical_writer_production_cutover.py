@@ -326,6 +326,123 @@ def test_legacy_isolated_canary_prerequisite_shape_is_rejected() -> None:
         )
 
 
+def test_owner_direct_mvp_no_canary_waiver_is_exact_and_freeze_owner_bound() -> None:
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    ).hex()
+    waiver = cutover.build_owner_direct_mvp_no_canary_waiver(
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        owner_public_key_ed25519_hex=public,
+    )
+
+    mode, validated = cutover._validate_release_validation_authority(
+        waiver,
+        revision=REVISION,
+    )
+    assert mode == cutover.OWNER_DIRECT_MVP_VALIDATION_MODE
+    assert validated["waived_gate"] == (
+        "release_bound_isolated_canary_goal_prerequisite"
+    )
+    assert validated["retain_live_production_prerequisite"] is True
+    assert validated["retain_pre_db_zero_write_observation"] is True
+    assert validated["immutable_artifacts_required"] is True
+    assert validated["signed_unit_inputs_required"] is True
+    assert _freeze(
+        private,
+        Services(),
+        release_validation_authority=waiver,
+    ).value["cutover_authority"][
+        "isolated_canary_goal_prerequisite"
+    ] == waiver
+
+    wrong_owner = cutover.build_owner_direct_mvp_no_canary_waiver(
+        release_revision=REVISION,
+        owner_subject_sha256="b" * 64,
+        owner_public_key_ed25519_hex=public,
+    )
+    with pytest.raises(ValueError, match="freeze-owner-bound"):
+        _freeze(
+            private,
+            Services(),
+            release_validation_authority=wrong_owner,
+        )
+
+
+def test_direct_mvp_waiver_retains_live_and_pre_db_gates_without_canary(
+    monkeypatch,
+) -> None:
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    ).hex()
+    waiver = cutover.build_owner_direct_mvp_no_canary_waiver(
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        owner_public_key_ed25519_hex=public,
+    )
+    services = Services()
+    plan = _cutover_plan(
+        private,
+        services,
+        release_validation_authority=waiver,
+    )
+    services.target_installed = True
+    services.stop_gateway()
+    services.stop_writer()
+    services.connector = _service(
+        cutover.CONNECTOR_UNIT,
+        active=True,
+        digest=services.target_connector_digest,
+        unit_file_state="disabled",
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cutover,
+        "collect_and_install_from_production_config",
+        lambda **_kwargs: calls.append("live_production_prerequisite"),
+    )
+    monkeypatch.setattr(
+        cutover,
+        "load_production_capability_prerequisite_receipt",
+        lambda **_kwargs: {
+            "receipt_sha256": "8" * 64,
+            "boot_id_sha256": "9" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_build_production_isolation_equivalence",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("isolated canary path must not run")
+        ),
+    )
+
+    acceptance = cutover.ProductionCapabilityPrerequisiteBoundary(
+        services=services,
+        snapshots=Snapshots(plan.final_snapshot),
+    ).collect_and_validate(plan)
+
+    assert calls == ["live_production_prerequisite"]
+    assert (
+        acceptance["schema"]
+        == cutover.CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA
+    )
+    assert acceptance["release_validation_authority_sha256"] == waiver[
+        "waiver_sha256"
+    ]
+    assert acceptance["isolated_canary_proof_present"] is False
+    assert acceptance["live_production_prerequisite_validated"] is True
+    assert acceptance["zero_canonical_database_mutation_observed"] is True
+    assert cutover._require_capability_prerequisite_acceptance(
+        acceptance,
+        plan=plan,
+    ) == acceptance
+
+
 def _operational_receipt_key_ids() -> dict[str, str]:
     domains = (
         "adventico_email", "bitrix", "canonical", "github",
@@ -843,7 +960,13 @@ def _cron_authority() -> tuple[dict, dict, dict, dict]:
     return inventory, plan, host_facts, package
 
 
-def _freeze(private: Ed25519PrivateKey, services: Services, initial_rows: int = 14_073):
+def _freeze(
+    private: Ed25519PrivateKey,
+    services: Services,
+    initial_rows: int = 14_073,
+    *,
+    release_validation_authority: Mapping[str, Any] | None = None,
+):
     public = private.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     ).hex()
@@ -909,6 +1032,8 @@ def _freeze(private: Ed25519PrivateKey, services: Services, initial_rows: int = 
         mechanical_job_package=mechanical_package,
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+            if release_validation_authority is None
+            else release_validation_authority
         ),
         database_recovery_receipt=_database_recovery_receipt(),
         legacy_truth_decision=legacy_truth_decision,
@@ -1207,8 +1332,20 @@ def _seed_cutover_passkey(
         )
 
 
-def _capture(private, services, *, initial_rows=14_073, final_rows=14_081):
-    plan = _freeze(private, services, initial_rows)
+def _capture(
+    private,
+    services,
+    *,
+    initial_rows=14_073,
+    final_rows=14_081,
+    release_validation_authority=None,
+):
+    plan = _freeze(
+        private,
+        services,
+        initial_rows,
+        release_validation_authority=release_validation_authority,
+    )
     journal = MemoryJournal()
     approval = _approval(private, plan)
     _seed_passkey_authority(journal, plan, approval)
@@ -1807,8 +1944,12 @@ def _host_transition(
     return {**unsigned, "manifest_sha256": cutover._sha256_json(unsigned)}
 
 
-def _cutover_plan(private, services):
-    freeze, tail, _journal = _capture(private, services)
+def _cutover_plan(private, services, *, release_validation_authority=None):
+    freeze, tail, _journal = _capture(
+        private,
+        services,
+        release_validation_authority=release_validation_authority,
+    )
     return cutover.build_cutover_plan(
         freeze_plan=freeze,
         final_tail_receipt=tail,
@@ -2166,12 +2307,13 @@ class Prerequisites:
             raise cutover.ProductionCutoverError(
                 "production_capability_prerequisite_drifted"
             )
-        canary = plan.value["freeze_plan"]["cutover_authority"][
-            "isolated_canary_goal_prerequisite"
-        ]
-        equivalence = cutover._build_production_isolation_equivalence(
-            plan=plan,
-            evidence=canary,
+        validation_mode, validation_authority = (
+            cutover._validate_release_validation_authority(
+                plan.value["freeze_plan"]["cutover_authority"][
+                    "isolated_canary_goal_prerequisite"
+                ],
+                revision=plan.value["release_revision"],
+            )
         )
         gateway_identity = plan.value["gateway_target_identity"]
         writer_identity = plan.value["writer_target_identity"]
@@ -2201,8 +2343,7 @@ class Prerequisites:
             ),
             snapshot=plan.final_snapshot,
         )
-        unsigned = {
-            "schema": cutover.CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA,
+        common = {
             "plan_sha256": plan.sha256,
             "production_owner_approval_sha256": plan.value[
                 "freeze_approval_sha256"
@@ -2219,38 +2360,64 @@ class Prerequisites:
             "pre_db_zero_write_observation_sha256": pre_db_observation[
                 "observation_sha256"
             ],
-            "isolated_canary_evidence_sha256": canary["evidence_sha256"],
-            "workspace_gateway_receipt_sha256": canary[
-                "workspace_gateway_receipt_sha256"
-            ],
-            "goal_continuation_terminal_schema": canary[
-                "goal_continuation_terminal_schema"
-            ],
-            "goal_continuation_terminal_sha256": canary[
-                "goal_continuation_terminal_sha256"
-            ],
-            "canary_run_id": canary["run_id"],
-            "canary_release_revision": canary["release_revision"],
-            "canary_fixture_sha256": canary["fixture_sha256"],
-            "canary_capability_plan_sha256": canary[
-                "capability_plan_sha256"
-            ],
-            "canary_full_canary_plan_sha256": canary[
-                "full_canary_plan_sha256"
-            ],
-            "canary_owner_approval_receipt_sha256": canary[
-                "canary_owner_approval_receipt_sha256"
-            ],
-            "production_diff_sha256": canary["production_diff_sha256"],
-            "isolation_equivalence_projection": equivalence,
-            "isolation_equivalence_projection_sha256": equivalence[
-                "projection_sha256"
-            ],
             "zero_canonical_database_mutation_observed": True,
             "ok": True,
             "secret_material_recorded": False,
             "secret_digest_recorded": False,
         }
+        if validation_mode == "release_bound_isolated_canary":
+            canary = validation_authority
+            equivalence = cutover._build_production_isolation_equivalence(
+                plan=plan,
+                evidence=canary,
+            )
+            unsigned = {
+                "schema": cutover.CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA,
+                **common,
+                "isolated_canary_evidence_sha256": canary[
+                    "evidence_sha256"
+                ],
+                "workspace_gateway_receipt_sha256": canary[
+                    "workspace_gateway_receipt_sha256"
+                ],
+                "goal_continuation_terminal_schema": canary[
+                    "goal_continuation_terminal_schema"
+                ],
+                "goal_continuation_terminal_sha256": canary[
+                    "goal_continuation_terminal_sha256"
+                ],
+                "canary_run_id": canary["run_id"],
+                "canary_release_revision": canary["release_revision"],
+                "canary_fixture_sha256": canary["fixture_sha256"],
+                "canary_capability_plan_sha256": canary[
+                    "capability_plan_sha256"
+                ],
+                "canary_full_canary_plan_sha256": canary[
+                    "full_canary_plan_sha256"
+                ],
+                "canary_owner_approval_receipt_sha256": canary[
+                    "canary_owner_approval_receipt_sha256"
+                ],
+                "production_diff_sha256": canary["production_diff_sha256"],
+                "isolation_equivalence_projection": equivalence,
+                "isolation_equivalence_projection_sha256": equivalence[
+                    "projection_sha256"
+                ],
+            }
+        else:
+            unsigned = {
+                "schema": (
+                    cutover.CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA
+                ),
+                **common,
+                "release_validation_mode": validation_mode,
+                "release_validation_authority_sha256": validation_authority[
+                    "waiver_sha256"
+                ],
+                "isolated_canary_proof_present": False,
+                "owner_approved_direct_mvp_no_canary": True,
+                "live_production_prerequisite_validated": True,
+            }
         return _hashed(unsigned, "receipt_sha256")
 
 
@@ -3132,6 +3299,61 @@ def test_successful_cutover_preserves_full_archive_and_canonical_digest_proofs()
         ),
         now_unix=NOW,
     )["receipt_sha256"] == terminal["receipt_sha256"]
+    assert database.calls == ["preflight", "apply", "terminal"]
+
+
+def test_owner_direct_mvp_cutover_emits_truthful_non_canary_terminal() -> None:
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    ).hex()
+    waiver = cutover.build_owner_direct_mvp_no_canary_waiver(
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        owner_public_key_ed25519_hex=public,
+    )
+    services = Services()
+    plan = _cutover_plan(
+        private,
+        services,
+        release_validation_authority=waiver,
+    )
+    database = Database(plan)
+    host = Host(plan, services)
+    journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
+
+    terminal = cutover.execute_cutover(
+        plan,
+        approval,
+        cutover.CutoverDependencies(
+            services,
+            Snapshots(plan.final_snapshot),
+            database,
+            host,
+            journal,
+            Prerequisites(),
+            nullcontext,
+        ),
+        now_unix=NOW,
+    )
+
+    assert terminal["schema"] == cutover.DIRECT_MVP_TERMINAL_SCHEMA
+    assert (
+        terminal["release_validation_mode"]
+        == cutover.OWNER_DIRECT_MVP_VALIDATION_MODE
+    )
+    assert terminal["release_validation_authority_sha256"] == waiver[
+        "waiver_sha256"
+    ]
+    assert terminal["isolated_canary_proof_present"] is False
+    assert terminal["owner_approved_direct_mvp_no_canary"] is True
+    assert terminal["live_production_prerequisite_validated"] is True
+    assert terminal["zero_canonical_database_mutation_observed"] is True
+    assert "isolation_equivalence_projection_sha256" not in terminal
+    assert "isolated_canary_goal_continuation_terminal_sha256" not in terminal
     assert database.calls == ["preflight", "apply", "terminal"]
 
 

@@ -2023,7 +2023,7 @@ def _validate_terminal_receipt(
     *,
     plan: cutover.CutoverPlan,
 ) -> Mapping[str, Any]:
-    fields = {
+    common_fields = {
         "schema",
         "plan_sha256",
         "freeze_plan_sha256",
@@ -2032,9 +2032,6 @@ def _validate_terminal_receipt(
         "final_tail_receipt_sha256",
         "capability_prerequisite_receipt_sha256",
         "capability_prerequisite_file_sha256",
-        "isolated_canary_goal_continuation_terminal_sha256",
-        "isolated_canary_workspace_gateway_receipt_sha256",
-        "isolation_equivalence_projection_sha256",
         "zero_canonical_database_mutation_observed",
         "pre_db_zero_write_observation_sha256",
         "capability_topology_identity_sha256",
@@ -2053,20 +2050,31 @@ def _validate_terminal_receipt(
         "completed_at_unix",
         "receipt_sha256",
     }
+    canary_fields = common_fields | {
+        "isolated_canary_goal_continuation_terminal_sha256",
+        "isolated_canary_workspace_gateway_receipt_sha256",
+        "isolation_equivalence_projection_sha256",
+    }
+    direct_mvp_fields = common_fields | {
+        "release_validation_mode",
+        "release_validation_authority_sha256",
+        "isolated_canary_proof_present",
+        "owner_approved_direct_mvp_no_canary",
+        "live_production_prerequisite_validated",
+    }
     unsigned = {
         name: item for name, item in value.items() if name != "receipt_sha256"
     }
-    canary_goal = plan.value["freeze_plan"]["cutover_authority"][
-        "isolated_canary_goal_prerequisite"
-    ]
-    expected_equivalence = cutover._build_production_isolation_equivalence(
-        plan=plan,
-        evidence=canary_goal,
+    validation_mode, validation_authority = (
+        cutover._validate_release_validation_authority(
+            plan.value["freeze_plan"]["cutover_authority"][
+                "isolated_canary_goal_prerequisite"
+            ],
+            revision=plan.value["release_revision"],
+        )
     )
-    if (
-        set(value) != fields
-        or value.get("schema") != cutover.TERMINAL_SCHEMA
-        or value.get("plan_sha256") != plan.sha256
+    common_invalid = (
+        value.get("plan_sha256") != plan.sha256
         or value.get("freeze_plan_sha256") != plan.value["freeze_plan_sha256"]
         or value.get("freeze_approval_sha256")
         != plan.value["freeze_approval_sha256"]
@@ -2076,23 +2084,57 @@ def _validate_terminal_receipt(
         or value.get("discord_dm_allowed") is not False
         or value.get("rollback_used") is not False
         or value.get("zero_canonical_database_mutation_observed") is not True
-        or value.get("isolated_canary_goal_continuation_terminal_sha256")
-        != canary_goal["goal_continuation_terminal_sha256"]
-        or value.get("isolated_canary_workspace_gateway_receipt_sha256")
-        != canary_goal["workspace_gateway_receipt_sha256"]
-        or value.get("isolation_equivalence_projection_sha256")
-        != expected_equivalence["projection_sha256"]
         or value.get("secret_material_recorded") is not False
         or any(
             _SHA256.fullmatch(str(value.get(field))) is None
-            for field in fields
+            for field in set(value)
             if field.endswith("_sha256")
         )
         or type(value.get("completed_at_unix")) is not int
         or value.get("completed_at_unix", 0) <= 0
         or _SHA256.fullmatch(str(value.get("receipt_sha256"))) is None
         or value.get("receipt_sha256") != _sha(_canonical(unsigned))
-    ):
+    )
+    if common_invalid:
+        raise OwnerCutoverError("owner_cutover_terminal_receipt_invalid")
+    if value.get("schema") == cutover.TERMINAL_SCHEMA:
+        if validation_mode != "release_bound_isolated_canary":
+            raise OwnerCutoverError("owner_cutover_terminal_receipt_invalid")
+        expected_equivalence = cutover._build_production_isolation_equivalence(
+            plan=plan,
+            evidence=validation_authority,
+        )
+        if (
+            set(value) != canary_fields
+            or value.get(
+                "isolated_canary_goal_continuation_terminal_sha256"
+            )
+            != validation_authority["goal_continuation_terminal_sha256"]
+            or value.get(
+                "isolated_canary_workspace_gateway_receipt_sha256"
+            )
+            != validation_authority["workspace_gateway_receipt_sha256"]
+            or value.get("isolation_equivalence_projection_sha256")
+            != expected_equivalence["projection_sha256"]
+        ):
+            raise OwnerCutoverError(
+                "owner_cutover_terminal_receipt_invalid"
+            )
+    elif value.get("schema") == cutover.DIRECT_MVP_TERMINAL_SCHEMA:
+        if (
+            set(value) != direct_mvp_fields
+            or validation_mode != cutover.OWNER_DIRECT_MVP_VALIDATION_MODE
+            or value.get("release_validation_mode") != validation_mode
+            or value.get("release_validation_authority_sha256")
+            != validation_authority["waiver_sha256"]
+            or value.get("isolated_canary_proof_present") is not False
+            or value.get("owner_approved_direct_mvp_no_canary") is not True
+            or value.get("live_production_prerequisite_validated") is not True
+        ):
+            raise OwnerCutoverError(
+                "owner_cutover_terminal_receipt_invalid"
+            )
+    else:
         raise OwnerCutoverError("owner_cutover_terminal_receipt_invalid")
     return copy.deepcopy(dict(value))
 
@@ -3486,8 +3528,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     os_login_migrate.add_argument("--output", type=Path, required=True)
     prepare = subparsers.add_parser("prepare-cutover")
     prepare.add_argument("--revision", required=True)
-    prepare.add_argument(
-        "--isolated-canary-goal-prerequisite", type=Path, required=True
+    validation_authority = prepare.add_mutually_exclusive_group(required=True)
+    validation_authority.add_argument(
+        "--isolated-canary-goal-prerequisite", type=Path
+    )
+    validation_authority.add_argument(
+        "--owner-approved-direct-mvp-no-canary",
+        action="store_true",
+        help=(
+            "owner-sign a narrow waiver of only the release-bound isolated "
+            "canary proof; all live production and pre-DB gates remain"
+        ),
     )
     prepare.add_argument("--owner-private-key", type=Path, required=True)
     prepare.add_argument(
@@ -3545,8 +3596,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if arguments.command == "prepare-cutover":
             if (
-                not arguments.isolated_canary_goal_prerequisite.is_absolute()
-                or not arguments.owner_private_key.is_absolute()
+                not arguments.owner_private_key.is_absolute()
+                or (
+                    arguments.isolated_canary_goal_prerequisite is not None
+                    and not arguments.isolated_canary_goal_prerequisite.is_absolute()
+                )
             ):
                 raise OwnerCutoverError(
                     "owner_cutover_workflow_input_invalid"
@@ -3585,6 +3639,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             canary_transport.harden_owner_secret_process()
             key = load_owner_private_key(arguments.owner_private_key)
+            release_validation_authority = (
+                cutover.build_owner_direct_mvp_no_canary_waiver(
+                    release_revision=arguments.revision,
+                    owner_subject_sha256=owner_subject,
+                    owner_public_key_ed25519_hex=_public_hex(key),
+                )
+                if arguments.owner_approved_direct_mvp_no_canary
+                else _read_public_json(
+                    arguments.isolated_canary_goal_prerequisite
+                )
+            )
 
             def transport_factory(owner_identity: Any) -> Any:
                 return ProductionCutoverTransport(
@@ -3604,8 +3669,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 owner_identity=identity,
                 owner_subject_sha256=owner_subject,
                 private_key=key,
-                isolated_canary_goal_prerequisite=_read_public_json(
-                    arguments.isolated_canary_goal_prerequisite
+                isolated_canary_goal_prerequisite=(
+                    release_validation_authority
                 ),
                 truth_mode=arguments.truth_mode,
                 accepted_event_receipts=accepted,

@@ -1,11 +1,45 @@
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import auth as auth_mod
 from hermes_cli.auth import AuthError, resolve_spotify_runtime_credentials
+from hermes_cli.subcommands.auth import build_auth_parser
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by manual-paste login tests
+# ---------------------------------------------------------------------------
+
+def _manual_paste_login(monkeypatch, tmp_path, paste_value):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(
+        auth_mod, "webbrowser", SimpleNamespace(open=lambda *_a, **_k: False)
+    )
+    exchanged: dict = {}
+
+    def fake_exchange(**kwargs):
+        exchanged.update(kwargs)
+        return {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": auth_mod.DEFAULT_SPOTIFY_SCOPE,
+        }
+
+    monkeypatch.setattr(auth_mod, "_spotify_exchange_code_for_tokens", fake_exchange)
+    monkeypatch.setattr("builtins.input", lambda prompt="": paste_value)
+    args = SimpleNamespace(
+        client_id="test-client", redirect_uri=None, scope=None,
+        no_browser=True, manual_paste=True, timeout=None,
+    )
+    auth_mod.login_spotify_command(args)
+    return exchanged
 
 
 def test_store_provider_state_can_skip_active_provider() -> None:
@@ -300,3 +334,54 @@ def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure(
     assert persisted["refresh_token"] == "dead-refresh-token"
     assert persisted["access_token"] == "dead-access-token"
     assert "last_auth_error" not in persisted
+
+
+def test_manual_paste_bare_code_reaches_token_exchange(tmp_path, monkeypatch, capsys):
+    exchanged = _manual_paste_login(monkeypatch, tmp_path, "AQDtR3-bare-code-value")
+    assert exchanged.get("code") == "AQDtR3-bare-code-value"
+    assert "Spotify login successful!" in capsys.readouterr().out
+
+
+def test_manual_paste_wrong_state_still_rejected(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit, match="state mismatch"):
+        _manual_paste_login(
+            monkeypatch, tmp_path,
+            "http://127.0.0.1:43827/spotify/callback?code=abc&state=not-the-nonce",
+        )
+
+
+def test_manual_paste_full_url_matching_state_reaches_token_exchange(
+    tmp_path, monkeypatch, capsys
+):
+    """Covers the documented primary workflow: pasting the failed browser
+
+    redirect URL (carrying the state Hermes itself generated) back verbatim,
+    not just the bare-code fallback.
+    """
+    monkeypatch.setattr(
+        auth_mod.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed-state-nonce")
+    )
+    exchanged = _manual_paste_login(
+        monkeypatch,
+        tmp_path,
+        "http://127.0.0.1:43827/spotify/callback?code=full-url-code&state=fixed-state-nonce",
+    )
+    assert exchanged.get("code") == "full-url-code"
+    assert "Spotify login successful!" in capsys.readouterr().out
+
+
+def test_manual_paste_flag_wired_into_spotify_subcommand_parser():
+    """`--manual-paste` must reach ``args.manual_paste`` for `auth spotify`.
+
+    The SSH hint has advertised this flag since before it existed; this
+    guards against the parser wiring regressing silently again.
+    """
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_auth_parser(sub, cmd_auth=lambda args: None)
+
+    ns = parser.parse_args(["auth", "spotify", "--manual-paste"])
+    assert ns.manual_paste is True
+
+    ns_default = parser.parse_args(["auth", "spotify"])
+    assert ns_default.manual_paste is False

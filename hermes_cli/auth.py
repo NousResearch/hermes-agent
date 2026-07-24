@@ -3171,6 +3171,80 @@ def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
     return raw
 
 
+def _parse_pasted_callback(raw: str) -> dict:
+    """Parse a pasted callback URL / query string into the loopback shape.
+
+    Accepts any of:
+
+    * full URL:  ``http://127.0.0.1:56121/callback?code=abc&state=xyz``
+    * bare query string:  ``?code=abc&state=xyz``  or  ``code=abc&state=xyz``
+    * bare code (no state, only used when the upstream omits state):
+      ``abc-the-code-value``
+
+    Returns ``{"code", "state", "error", "error_description"}`` with
+    missing keys set to ``None`` so the Spotify PKCE callsite can keep
+    using the same validation path (state check, error check, etc.)
+    it already uses for the HTTP server output. Regression for #26923 —
+    formalises the curl-the-callback-URL workaround the reporter used
+    while waiting for upstream support.
+    """
+    stripped = raw.strip()
+    result: dict = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+    if not stripped:
+        return result
+    query = ""
+    if stripped.startswith(("http://", "https://")):
+        try:
+            parsed = urlparse(stripped)
+        except Exception:
+            return result
+        query = parsed.query or ""
+    elif stripped.startswith("?"):
+        query = stripped[1:]
+    elif "=" in stripped:
+        # Looks like a bare query fragment (``code=...&state=...``).
+        query = stripped
+    else:
+        # Treat as a bare opaque code value with no state.
+        result["code"] = stripped
+        return result
+    params = parse_qs(query, keep_blank_values=False)
+    for key in ("code", "state", "error", "error_description"):
+        values = params.get(key)
+        if values:
+            result[key] = values[0]
+    return result
+
+
+def _prompt_manual_callback_paste(redirect_uri: str) -> dict:
+    """Read a callback URL from stdin as a fallback for browser-only remotes.
+
+    Used when ``--manual-paste`` is set or when the loopback listener
+    cannot bind. Returns the parsed callback dict (same shape as the
+    HTTP handler output) so the existing state / error validation in
+    the caller works unchanged. See #26923.
+    """
+    print()
+    print("─── Manual callback paste ─────────────────────────────────────")
+    print("After approving in your browser, your browser will try to load")
+    print(f"  {redirect_uri}")
+    print("which fails (the loopback listener is on this remote machine,")
+    print("not on your laptop) — that is expected. Copy the FULL URL")
+    print("from your browser's address bar of that failed page and paste")
+    print("it below. A bare '?code=...&state=...' fragment also works.")
+    print("───────────────────────────────────────────────────────────────")
+    try:
+        raw = input("Callback URL: ")
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    return _parse_pasted_callback(raw)
+
+
 def login_spotify_command(args) -> None:
     existing_state = get_provider_auth_state("spotify") or {}
 
@@ -3192,6 +3266,7 @@ def login_spotify_command(args) -> None:
     accounts_base_url = _spotify_accounts_base_url(existing_state)
     api_base_url = _spotify_api_base_url(existing_state)
     open_browser = not getattr(args, "no_browser", False)
+    manual_paste = bool(getattr(args, "manual_paste", False))
 
     code_verifier = _spotify_code_verifier()
     code_challenge = _spotify_code_challenge(code_verifier)
@@ -3216,7 +3291,8 @@ def login_spotify_command(args) -> None:
     print(f"Full setup guide: {SPOTIFY_DOCS_URL}")
     print()
 
-    _print_loopback_ssh_hint(redirect_uri, docs_url=SPOTIFY_DOCS_URL)
+    if not manual_paste:
+        _print_loopback_ssh_hint(redirect_uri, docs_url=SPOTIFY_DOCS_URL)
 
     if open_browser and not _is_remote_session() and _can_open_graphical_browser():
         try:
@@ -3228,14 +3304,21 @@ def login_spotify_command(args) -> None:
         else:
             print("Could not open the browser automatically; use the URL above.")
 
-    callback = _spotify_wait_for_callback(
-        redirect_uri,
-        timeout_seconds=float(getattr(args, "timeout", None) or 180.0),
-    )
+    if manual_paste:
+        callback = _prompt_manual_callback_paste(redirect_uri)
+    else:
+        callback = _spotify_wait_for_callback(
+            redirect_uri,
+            timeout_seconds=float(getattr(args, "timeout", None) or 180.0),
+        )
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]
         raise SystemExit(f"Spotify authorization failed: {detail}")
-    if callback.get("state") != state_nonce:
+    callback_state = callback.get("state")
+    if callback_state is None and manual_paste:
+        # Bare-code pastes carry no state; PKCE still binds the exchange.
+        callback_state = state_nonce
+    if callback_state != state_nonce:
         raise SystemExit("Spotify authorization failed: state mismatch.")
 
     token_payload = _spotify_exchange_code_for_tokens(

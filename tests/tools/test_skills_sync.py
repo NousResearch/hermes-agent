@@ -7,7 +7,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.skills_sync import (
+    _copy_file_writable,
+    _copytree_writable,
+    _ensure_owner_writable,
     _get_bundled_dir,
+    _make_tree_owner_writable,
     _read_manifest,
     _read_skill_name,
     _write_manifest,
@@ -1118,14 +1122,10 @@ class TestResetBundledSkill:
 
             assert result["ok"] is True
             assert result["action"] == "restored"
-            # Bundled version was re-copied over the (deleted) user copy.
             assert "upstream" in (dest / "SKILL.md").read_text()
-            # The read-only nested user dir/file was fully removed, not left behind.
             assert not (sub / "ref.md").exists()
-            # sync ran and re-copied the skill (not stuck in limbo).
             assert "google-workspace" in result["synced"]["copied"]
         finally:
-            # Restore perms so tmp_path teardown can remove anything left.
             for p in (sub, dest):
                 if p.exists():
                     os.chmod(p, stat.S_IRWXU)
@@ -1145,8 +1145,6 @@ class TestResetBundledSkill:
             "google-workspace:STALEHASH000000000000000000000000\n"
         )
 
-        # Simulate an unremovable tree (e.g. a busy mountpoint or a path even
-        # chmod can't rescue) by making the removal helper raise.
         def _boom(_path):
             raise PermissionError(13, "Permission denied")
 
@@ -1155,14 +1153,304 @@ class TestResetBundledSkill:
         ):
             result = reset_bundled_skill("google-workspace", restore=True)
 
-        # Restore failed, and the manifest must be left untouched.
         assert result["ok"] is False
         assert result["action"] == "not_reset"
         assert "Manifest entry preserved" in result["message"]
         manifest_after = manifest_file.read_text()
         assert "google-workspace" in manifest_after
-        # User copy is still on disk (we changed nothing).
         assert (dest / "SKILL.md").exists()
+
+
+class TestEnsureOwnerWritable:
+    """Unit tests for the writable-mode helpers."""
+
+    def test_handles_missing_path(self, tmp_path):
+        # Should not raise on missing path
+        _ensure_owner_writable(tmp_path / "does-not-exist")
+
+    def test_grants_user_write_to_readonly_file(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        f = tmp_path / "readonly.md"
+        f.write_text("x")
+        os.chmod(f, 0o444)  # mimic Nix store mode
+
+        _ensure_owner_writable(f)
+
+        assert os.stat(f).st_mode & stat_mod.S_IWUSR
+
+    def test_preserves_executable_bit(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        script = tmp_path / "skill.sh"
+        script.write_text("#!/bin/sh\n")
+        os.chmod(script, 0o555)  # executable, read-only — Nix-store-style
+
+        _ensure_owner_writable(script)
+
+        m = stat_mod.S_IMODE(os.stat(script).st_mode)
+        assert m & stat_mod.S_IWUSR
+        assert m & stat_mod.S_IXUSR  # executable still set
+
+    def test_idempotent_on_writable_target(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        f = tmp_path / "ok.txt"
+        f.write_text("x")
+        before = os.stat(f).st_mode
+
+        _ensure_owner_writable(f)
+
+        # Same or only the (already-set) user-write bit changed
+        after = os.stat(f).st_mode
+        assert after | stat_mod.S_IWUSR == before | stat_mod.S_IWUSR
+
+
+class TestCopyFileWritable:
+    """``_copy_file_writable`` is the ``copy_function`` for copytree, plus a
+    drop-in replacement for ``shutil.copy2``."""
+
+    def test_readonly_source_yields_writable_destination(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        src = tmp_path / "src.md"
+        dst = tmp_path / "dst.md"
+        src.write_text("hello")
+        os.chmod(src, 0o444)
+
+        _copy_file_writable(src, dst)
+
+        assert dst.read_text() == "hello"
+        assert os.stat(dst).st_mode & stat_mod.S_IWUSR
+
+    def test_executable_source_keeps_executable_bit(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        src = tmp_path / "script.sh"
+        dst = tmp_path / "script-copy.sh"
+        src.write_text("#!/bin/sh\n")
+        os.chmod(src, 0o555)
+
+        _copy_file_writable(src, dst)
+
+        m = stat_mod.S_IMODE(os.stat(dst).st_mode)
+        assert m & stat_mod.S_IWUSR
+        assert m & stat_mod.S_IXUSR
+
+
+class TestMakeTreeOwnerWritable:
+    """``_make_tree_owner_writable`` walks an existing tree and grants the
+    owner-write bit to every entry."""
+
+    def test_grants_user_write_to_all_descendants(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        sub = tmp_path / "sub"
+        nested = sub / "nested"
+        nested.mkdir(parents=True)
+        f = nested / "file.txt"
+        f.write_text("x")
+        # Lock everything down depth-first like the Nix store would.
+        os.chmod(f, 0o444)
+        os.chmod(nested, 0o555)
+        os.chmod(sub, 0o555)
+        os.chmod(tmp_path, 0o555)
+
+        try:
+            _make_tree_owner_writable(tmp_path)
+
+            assert os.stat(tmp_path).st_mode & stat_mod.S_IWUSR
+            assert os.stat(sub).st_mode & stat_mod.S_IWUSR
+            assert os.stat(nested).st_mode & stat_mod.S_IWUSR
+            assert os.stat(f).st_mode & stat_mod.S_IWUSR
+        finally:
+            # Restore writable mode on the whole tree so pytest tmp_path
+            # teardown does not error if an assertion above failed midway.
+            os.chmod(tmp_path, 0o755)
+            os.chmod(sub, 0o755)
+            os.chmod(nested, 0o755)
+            os.chmod(f, 0o644)
+
+    def test_handles_missing_root(self, tmp_path):
+        # No-op on missing path
+        _make_tree_owner_writable(tmp_path / "ghost")
+
+
+class TestCopytreeWritable:
+    """End-to-end: ``_copytree_writable`` produces a fully editable copy of
+    a read-only source tree."""
+
+    def test_readonly_source_tree_yields_editable_destination(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        src = tmp_path / "src"
+        nested = src / "category" / "skill-x"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("# X\n")
+        (nested / "main.py").write_text("print(1)\n")
+        # Apply Nix-store-style modes depth-first.
+        for path in sorted(src.rglob("*"), reverse=True):
+            os.chmod(path, 0o444 if path.is_file() else 0o555)
+        os.chmod(src, 0o555)
+
+        dst = tmp_path / "dst"
+        try:
+            _copytree_writable(src, dst)
+
+            sk = dst / "category" / "skill-x" / "SKILL.md"
+            assert sk.exists()
+            assert os.stat(sk).st_mode & stat_mod.S_IWUSR
+            assert os.stat(dst / "category" / "skill-x").st_mode & stat_mod.S_IWUSR
+            # Append-edit must succeed (this is the regression: previously
+            # raised PermissionError because mode 0444 was preserved).
+            with sk.open("a") as fh:
+                fh.write("\nappended\n")
+        finally:
+            for path in sorted(src.rglob("*"), reverse=True):
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            os.chmod(src, 0o755)
+
+
+class TestSyncSkillsReadOnlyBundledSource:
+    """Regression: bundled skills served from a read-only filesystem (such as
+    the Nix store, mode 0444/0555) must end up writable in ~/.hermes/skills/.
+
+    Without the fix, the user copy inherits the read-only mode bits via
+    ``shutil.copy2`` / ``shutil.copytree`` and a later ``skill_manage`` /
+    curator edit fails with ``PermissionError``.
+    """
+
+    def _setup_readonly_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled_skills_ro"
+        skill_dir = bundled / "category" / "ro-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: ro-skill\n---\n# RO\n"
+        )
+        (skill_dir / "main.py").write_text("print(1)\n")
+        # Lock down depth-first like the Nix store.
+        import os
+
+        for path in sorted(bundled.rglob("*"), reverse=True):
+            if path.is_dir():
+                os.chmod(path, 0o555)
+            else:
+                os.chmod(path, 0o444)
+        os.chmod(bundled, 0o555)
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(
+            patch("tools.skills_sync._get_bundled_dir", return_value=bundled)
+        )
+        stack.enter_context(
+            patch("tools.skills_sync.SKILLS_DIR", skills_dir)
+        )
+        stack.enter_context(
+            patch("tools.skills_sync.MANIFEST_FILE", manifest_file)
+        )
+        return stack
+
+    def test_fresh_install_user_copy_is_writable(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        bundled = self._setup_readonly_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = sync_skills(quiet=True)
+
+            assert result["copied"] == ["ro-skill"]
+            user_skill = skills_dir / "category" / "ro-skill" / "SKILL.md"
+            assert user_skill.exists()
+            assert os.stat(user_skill).st_mode & stat_mod.S_IWUSR, (
+                "User copy of bundled skill must be writable after sync; see "
+                "tools.skills_sync._copytree_writable"
+            )
+            # skill_manage emulation: append must succeed.
+            with user_skill.open("a") as fh:
+                fh.write("\nappended\n")
+        finally:
+            # Restore writability on bundled tree so pytest tmp_path
+            # teardown does not fail.
+            for path in sorted(bundled.rglob("*"), reverse=True):
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            os.chmod(bundled, 0o755)
+
+    def test_preexisting_hash_identical_readonly_copy_is_repaired(self, tmp_path):
+        """Migration regression: a user copy made *before* the writable-copy
+        fix landed can be hash-identical to the bundled source (so the sync
+        logic takes the "bundled unchanged, user unchanged" no-op branch)
+        while still carrying the inherited 0444/0555 mode bits from that
+        earlier, unfixed copy. Nothing about the content differs, so this
+        skill would otherwise never reach an update/copy path that could
+        repair it — it would stay unwritable forever. sync_skills must sweep
+        write-permissions onto it on every run regardless.
+        """
+        import os
+        import stat as stat_mod
+
+        bundled = self._setup_readonly_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Pre-seed a user copy that is byte-identical to the bundled skill
+        # (simulating a copy made by a pre-fix Hermes build) and lock it
+        # down to Nix-store-style read-only modes, with a manifest entry
+        # already recording the matching origin hash.
+        bundled_skill_dir = bundled / "category" / "ro-skill"
+        bundled_hash = _dir_hash(bundled_skill_dir)
+
+        dest = skills_dir / "category" / "ro-skill"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(
+            (bundled_skill_dir / "SKILL.md").read_text()
+        )
+        (dest / "main.py").write_text((bundled_skill_dir / "main.py").read_text())
+        os.chmod(dest / "SKILL.md", 0o444)
+        os.chmod(dest / "main.py", 0o444)
+        os.chmod(dest, 0o555)
+
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"ro-skill:{bundled_hash}\n")
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = sync_skills(quiet=True)
+
+            # No-op from the sync's perspective: not re-copied, just repaired.
+            assert "ro-skill" not in result["copied"]
+            assert "ro-skill" not in result["updated"]
+
+            user_skill = dest / "SKILL.md"
+            assert os.stat(user_skill).st_mode & stat_mod.S_IWUSR, (
+                "Pre-existing hash-identical read-only user copy must be "
+                "repaired in place by sync_skills"
+            )
+            assert os.stat(dest).st_mode & stat_mod.S_IWUSR
+            # skill_manage emulation: append must succeed.
+            with user_skill.open("a") as fh:
+                fh.write("\nappended\n")
+        finally:
+            for path in sorted(bundled.rglob("*"), reverse=True):
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            os.chmod(bundled, 0o755)
+            for path in sorted(dest.rglob("*"), reverse=True):
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            os.chmod(dest, 0o755)
 
 
 class TestNoBundledSkillsOptOut:

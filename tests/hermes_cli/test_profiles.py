@@ -254,6 +254,55 @@ class TestCreateProfile:
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
 
+    def test_clone_config_skills_with_external_symlink_does_not_chmod_target(
+        self, profile_env
+    ):
+        """Regression: the skills tree is cloned with ``symlinks=True`` so a
+        skill that is itself a symlink to something outside the profile (a
+        shared/vendored skill directory, a dev checkout) is copied as a
+        symlink rather than traversed into. The post-copy writable-mode
+        repair must not follow that symlink and chmod the external target —
+        doing so would mutate a file the clone has no business touching.
+        """
+        import os
+        import stat
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+
+        # An external skill directory living outside any profile, locked
+        # down read-only (e.g. a Nix-store-backed shared skill mount).
+        external_target = tmp_path / "external-shared-skill"
+        external_target.mkdir(parents=True)
+        (external_target / "SKILL.md").write_text("---\nname: shared\n---\n")
+        os.chmod(external_target / "SKILL.md", 0o444)
+        os.chmod(external_target, 0o555)
+
+        skills_dir = default_home / "skills" / "custom"
+        skills_dir.mkdir(parents=True)
+        link_path = skills_dir / "linked-skill"
+        link_path.symlink_to(external_target, target_is_directory=True)
+
+        try:
+            profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+            cloned_link = profile_dir / "skills" / "custom" / "linked-skill"
+            assert cloned_link.is_symlink(), (
+                "symlinks=True must copy the symlink itself, not its target's "
+                "contents"
+            )
+
+            # The external target's mode bits must be untouched by the
+            # clone's writable-mode repair sweep.
+            assert stat.S_IMODE(os.stat(external_target).st_mode) == 0o555
+            assert (
+                stat.S_IMODE(os.stat(external_target / "SKILL.md").st_mode)
+                == 0o444
+            )
+        finally:
+            os.chmod(external_target / "SKILL.md", 0o644)
+            os.chmod(external_target, 0o755)
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

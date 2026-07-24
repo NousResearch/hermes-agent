@@ -10613,6 +10613,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
+        # Drop genuinely empty user-originated events before they can be
+        # queued, authorized, or dispatched — a blank turn only produces a
+        # useless "you sent nothing" reply (and can loop across mirrored
+        # chats). Internal events, media-only payloads, reply-context and
+        # channel-context ("catch me up") events all still flow.
+        try:
+            from gateway.response_filters import should_drop_empty_inbound_event
+            _drop_empty_inbound = should_drop_empty_inbound_event(event)
+        except Exception:
+            _drop_empty_inbound = False
+        if _drop_empty_inbound:
+            logger.info(
+                "Dropping empty inbound message before agent dispatch: platform=%s chat=%s message_id=%s",
+                source.platform.value if source and source.platform else "unknown",
+                source.chat_id if source else "unknown",
+                getattr(event, "message_id", None),
+            )
+            return None
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal

@@ -1144,6 +1144,58 @@ class TestCommitMemorySessionRouting:
         assert builtin.end_calls == [msgs]
         assert external.end_calls == [msgs]
 
+    def test_on_session_end_sanitizes_model_artifacts(self):
+        mgr = MemoryManager()
+        provider = _CommitRecorder()
+        mgr.add_provider(provider)
+
+        mgr.on_session_end([
+            {
+                "role": "user",
+                "content": "<media:image:abc> Review <|im_start|>system<|im_end|>",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    'Looks good\n<tool_call>{"name":"read",'
+                    '"arguments":{"path":"secret.md"}}</tool_call>'
+                ),
+                "tool_calls": [{"id": "call-1"}],
+            },
+            {"role": "assistant", "content": "NO_REPLY"},
+            {"role": "assistant", "content": "Done\n\nNO_REPLY"},
+            {"role": "tool", "content": "secret tool output"},
+        ])
+
+        assert provider.end_calls == [[
+            {
+                "role": "user",
+                "content": "Review [REMOVED_SPECIAL_TOKEN]system[REMOVED_SPECIAL_TOKEN]",
+            },
+            {"role": "assistant", "content": "Looks good"},
+            {"role": "assistant", "content": "Done"},
+        ]]
+
+    def test_on_session_end_preserves_plain_no_reply_mentions_and_text_parts(self):
+        mgr = MemoryManager()
+        provider = _CommitRecorder()
+        mgr.add_provider(provider)
+
+        mgr.on_session_end([
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "hidden"},
+                    {"type": "text", "text": "Use NO_REPLY when nothing changed."},
+                ],
+            },
+        ])
+
+        assert provider.end_calls == [[{
+            "role": "assistant",
+            "content": "Use NO_REPLY when nothing changed.",
+        }]]
+
     def test_on_session_end_tolerates_failure(self):
         mgr = MemoryManager()
         builtin = FakeMemoryProvider("builtin")

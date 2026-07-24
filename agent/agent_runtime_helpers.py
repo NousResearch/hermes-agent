@@ -2874,14 +2874,18 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # tool result. This is the final pre-API chokepoint, so dedup defensively
     # here even though repair_message_sequence also consumes matched ids.
     #   (a) collapse duplicate tool_calls WITHIN an assistant message
-    #   (b) drop later tool result messages reusing an already-seen id
+    #   (b) drop duplicate tool result messages WITHIN THE SAME assistant turn.
+    #      Key dedup state off the outstanding (assistant, tool_result) pair
+    #      per assistant message so a server that reuses tool_call_ids across
+    #      messages (llama.cpp) does not false-positive on legitimate new calls
+    #      (#70724).
     seen_assistant_call_ids: set = set()
-    seen_result_call_ids: set = set()
     deduped: List[Dict[str, Any]] = []
     removed_dupes = 0
     for msg in messages:
         role = msg.get("role")
         if role == "assistant" and msg.get("tool_calls"):
+            seen_result_call_ids: set = set()
             kept_tcs = []
             for tc in msg.get("tool_calls") or []:
                 cid = _ra().AIAgent._get_tool_call_id_static(tc)
@@ -3056,6 +3060,16 @@ def intent_ack_continuation_enabled(agent) -> bool:
     return intent_ack_continuation_mode(agent) != "off"
 
 
+def _provider_accepts_reasoning_content(agent) -> bool:
+    """Return True when the provider accepts reasoning_content in replay messages.
+
+    Strict OpenAI-compatible providers (Mistral, Cerebras, Groq, SambaNova, …)
+    reject ANY reasoning_content key in input with HTTP 400/422.  However,
+    Gemma 4 (google/gemma-4) accepts it via OpenAI-compatible endpoints even
+    though it does not require echo-back, so we preserve it for that family.
+    """
+    model = (getattr(agent, "model", None) or "").lower()
+    return model.startswith("google/gemma-4")
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
@@ -3086,7 +3100,16 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
         if not needs_thinking_pad:
-            api_msg.pop("reasoning_content", None)
+            # Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
+            # SambaNova, …) reject ANY reasoning_content key in input messages
+            # with HTTP 400/422 ("Extra inputs are not permitted"). Strip it.
+            # However, Gemma 4 (google/gemma-4) accepts reasoning_content via
+            # OpenAI-compatible endpoints even though it does not require
+            # echo-back — preserve it for that family (#70745).
+            if existing and _provider_accepts_reasoning_content(agent):
+                api_msg["reasoning_content"] = existing
+            else:
+                api_msg.pop("reasoning_content", None)
         elif existing == "":
             api_msg["reasoning_content"] = " "
         else:

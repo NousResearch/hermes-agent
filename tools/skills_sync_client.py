@@ -1671,10 +1671,17 @@ def pull_org_skills(
     head = next(
         (r["hash"] for r in refs if r.get("name") == org_head_ref(org_id)), None
     )
+    # TOKEN-GATED resolution marker (agent/skill_utils.read_active_org_id):
+    # written HERE because this function only runs after resolve_org_identity
+    # verified the token's org_id + org_role. Discovery scans only the marked
+    # org's mirror, so a stale mirror from a previous org stops resolving the
+    # moment a pull runs under a different org — no manual cleanup.
+    _write_active_org_marker(org_id)
     if not head:
         return {"ok": True, "org_id": org_id, "head": None, "updated": []}
 
-    root_tree = _root_tree_of_commit(client, head)
+    head_commit = client.get_commit_json(head)
+    root_tree = head_commit["tree"]
     skill_trees = _skill_trees_of_root(client, root_tree)
 
     dest_root = _org_dir() / org_id
@@ -1695,7 +1702,47 @@ def pull_org_skills(
                 rel_path,
                 e,
             )
+    # Provenance sidecar for the load-time header (skill_view): the HEAD
+    # commit's author is TOKEN-VERIFIED at push time by the plane
+    # (author_mismatch guard, gateway-gateway #166) — trustworthy to display.
+    _write_org_provenance(
+        org_id,
+        {
+            "org_id": org_id,
+            "head": head,
+            "author_user_id": (head_commit.get("author") or {}).get("owner", ""),
+            "author_device": (head_commit.get("author") or {}).get("device", ""),
+            "ts": head_commit.get("ts", ""),
+            "skills": updated,
+        },
+    )
     return {"ok": True, "org_id": org_id, "head": head, "updated": updated}
+
+
+def _write_active_org_marker(org_id: str) -> None:
+    """Record which org's mirror may resolve (best-effort, never raises)."""
+    try:
+        from agent.skill_utils import ORG_ACTIVE_MARKER
+
+        root = _org_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ORG_ACTIVE_MARKER).write_text(org_id, encoding="utf-8")
+    except Exception as e:
+        logger.debug("skills_sync_client: active-org marker write failed: %s", e)
+
+
+def _write_org_provenance(org_id: str, data: Dict[str, Any]) -> None:
+    """Persist the org HEAD provenance sidecar (best-effort, never raises)."""
+    try:
+        from agent.skill_utils import ORG_PROVENANCE_FILE
+
+        dest = _org_dir() / org_id
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / ORG_PROVENANCE_FILE).write_text(
+            json.dumps(data, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.debug("skills_sync_client: org provenance write failed: %s", e)
 
 
 def propose_skill(
@@ -1797,9 +1844,31 @@ def maybe_pull_org_skills() -> Optional[Dict[str, Any]]:
     org), feature enabled, base URL configured. Personal orgs are inert here
     by construction — resolve_org_identity raises SyncInertError without the
     claim.
+
+    Marker hygiene: when the token VERIFIABLY lacks the org claim (logged in,
+    personal org / left the org), the active-org marker is cleared so
+    previously-mirrored org skills stop resolving. When we simply cannot
+    resolve identity (offline, logged out), the marker is left alone —
+    offline grace keeps already-pulled org skills working.
     """
     try:
         identity = resolve_org_identity()
+    except SyncInertError:
+        # Distinguish "verifiably personal/left-org" from "can't tell".
+        try:
+            base_identity = resolve_identity()
+            claims = base_identity.get("claims") or {}
+            if not claims.get("org_role"):
+                _clear_active_org_marker()
+        except Exception:
+            pass  # offline/logged out — keep offline grace
+        return None
+    except Exception as e:
+        logger.debug(
+            "skills_sync_client: maybe_pull_org_skills inert/failed: %s", e
+        )
+        return None
+    try:
         if not sync_feature_enabled():
             return None
         if not resolve_sync_base_url():
@@ -1810,3 +1879,19 @@ def maybe_pull_org_skills() -> Optional[Dict[str, Any]]:
             "skills_sync_client: maybe_pull_org_skills inert/failed: %s", e
         )
         return None
+
+
+def _clear_active_org_marker() -> None:
+    """Remove the active-org marker (org skills stop resolving)."""
+    try:
+        from agent.skill_utils import ORG_ACTIVE_MARKER
+
+        marker = _org_dir() / ORG_ACTIVE_MARKER
+        if marker.exists():
+            marker.unlink()
+            logger.info(
+                "skills_sync_client: cleared active-org marker "
+                "(token has no org workflow); org skills no longer resolve"
+            )
+    except Exception as e:
+        logger.debug("skills_sync_client: marker clear failed: %s", e)

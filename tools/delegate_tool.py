@@ -3202,21 +3202,24 @@ def _resolve_child_credential_pool(
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    Precedence (highest to lowest):
 
-    Otherwise, if ``delegation.provider`` is configured, the full credential
-    bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
-    provider system — the same path used by CLI/gateway startup. This lets
-    subagents run on a completely different provider:model pair.
-
-    If neither base_url nor provider is configured, returns None values so the
-    child inherits everything from the parent agent.
+    1. **Explicit ``delegation.api_key``** — always wins. When set, the
+       configured ``base_url`` is used as a direct OpenAI-compatible endpoint
+       with that key. This applies even for Nous-family providers: an explicit
+       key means "use this direct endpoint with this key".
+    2. **Nous-family provider without explicit key** — ``provider`` is one of
+       the registered Nous aliases (``nous``, ``nous-portal``, ``nousresearch``)
+       and no ``delegation.api_key`` is set. Routes through
+       ``resolve_runtime_provider()`` for JWT-rotated credentials, even when
+       ``base_url`` is also configured. This prevents 401s from stale parent
+       keys when the Nous JWT has rotated.
+    3. **``delegation.base_url`` without explicit key** — direct endpoint;
+       ``api_key`` is returned as ``None`` so ``_build_child_agent`` inherits
+       the parent agent's key.
+    4. **``delegation.provider``** — full credential bundle resolved via the
+       runtime provider system.
+    5. **Neither** — child inherits everything from the parent agent.
 
     Raises ValueError with a user-friendly message on credential failure.
     """
@@ -3235,8 +3238,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _NATIVE_SDK_PROVIDERS = {"bedrock", "vertex", "google", "google-genai"}
     _provider_lower = (configured_provider or "").strip().lower()
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
+    # Nous-family providers must use runtime auth (JWT rotation) UNLESS the
+    # user explicitly configured delegation.api_key — an explicit key means
+    # "use this direct endpoint with this key" and must not be overridden.
+    # Registered aliases: nous, nous-portal, nousresearch
+    # (plugins/model-providers/nous/__init__.py).
+    _NOUS_ALIASES = {"nous", "nous-portal", "nousresearch"}
+    _requires_runtime_provider_auth = (
+        _provider_lower in _NOUS_ALIASES and not configured_api_key
+    )
 
-    if configured_base_url and not _is_native_sdk_provider:
+    if configured_base_url and not _is_native_sdk_provider and not _requires_runtime_provider_auth:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This

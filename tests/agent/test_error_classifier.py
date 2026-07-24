@@ -224,6 +224,32 @@ class TestClassify402:
         )
         assert result.reason == FailoverReason.billing
 
+    def test_affordable_tokens_is_rate_limit(self):
+        """402 'can only afford N' = rate_limit (retryable), not billing.
+
+        The account HAS credit for N tokens — the output cap just needs
+        clamping. Should NOT rotate providers or fall back."""
+        result = _classify_402(
+            "You requested up to 65536 tokens, but can only afford 56272",
+            lambda reason, **kw: ClassifiedError(reason=reason, **kw),
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is False
+        assert result.error_context["affordable_max_tokens"] == 56272
+
+    def test_affordable_tokens_without_number(self):
+        """402 with 'can only afford' but no parseable number — still rate_limit,
+        just no clamping hint."""
+        result = _classify_402(
+            "can only afford a smaller request",
+            lambda reason, **kw: ClassifiedError(reason=reason, **kw),
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert "affordable_max_tokens" not in result.error_context
+
 
 # ── Test: Full classification pipeline ─────────────────────────────────
 

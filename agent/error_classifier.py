@@ -206,6 +206,16 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "window",
 ]
 
+# Patterns for 402 responses where the account still has credit but the
+# requested max_tokens exceeds the affordable balance. For example:
+#   "You requested up to 65536 tokens, but can only afford 56272."
+# This is NOT credit exhaustion — the account has usable credit for fewer
+# output tokens. Treating it as terminal billing throws away a request that
+# would succeed with a lower max_tokens.
+_AFFORDABLE_TOKENS_PATTERNS = [
+    "can only afford",
+]
+
 # Payload-too-large patterns detected from message text (no status_code attr).
 # Proxies and some backends embed the HTTP status in the error message.
 _PAYLOAD_TOO_LARGE_PATTERNS = [
@@ -213,6 +223,10 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "payload too large",
     "error code: 413",
 ]
+
+# Extraction regex for the affordable token count from "can only afford N"
+import re as _re
+_AFFORDABLE_TOKENS_RE = _re.compile(r"can only afford\s+(\d+)", _re.IGNORECASE)
 
 # Image-size patterns.  Matched against 400 bodies (not 413) because most
 # providers return a 400 with a specific image-too-big message before the
@@ -1158,11 +1172,15 @@ def _classify_by_status(
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
-    """Disambiguate 402: billing exhaustion vs transient usage limit.
+    """Disambiguate 402: billing exhaustion vs transient usage limit vs affordable-tokens.
 
-    The key insight from OpenClaw: some 402s are transient rate limits
-    disguised as payment errors.  "Usage limit, try again in 5 minutes"
-    is NOT a billing problem — it's a periodic quota that resets.
+    Three distinct 402 shapes exist:
+      1. Transient usage limit (periodic quota that resets):
+           "Usage limit, try again in 5 minutes" → rate_limit (retryable)
+      2. Affordable-tokens limit (account HAS credit, just not for this max_tokens):
+           "can only afford 56272" → rate_limit with clamp_max_tokens hint (retryable)
+      3. Billing exhaustion (no credit left):
+           Everything else → billing (non-retryable)
     """
     # Check for transient usage-limit signals first
     has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
@@ -1175,6 +1193,26 @@ def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
             retryable=True,
             should_rotate_credential=True,
             should_fallback=True,
+        )
+
+    # Check for affordable-tokens pattern before billing exhaustion.
+    # "can only afford N" means the account HAS credit (enough for N tokens),
+    # but the requested max_tokens is too high.  The recovery is to clamp
+    # max_tokens, not to rotate providers or abort.
+    has_affordable = any(p in error_msg for p in _AFFORDABLE_TOKENS_PATTERNS)
+    if has_affordable:
+        # Extract the affordable token count from the error message
+        affordable_match = _AFFORDABLE_TOKENS_RE.search(error_msg)
+        affordable_tokens = int(affordable_match.group(1)) if affordable_match else None
+        error_context = {}
+        if affordable_tokens is not None:
+            error_context["affordable_max_tokens"] = affordable_tokens
+        return result_fn(
+            FailoverReason.rate_limit,
+            retryable=True,
+            should_rotate_credential=False,
+            should_fallback=False,
+            error_context=error_context,
         )
 
     # Confirmed billing exhaustion

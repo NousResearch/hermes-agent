@@ -226,7 +226,7 @@ class TestRuntimeStaleGuard:
     ):
         """Stale `agent_close` entry + overdue reset policy → fresh session.
 
-        The #54878 self-healing path popped the stale sessions.json entry and
+        The #54878 self-healing path popped the stale routing entry and
         recovered the same session_id from the DB without checking whether a
         daily/idle reset was actually due.  This test guards the fix at
         gateway/session.py:1765 — when the session is overdue under the

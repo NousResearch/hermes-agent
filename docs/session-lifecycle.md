@@ -1,8 +1,8 @@
 # Session Lifecycle
 
 > **Audience:** Gateway developers and maintainers
-> **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
-> **Last updated:** 2026-06-16
+> **Source files:** `gateway/session.py`, `gateway/run.py`, `gateway/config.py`, `hermes_state.py`
+> **Last updated:** 2026-07-20
 
 ## Overview
 
@@ -49,14 +49,16 @@ incoming `MessageEvent` and used for routing, isolation, and context injection.
 
 - **`description`** (property: `str`) — Human-readable summary e.g. `"DM with Alice"`,
   `"group: My Group, thread: 12345"`.
-- **`to_dict()` / `from_dict()`** — Serialization round-trip for persistence in `sessions.json`.
+- **`to_dict()` / `from_dict()`** — Serialization round-trip for the `state.db` routing index and optional `sessions.json` compatibility mirror.
 
 ---
 
 ## 2. SessionEntry — Active Session Record
 
-`SessionEntry` is the per-session metadata record stored in memory and persisted to
-`{sessions_dir}/sessions.json`. Each entry maps a `session_key` to its current `session_id`.
+`SessionEntry` is the per-session routing record stored in memory and persisted to the
+`gateway_routing` table in `state.db`. Each entry maps a `session_key` to its current
+`session_id`; it is also written to `{sessions_dir}/sessions.json` when the legacy
+mirror is enabled or a database routing write fails.
 
 ### Fields
 
@@ -143,9 +145,10 @@ behavior on the next access.
 
 ## 3. SessionStore — Storage and Operations
 
-`SessionStore` is the main storage layer. It maintains an in-memory dict (`_entries`) persisted
-to `sessions.json`, with SQLite (`SessionDB`) as the canonical store for session metadata and
-message transcripts.
+`SessionStore` is the main storage layer. It maintains an in-memory routing dict (`_entries`)
+persisted primarily to SQLite (`SessionDB`): session metadata and messages live in the
+`sessions` / `messages` tables, while active gateway routes live in `gateway_routing`.
+`sessions.json` is an optional compatibility mirror, not the source of truth.
 
 ### Constructor
 
@@ -153,7 +156,7 @@ message transcripts.
 SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None)
 ```
 
-- `sessions_dir` — Directory where `sessions.json` lives.
+- `sessions_dir` — Directory for the optional `sessions.json` compatibility mirror and other gateway session artifacts.
 - `config` — `GatewayConfig` instance for reset policy lookups.
 - `has_active_processes_fn` — Optional callback keyed by `session_key` to check for running
   background processes. Sessions with active processes are never expired or pruned.
@@ -181,8 +184,9 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 
 ### Internal Helpers
 
-- `_ensure_loaded()` / `_ensure_loaded_locked()` — Load `sessions.json` into `_entries` dict.
-- `_save()` — Atomic write to `sessions.json` via temp file + `atomic_replace`.
+- `_ensure_loaded()` / `_ensure_loaded_locked()` — Load `state.db` routing rows into `_entries`, then import only legacy `sessions.json` keys missing from the database.
+- `_save()` — Persist the routing snapshot to `state.db`; atomically write the
+  `sessions.json` compatibility mirror when enabled or when the database write fails.
 - `_generate_session_key(source)` — Delegates to `build_session_key()` with config params.
 - `_is_session_expired(entry)` — Policy check from entry alone (no source needed). Used by
   background expiry watcher.
@@ -191,16 +195,21 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 ### Storage Layout
 
 ```
+~/.hermes/state.db
+  sessions               # Canonical session metadata
+  messages               # Canonical message transcripts
+  gateway_routing        # Canonical session_key → SessionEntry routing index
+
 {sessions_dir}/
-  sessions.json          # In-memory _entries dict, persisted as JSON
-                           Maps session_key → SessionEntry (metadata only)
-  {session_id}.jsonl     # (Legacy, removed in spec 002)
+  sessions.json          # Optional compatibility mirror of gateway_routing
+  {session_id}.jsonl     # Legacy transcript artifact; no longer read or written
 ```
 
-The canonical transcript store is SQLite via `SessionDB` (from `hermes_state`). The
-`sessions.json` file persists the `session_key → session_id` mapping and entry metadata
-(flags, timestamps, token counts). If SQLite is unavailable, the store falls back to
-JSONL, but this is a degradation path.
+SQLite via `SessionDB` (from `hermes_state`) is authoritative for transcripts, session
+metadata, and gateway routing. The JSON mirror is written by default for external tooling
+and downgrade safety. `gateway.write_sessions_json: false` disables routine mirror writes,
+but a failed database routing save still writes the JSON recovery fallback. On load, legacy
+JSON entries missing from the database routing table are imported.
 
 ---
 
@@ -548,7 +557,8 @@ The `_session_expiry_watcher` task runs in the gateway event loop every 300 seco
    - Clean up cached AIAgent resources (close tool resources, shut down memory provider).
    - Evict the cached agent entry.
    - Clear per-session overrides (`_session_model_overrides`, reasoning overrides, etc.).
-   - Mark `expiry_finalized=True` and persist (sessions.json + state.db).
+   - Mark `expiry_finalized=True` and persist to `state.db` (and the optional
+     `sessions.json` mirror when enabled or when the database write fails).
    - Promote the state.db session row to `end_reason='session_reset'` via
      `promote_to_session_reset()` — conditional: only live rows or rows ended with a
      recoverable accidental reason (`agent_close`, `ws_orphan_reap`) are promoted, so
@@ -561,7 +571,7 @@ The `_session_expiry_watcher` task runs in the gateway event loop every 300 seco
    reset policy. This prevents unbounded memory growth in gateways with long-lived sessions.
 
 3. **Prune stale entries** — Calls `session_store.prune_old_entries()` hourly based on
-   `config.session_store_max_age_days`. Prevents `sessions.json` from growing unbounded.
+   `config.session_store_max_age_days`. Prevents the routing index (and its optional JSON mirror) from growing unbounded.
 
 ### Failure Handling
 

@@ -73,8 +73,8 @@ $HERMES_HOME/skills/        Installed skills
 ~/.hermes/desktop-plugins/  Desktop app UI plugins (see references/desktop-plugins.md)
 ~/.hermes/tui-widgets/      TUI widget apps (see references/tui-widgets.md)
 ~/.hermes/pets/             Installed pet mascots (see references/petdex.md)
-~/.hermes/state.db          Canonical session store (SQLite + FTS5)
-~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts
+~/.hermes/sessions/         Optional legacy routing mirror, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
+~/.hermes/state.db          Canonical session store and gateway routing index (SQLite + FTS5)
 ~/.hermes/logs/             Gateway and error logs
 ~/.hermes/auth.json         OAuth tokens and credential pools
 ~/.hermes/hermes-agent/     Source code (if git-installed)

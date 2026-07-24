@@ -867,7 +867,8 @@ class GatewayConfig:
     # routing index. The primary copy lives in state.db (gateway_routing
     # table, #9006). Default True for backward compatibility with external
     # tooling and downgrade safety; set gateway.write_sessions_json: false in
-    # config.yaml to stop producing the file.
+    # config.yaml to stop routine mirror writes. A failed state.db routing save
+    # still writes the JSON file as a recovery fallback.
     write_sessions_json: bool = True
     
     # Delivery settings
@@ -907,8 +908,8 @@ class GatewayConfig:
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
     # Session store pruning: drop SessionEntry records older than this many
-    # days from the in-memory dict and sessions.json.  Keeps the store from
-    # growing unbounded in gateways serving many chats/threads/users over
+    # days from the in-memory routing index and its optional JSON mirror. Keeps
+    # the store from growing unbounded in gateways serving many chats/threads/users over
     # months.  Pruning is invisible to users — if they resume, they get a
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90

@@ -644,22 +644,29 @@ Sessions with **active background processes** are never auto-reset, regardless o
 
 | What | Path | Description |
 |------|------|-------------|
-| SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
-| Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
-| Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
+| Canonical session store | `~/.hermes/state.db` | All session metadata and messages with FTS5, plus the primary gateway routing index |
+| Legacy gateway routing mirror | `~/.hermes/sessions/sessions.json` | Optional compatibility mirror of active gateway routes; written by default for external tooling and downgrade safety |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
 
-:::warning `sessions.json` is not the session list
-`~/.hermes/sessions/sessions.json` is the **gateway routing index** — it maps
-messaging session keys (`agent:main:<platform>:...`) to active session IDs.
-It only ever contains gateway/messaging entries, so if you run a messaging
-platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
+:::warning `sessions.json` is a compatibility mirror, not the session list
+The primary gateway routing index lives in the `gateway_routing` table in
+`~/.hermes/state.db`. By default Hermes also writes
+`~/.hermes/sessions/sessions.json` as a backward-compatible mirror for
+external tooling and downgrade safety. It maps messaging session keys
+(`agent:main:<platform>:...`) to active session IDs and only contains
+gateway/messaging entries, so if you run a messaging platform you'll see only
+those (e.g. `agent:main:whatsapp:dm:...`). You can disable routine mirror
+writes with `gateway.write_sessions_json: false` in `config.yaml`; if the
+`state.db` routing save fails, Hermes still writes the JSON file as a recovery
+fallback.
 
 This is **expected** and does **not** mean your CLI sessions are missing.
 `hermes sessions list`, `/sessions`, and the dashboard all read `state.db`,
-which holds **every** session (CLI, TUI, and gateway). The `/save` snapshots
-under `~/.hermes/sessions/saved/*.json` are convenience exports, not the index.
+which holds **every** session (CLI, TUI, and gateway) and is authoritative if
+the JSON mirror disagrees. The `/save` snapshots under
+`~/.hermes/sessions/saved/*.json` are convenience exports, not the routing
+index.
 
 If CLI sessions genuinely don't appear in `hermes sessions list`, the cause is
 `state.db` not receiving them — run `hermes sessions repair` and watch for a

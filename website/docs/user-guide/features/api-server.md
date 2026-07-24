@@ -57,7 +57,9 @@ Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI i
 
 ### POST /v1/chat/completions
 
-Standard OpenAI Chat Completions format. Stateless — the full conversation is included in each request via the `messages` array.
+Standard OpenAI Chat Completions format. Stateless **on the wire** — the full conversation is included in each request via the `messages` array, and the endpoint carries no conversation state between calls.
+
+Note that the server still **persists a session and its messages** for each request. When no `X-Hermes-Session-Id` header is supplied, the session id is derived deterministically as `api-<16 hex>` from the system prompt and the first user message; identical opening exchanges therefore reuse the same session (and the same sandbox directory), which is deliberate. One-shot callers should expect one persisted session per distinct opening exchange and are responsible for their own cleanup via `DELETE /api/sessions/{id}`.
 
 **Request:**
 ```json

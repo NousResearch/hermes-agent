@@ -1969,6 +1969,21 @@ def compress_context(
         ):
             new_system_prompt = cached_system_prompt
             agent._cached_system_prompt = cached_system_prompt
+            # _invalidate_system_prompt() above also cleared the
+            # cross-session-stable prefix marker boundary. The kept prompt
+            # is byte-identical, so reconstruct the stable tier and reuse
+            # it ONLY when the kept prompt still literally starts with it
+            # (same startswith gate as the restore path); otherwise the
+            # request layer falls back to the legacy single-breakpoint
+            # layout with the prompt bytes untouched.
+            try:
+                from agent.system_prompt import build_system_prompt_parts as _build_parts
+
+                _static = _build_parts(agent, system_message=system_message)["stable"]
+                if _static and cached_system_prompt.startswith(_static):
+                    agent._cached_system_prompt_static = _static
+            except Exception:
+                pass
         else:
             new_system_prompt = agent._build_system_prompt(system_message)
             agent._cached_system_prompt = new_system_prompt

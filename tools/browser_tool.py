@@ -1842,7 +1842,10 @@ def _stop_browser_cleanup_thread():
     global _cleanup_running
     _cleanup_running = False
     if _cleanup_thread is not None:
-        _cleanup_thread.join(timeout=5)
+        try:
+            _cleanup_thread.join(timeout=5)
+        except KeyboardInterrupt:
+            pass
 
 
 def _update_session_activity(task_id: str):

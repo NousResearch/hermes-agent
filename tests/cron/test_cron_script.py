@@ -112,6 +112,27 @@ class TestJobScriptField:
         # Absent (not a falsy sentinel) so existing records stay byte-identical.
         assert "interpreter" not in job
 
+    def test_no_agent_positional_arg_not_shifted_by_interpreter(self, cron_env):
+        """The new ``interpreter`` param must not break positional callers.
+
+        ``interpreter`` is appended AFTER ``no_agent``/``attach_to_session`` so
+        an existing positional call like ``create_job(p, sched, script=..., True)``
+        keeps binding ``True`` to ``no_agent`` — not silently to ``interpreter``,
+        which would flip a no-agent watchdog into an LLM job.
+        """
+        import inspect
+        from cron.jobs import create_job
+
+        params = list(inspect.signature(create_job).parameters)
+        # interpreter must come after both no_agent and attach_to_session.
+        assert params.index("interpreter") > params.index("no_agent")
+        assert params.index("interpreter") > params.index("attach_to_session")
+
+        # And the real positional call must still set no_agent=True.
+        job = create_job(None, "every 5m", script="w.sh", no_agent=True)
+        assert job["no_agent"] is True
+        assert "interpreter" not in job
+
     def test_create_job_interpreter_whitespace_trimmed(self, cron_env):
         from cron.jobs import create_job
 
@@ -558,6 +579,27 @@ class TestRunJobScript:
         assert success is False
         assert "execut" in output.lower()
 
+    def test_interpreter_unknown_user_does_not_raise(self, cron_env):
+        """A ``~unknown-user/...`` interpreter must NOT escape as a RuntimeError.
+
+        ``Path.expanduser()`` raises ``RuntimeError: Could not determine home
+        directory`` for an unknown user. The resolver must convert that into its
+        ``(False, message)`` contract so the cron tick surfaces a clear
+        scheduled-run failure instead of crashing the scheduler.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n')
+
+        # An extremely unlikely-to-exist user name so expanduser() fails to
+        # resolve a home directory regardless of the test host.
+        success, output = _run_job_script(
+            "probe.py", interpreter="~definitely-no-such-user-zzz/python"
+        )
+        assert success is False
+        assert "interpreter" in output.lower() or "resolve" in output.lower()
+
     def test_interpreter_ignored_for_shell_scripts(self, cron_env):
         """``.sh``/``.bash`` always run under bash; the interpreter override
         is a Python-script-only contract."""
@@ -730,6 +772,67 @@ class TestInterpreterPropagationThroughRunJob:
         assert output == "ok"
         mock_run.assert_called_once_with(
             "monitor.py", interpreter="/opt/venv/bin/python"
+        )
+
+    def test_one_shot_heartbeat_forwards_interpreter_to_runner(self, cron_env, monkeypatch):
+        """The one-shot claim-heartbeat path (the threaded branch) must also
+        forward the interpreter to ``_run_job_script``."""
+        from cron.scheduler import _run_job_script_with_claim_heartbeat
+
+        # A claimed one-shot job triggers the heartbeat-threaded branch.
+        job = {
+            "id": "once123abc456",
+            "schedule": {"kind": "once"},
+            "script": "oneshot.py",
+            "interpreter": "/opt/venv/bin/python",
+            "run_claim": {"by": "owner-xyz"},
+        }
+        # Keep the heartbeat snappy and no-op so the test doesn't hit storage.
+        monkeypatch.setattr("cron.scheduler._RUN_CLAIM_HEARTBEAT_SECONDS", 3600)
+        monkeypatch.setattr("cron.scheduler.heartbeat_run_claim", lambda *a, **k: None)
+
+        with patch("cron.scheduler._run_job_script", return_value=(True, "ok")) as mock_run:
+            success, output = _run_job_script_with_claim_heartbeat(job, "oneshot.py")
+
+        assert success is True
+        assert output == "ok"
+        mock_run.assert_called_once_with(
+            "oneshot.py", interpreter="/opt/venv/bin/python"
+        )
+
+    def test_heartbeat_start_failure_falls_back_with_interpreter(self, cron_env, monkeypatch):
+        """When the heartbeat thread cannot start, the wrapper falls back to a
+        direct ``_run_job_script`` call — the interpreter must survive that
+        fallback path too."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script_with_claim_heartbeat
+
+        job = {
+            "id": "once456abc789",
+            "schedule": {"kind": "once"},
+            "script": "oneshot.py",
+            "interpreter": "/opt/venv/bin/python",
+            "run_claim": {"by": "owner-xyz"},
+        }
+        monkeypatch.setattr("cron.scheduler._RUN_CLAIM_HEARTBEAT_SECONDS", 3600)
+        monkeypatch.setattr("cron.scheduler.heartbeat_run_claim", lambda *a, **k: None)
+
+        # Force Thread.start() to raise so the wrapper takes the fallback branch.
+        real_thread = sched_mod.threading.Thread
+
+        class _BrokenThread(real_thread):
+            def start(self):
+                raise RuntimeError("cannot start thread")
+
+        monkeypatch.setattr(sched_mod.threading, "Thread", _BrokenThread)
+
+        with patch("cron.scheduler._run_job_script", return_value=(True, "ok")) as mock_run:
+            success, output = _run_job_script_with_claim_heartbeat(job, "oneshot.py")
+
+        assert success is True
+        assert output == "ok"
+        mock_run.assert_called_once_with(
+            "oneshot.py", interpreter="/opt/venv/bin/python"
         )
 
 

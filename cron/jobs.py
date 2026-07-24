@@ -1085,9 +1085,9 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
-    interpreter: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    interpreter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1128,6 +1128,10 @@ def create_job(
                 With ``no_agent=True``, ``workdir`` is still applied as the
                 script's cwd so relative paths inside the script behave
                 predictably.
+        no_agent: When True, skip the agent entirely — run ``script`` on schedule
+                and deliver its stdout directly. Empty stdout = silent (no
+                delivery). Requires ``script`` to be set. Ideal for classic
+                watchdogs and periodic alerts that don't need LLM reasoning.
         interpreter: Optional Python interpreter for the script — an absolute
                 or ``~``-prefixed path to a Python executable in a user-owned
                 venv. Lets a script import packages the Hermes-managed venv
@@ -1137,10 +1141,6 @@ def create_job(
                 the script runs under Hermes' own Python (``sys.executable``),
                 preserving the original behaviour. The path is validated at
                 run time, not here.
-        no_agent: When True, skip the agent entirely — run ``script`` on schedule
-                and deliver its stdout directly. Empty stdout = silent (no
-                delivery). Requires ``script`` to be set. Ideal for classic
-                watchdogs and periodic alerts that don't need LLM reasoning.
 
     Returns:
         The created job dict

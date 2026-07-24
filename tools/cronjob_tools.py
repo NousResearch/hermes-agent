@@ -677,9 +677,9 @@ def cronjob(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
-    interpreter: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    interpreter: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""

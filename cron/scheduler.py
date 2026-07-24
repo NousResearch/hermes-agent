@@ -2184,29 +2184,39 @@ def _resolve_cron_interpreter(interpreter: Optional[str]) -> tuple[bool, str, st
         return True, sys.executable, ""
 
     raw = str(interpreter).strip()
-    resolved = Path(raw).expanduser()
+    # Expand ``~`` and validate the path. ``Path.expanduser()`` raises
+    # ``RuntimeError`` for an unknown user (``~nobody/...``) when it cannot
+    # determine that user's home directory, and the subsequent existence /
+    # permission checks can raise ``OSError`` on a broken symlink or a path
+    # inside an unreadable directory. Both must be converted into the
+    # resolver's ``(False, message)`` contract — the caller surfaces it as a
+    # clear scheduled-run failure, never an uncaught exception.
+    try:
+        resolved = Path(raw).expanduser()
+        is_absolute = resolved.is_absolute()
+        exists = resolved.exists()
+        is_file = resolved.is_file() if exists else False
+        mode = resolved.stat().st_mode if (exists and is_file) else 0
+    except (RuntimeError, OSError) as exc:
+        return False, "", f"Unable to resolve interpreter path {raw!r}: {exc}"
     # Bare names like ``python3`` are rejected: they are not stable across PATH
     # changes and would silently pick up a different interpreter after a
     # profile/env change. Require an absolute or ``~``-prefixed path.
-    if not resolved.is_absolute():
+    if not is_absolute:
         return (
             False,
             "",
             f"Interpreter must be an absolute or ~-prefixed path (got {raw!r}). "
             "Bare names like 'python3' are not stable across PATH changes.",
         )
-    if not resolved.exists():
+    if not exists:
         return False, "", f"Interpreter not found: {resolved}"
-    if not resolved.is_file():
+    if not is_file:
         return False, "", f"Interpreter path is not a file: {resolved}"
     # On POSIX the interpreter must be executable. Skipped on Windows, where
     # the executable bit is not meaningful and the launcher re-execs anyway.
-    if sys.platform != "win32":
-        try:
-            if not (resolved.stat().st_mode & 0o111):
-                return False, "", f"Interpreter is not executable: {resolved}"
-        except OSError as exc:
-            return False, "", f"Interpreter check failed for {resolved}: {exc}"
+    if sys.platform != "win32" and not (mode & 0o111):
+        return False, "", f"Interpreter is not executable: {resolved}"
 
     return True, str(resolved), ""
 

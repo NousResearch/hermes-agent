@@ -30,25 +30,28 @@ changes.
       Python state.
 - [x] Run focused unit tests for configuration, sessions, model providers, tool
       dispatch, memory, skills, and security boundaries.
-- [ ] Fix reproducible failures in coherent, separately committed slices.
-- [ ] Run the full Python test suite and record results.
+- [x] Fix reproducible failures in coherent, separately committed slices.
+- [x] Run the full Python test suite and record results.
 
 ## Milestone 2 — CLI and local model path
 
 - [ ] Verify CLI help, diagnostics, setup, and non-interactive entry points.
   - [x] `hermes --help` and `hermes doctor --help` load with isolated state.
-  - [ ] Run non-mutating diagnostics and setup-path tests.
-- [ ] Verify configuration can target the existing local Ollama service without
+  - [x] Run non-mutating diagnostics with repository-isolated state.
+- [x] Verify configuration can target the existing local Ollama service without
       changing the installed Hermes configuration.
-- [ ] Add a repository-local smoke-test configuration or fixture.
+- [x] Add a repository-local smoke-test configuration or fixture.
 - [ ] Exercise a real local-model conversation and tool call with test-scoped
       state contained in this repository.
+  - [x] Transport and validation paths exercised against local Ollama.
+  - [ ] Install/select a >=64K local model that reliably follows Hermes tool
+        schemas; current installed models each miss one compatibility contract.
 
 ## Milestone 3 — JavaScript applications
 
-- [ ] Inventory Node workspaces and lockfile integrity.
-- [ ] Install dependencies locally in the repository.
-- [ ] Run formatting, type checks, linting, and unit tests for the web, TUI,
+- [x] Inventory Node workspaces and lockfile integrity.
+- [x] Install dependencies locally in the repository.
+- [x] Run formatting, type checks, linting, and unit tests for the web, TUI,
       desktop, and shared packages.
 - [ ] Build production bundles and fix reproducible failures.
 
@@ -105,3 +108,20 @@ changes.
   passed 413 tests in 102.55 seconds.
 - 2026-07-24: `hermes --help` and `hermes doctor --help` loaded successfully
   with `HERMES_HOME` isolated under `.tmp/hermes-home`.
+- 2026-07-24: Installed declared `.[all,dev]` plus pinned lazy integrations in
+  `.venv`. Fixed Copilot ACP host-HOME propagation and made SQLite corruption/
+  WAL tests portable across protected SQLite builds. The original 14-file
+  failure matrix then passed 751 tests with zero failures.
+- 2026-07-24: Definitive Python suite passed: 2,258 files, 46,326 tests, zero
+  failures in 780.4 seconds with eight workers. Ruff passed. Whole-tree `ty`
+  reports 12,512 existing diagnostics; upstream treats ty as a diff-comparison
+  gate rather than requiring a legacy-clean tree.
+- 2026-07-24: Root `npm run check` passed for all workspaces, including type
+  checks, unit tests, builds invoked by workspace checks, and linting. Lint
+  reported 24 warnings and zero errors.
+- 2026-07-24: `hermes doctor` exited 0 against repository-isolated state. Core
+  tools are available; credential-gated integrations correctly remain disabled.
+- 2026-07-24: Local Ollama validation: qwen3/hermes-qwen report 40,960-token
+  contexts (below Hermes 64K minimum); gemma3:12b reports 131K but Ollama says
+  it does not support tools; llama3.1:8b reports 131K and accepts requests/tools
+  but returned a serialized tool schema instead of the requested response.

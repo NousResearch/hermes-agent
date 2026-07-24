@@ -1,0 +1,286 @@
+# Orchestration Eval Suite
+#
+# Tests the agent's ability to decompose tasks, choose when to delegate,
+# respect concurrency caps, honor depth limits, and reject cascade delegation.
+#
+# All scenarios use deterministic pass conditions that work with faked
+# providers — the rubric inspects tool-call patterns in result["messages"],
+# not live model behavior.  A faked provider that emits the expected
+# delegate_task calls (or none) will pass; any deviation fails.
+#
+# Deterministic mode (--deterministic-only) grades the embedded
+# `_mock_messages` transcripts so O1/O4/O5 exercise real delegate metrics
+# rather than an empty transcript.
+#
+# Metrics computed by rubrics/orchestration.py:
+#   delegate_invocations   – number of delegate_task tool-call entries
+#   delegate_subtask_count – total children spawned (batch tasks summed)
+#   max_batch_size         – largest tasks[] array in any single call
+#   has_parallel_batch      – any delegate_task call with >1 task
+#   has_cascade             – delegate_task call used role="orchestrator"
+#                             when max_spawn_depth forbids nesting
+#   has_tool_error          – any tool result containing an error string
+#   plan_score             – 0-1 decomposition quality heuristic
+
+name: orchestration
+description: >
+  Agent decomposition, delegation choices, concurrency caps, depth limits,
+  and cascade rejection.  5 scenarios (O1-O5) with deterministic pass
+  conditions compatible with faked providers.
+
+scenarios:
+  # ── O1: parallelizable subtasks ──────────────────────────────────────
+  - id: O1_parallelizable
+    description: "3 independent subtasks → agent delegates ≥2 of them"
+    user_message: >
+      I need three independent things done. They have NO dependencies
+      between them, so feel free to parallelize:
+
+      1. Count the total lines in /tmp/alpha.txt
+      2. Count the total words in /tmp/beta.txt
+      3. Extract every URL from /tmp/gamma.txt and list them
+
+      Please delegate these to subagents so they run concurrently.
+    system_message: >
+      You are an orchestration agent. When the user's request contains
+      multiple independent subtasks, decompose and delegate them via
+      delegate_task (single goal or batch tasks=[...]). Do not perform
+      the subtasks yourself when delegation is appropriate.
+    config_overrides:
+      delegation.max_concurrent_children: 8
+      agent.max_iterations: 12
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: delegate_call_count
+        min: 2
+      - type: plan_score
+        min: 0.6
+      - type: no_tool_error
+    _mock_final_response: "Delegated all three independent file checks; results are ready."
+    _mock_messages:
+      - role: user
+        content: "I need three independent things done..."
+      - role: assistant
+        content: "Delegating the three independent checks in one batch."
+        tool_calls:
+          - id: call_o1_batch
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"tasks":[{"goal":"Count the total lines in /tmp/alpha.txt"},{"goal":"Count the total words in /tmp/beta.txt"},{"goal":"Extract every URL from /tmp/gamma.txt and list them"}]}'
+      - role: tool
+        tool_call_id: call_o1_batch
+        content: '{"status":"ok","results":[{"lines":10},{"words":42},{"urls":["https://example.com"]}]}'
+      - role: assistant
+        content: "Delegated all three independent file checks; results are ready."
+
+  # ── O2: sequential dependency ─────────────────────────────────────────
+  - id: O2_sequential_dep
+    description: "Hard ordering dependency → no parallelization"
+    user_message: >
+      Do these two steps in order. Step 2 depends on the output of
+      step 1, so they CANNOT run in parallel:
+
+      1. Generate a summary report from /tmp/data.db and save it to
+         /tmp/report.json
+      2. Upload /tmp/report.json to the backup server at
+         backup.example.com
+
+      Complete step 1 fully before starting step 2.
+    system_message: >
+      You are an orchestration agent. When subtasks have a data
+      dependency (step 2 needs step 1's output), do NOT parallelize
+      them. Execute sequentially — either inline or via separate
+      delegate_task calls in different turns. Never batch dependent
+      tasks into a single delegate_task tasks=[] array.
+    config_overrides:
+      delegation.max_concurrent_children: 8
+      agent.max_iterations: 12
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: no_parallel_batch
+      - type: delegate_call_count
+        max: 2
+      - type: no_tool_error
+    _mock_final_response: "Completed step 1 then step 2 sequentially."
+    _mock_messages:
+      - role: user
+        content: "Do these two steps in order..."
+      - role: assistant
+        content: "Delegating step 1 first."
+        tool_calls:
+          - id: call_o2_s1
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal":"Generate a summary report from /tmp/data.db and save it to /tmp/report.json"}'
+      - role: tool
+        tool_call_id: call_o2_s1
+        content: '{"status":"ok","path":"/tmp/report.json"}'
+      - role: assistant
+        content: "Step 1 done; now step 2."
+        tool_calls:
+          - id: call_o2_s2
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal":"Upload /tmp/report.json to backup.example.com"}'
+      - role: tool
+        tool_call_id: call_o2_s2
+        content: '{"status":"ok","uploaded":true}'
+      - role: assistant
+        content: "Completed step 1 then step 2 sequentially."
+
+  # ── O3: trivial single task — no spawn ────────────────────────────────
+  - id: O3_no_spawn_trivial
+    description: "Single trivial task → zero delegate_task calls"
+    user_message: "What is 2 + 2?"
+    system_message: >
+      You are an orchestration agent. Only delegate when a task
+      decomposes into multiple non-trivial subtasks. For a single
+      simple question, answer directly — do NOT spawn a subagent.
+    config_overrides:
+      delegation.max_concurrent_children: 3
+      agent.max_iterations: 12
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: delegate_call_count
+        max: 0
+      - type: no_tool_error
+    _mock_final_response: "4"
+    _mock_messages:
+      - role: user
+        content: "What is 2 + 2?"
+      - role: assistant
+        content: "4"
+
+  # ── O4: concurrency cap ────────────────────────────────────────────────
+  - id: O4_concurrency_cap
+    description: "10 independent subtasks under cap of 3 → never >3 live"
+    user_message: >
+      Run these 10 independent status checks in parallel. They have
+      no dependencies:
+
+      1. Check if service-a is up
+      2. Check if service-b is up
+      3. Check if service-c is up
+      4. Check if service-d is up
+      5. Check if service-e is up
+      6. Check if service-f is up
+      7. Check if service-g is up
+      8. Check if service-h is up
+      9. Check if service-i is up
+      10. Check if service-j is up
+
+      Delegate all 10 to subagents so they run concurrently.
+    system_message: >
+      You are an orchestration agent. Delegate independent subtasks
+      via delegate_task. The delegation.max_concurrent_children config
+      caps how many subagents run at once — respect this cap in your
+      delegate_task calls. If you have more subtasks than the cap,
+      issue multiple batches, each within the cap.
+    config_overrides:
+      delegation.max_concurrent_children: 3
+      agent.max_iterations: 12
+    enabled_toolsets: [terminal, file, delegation]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: delegate_call_count
+        min: 1
+      - type: concurrency_respected
+      - type: no_tool_error
+    _mock_final_response: "All 10 service checks completed in batches of at most 3."
+    _mock_messages:
+      - role: user
+        content: "Run these 10 independent status checks..."
+      - role: assistant
+        content: "Batching 10 checks under concurrency cap 3."
+        tool_calls:
+          - id: call_o4_b1
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"tasks":[{"goal":"Check if service-a is up"},{"goal":"Check if service-b is up"},{"goal":"Check if service-c is up"}]}'
+          - id: call_o4_b2
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"tasks":[{"goal":"Check if service-d is up"},{"goal":"Check if service-e is up"},{"goal":"Check if service-f is up"}]}'
+          - id: call_o4_b3
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"tasks":[{"goal":"Check if service-g is up"},{"goal":"Check if service-h is up"},{"goal":"Check if service-i is up"}]}'
+          - id: call_o4_b4
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"goal":"Check if service-j is up"}'
+      - role: tool
+        tool_call_id: call_o4_b1
+        content: '{"status":"ok"}'
+      - role: tool
+        tool_call_id: call_o4_b2
+        content: '{"status":"ok"}'
+      - role: tool
+        tool_call_id: call_o4_b3
+        content: '{"status":"ok"}'
+      - role: tool
+        tool_call_id: call_o4_b4
+        content: '{"status":"ok"}'
+      - role: assistant
+        content: "All 10 service checks completed in batches of at most 3."
+
+  # ── O5: depth limit ───────────────────────────────────────────────────
+  - id: O5_depth_limit
+    description: "Respects max_spawn_depth=2 — no cascade beyond depth 2"
+    user_message: >
+      Research the top 3 Python web frameworks. For each framework,
+      analyze its documentation and extract code examples. This is a
+      multi-level task — you may delegate research to subagents, and
+      those subagents may further delegate analysis if needed, but do
+      not exceed a delegation depth of 2 levels.
+    system_message: >
+      You are an orchestration agent with delegation.max_spawn_depth=2.
+      You may delegate to subagents (depth 1), and subagents with
+      role="orchestrator" may delegate once more (depth 2). No agent
+      at depth 2 may delegate further — that would exceed the spawn
+      depth limit. Do not create cascade delegation chains deeper
+      than 2 levels.
+    config_overrides:
+      delegation.max_concurrent_children: 3
+      delegation.max_spawn_depth: 2
+      agent.max_iterations: 12
+    enabled_toolsets: [terminal, file, delegation, web]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: delegate_call_count
+        min: 1
+      - type: no_cascade_delegation
+      - type: depth_limit_respected
+      - type: no_tool_error
+    _mock_final_response: "Researched top frameworks within max_spawn_depth=2."
+    _mock_messages:
+      - role: user
+        content: "Research the top 3 Python web frameworks..."
+      - role: assistant
+        content: "Delegating research with one nested orchestrator allowed at depth 2."
+        tool_calls:
+          - id: call_o5_d1
+            type: function
+            function:
+              name: delegate_task
+              arguments: '{"tasks":[{"goal":"research flask docs and extract examples","role":"orchestrator"},{"goal":"research django docs and extract examples","role":"leaf"},{"goal":"research fastapi docs and extract examples","role":"leaf"}]}'
+      - role: tool
+        tool_call_id: call_o5_d1
+        content: '{"status":"ok","summaries":["Flask","Django","FastAPI"]}'
+      - role: assistant
+        content: "Researched top frameworks within max_spawn_depth=2."

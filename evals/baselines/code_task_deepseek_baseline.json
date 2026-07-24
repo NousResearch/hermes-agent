@@ -1,0 +1,65 @@
+{
+  "suite": "code_task",
+  "timestamp": "2026-06-29T23:00:41.813510+00:00",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "total": 4,
+  "passed": 3,
+  "failed": 1,
+  "errored": 0,
+  "pass_rate": 0.75,
+  "scenarios": [
+    {
+      "id": "C1_bugfix_repro",
+      "pass": false,
+      "score": 0.5,
+      "details": {
+        "test_passed": true,
+        "has_tool_error": true,
+        "api_calls": 5,
+        "contains_pass": true
+      },
+      "api_calls": 5,
+      "duration_s": 39.45
+    },
+    {
+      "id": "C2_feature_tdd",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "test_passed": true,
+        "has_tool_error": false,
+        "api_calls": 3,
+        "contains_pass": true
+      },
+      "api_calls": 3,
+      "duration_s": 13.27
+    },
+    {
+      "id": "C3_refactor_extract",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "test_passed": true,
+        "has_tool_error": false,
+        "api_calls": 3,
+        "contains_PASS": true
+      },
+      "api_calls": 3,
+      "duration_s": 16.18
+    },
+    {
+      "id": "C5_self_test",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "test_passed": true,
+        "has_tool_error": false,
+        "api_calls": 4,
+        "contains_pass": true
+      },
+      "api_calls": 4,
+      "duration_s": 21.23
+    }
+  ]
+}

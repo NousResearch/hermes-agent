@@ -1,0 +1,122 @@
+{
+  "suite": "cost_cache",
+  "timestamp": "2026-07-18T01:15:31.461564+00:00",
+  "provider": "openrouter",
+  "model": "anthropic/claude-haiku-4.5",
+  "deterministic_only": true,
+  "total": 4,
+  "passed": 4,
+  "failed": 0,
+  "errored": 0,
+  "skipped": 0,
+  "pass_rate": 1.0,
+  "scenarios": [
+    {
+      "id": "E1_cache_stable",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "E1_cache_stable",
+        "cache_break_events": 0,
+        "system_prompt_changes": 0,
+        "toolset_mutations": 0,
+        "expected": "cache_break_events == 0, toolset_mutations == 0",
+        "analysis": [],
+        "system_prompt_hashes": [
+          "35ec55295cc07b7e6313059c4036fbc533bdcb715ab8d88deab658bd9fd439ef",
+          "35ec55295cc07b7e6313059c4036fbc533bdcb715ab8d88deab658bd9fd439ef",
+          "35ec55295cc07b7e6313059c4036fbc533bdcb715ab8d88deab658bd9fd439ef"
+        ],
+        "all_hashes_identical": true,
+        "scenario_id": "E1_cache_stable",
+        "messages_count": 5,
+        "has_snapshots": true,
+        "snapshot_count": 3
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "E2_toolset_swap_forbidden",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "E2_toolset_swap_forbidden",
+        "cache_break_events": 0,
+        "toolset_mutations": 0,
+        "refusal_mentioned_reset": true,
+        "expected": "toolset_mutations == 0, cache_break_events == 0, response mentions /reset",
+        "analysis": [],
+        "tool_name_sets": [
+          [
+            "read_file",
+            "terminal"
+          ],
+          [
+            "read_file",
+            "terminal"
+          ]
+        ],
+        "scenario_id": "E2_toolset_swap_forbidden",
+        "messages_count": 3,
+        "has_snapshots": true,
+        "snapshot_count": 2
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "E3_compression_ok",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "E3_compression_ok",
+        "cache_break_events": 1,
+        "system_prompt_changes": 1,
+        "toolset_mutations": 0,
+        "compression_detected": true,
+        "expected": "toolset_mutations == 0, system_prompt_changes <= 1, compression_detected == True, cache_break_events == system_prompt_changes",
+        "analysis": [
+          "Turn 1: system prompt hash changed (aec6747e → de1b6d84)",
+          "Turn 1: message count dropped (7 → 3) — compression boundary"
+        ],
+        "system_prompt_hashes": [
+          "aec6747e591415a9f237dbccae8a48e444b6ef06d5a10afb878feffa84bfe003",
+          "de1b6d84c2c3f4b467ead52e1f377ae08249eb48ac6b963df8fb2b0a2783c8cd"
+        ],
+        "scenario_id": "E3_compression_ok",
+        "messages_count": 3,
+        "has_snapshots": true,
+        "snapshot_count": 2
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "E4_system_prompt_byte_stable",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "scenario": "E4_system_prompt_byte_stable",
+        "cache_break_events": 0,
+        "system_prompt_changes": 0,
+        "toolset_mutations": 0,
+        "all_hashes_identical": true,
+        "unique_hashes": 1,
+        "expected": "cache_break_events == 0, toolset_mutations == 0, all system prompt hashes identical",
+        "analysis": [],
+        "system_prompt_hashes": [
+          "9bc159a1118428ea87684caa891c7e0be261a735cd4e50d09277803f4fb64a88",
+          "9bc159a1118428ea87684caa891c7e0be261a735cd4e50d09277803f4fb64a88",
+          "9bc159a1118428ea87684caa891c7e0be261a735cd4e50d09277803f4fb64a88"
+        ],
+        "scenario_id": "E4_system_prompt_byte_stable",
+        "messages_count": 5,
+        "has_snapshots": true,
+        "snapshot_count": 3
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "suite": "research_citation",
+  "timestamp": "2026-06-29T23:35:31.067484+00:00",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "total": 4,
+  "passed": 3,
+  "failed": 1,
+  "errored": 0,
+  "pass_rate": 0.75,
+  "scenarios": [
+    {
+      "id": "R1_single_source",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "citation_count": 1,
+        "urls": [
+          "https://www.python.org/downloads/feed.rss"
+        ],
+        "has_credible_urls": true,
+        "search_count": 0,
+        "has_tool_error": false,
+        "api_calls": 8,
+        "contains_python.org": true
+      },
+      "api_calls": 8,
+      "duration_s": 81.23
+    },
+    {
+      "id": "R2_contradictory",
+      "pass": false,
+      "score": 0.333,
+      "details": {
+        "citation_count": 1,
+        "urls": [
+          "https://www.typescriptlang.org/"
+        ],
+        "has_credible_urls": false,
+        "search_count": 0,
+        "has_tool_error": true,
+        "api_calls": 10,
+        "contains_http": true
+      },
+      "api_calls": 10,
+      "duration_s": 79.83
+    },
+    {
+      "id": "R3_no_source",
+      "pass": true,
+      "score": 0.5,
+      "details": {
+        "citation_count": 0,
+        "urls": [],
+        "has_credible_urls": false,
+        "search_count": 0,
+        "has_tool_error": false,
+        "api_calls": 2,
+        "contains_cannot find": true
+      },
+      "api_calls": 2,
+      "duration_s": 12.61
+    },
+    {
+      "id": "R5_multi_hop",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "citation_count": 5,
+        "urls": [
+          "https://www.nobelprize.org/prizes/physics/2024/summary/",
+          "https://www.nobelprize.org/prizes/physics/2024/hopfield/facts/",
+          "https://www.nobelprize.org/prizes/physics/2024/hinton/facts/",
+          "https://en.wikipedia.org/wiki/Princeton_University",
+          "https://en.wikipedia.org/wiki/University_of_Toronto"
+        ],
+        "has_credible_urls": true,
+        "search_count": 0,
+        "has_tool_error": false,
+        "api_calls": 12,
+        "contains_http": true
+      },
+      "api_calls": 12,
+      "duration_s": 72.23
+    }
+  ]
+}

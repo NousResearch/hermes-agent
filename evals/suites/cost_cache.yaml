@@ -1,0 +1,238 @@
+name: cost_cache
+description: >
+  Prompt-cache preservation and cache-break detection for Hermes Agent.
+  Verifies that the per-conversation prompt-cache prefix is byte-stable across
+  turns, that toolsets cannot be mutated mid-conversation, and that context
+  compression is the ONLY legitimate path that invalidates the cached prefix.
+  Deterministic mode grades embedded _mock_messages / _mock_api_call_snapshots.
+
+scenarios:
+  # ─────────────────────────────────────────────────────────────────────
+  # E1 — Cache stability across a long multi-turn conversation
+  # ─────────────────────────────────────────────────────────────────────
+  - id: E1_cache_stable
+    description: >
+      A multi-turn conversation with a fixed system prompt and an immutable
+      toolset. The system prompt must be byte-identical and the toolset must
+      never change. cache_break_events must be exactly 0.
+    user_message: >
+      Tell me a short fact about numbers. Then tell me another. Keep going —
+      I want 20 small facts in a row, one per turn.
+    config_overrides:
+      agent.max_iterations: 25
+      provider: fake
+      model: fake/deterministic
+      prompt_caching.enabled: true
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: custom
+        rubric: "rubrics.cost_cache.grade"
+      - type: no_cache_break
+      - type: response_contains
+        value: "fact"
+    _mock_final_response: "Here is another interesting number fact: 7 is prime."
+    _mock_api_call_snapshots:
+      - messages:
+          - role: system
+            content: "You are Hermes. Tools fixed for this session."
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+      - messages:
+          - role: system
+            content: "You are Hermes. Tools fixed for this session."
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+      - messages:
+          - role: system
+            content: "You are Hermes. Tools fixed for this session."
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+    _mock_messages:
+      - role: system
+        content: "You are Hermes. Tools fixed for this session."
+      - role: user
+        content: "Tell me a short fact about numbers."
+      - role: assistant
+        content: "Fact: zero is an even number."
+      - role: user
+        content: "another"
+      - role: assistant
+        content: "Here is another interesting number fact: 7 is prime."
+
+  # ─────────────────────────────────────────────────────────────────────
+  # E2 — Toolset swap is forbidden mid-conversation
+  # ─────────────────────────────────────────────────────────────────────
+  - id: E2_toolset_swap_forbidden
+    description: >
+      Mid-conversation the user attempts to add/remove toolsets. The agent
+      must refuse, mention /reset, and must NOT mutate the active tools list.
+    user_message: >
+      I want to change my tools mid-conversation. First, add the web toolset
+      so I can search. Second, remove the terminal toolset — I don't need it
+      anymore. Just swap them in for me now.
+    config_overrides:
+      agent.max_iterations: 8
+      provider: fake
+      model: fake/deterministic
+      prompt_caching.enabled: true
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: custom
+        rubric: "rubrics.cost_cache.grade"
+      - type: no_cache_break
+      - type: response_contains
+        value: "/reset"
+    _mock_final_response: >
+      I can't swap toolsets mid-conversation because that would bust the
+      prompt cache. Please run /reset to start a new session with different tools.
+    _mock_api_call_snapshots:
+      - messages:
+          - role: system
+            content: "You are Hermes. Toolsets are fixed until /reset."
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+      - messages:
+          - role: system
+            content: "You are Hermes. Toolsets are fixed until /reset."
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+    _mock_messages:
+      - role: system
+        content: "You are Hermes. Toolsets are fixed until /reset."
+      - role: user
+        content: "add the web toolset and remove terminal"
+      - role: assistant
+        content: >
+          I can't swap toolsets mid-conversation because that would bust the
+          prompt cache. Please run /reset to start a new session with different tools.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # E3 — Compression is the ONLY allowed cache invalidation
+  # ─────────────────────────────────────────────────────────────────────
+  - id: E3_compression_ok
+    description: >
+      Conversation grows past the compression threshold. The cache may break
+      ONLY at the compression boundary (exactly one system-prompt rebuild).
+    user_message: >
+      Repeat this large block of text back to me many times so the context
+      grows quickly: "The quick brown fox jumps over the lazy dog. " repeated
+      50 times per turn.
+    config_overrides:
+      agent.max_iterations: 15
+      provider: fake
+      model: fake/deterministic
+      prompt_caching.enabled: true
+      compression.enabled: true
+      compression.threshold_percent: 0.02
+      compression.context_length: 4096
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: custom
+        rubric: "rubrics.cost_cache.grade"
+      - type: response_contains
+        value: "fox"
+    _mock_final_response: "Repeated the quick brown fox block after compression."
+    # Two snapshots: pre-compression (long history) and post-compression
+    # (shorter messages + rebuilt system prompt). tools stay stable.
+    _mock_api_call_snapshots:
+      - messages:
+          - role: system
+            content: "You are Hermes. system-v1"
+          - role: user
+            content: "fox block 1"
+          - role: assistant
+            content: "The quick brown fox jumps over the lazy dog."
+          - role: user
+            content: "fox block 2"
+          - role: assistant
+            content: "The quick brown fox jumps over the lazy dog."
+          - role: user
+            content: "fox block 3"
+          - role: assistant
+            content: "The quick brown fox jumps over the lazy dog."
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+      - messages:
+          - role: system
+            content: "You are Hermes. system-v2-after-compression"
+          - role: user
+            content: "[compressed summary of earlier turns about fox]"
+          - role: assistant
+            content: "Repeated the quick brown fox block after compression."
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+    _mock_messages:
+      - role: system
+        content: "You are Hermes. system-v2-after-compression"
+      - role: user
+        content: "[compressed summary of earlier turns about fox]"
+      - role: assistant
+        content: "Repeated the quick brown fox block after compression."
+
+  # ─────────────────────────────────────────────────────────────────────
+  # E4 — System prompt byte-stability across turns
+  # ─────────────────────────────────────────────────────────────────────
+  - id: E4_system_prompt_byte_stable
+    description: >
+      A multi-turn conversation with varied queries. System prompt string must
+      be byte-for-byte identical across API-call snapshots. No toolset drift.
+    user_message: >
+      Let's have a 5-turn conversation. Turn 1: what is 2+2? Turn 2: write a
+      haiku about the sea. Turn 3: list files in the current directory. Turn
+      4: what is the capital of France? Turn 5: tell me a joke.
+    config_overrides:
+      agent.max_iterations: 10
+      provider: fake
+      model: fake/deterministic
+      prompt_caching.enabled: true
+    enabled_toolsets: [terminal, file]
+    skip_memory: true
+    skip_context_files: true
+    pass_conditions:
+      - type: custom
+        rubric: "rubrics.cost_cache.grade"
+      - type: no_cache_break
+    _mock_final_response: "Why did the programmer quit? Because they didn't get arrays."
+    _mock_api_call_snapshots:
+      - messages:
+          - role: system
+            content: "STABLE_SYSTEM_PROMPT_V1"
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+      - messages:
+          - role: system
+            content: "STABLE_SYSTEM_PROMPT_V1"
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+      - messages:
+          - role: system
+            content: "STABLE_SYSTEM_PROMPT_V1"
+        tools:
+          - function: {name: terminal}
+          - function: {name: read_file}
+    _mock_messages:
+      - role: system
+        content: "STABLE_SYSTEM_PROMPT_V1"
+      - role: user
+        content: "what is 2+2?"
+      - role: assistant
+        content: "4"
+      - role: user
+        content: "tell me a joke"
+      - role: assistant
+        content: "Why did the programmer quit? Because they didn't get arrays."

@@ -1,0 +1,58 @@
+# Research Citation Suite — Live Model (Tier 2)
+# Tests web-grounded answers with citations and source verification.
+# Requires web tools (web_search, web_extract) and network access.
+
+name: research_citation
+description: Tests that the agent cites retrievable sources and flags uncertainty
+
+scenarios:
+  - id: R1_single_source
+    description: Factual question with one authoritative source
+    user_message: "What is the current stable version of Python? Search the official Python website and cite the URL where you found this information."
+    enabled_toolsets: [web, terminal]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 8
+    pass_conditions:
+      - type: response_contains
+        value: "python.org"
+      - type: no_tool_error
+
+  - id: R2_contradictory
+    description: Two sources disagree — agent must surface disagreement
+    user_message: "Search for 'Is TypeScript faster than JavaScript?' Find at least two sources. If they disagree, explain the disagreement and cite both sources."
+    enabled_toolsets: [web, terminal]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 10
+    pass_conditions:
+      - type: response_contains
+        value: "http"
+      - type: no_tool_error
+
+  - id: R3_no_source
+    description: Question the agent cannot answer from web — must say so
+    user_message: "What is the exact number of grains of sand on Earth as of June 30, 2026? Search the web and if you cannot find a definitive answer, say 'I cannot find a definitive answer' and explain why."
+    enabled_toolsets: [web, terminal]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 8
+    pass_conditions:
+      - type: response_contains
+        value: "cannot find"
+
+  - id: R5_multi_hop
+    description: Multi-step research requiring chained searches
+    user_message: "Find out: (1) Who won the Nobel Prize in Physics in 2024? (2) What university are they affiliated with? (3) What is that university's founding year? Return all three facts with sources."
+    enabled_toolsets: [web, terminal]
+    skip_memory: true
+    skip_context_files: true
+    config_overrides:
+      agent.max_iterations: 12
+    pass_conditions:
+      - type: response_contains
+        value: "http"
+      - type: no_tool_error

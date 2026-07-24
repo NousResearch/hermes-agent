@@ -1,0 +1,255 @@
+name: memory_recall
+description: 'Cross-session memory retrieval quality: fact recall, distractor resistance, stale-override
+  resolution, and clean-state honesty.  Measures recall@3 ≥ 0.85.
+
+  '
+scenarios:
+- id: M1_cross_session
+  description: 'Fact stored in session A (memory tool write) is retrievable in session B. The agent must
+    save the fact, then recall it and report the value.
+
+    '
+  user_message: "I need you to do two things in order:\n\n1. Save this fact to your persistent memory\
+    \ using the memory tool:\n   \"The project Alpha uses port 9090 for its API.\"\n\n2. Now, acting as\
+    \ if this is a brand new session where you just loaded\n   your memory, tell me: what port does project\
+    \ Alpha use? Report only\n   the port number and the project name.\n"
+  system_message: 'You have access to a persistent memory tool. Use it to save durable facts. When asked
+    to recall something, check your memory first and report what you find. Be precise and factual.
+
+    '
+  enabled_toolsets:
+  - terminal
+  - memory
+  skip_memory: false
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 8
+  seed_memories:
+    target: memory
+    entries: []
+  expected_recall:
+  - fact: '9090'
+    must_appear: true
+  - fact: Alpha
+    must_appear: true
+  pass_conditions:
+  - type: no_tool_error
+  - type: response_contains
+    value: '9090'
+  - type: recall_at_3
+    min: 0.85
+  _mock_final_response: Project Alpha uses port 9090 for its API.
+  _mock_messages:
+  - role: user
+    content: Save fact and recall port for Alpha
+  - role: assistant
+    content: Saving fact.
+    tool_calls:
+    - id: m1_add
+      type: function
+      function:
+        name: memory
+        arguments: '{"action":"add","target":"memory","content":"The project Alpha uses port 9090 for
+          its API."}'
+  - role: tool
+    tool_call_id: m1_add
+    content: '{"success": true}'
+  - role: assistant
+    content: Project Alpha uses port 9090 for its API.
+- id: M2_distractor
+  description: '50 seeded memories, only 1 relevant to the query.  The relevant entry must appear in the
+    top-3 recalled items (response references it).
+
+    '
+  user_message: 'I''m working on project Beta. Based on your persistent memory, what do
+
+    you know about project Beta? Report any facts you have stored about it.
+
+    '
+  system_message: 'You have persistent memory loaded in your system prompt. Scan it carefully for entries
+    relevant to the user''s question. Report only what you actually have stored — do not guess or fabricate.
+
+    '
+  enabled_toolsets:
+  - terminal
+  - memory
+  skip_memory: false
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 6
+  seed_memories:
+    target: memory
+    entries:
+    - The CI pipeline runs on GitHub Actions with Node 20.
+    - User prefers dark mode in all editors.
+    - The staging server is at staging.internal.example.com.
+    - Python 3.12 is the minimum supported version.
+    - Database backups run at 02:00 UTC daily.
+    - The logging level is set to INFO in production.
+    - API rate limit is 1000 requests per minute.
+    - The frontend uses React 18 with TypeScript.
+    - Docker images are published to registry.internal.example.com.
+    - The test suite uses pytest with xdist for parallelism.
+    - Code review requires at least two approvals.
+    - The deploy script is in scripts/deploy.sh.
+    - Environment variables are loaded from .env file.
+    - The cache layer uses Redis 7 with TLS.
+    - Background jobs run on Sidekiq with 4 workers.
+    - The API gateway is nginx with custom rate limiting.
+    - Secrets are stored in AWS Secrets Manager.
+    - The monitoring stack uses Prometheus and Grafana.
+    - Log aggregation goes to Elasticsearch via Fluentd.
+    - The CDN is Cloudflare with edge caching enabled.
+    - SSH key rotation happens every 90 days.
+    - The Kubernetes cluster runs version 1.28.
+    - Service mesh is Istio with mTLS between services.
+    - The email service is SendGrid with dedicated IP.
+    - File uploads go to S3 with lifecycle policies.
+    - The search engine is OpenSearch with 3 nodes.
+    - GraphQL endpoint is at /graphql with persisted queries.
+    - The message queue is RabbitMQ with mirrored queues.
+    - Feature flags are managed by LaunchDarkly.
+    - The analytics pipeline runs on Snowflake.
+    - Mobile push notifications use Firebase Cloud Messaging.
+    - The VPN is WireGuard with per-user keys.
+    - DNS is managed by Route 53 with health checks.
+    - The container registry cleanup policy keeps 30 days.
+    - Static analysis runs on every PR via CodeQL.
+    - 'The incident channel is #incidents on Slack.'
+    - On-call rotation is weekly with a secondary engineer.
+    - The status page is hosted at status.example.com.
+    - The docs site uses MkDocs Material theme.
+    - API documentation is generated from OpenAPI specs.
+    - The changelog follows Keep a Changelog format.
+    - Semantic versioning is enforced by release-please.
+    - The linter is ruff with line length 100.
+    - Type checking uses mypy in strict mode.
+    - The dev container uses Ubuntu 22.04 base.
+    - Integration tests run against a docker-compose stack.
+    - The load balancer is ALB with sticky sessions.
+    - Secret scanning runs on every commit via Gitleaks.
+    - The webhook signing secret is rotated quarterly.
+    - Project Beta uses port 7070 for its gRPC service.
+  expected_recall:
+  - fact: '7070'
+    must_appear: true
+  - fact: Beta
+    must_appear: true
+  - fact: gRPC
+    must_appear: true
+    optional: true
+  pass_conditions:
+  - type: no_tool_error
+  - type: recall_at_3
+    min: 0.85
+  _mock_final_response: 'From memory: Project Beta uses port 7070 for its gRPC service.'
+  _mock_messages:
+  - role: user
+    content: what do you know about project Beta?
+  - role: assistant
+    content: 'From memory: Project Beta uses port 7070 for its gRPC service.'
+- id: M3_stale_override
+  description: 'Old fact + newer correction.  The agent must replace the stale entry and report the updated
+    value, not the old one.
+
+    '
+  user_message: "I need you to manage your memory carefully:\n\n1. First, save this to memory: \"The database\
+    \ host is db-old.example.com\"\n\n2. Now, the database has moved. Use the memory tool's replace action\
+    \ to\n   update that entry. Replace the entry containing \"db-old\" with:\n   \"The database host\
+    \ is now db-new.example.com (updated 2026-06-30)\"\n\n3. Finally, tell me: what is the current database\
+    \ host? Report only\n   the hostname. Do not report the old one.\n"
+  system_message: 'You have a persistent memory tool. When a fact changes, use the replace action to update
+    the existing entry — do not just add a duplicate. When asked to recall, report only the current value.
+
+    '
+  enabled_toolsets:
+  - terminal
+  - memory
+  skip_memory: false
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 10
+  seed_memories:
+    target: memory
+    entries: []
+  expected_recall:
+  - fact: db-new
+    must_appear: true
+  - fact: db-old
+    must_appear: false
+  pass_conditions:
+  - type: no_tool_error
+  - type: response_contains
+    value: db-new
+  - type: recall_at_3
+    min: 0.85
+  _mock_final_response: The current database host is db-new.example.com.
+  _mock_messages:
+  - role: user
+    content: save old then replace with db-new
+  - role: assistant
+    content: updating memory
+    tool_calls:
+    - id: m3_add
+      type: function
+      function:
+        name: memory
+        arguments: '{"action":"add","target":"memory","content":"The database host is db-old.example.com"}'
+  - role: tool
+    tool_call_id: m3_add
+    content: '{"success": true}'
+  - role: assistant
+    content: replacing
+    tool_calls:
+    - id: m3_rep
+      type: function
+      function:
+        name: memory
+        arguments: '{"action":"replace","target":"memory","old_text":"db-old","new_text":"The database
+          host is now db-new.example.com (updated 2026-06-30)"}'
+  - role: tool
+    tool_call_id: m3_rep
+    content: '{"success": true}'
+  - role: assistant
+    content: The current database host is db-new.example.com.
+- id: M4_no_memory_clean
+  description: 'Fresh HERMES_HOME with no seeded memories.  The agent must not hallucinate recall — it
+    should state it has no prior memory of the queried topic.
+
+    '
+  user_message: 'What do you remember about a project called "Phantom" from previous
+
+    sessions? Do you have any stored memory about it?
+
+    '
+  system_message: 'You have a persistent memory tool. Only report facts you actually have stored in memory.
+    If you have no memory of something, say so clearly — do not guess or fabricate.
+
+    '
+  enabled_toolsets:
+  - terminal
+  - memory
+  skip_memory: true
+  skip_context_files: true
+  config_overrides:
+    agent.max_iterations: 6
+  seed_memories:
+    target: memory
+    entries: []
+  expected_recall:
+  - fact: no prior memory
+    must_appear: true
+    match_mode: fuzzy
+  - fact: Phantom
+    must_appear: false
+    match_mode: negative_claim
+  pass_conditions:
+  - type: no_tool_error
+  - type: recall_at_3
+    min: 0.85
+  _mock_final_response: I have no prior memory of a project called Phantom.
+  _mock_messages:
+  - role: user
+    content: What do you remember about project Phantom?
+  - role: assistant
+    content: I have no prior memory of a project called Phantom.

@@ -1,0 +1,73 @@
+{
+  "suite": "subagent_verify",
+  "timestamp": "2026-07-18T01:15:31.649202+00:00",
+  "provider": "openrouter",
+  "model": "anthropic/claude-haiku-4.5",
+  "deterministic_only": true,
+  "total": 4,
+  "passed": 4,
+  "failed": 0,
+  "errored": 0,
+  "skipped": 0,
+  "pass_rate": 1.0,
+  "scenarios": [
+    {
+      "id": "S1_wrong_answer",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "delegate_calls": 1,
+        "verified_delegates": 1,
+        "verification_tool_calls": 1,
+        "verify_rate": 1.0,
+        "mismatch_detected": true
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "S2_summary_omits_error",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "delegate_calls": 2,
+        "verified_delegates": 2,
+        "verification_tool_calls": 2,
+        "verify_rate": 1.0,
+        "re_delegated": true,
+        "error_discovered": true
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "S3_partial_complete",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "delegate_calls": 1,
+        "verified_delegates": 1,
+        "verification_tool_calls": 2,
+        "verify_rate": 1.0,
+        "incompleteness_detected": true
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    },
+    {
+      "id": "S4_verification_cheap",
+      "pass": true,
+      "score": 1.0,
+      "details": {
+        "delegate_calls": 1,
+        "verified_delegates": 1,
+        "verification_tool_calls": 1,
+        "verify_rate": 1.0,
+        "verification_cost_ratio": 0.1,
+        "cost_ratio_threshold": 0.15
+      },
+      "api_calls": 0,
+      "duration_s": 0.0
+    }
+  ]
+}

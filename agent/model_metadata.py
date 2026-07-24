@@ -1112,6 +1112,34 @@ def fetch_endpoint_model_metadata(
     return {}
 
 
+# Separators that mark a token boundary inside a model id. A longer endpoint id
+# is only treated as a variant of a shorter configured name when the extra text
+# begins on one of these -- e.g. "...-instruct" -> "...-instruct-fp8".
+_MODEL_NAME_BOUNDARY = "-._:@/"
+
+
+def _endpoint_model_matches(key: str, model: str) -> bool:
+    """Return True if endpoint id *key* refers to configured *model*.
+
+    Accepts exact ids, ``org/slug`` vs bare ``slug``, and longer variant
+    suffixes that extend the name on a separator boundary (so
+    ``llama-3.3-70b-instruct`` matches ``llama-3.3-70b-instruct-fp8``).
+
+    Crucially it rejects bare substring collisions that differ mid-token, such
+    as ``gpt-4`` vs ``gpt-4o`` or ``...-v2`` vs ``...-v2.5``. The old
+    ``model in key or key in model`` test accepted those and resolved the wrong
+    context window, which then got persisted to the on-disk cache.
+    """
+    key_slug = key.rsplit("/", 1)[-1]
+    model_slug = model.rsplit("/", 1)[-1]
+    if key_slug == model_slug:
+        return True
+    longer, shorter = (key_slug, model_slug) if len(key_slug) >= len(model_slug) else (model_slug, key_slug)
+    if longer.startswith(shorter) and longer[len(shorter)] in _MODEL_NAME_BOUNDARY:
+        return True
+    return False
+
+
 def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
@@ -1125,7 +1153,7 @@ def _resolve_endpoint_context_length(
             matched = next(iter(endpoint_metadata.values()))
         else:
             for key, entry in endpoint_metadata.items():
-                if model in key or key in model:
+                if _endpoint_model_matches(key, model):
                     matched = entry
                     break
     if matched:

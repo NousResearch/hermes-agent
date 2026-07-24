@@ -1088,6 +1088,30 @@ class TestGetModelContextLength:
         assert result == 131072
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_substring_collision_is_rejected(self, mock_endpoint_fetch, mock_fetch):
+        """A shorter name must not match a mid-token-longer model.
+
+        "gpt-4" is a substring of "gpt-4o" but a different model with a
+        different window. The fuzzy match must reject it (no separator
+        boundary after "gpt-4"), falling back to the default probe tier
+        instead of persisting "gpt-4o"'s window for "gpt-4".
+        """
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "gpt-4o": {"context_length": 128000},
+            "gpt-4o-mini": {"context_length": 128000},
+        }
+
+        result = get_model_context_length(
+            "gpt-4",
+            base_url="http://myserver.example.com:8080/v1",
+            api_key="test-key",
+        )
+
+        assert result == CONTEXT_PROBE_TIERS[0]
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_config_context_length_overrides_all(self, mock_fetch):
         """Explicit config_context_length takes priority over everything."""
         mock_fetch.return_value = {

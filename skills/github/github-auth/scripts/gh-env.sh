@@ -39,7 +39,7 @@ fi
 if [ "$GH_AUTH_METHOD" = "curl" ] && [ -z "$GH_USER" ]; then
     GH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
         https://api.github.com/user 2>/dev/null \
-        | python3 -c "import sys,json; print(json.load(sys.stdin).get('login',''))" 2>/dev/null)
+        | python -c "import sys,json; print(json.load(sys.stdin).get('login',''))" 2>/dev/null)
 fi
 
 # --- Repo detection (if inside a git repo with a GitHub remote) ---

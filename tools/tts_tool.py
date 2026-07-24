@@ -362,6 +362,58 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
+def _apply_tts_overrides(
+    tts_config: Dict[str, Any],
+    provider: str,
+    voice: Optional[str],
+    speed: Optional[float],
+) -> Dict[str, Any]:
+    """Return a config with per-request voice/speed overrides applied.
+
+    The OpenAI-compatible ``/v1/audio/speech`` endpoint lets callers pass
+    ``voice`` and ``speed`` per request. Rather than thread them through every
+    provider's generator, we inject them into a copy of the loaded config under
+    the resolved provider's section, where each generator already reads them.
+
+    ``voice`` is written to both ``voice`` and ``voice_id`` because providers
+    split on which key they use (Edge/OpenAI/Gemini/Piper/KittenTTS read
+    ``voice``; ElevenLabs/MiniMax/xAI/Mistral read ``voice_id``). The generator
+    only reads the key it cares about, so the other is inert.
+
+    The original config is never mutated.
+    """
+    if not voice and speed is None:
+        return tts_config
+
+    import copy
+    effective = copy.deepcopy(tts_config) if isinstance(tts_config, dict) else {}
+
+    def _section(container: Dict[str, Any], key: str) -> Dict[str, Any]:
+        sub = container.get(key)
+        if not isinstance(sub, dict):
+            sub = container[key] = {}
+        return sub
+
+    # Built-ins read from tts.<provider>; command/plugin providers read from
+    # tts.providers.<provider> (with tts.<provider> as a legacy fallback).
+    sections = [_section(effective, provider)]
+    if provider not in BUILTIN_TTS_PROVIDERS:
+        sections.append(_section(_section(effective, "providers"), provider))
+
+    for section in sections:
+        if voice:
+            section["voice"] = voice
+            section["voice_id"] = voice
+        if speed is not None:
+            section["speed"] = speed
+
+    if speed is not None:
+        # Top-level fallback for generators that read tts.speed.
+        effective["speed"] = speed
+
+    return effective
+
+
 # ===========================================================================
 # Custom command providers (type: command under tts.providers.<name>)
 # ===========================================================================
@@ -603,6 +655,36 @@ def _iter_command_providers(tts_config: Dict[str, Any]):
         if isinstance(name, str) and name.lower() not in BUILTIN_TTS_PROVIDERS:
             if _is_command_provider_config(cfg):
                 yield name, cfg
+
+
+def _iter_plugin_providers():
+    """Yield the name of every registered plugin TTS provider.
+
+    Plugin providers (registered via ``PluginContext.register_tts_provider``)
+    are dispatched to by :func:`_dispatch_to_plugin_provider`, so they must
+    also count as available for enumeration — otherwise a working plugin
+    backend would be advertised nowhere and rejected by callers that gate on
+    availability before dispatch. Discovery failures are non-fatal (yields
+    nothing), matching the dispatcher's defensiveness.
+    """
+    try:
+        from agent.tts_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+        logger.debug("tts plugin enumeration skipped (discovery failed): %s", exc)
+        return
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if isinstance(name, str) and name.strip():
+            key = name.strip().lower()
+            # Built-ins always win; the registry blocks shadowing names at
+            # registration, but re-check defensively so enumeration can't
+            # advertise a shadowed built-in name.
+            if key not in BUILTIN_TTS_PROVIDERS:
+                yield key
 
 
 def _get_command_tts_timeout(config: Dict[str, Any]) -> float:
@@ -2287,6 +2369,10 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    provider: Optional[str] = None,
+    voice: Optional[str] = None,
+    speed: Optional[float] = None,
+    response_format: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2301,6 +2387,18 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        provider: Optional provider override (e.g. "edge", "openai").
+            When set, bypasses the config tts.provider default.
+        voice: Optional voice override (e.g. "alloy"). When set, overrides the
+            configured voice/voice_id for the resolved provider. Used by the
+            OpenAI-compatible /v1/audio/speech endpoint.
+        speed: Optional playback-speed override (provider-dependent). When set,
+            overrides the configured speed for the resolved provider.
+        response_format: Optional output format hint ("mp3" or "opus"/"ogg").
+            "opus"/"ogg" requests Opus output (native for OpenAI/ElevenLabs/
+            Mistral/Gemini, ffmpeg-converted otherwise); anything else yields
+            the provider's default (MP3 for most). The actual file extension is
+            authoritative — callers should derive Content-Type from file_path.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2309,7 +2407,13 @@ def text_to_speech_tool(
         return tool_error("Text is required", success=False)
 
     tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
+    if provider:
+        provider = provider.lower().strip()
+    else:
+        provider = _get_provider(tts_config)
+
+    # Apply per-request voice/speed overrides (OpenAI /v1/audio/speech).
+    tts_config = _apply_tts_overrides(tts_config, provider, voice, speed)
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
@@ -2333,7 +2437,12 @@ def text_to_speech_tool(
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    # Telegram voice bubbles need Opus; the OpenAI endpoint can also request it
+    # via response_format. Both route through the same Opus output/conversion
+    # logic below (native for OpenAI/ElevenLabs/Mistral/Gemini, ffmpeg otherwise).
+    want_opus = (platform == "telegram") or (
+        str(response_format or "").lower() in {"opus", "ogg"}
+    )
 
     # Determine output path
     if output_path:
@@ -2610,6 +2719,102 @@ def text_to_speech_tool(
 # ===========================================================================
 # Requirements check
 # ===========================================================================
+def _iter_available_tts_providers(
+    tts_config: Optional[Dict[str, Any]] = None,
+):
+    """Yield the name of every TTS provider usable right now.
+
+    This is the single source of truth for provider availability. It is a
+    generator so callers that only need existence (:func:`check_tts_requirements`)
+    short-circuit after the first item without importing or credential-checking
+    every backend. Cheap, no-API-key providers are yielded first to keep that
+    hot path fast.
+
+    Yields built-in provider names (``edge``, ``openai`` …), any user-declared
+    ``type: command`` providers (by their config name), and any plugin-
+    registered providers. Plugins are yielded **last** so the
+    :func:`check_tts_requirements` hot path short-circuits on a cheap built-in
+    (usually edge) without paying for plugin discovery.
+    """
+    if tts_config is None:
+        tts_config = _load_tts_config()
+
+    # User command providers count as available as soon as they're declared.
+    for name, _cfg in _iter_command_providers(tts_config):
+        yield name
+
+    # edge: package only, no API key.
+    try:
+        _import_edge_tts()
+        yield "edge"
+    except ImportError:
+        pass
+
+    # elevenlabs: package + API key.
+    try:
+        _import_elevenlabs()
+        if get_env_value("ELEVENLABS_API_KEY"):
+            yield "elevenlabs"
+    except ImportError:
+        pass
+
+    # openai: package + audio backend (direct creds or managed gateway).
+    try:
+        _import_openai_client()
+        if _has_openai_audio_backend():
+            yield "openai"
+    except ImportError:
+        pass
+
+    # deepinfra: OpenAI-compatible client + API key. Mirrors the
+    # check_tts_requirements() branch so the endpoint advertises and accepts
+    # tts/deepinfra rather than rejecting a provider this module supports.
+    try:
+        _import_openai_client()
+        if get_env_value("DEEPINFRA_API_KEY"):
+            yield "deepinfra"
+    except ImportError:
+        pass
+
+    # minimax: API key only.
+    if get_env_value("MINIMAX_API_KEY"):
+        yield "minimax"
+
+    # xai: Grok OAuth credentials or XAI_API_KEY.
+    try:
+        from tools.xai_http import resolve_xai_http_credentials
+
+        if resolve_xai_http_credentials().get("api_key"):
+            yield "xai"
+    except Exception:
+        pass
+
+    # gemini: API key only.
+    if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+        yield "gemini"
+
+    # mistral: package + API key.
+    try:
+        _import_mistral_client()
+        if get_env_value("MISTRAL_API_KEY"):
+            yield "mistral"
+    except ImportError:
+        pass
+
+    # Local, no-API-key engines.
+    if _check_neutts_available():
+        yield "neutts"
+    if _check_kittentts_available():
+        yield "kittentts"
+    if _check_piper_available():
+        yield "piper"
+
+    # Plugin-registered providers, yielded last: triggers plugin discovery, so
+    # keeping it after the cheap built-ins preserves the check_tts_requirements
+    # short-circuit (it stops at the first available provider).
+    yield from _iter_plugin_providers()
+
+
 def check_tts_requirements() -> bool:
     """Return whether the explicitly resolved TTS provider can run.
 
@@ -2680,6 +2885,19 @@ def check_tts_requirements() -> bool:
         return bool(plugin and plugin.is_available())
     except Exception:
         return False
+
+
+def list_available_tts_providers(
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> list[str]:
+    """Return the sorted names of every TTS provider usable right now.
+
+    Unlike :func:`check_tts_requirements`, this enumerates *all* available
+    providers (built-ins with satisfied credentials, user-declared command
+    providers, and plugin-registered providers). Used to advertise
+    ``tts/<provider>`` models on the OpenAI-compatible ``/v1/models`` endpoint.
+    """
+    return sorted(set(_iter_available_tts_providers(tts_config)))
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:

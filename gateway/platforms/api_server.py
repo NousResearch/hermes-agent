@@ -48,6 +48,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from functools import wraps
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -1571,6 +1572,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
+            ("POST", "/v1/audio/speech", self._handle_audio_speech),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
             ("DELETE", "/v1/responses/{response_id}", self._handle_delete_response),
@@ -2023,7 +2025,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — list hermes-agent and any configured model_routes aliases.
+        """GET /v1/models — list hermes-agent, configured model_routes aliases, and available TTS models.
 
         Under ``/p/<profile>/v1/models`` (multiplex on) the advertised primary
         model id follows that profile's name/config, not the default adapter's
@@ -2050,8 +2052,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "permission": [],
                 "root": model_name,
                 "parent": None,
-            }
+            },
         ]
+
         # Expose configured model route aliases so clients can discover them.
         # Only the alias and resolved model name are exposed — never provider
         # credentials.
@@ -2068,7 +2071,204 @@ class APIServerAdapter(BasePlatformAdapter):
                 "parent": model_name,
             })
 
+        # Advertise each configured-and-available TTS backend as a tts/<provider>
+        # model so OpenAI-compatible clients can target it via /v1/audio/speech.
+        try:
+            from tools.tts_tool import list_available_tts_providers
+
+            for provider in list_available_tts_providers():
+                models.append({
+                    "id": f"tts/{provider}",
+                    "object": "model",
+                    "created": now,
+                    "owned_by": "hermes",
+                    "permission": [],
+                    "root": f"tts/{provider}",
+                    "parent": None,
+                })
+        except Exception:
+            logger.debug("Failed to enumerate TTS providers for /v1/models", exc_info=True)
+
         return web.json_response({"object": "list", "data": models})
+
+    # Output formats the TTS pipeline can faithfully produce. Anything else
+    # is rejected rather than returned mislabeled. "ogg" is accepted as an
+    # alias for "opus".
+    _AUDIO_SPEECH_FORMATS = {"mp3", "opus", "ogg"}
+    # Maps an actual output-file extension to its Content-Type, so the response
+    # never advertises a format the bytes aren't in.
+    _AUDIO_EXT_MIME = {
+        "mp3": "audio/mpeg",
+        "ogg": "audio/ogg",
+        "opus": "audio/ogg",
+        "wav": "audio/wav",
+        "flac": "audio/flac",
+        "aac": "audio/aac",
+    }
+
+    async def _handle_audio_speech(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/speech — OpenAI-compatible text-to-speech.
+
+        Request body (JSON):
+          - input (required): text to synthesize.
+          - model (optional): ``tts/<provider>`` (e.g. ``tts/openai``) or a bare
+            provider name. Defaults to ``tts.provider`` from config.yaml.
+          - voice (optional): voice name/ID override for the provider.
+          - response_format (optional): ``mp3`` (default) or ``opus``.
+          - speed (optional): playback speed, clamped to OpenAI's 0.25–4.0.
+
+        Returns the raw audio bytes. The ``Content-Type`` reflects the actual
+        produced file, which may differ from ``response_format`` when the
+        provider can't emit the requested codec (e.g. Opus without ffmpeg).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                _openai_error("Invalid JSON body", code="invalid_json"),
+                status=400,
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                _openai_error("Request body must be a JSON object", code="invalid_body"),
+                status=400,
+            )
+
+        text = body.get("input")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(
+                _openai_error("'input' field is required", code="missing_input", param="input"),
+                status=400,
+            )
+
+        response_format = str(body.get("response_format") or "mp3").strip().lower()
+        if response_format not in self._AUDIO_SPEECH_FORMATS:
+            return web.json_response(
+                _openai_error(
+                    f"Unsupported response_format '{response_format}'. Supported: mp3, opus.",
+                    code="unsupported_response_format",
+                    param="response_format",
+                ),
+                status=400,
+            )
+
+        speed = None
+        speed_raw = body.get("speed")
+        if speed_raw is not None:
+            try:
+                speed = float(speed_raw)
+            except (TypeError, ValueError):
+                return web.json_response(
+                    _openai_error("'speed' must be a number", code="invalid_speed", param="speed"),
+                    status=400,
+                )
+            # Reject non-finite speeds (nan/inf) explicitly rather than relying
+            # on the clamp below to swallow them. max(0.25, min(4.0, nan)) does
+            # collapse nan→4.0 today, but only because of min's argument order;
+            # a future refactor that flips it would leak a non-finite value into
+            # provider code (e.g. Edge's round()).
+            if not math.isfinite(speed):
+                return web.json_response(
+                    _openai_error("'speed' must be a finite number", code="invalid_speed", param="speed"),
+                    status=400,
+                )
+            speed = max(0.25, min(4.0, speed))
+
+        voice = str(body.get("voice") or "").strip() or None
+
+        # Resolve provider from model: "tts/<provider>" or a bare provider name.
+        # An empty model or the agent's own model name means "use config default".
+        model = str(body.get("model") or "").strip()
+        provider_override = None
+        if model.startswith("tts/"):
+            provider_override = model[len("tts/"):].strip() or None
+        elif model and model != self._model_name:
+            provider_override = model
+
+        try:
+            from tools.tts_tool import (
+                text_to_speech_tool,
+                list_available_tts_providers,
+            )
+
+            available = list_available_tts_providers()
+            if not available:
+                return web.json_response(
+                    _openai_error("No TTS provider available", code="tts_unavailable"),
+                    status=503,
+                )
+            if provider_override and provider_override not in available:
+                return web.json_response(
+                    _openai_error(
+                        f"TTS model 'tts/{provider_override}' is not available. "
+                        f"Available: {', '.join('tts/' + p for p in available)}.",
+                        code="model_not_found",
+                        param="model",
+                    ),
+                    status=400,
+                )
+
+            # Synthesis is CPU/IO-heavy work offloaded to a thread; gate it on
+            # the same concurrency cap the agent-serving endpoints use so a
+            # burst of TTS requests can't exhaust the shared thread pool. The
+            # counter is bracketed around only the synthesis so validation
+            # errors above return without consuming a slot.
+            limited = self._concurrency_limited_response()
+            if limited is not None:
+                return limited
+
+            self._inflight_agent_runs += 1
+            try:
+                result_str = await asyncio.to_thread(
+                    text_to_speech_tool,
+                    text=text,
+                    provider=provider_override,
+                    voice=voice,
+                    speed=speed,
+                    response_format=response_format,
+                )
+            finally:
+                self._inflight_agent_runs -= 1
+            result = json.loads(result_str)
+
+            if not result.get("success"):
+                error_msg = result.get("error", "TTS generation failed")
+                return web.json_response(
+                    _openai_error(error_msg, code="tts_generation_failed", err_type="server_error"),
+                    status=500,
+                )
+
+            file_path = result.get("file_path", "")
+            if not file_path or not Path(file_path).exists():
+                return web.json_response(
+                    _openai_error("TTS output file not found", code="tts_file_missing", err_type="server_error"),
+                    status=500,
+                )
+
+            audio_data = Path(file_path).read_bytes()
+            # Content-Type follows the produced file, never the request, so the
+            # bytes and the header always agree.
+            ext = Path(file_path).suffix.lower().lstrip(".")
+            content_type = self._AUDIO_EXT_MIME.get(ext, "application/octet-stream")
+
+            return web.Response(
+                body=audio_data,
+                content_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="speech.{ext or "bin"}"',
+                },
+            )
+
+        except Exception as e:
+            logger.exception("POST /v1/audio/speech failed")
+            return web.json_response(
+                _openai_error(f"TTS error: {e}", code="tts_error", err_type="server_error"),
+                status=500,
+            )
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
@@ -2119,7 +2319,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
-                "audio_api": False,
+                "audio_api": True,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
@@ -2130,6 +2330,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+                "audio_speech": {"method": "POST", "path": "/v1/audio/speech"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},

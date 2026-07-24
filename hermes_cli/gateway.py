@@ -4134,6 +4134,9 @@ def refresh_launchd_plist_if_needed() -> bool:
         # gateway is still draining (default agent.restart_drain_timeout=180s),
         # so a fixed ~10s window is too short — bound by that budget instead.
         _reload_budget = int(max(30.0, _get_restart_drain_timeout()))
+        # Label for the transient one-shot job (see `launchctl submit` below).
+        # Unique per reload so concurrent/repeated reloads never collide.
+        submit_label = f"{label}.reload.{os.getpid()}.{int(time.time())}"
         reload_script = (
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
@@ -4148,7 +4151,12 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"done; "
             f"if ! launchctl list {shlex.quote(label)} >/dev/null 2>&1; then "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
-            f"fi"
+            f"fi; "
+            # Submitted jobs stay registered with launchd after the script
+            # exits; without this, every reload leaks one dead label. Removing
+            # our own label is the documented way to end a one-shot submit job
+            # (it SIGTERMs the job, but this is the final statement anyway).
+            f"launchctl remove {shlex.quote(submit_label)} 2>/dev/null"
         )
         try:
             # Spawn the reload helper via `launchctl submit` (a transient
@@ -4162,7 +4170,6 @@ def refresh_launchd_plist_if_needed() -> bool:
             # `launchctl submit` creates a wholly independent transient launchd
             # job that launchd manages separately from the gateway, so bootout
             # of the gateway job cannot reach the helper.
-            submit_label = f"{label}.reload.{os.getpid()}.{int(time.time())}"
             subprocess.Popen(
                 [
                     "launchctl", "submit",

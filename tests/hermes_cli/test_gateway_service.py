@@ -752,6 +752,10 @@ class TestLaunchdServiceRecovery:
         script = cmd[bash_idx + 2]
         assert "bootout" in script and "bootstrap" in script
         assert str(plist_path) in script
+        # The one-shot job must deregister its own transient label at the end,
+        # otherwise every reload leaks a dead label in launchd.
+        submit_label = cmd[cmd.index("-l") + 1]
+        assert f"launchctl remove {submit_label}" in script
 
     def test_refresh_uses_direct_reload_when_not_inside_gateway_tree(self, tmp_path, monkeypatch):
         """Normal CLI-initiated refresh (outside the service tree) keeps the

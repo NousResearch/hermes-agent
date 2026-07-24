@@ -53,6 +53,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._send_read_receipts = False
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -197,6 +198,40 @@ class TestStaleBridgeHandshake:
         mock_kill_port.assert_called_once_with(adapter._bridge_port)
 
     @pytest.mark.asyncio
+    async def test_restarts_bridge_when_read_receipt_config_changed(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        adapter._send_read_receipts = True
+        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health(
+            {
+                "status": "connected",
+                "scriptHash": disk_hash,
+                "sendReadReceipts": False,
+            }
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        mock_popen.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_restarts_unversioned_bridge(self, tmp_path):
         """Bridges predating the handshake report no scriptHash → stale."""
         bridge_dir = _setup_bridge_dir(tmp_path)
@@ -317,6 +352,7 @@ class TestCacheDirEnvPassthrough:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
+        adapter._send_read_receipts = True
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
@@ -339,3 +375,4 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_IMAGE_CACHE_DIR"] == str(get_image_cache_dir())
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
+        assert env["WHATSAPP_SEND_READ_RECEIPTS"] == "true"

@@ -30,10 +30,63 @@ def _fmt_state(subsystem: str) -> str:
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
+def _memory_action_menu(pending_id: str) -> str:
+    return "\n".join([
+        "Choose:",
+        f"  A) Approve this memory write    /memory approve {pending_id}   (or /memory a {pending_id})",
+        f"  B) Reject this memory write     /memory reject {pending_id}    (or /memory b {pending_id})",
+        "  C) Show all pending memory writes /memory pending              (or /memory c)",
+        "  D) Reject all pending memory writes /memory reject all          (or /memory d)",
+        f"  E) Review one-by-one / edit      /memory review                (or /memory e)",
+        f"     Edit before approving: /memory edit {pending_id} <new text>",
+    ])
+
+
+def _fmt_memory_record(record) -> str:
+    payload = record.get("payload", {}) if isinstance(record, dict) else {}
+    pending_id = record.get("id", "")
+    action = payload.get("action") or record.get("action", "")
+    target = payload.get("target", "memory")
+    content = payload.get("content") or ""
+    old_text = payload.get("old_text") or ""
+
+    lines = [
+        "MEMORY WRITE APPROVAL",
+        f"Pending ID: {pending_id}",
+        f"Action: {action} to {target.upper()}",
+    ]
+    if old_text:
+        lines.extend(["Old content:", old_text])
+    if content:
+        lines.extend(["Content:", content])
+    lines.extend(["", _memory_action_menu(pending_id)])
+    return "\n".join(lines)
+
+
 def _fmt_pending_list(subsystem: str) -> str:
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
+    if subsystem == wa.MEMORY:
+        lines = [
+            f"MEMORY WRITE APPROVAL — pending writes ({len(records)}):",
+        ]
+        for r in records:
+            payload = r.get("payload", {})
+            target = str(payload.get("target", "memory")).upper()
+            action = payload.get("action", r.get("action", ""))
+            content = (payload.get("content") or payload.get("old_text") or r.get("summary", "")).replace("\n", " ")
+            if len(content) > 120:
+                content = content[:117] + "..."
+            lines.append(f"  {r['id']}  {action} {target}: {content}")
+        lines.append("")
+        lines.append("Review one at a time: /memory review    (or /memory e)")
+        lines.append("Approve: /memory approve <id>           (or /memory a <id>)")
+        lines.append("Reject:  /memory reject <id>            (or /memory b <id>)")
+        lines.append("Edit:    /memory edit <id> <new text>")
+        lines.append("Reject all: /memory reject all          (or /memory d)")
+        return "\n".join(lines)
+
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
     for r in records:
         origin = r.get("origin", "foreground")
@@ -81,8 +134,27 @@ def handle_pending_subcommand(
     sub = args[0].lower()
     rest = args[1:]
 
+    if subsystem == wa.MEMORY:
+        alias_map = {
+            "a": "approve",
+            "b": "reject",
+            "c": "pending",
+            "d": "reject_all",
+            "e": "review",
+        }
+        sub = alias_map.get(sub, sub)
+
     if sub == "pending":
         return _fmt_pending_list(subsystem)
+
+    if sub in {"review", "show"} and subsystem == wa.MEMORY:
+        return _review_memory(rest)
+
+    if sub == "edit" and subsystem == wa.MEMORY:
+        return _edit_memory(rest)
+
+    if sub == "reject_all" and subsystem == wa.MEMORY:
+        return _reject(subsystem, ["all"])
 
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
@@ -168,6 +240,42 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     if wa.discard_pending(subsystem, target):
         return f"Rejected pending {subsystem} write '{target}'."
     return f"No pending {subsystem} write with id '{target}'."
+
+
+def _review_memory(rest: List[str]) -> str:
+    if rest:
+        rec = wa.get_pending(wa.MEMORY, rest[0])
+        if not rec:
+            return f"No pending memory write with id '{rest[0]}'."
+    else:
+        records = wa.list_pending(wa.MEMORY)
+        if not records:
+            return "No pending memory writes."
+        rec = records[0]
+    return _fmt_memory_record(rec)
+
+
+def _edit_memory(rest: List[str]) -> str:
+    if len(rest) < 2:
+        return "Usage: /memory edit <id> <new text>"
+    pending_id = rest[0]
+    rec = wa.get_pending(wa.MEMORY, pending_id)
+    if not rec:
+        return f"No pending memory write with id '{pending_id}'."
+    payload = dict(rec.get("payload", {}))
+    action = payload.get("action")
+    if action not in {"add", "replace"}:
+        return f"Pending memory write '{pending_id}' is action '{action}' and cannot be edited. Reject it instead."
+    new_text = " ".join(rest[1:]).strip()
+    if not new_text:
+        return "Usage: /memory edit <id> <new text>"
+    payload["content"] = new_text
+    target = payload.get("target", "memory")
+    summary = f"{action} to {target}: {new_text[:120]}"
+    updated = wa.update_pending(wa.MEMORY, pending_id, payload, summary=summary)
+    if updated is None:
+        return f"Failed to edit pending memory write '{pending_id}'."
+    return "Updated pending memory write.\n\n" + _fmt_memory_record(updated)
 
 
 def _diff(rest: List[str]) -> str:

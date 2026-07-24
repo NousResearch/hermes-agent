@@ -94,7 +94,25 @@ async def test_api_and_cli_share_the_authoritative_registry(
         },
     )
     assert retired.status_code == 200
+    assert retired.json()["credential_status"] == "revoked"
     assert NodeRegistry().get("node-1").state == "retired"
+    rejected = await client.post(
+        "/api/control-plane/v1/nodes/node-1/authenticate",
+        json={"credential": issuance["credential"]},
+    )
+    assert rejected.status_code == 401
+    rejected_observation = await client.post(
+        "/api/control-plane/v1/nodes/node-1/observations",
+        json={
+            "credential": issuance["credential"],
+            "schema_version": 1,
+            "report_sequence": 1,
+            "observed_at": 100,
+            "health_state": "healthy",
+            "capabilities": {},
+        },
+    )
+    assert rejected_observation.status_code == 401
 
     args = _parser().parse_args([
         "harness",
@@ -108,6 +126,26 @@ async def test_api_and_cli_share_the_authoritative_registry(
     assert api_history.json()["events"] == cli_history
     audit = await client.get("/api/control-plane/v1/audit")
     assert audit.json() == {"valid": True}
+
+
+@pytest.mark.asyncio
+async def test_audit_api_detects_deleted_tail_and_all_events(
+    tmp_path, monkeypatch, client
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    registry = NodeRegistry()
+    registry.enroll(**_enrollment())
+
+    with registry.connect() as conn:
+        conn.execute(
+            "DELETE FROM managed_node_events WHERE sequence = "
+            "(SELECT MAX(sequence) FROM managed_node_events)"
+        )
+    assert (await client.get("/api/control-plane/v1/audit")).json() == {"valid": False}
+
+    with registry.connect() as conn:
+        conn.execute("DELETE FROM managed_node_events")
+    assert (await client.get("/api/control-plane/v1/audit")).json() == {"valid": False}
 
 
 @pytest.mark.asyncio

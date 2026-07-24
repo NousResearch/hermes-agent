@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS managed_node_events (
 CREATE INDEX IF NOT EXISTS idx_managed_node_events_node_sequence
     ON managed_node_events(node_id, sequence);
 
+CREATE TABLE IF NOT EXISTS managed_node_audit_head (
+    singleton       INTEGER PRIMARY KEY CHECK (singleton = 1),
+    event_sequence  INTEGER NOT NULL,
+    event_hash      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS managed_node_credentials (
     node_id        TEXT PRIMARY KEY REFERENCES managed_nodes(id),
     verifier       TEXT NOT NULL,
@@ -279,11 +285,43 @@ class NodeRegistry:
 
             apply_wal_with_fallback(conn, db_label="control-plane.db")
             conn.executescript(SCHEMA_SQL)
+            self._migrate_audit_head(conn)
             self._migrate_uncredentialed_nodes(conn)
         except Exception:
             conn.close()
             raise
         return conn
+
+    @staticmethod
+    def _migrate_audit_head(conn: sqlite3.Connection) -> None:
+        """Idempotently anchor a legacy event chain outside its event rows."""
+        schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if schema_version >= 1:
+            return
+        if (
+            conn.execute("SELECT 1 FROM managed_node_audit_head LIMIT 1").fetchone()
+            is not None
+        ):
+            conn.execute("PRAGMA user_version = 1")
+            return
+        with write_txn(conn):
+            latest = conn.execute(
+                """
+                SELECT sequence, event_hash
+                FROM managed_node_events ORDER BY sequence DESC LIMIT 1
+                """
+            ).fetchone()
+            sequence = latest["sequence"] if latest is not None else 0
+            event_hash = latest["event_hash"] if latest is not None else None
+            conn.execute(
+                """
+                INSERT INTO managed_node_audit_head (
+                    singleton, event_sequence, event_hash
+                ) VALUES (1, ?, ?)
+                """,
+                (sequence, event_hash),
+            )
+            conn.execute("PRAGMA user_version = 1")
 
     def _migrate_uncredentialed_nodes(self, conn: sqlite3.Connection) -> None:
         """Safely disable legacy nodes until an operator rotates a credential."""
@@ -458,12 +496,14 @@ class NodeRegistry:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT verifier, revoked_at
-                FROM managed_node_credentials WHERE node_id = ?
+                SELECT credentials.verifier, credentials.revoked_at, nodes.state
+                FROM managed_node_credentials AS credentials
+                JOIN managed_nodes AS nodes ON nodes.id = credentials.node_id
+                WHERE credentials.node_id = ?
                 """,
                 (node_id,),
             ).fetchone()
-        if row is None or row["revoked_at"] is not None:
+        if row is None or row["revoked_at"] is not None or row["state"] == "retired":
             return False
         return hmac.compare_digest(
             row["verifier"],
@@ -511,6 +551,7 @@ class NodeRegistry:
             ).fetchone()
             if (
                 auth is None
+                or node["state"] == "retired"
                 or auth["revoked_at"] is not None
                 or not hmac.compare_digest(
                     auth["verifier"], self._credential_verifier(candidate)
@@ -840,6 +881,43 @@ class NodeRegistry:
                 occurred_at=now,
                 details={"reason": reason},
             )
+            if to_state == "retired":
+                credential = conn.execute(
+                    """
+                    SELECT revision, revoked_at
+                    FROM managed_node_credentials WHERE node_id = ?
+                    """,
+                    (node_id,),
+                ).fetchone()
+                if credential["revoked_at"] is None:
+                    credential_revision = credential["revision"] + 1
+                    conn.execute(
+                        """
+                        UPDATE managed_node_credentials
+                        SET revision = ?, revoked_at = ?
+                        WHERE node_id = ? AND revision = ? AND revoked_at IS NULL
+                        """,
+                        (
+                            credential_revision,
+                            now,
+                            node_id,
+                            credential["revision"],
+                        ),
+                    )
+                    self._append_event(
+                        conn,
+                        node_id=node_id,
+                        event_type="node.credential_revoked",
+                        actor=actor,
+                        from_state=to_state,
+                        to_state=to_state,
+                        revision=revision,
+                        occurred_at=now,
+                        details={
+                            "credential_revision": credential_revision,
+                            "reason": "node retired",
+                        },
+                    )
             updated = conn.execute(
                 "SELECT * FROM managed_nodes WHERE id = ?", (node_id,)
             ).fetchone()
@@ -882,6 +960,34 @@ class NodeRegistry:
         """Return whether every stored event still matches the global hash chain."""
         previous_hash: str | None = None
         with self.connect() as conn:
+            heads = conn.execute(
+                """
+                SELECT singleton, event_sequence, event_hash
+                FROM managed_node_audit_head
+                """
+            ).fetchall()
+            if len(heads) != 1:
+                return False
+            head = heads[0]
+            head_sequence = head["event_sequence"]
+            head_hash = head["event_hash"]
+            if (
+                head["singleton"] != 1
+                or isinstance(head_sequence, bool)
+                or not isinstance(head_sequence, int)
+                or head_sequence < 0
+                or (head_sequence == 0 and head_hash is not None)
+                or (
+                    head_sequence > 0
+                    and (
+                        not isinstance(head_hash, str)
+                        or len(head_hash) != 64
+                        or any(char not in "0123456789abcdef" for char in head_hash)
+                    )
+                )
+            ):
+                return False
+            last_sequence = 0
             for row in conn.execute(
                 "SELECT * FROM managed_node_events ORDER BY sequence"
             ):
@@ -904,7 +1010,8 @@ class NodeRegistry:
                 if row["event_hash"] != expected:
                     return False
                 previous_hash = row["event_hash"]
-        return True
+                last_sequence = row["sequence"]
+        return last_sequence == head_sequence and previous_hash == head_hash
 
     @staticmethod
     def _node(row: sqlite3.Row, credential: sqlite3.Row) -> Node:
@@ -957,6 +1064,8 @@ class NodeRegistry:
             ).fetchone()
             if node_row is None:
                 raise KeyError(node_id)
+            if not revoke and node_row["state"] == "retired":
+                raise InvalidTransition("cannot rotate a retired node credential")
             credential_row = conn.execute(
                 "SELECT * FROM managed_node_credentials WHERE node_id = ?", (node_id,)
             ).fetchone()
@@ -1100,10 +1209,27 @@ class NodeRegistry:
         occurred_at: int,
         details: Mapping[str, Any],
     ) -> None:
+        head = conn.execute(
+            """
+            SELECT singleton, event_sequence, event_hash
+            FROM managed_node_audit_head
+            """
+        ).fetchall()
+        if len(head) != 1 or head[0]["singleton"] != 1:
+            raise RuntimeError("managed-node audit head is missing or malformed")
         previous = conn.execute(
-            "SELECT event_hash FROM managed_node_events ORDER BY sequence DESC LIMIT 1"
+            """
+            SELECT sequence, event_hash
+            FROM managed_node_events ORDER BY sequence DESC LIMIT 1
+            """
         ).fetchone()
         previous_hash = previous["event_hash"] if previous is not None else None
+        previous_sequence = previous["sequence"] if previous is not None else 0
+        if (
+            head[0]["event_sequence"] != previous_sequence
+            or head[0]["event_hash"] != previous_hash
+        ):
+            raise RuntimeError("managed-node audit head does not match event history")
         details_json = _canonical_json(dict(details))
         event_hash = self._event_hash(
             previous_hash=previous_hash,
@@ -1116,7 +1242,7 @@ class NodeRegistry:
             occurred_at=occurred_at,
             details_json=details_json,
         )
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO managed_node_events (
                 node_id, event_type, actor, from_state, to_state, node_revision,
@@ -1135,6 +1261,14 @@ class NodeRegistry:
                 previous_hash,
                 event_hash,
             ),
+        )
+        conn.execute(
+            """
+            UPDATE managed_node_audit_head
+            SET event_sequence = ?, event_hash = ?
+            WHERE singleton = 1
+            """,
+            (cursor.lastrowid, event_hash),
         )
 
     @staticmethod

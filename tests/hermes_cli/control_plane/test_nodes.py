@@ -8,6 +8,7 @@ import pytest
 from hermes_cli.control_plane.nodes import (
     AuthenticationFailed,
     ConcurrencyConflict,
+    CredentialConflict,
     IdempotencyConflict,
     InvalidTransition,
     NodeRegistry,
@@ -316,7 +317,14 @@ def test_stale_revision_is_rejected(registry):
 
 
 def test_retired_node_is_terminal(registry):
-    node = enroll(registry)
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    node = issuance.node
     node = registry.transition(
         node.id,
         "retired",
@@ -333,6 +341,133 @@ def test_retired_node_is_terminal(registry):
             expected_revision=node.revision,
             reason="accidental reuse",
         )
+    assert node.credential_status == "revoked"
+    assert node.credential_revision == 2
+    assert not registry.authenticate(node.id, issuance.credential)
+    assert [event.event_type for event in registry.history(node.id)] == [
+        "node.enrolled",
+        "node.retired",
+        "node.credential_revoked",
+    ]
+    assert registry.history(node.id)[-1].details == {
+        "credential_revision": 2,
+        "reason": "node retired",
+    }
+
+
+def test_retirement_rejects_observation_and_credential_rotation(registry):
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    registry.transition(
+        "node-1",
+        "retired",
+        actor="operator:alice",
+        expected_revision=1,
+        reason="decommissioned",
+    )
+
+    with pytest.raises(AuthenticationFailed):
+        registry.submit_observation(
+            "node-1",
+            credential=issuance.credential,
+            schema_version=1,
+            report_sequence=1,
+            observed_at=900,
+            health_state="healthy",
+            capabilities={},
+        )
+    with pytest.raises(InvalidTransition, match="retired"):
+        registry.rotate_credential(
+            "node-1",
+            actor="operator:alice",
+            expected_credential_revision=2,
+        )
+
+
+def test_retirement_rolls_back_lifecycle_and_credential_together(registry, monkeypatch):
+    issuance = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+    original_append = registry._append_event
+
+    def fail_credential_event(conn, **kwargs):
+        if kwargs["event_type"] == "node.credential_revoked":
+            raise RuntimeError("injected audit failure")
+        return original_append(conn, **kwargs)
+
+    monkeypatch.setattr(registry, "_append_event", fail_credential_event)
+    with pytest.raises(RuntimeError, match="injected"):
+        registry.transition(
+            "node-1",
+            "retired",
+            actor="operator:alice",
+            expected_revision=1,
+            reason="decommissioned",
+        )
+
+    node = registry.get("node-1")
+    assert node.state == "enrolled"
+    assert node.revision == 1
+    assert node.credential_status == "active"
+    assert registry.authenticate("node-1", issuance.credential)
+    assert [event.event_type for event in registry.history("node-1")] == [
+        "node.enrolled"
+    ]
+
+
+def test_concurrent_retirement_and_rotation_cannot_leave_retired_credential_active(
+    tmp_path,
+):
+    db_path = tmp_path / "control-plane.db"
+    issuance = NodeRegistry(db_path).enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+
+    def retire():
+        return NodeRegistry(db_path).transition(
+            "node-1",
+            "retired",
+            actor="operator:alice",
+            expected_revision=1,
+            reason="decommissioned",
+        )
+
+    def rotate():
+        return NodeRegistry(db_path).rotate_credential(
+            "node-1",
+            actor="operator:bob",
+            expected_credential_revision=1,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(retire), executor.submit(rotate)]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(future.result())
+        except (InvalidTransition, CredentialConflict) as exc:
+            outcomes.append(exc)
+
+    node = NodeRegistry(db_path).get("node-1")
+    assert node.state == "retired"
+    assert node.credential_status == "revoked"
+    assert not NodeRegistry(db_path).authenticate("node-1", issuance.credential)
+    for outcome in outcomes:
+        if hasattr(outcome, "credential") and outcome.credential:
+            assert not NodeRegistry(db_path).authenticate("node-1", outcome.credential)
 
 
 def test_audit_chain_detects_tampering(registry):
@@ -361,6 +496,75 @@ def test_audit_chain_treats_corrupt_details_json_as_invalid(registry):
         conn.execute(
             "UPDATE managed_node_events SET details_json = ? WHERE sequence = 1",
             ("{not-json",),
+        )
+
+    assert registry.verify_audit_chain() is False
+
+
+def test_audit_chain_detects_tail_and_all_event_deletion(registry):
+    node = enroll(registry)
+    registry.transition(
+        node.id,
+        "active",
+        actor="service:reconciler",
+        expected_revision=1,
+        reason="ready",
+    )
+    with sqlite3.connect(registry.db_path) as conn:
+        conn.execute(
+            "DELETE FROM managed_node_events WHERE sequence = "
+            "(SELECT MAX(sequence) FROM managed_node_events)"
+        )
+    assert registry.verify_audit_chain() is False
+
+    with sqlite3.connect(registry.db_path) as conn:
+        conn.execute("DELETE FROM managed_node_events")
+    assert registry.verify_audit_chain() is False
+
+
+def test_audit_head_migration_is_idempotent_and_preserves_valid_legacy_chain(
+    registry,
+):
+    enroll(registry)
+    with sqlite3.connect(registry.db_path) as conn:
+        expected = conn.execute(
+            "SELECT sequence, event_hash FROM managed_node_events"
+        ).fetchone()
+        conn.execute("DROP TABLE managed_node_audit_head")
+        conn.execute("PRAGMA user_version = 0")
+
+    registry.connect().close()
+    registry.connect().close()
+    with sqlite3.connect(registry.db_path) as conn:
+        heads = conn.execute(
+            "SELECT singleton, event_sequence, event_hash FROM managed_node_audit_head"
+        ).fetchall()
+    assert heads == [(1, expected[0], expected[1])]
+    assert registry.verify_audit_chain()
+
+
+def test_migrated_database_never_reanchors_a_deleted_audit_head(registry):
+    enroll(registry)
+    with sqlite3.connect(registry.db_path) as conn:
+        conn.execute("DELETE FROM managed_node_audit_head")
+
+    registry.connect().close()
+    assert registry.verify_audit_chain() is False
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("event_sequence", "malformed"),
+        ("event_hash", "not-a-hash"),
+    ],
+)
+def test_audit_chain_fails_closed_on_malformed_head(registry, column, value):
+    enroll(registry)
+    with sqlite3.connect(registry.db_path) as conn:
+        conn.execute(
+            f"UPDATE managed_node_audit_head SET {column} = ? WHERE singleton = 1",
+            (value,),
         )
 
     assert registry.verify_audit_chain() is False

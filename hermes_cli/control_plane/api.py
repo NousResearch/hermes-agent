@@ -306,6 +306,8 @@ async def rotate_node_credential(node_id: str, body: CredentialMutation):
         return _error(404, "node_not_found", f"managed node not found: {node_id}")
     except CredentialConflict as exc:
         return _error(409, "credential_revision_conflict", str(exc))
+    except InvalidTransition as exc:
+        return _error(409, "invalid_transition", str(exc))
     except ValueError as exc:
         return _error(400, "invalid_request", str(exc))
     return _issuance(issuance)

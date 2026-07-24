@@ -64,7 +64,7 @@ def test_cli_enroll_list_transition_history_and_audit(tmp_path, monkeypatch, cap
             "nodes",
             "transition",
             "node-1",
-            "active",
+            "retired",
             "--actor",
             "service:reconciler",
             "--expected-revision",
@@ -85,10 +85,12 @@ def test_cli_enroll_list_transition_history_and_audit(tmp_path, monkeypatch, cap
     raw = results[0]["credential"]
     assert raw
     assert results[1][0]["state"] == "enrolled"
-    assert results[2]["state"] == "active"
+    assert results[2]["state"] == "retired"
+    assert results[2]["credential_status"] == "revoked"
     assert [event["event_type"] for event in results[3]] == [
         "node.enrolled",
-        "node.active",
+        "node.retired",
+        "node.credential_revoked",
     ]
     assert results[4] == {"valid": True}
     public_output = json.dumps(results[1:])

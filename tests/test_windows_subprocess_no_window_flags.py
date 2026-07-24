@@ -508,6 +508,8 @@ def test_gateway_force_kill_hides_taskkill_window(monkeypatch):
             {
                 "capture_output": True,
                 "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
                 "timeout": 10,
                 "creationflags": _CREATE_NO_WINDOW,
             },

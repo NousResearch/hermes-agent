@@ -8542,10 +8542,10 @@ function createWindow() {
 
   mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
 
-  // Electron 36+ passes messageDetails as the second argument. Keep the
-  // listener at the canonical two-argument shape: declaring the deprecated
+  // Electron 36+ passes message details as the first argument. Keep the
+  // listener at the canonical one-argument shape: declaring the deprecated
   // positional fields makes Electron populate them and warn on every launch.
-  mainWindow.webContents.on('console-message', (_event, details) => {
+  mainWindow.webContents.on('console-message', details => {
     const line = formatRendererConsoleError(details)
 
     if (line) {

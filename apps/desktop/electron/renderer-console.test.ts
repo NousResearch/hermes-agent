@@ -4,13 +4,13 @@ import { test } from 'vitest'
 
 import { formatRendererConsoleError } from './renderer-console'
 
-test('formats renderer console errors from Electron message details', () => {
+test('formats renderer console errors from Electron webContents details', () => {
   assert.equal(
     formatRendererConsoleError({
-      level: 3,
+      level: 'error',
       lineNumber: 17,
       message: 'renderer failed',
-      sourceUrl: 'file:///renderer.js'
+      sourceId: 'file:///renderer.js'
     }),
     '[renderer console] renderer failed (file:///renderer.js:17)'
   )
@@ -22,13 +22,13 @@ test('ignores missing renderer console details', () => {
 })
 
 test('ignores non-error renderer console messages', () => {
-  for (const level of [0, 1, 2]) {
+  for (const level of ['info', 'warning', 'debug'] as const) {
     assert.equal(
       formatRendererConsoleError({
         level,
         lineNumber: 1,
         message: 'not an error',
-        sourceUrl: 'file:///renderer.js'
+        sourceId: 'file:///renderer.js'
       }),
       null
     )

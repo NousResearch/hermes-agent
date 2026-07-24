@@ -1,13 +1,13 @@
-import type { MessageDetails } from 'electron'
+import type { WebContentsConsoleMessageEventParams } from 'electron'
 
 function formatRendererConsoleError(
-  details: Pick<MessageDetails, 'level' | 'lineNumber' | 'message' | 'sourceUrl'> | null | undefined
+  details: Pick<WebContentsConsoleMessageEventParams, 'level' | 'lineNumber' | 'message' | 'sourceId'> | null | undefined
 ): string | null {
-  if (!details || details.level !== 3) {
+  if (!details || details.level !== 'error') {
     return null
   }
 
-  return `[renderer console] ${details.message} (${details.sourceUrl}:${details.lineNumber})`
+  return `[renderer console] ${details.message} (${details.sourceId}:${details.lineNumber})`
 }
 
 export { formatRendererConsoleError }

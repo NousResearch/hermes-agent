@@ -317,6 +317,8 @@ export const ja: Translations = {
     disableRuntime: "無効化",
     enableAfterInstall: "インストール後に有効化",
     enableRuntime: "有効化",
+    toggleTakesEffectNextSession:
+      "保存しました — 新しいセッションから有効になります。すべてに適用するにはゲートウェイを再起動してください。",
     forceReinstall: "強制再インストール (既存のフォルダを先に削除)",
     headline:
       "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",

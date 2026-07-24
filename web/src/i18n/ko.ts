@@ -317,6 +317,8 @@ export const ko: Translations = {
     disableRuntime: "비활성화",
     enableAfterInstall: "설치 후 활성화",
     enableRuntime: "활성화",
+    toggleTakesEffectNextSession:
+      "저장됨 — 새 세션부터 적용됩니다. 모든 곳에 적용하려면 게이트웨이를 다시 시작하세요.",
     forceReinstall: "강제 재설치 (기존 폴더를 먼저 삭제)",
     headline:
       "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",

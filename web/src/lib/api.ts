@@ -929,16 +929,24 @@ export const api = {
     }),
 
   enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/enable`, {
+      method: "POST",
+    }),
 
   disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/disable`, {
+      method: "POST",
+    }),
 
   updateAgentPlugin: (name: string) =>
     fetchJSON<AgentPluginUpdateResponse>(

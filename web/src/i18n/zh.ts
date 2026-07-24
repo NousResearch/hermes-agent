@@ -314,6 +314,8 @@ export const zh: Translations = {
     disableRuntime: "禁用",
     enableAfterInstall: "安装后启用",
     enableRuntime: "启用",
+    toggleTakesEffectNextSession:
+      "已保存 — 对新会话生效。重启网关以应用到所有会话。",
     forceReinstall: "强制重装（先删除已有目录）",
     headline: "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
     identifierLabel: "Git 地址或 owner/repo",

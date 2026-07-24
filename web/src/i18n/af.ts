@@ -318,6 +318,8 @@ export const af: Translations = {
     disableRuntime: "Deaktiveer",
     enableAfterInstall: "Aktiveer ná installasie",
     enableRuntime: "Aktiveer",
+    toggleTakesEffectNextSession:
+      "Gestoor — geld vir nuwe sessies. Herbegin die gateway om dit oral toe te pas.",
     forceReinstall: "Forseer herinstallasie (skrap eers bestaande gids)",
     headline:
       "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",

@@ -513,6 +513,82 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
+def api_plugin_command_registry() -> list[dict[str, Any]]:
+    """Return serializable/API-client-safe command metadata from the live registry.
+
+    Only plugin commands explicitly registered with ``api_executable=True`` are
+    returned because these have opted into the matching authenticated API-server
+    dispatch route. Local-only commands and gateway built-ins are omitted.
+    Handlers and other callable/plugin internals are never serialized.
+    """
+    registry: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(entry: dict[str, Any]) -> None:
+        name = str(entry.get("name") or "").strip().lower().lstrip("/")
+        if not name or name in seen:
+            return
+        seen.add(name)
+        description = str(entry.get("description") or entry.get("summary") or f"Run /{name}").strip()
+        record: dict[str, Any] = {
+            "name": name,
+            "command": f"/{name}",
+            "summary": description,
+            "description": description,
+        }
+        category = str(entry.get("category") or "").strip()
+        if category:
+            record["category"] = category
+        args_hint = str(entry.get("argsHint") or entry.get("args_hint") or "").strip()
+        if args_hint:
+            record["argsHint"] = args_hint
+            record["usage"] = f"/{name} {args_hint}"
+        aliases = [
+            f"/{str(alias).strip().lstrip('/')}"
+            for alias in entry.get("aliases", [])
+            if str(alias).strip()
+        ]
+        if aliases:
+            record["aliases"] = aliases
+        subcommands = [str(item).strip() for item in entry.get("subcommands", []) if str(item).strip()]
+        if subcommands:
+            record["subcommands"] = subcommands
+        source = str(entry.get("source") or "").strip()
+        if source:
+            record["source"] = source
+        plugin = str(entry.get("plugin") or "").strip()
+        if plugin:
+            record["plugin"] = plugin
+        registry.append(record)
+
+    try:
+        from hermes_cli.plugins import get_api_executable_plugin_commands
+    except Exception:
+        plugin_commands = {}
+    else:
+        try:
+            plugin_commands = get_api_executable_plugin_commands() or {}
+        except Exception:
+            plugin_commands = {}
+
+    for raw_name, meta in plugin_commands.items():
+        if not isinstance(meta, dict):
+            continue
+        name = str(raw_name or "").strip().lower().lstrip("/").replace(" ", "-")
+        _add(
+            {
+                "name": name,
+                "description": meta.get("description") or f"Run /{name}",
+                "category": meta.get("category") or "Plugin",
+                "argsHint": meta.get("args_hint") or meta.get("argsHint") or "",
+                "source": "plugin",
+                "plugin": meta.get("plugin") or "",
+            }
+        )
+
+    return registry
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 

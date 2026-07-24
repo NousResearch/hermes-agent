@@ -8,6 +8,7 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- POST /v1/commands/{name}         — execute an advertised plugin slash command
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
@@ -43,6 +44,7 @@ import asyncio
 import errno
 import hashlib
 import hmac
+import inspect
 import json
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -67,6 +69,10 @@ _PROFILE_REJECTED = object()
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None
 )
+
+_PLUGIN_COMMAND_TIMEOUT_SECONDS = 30.0
+_PLUGIN_COMMAND_REGISTRY_TIMEOUT_SECONDS = 5.0
+
 
 def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
     if smart_denied:
@@ -1559,6 +1565,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/v1/capabilities", self._handle_capabilities),
+            ("POST", "/v1/commands/{name}", self._handle_plugin_command),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
@@ -2081,7 +2088,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
+        payload = {
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
@@ -2148,6 +2155,126 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
+        }
+        if _api_request_profile.get() is not None:
+            payload["commands"] = []
+        else:
+            payload["endpoints"]["plugin_command"] = {
+                "method": "POST",
+                "path": "/v1/commands/{name}",
+            }
+            try:
+                from hermes_cli.commands import api_plugin_command_registry
+
+                payload["commands"] = await asyncio.wait_for(
+                    asyncio.to_thread(api_plugin_command_registry),
+                    timeout=_PLUGIN_COMMAND_REGISTRY_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Command registry timed out; omitting plugin commands",
+                    self.name,
+                )
+                payload["commands"] = []
+            except Exception as exc:
+                logger.debug(
+                    "[%s] Command registry unavailable for capabilities (%s)",
+                    self.name,
+                    type(exc).__name__,
+                )
+                payload["commands"] = []
+
+        return web.json_response(payload)
+
+    async def _handle_plugin_command(self, request: "web.Request") -> "web.Response":
+        """Execute a plugin command advertised by /v1/capabilities."""
+        if _api_request_profile.get() is not None:
+            return web.json_response(
+                _openai_error("Command not found", code="command_not_found"),
+                status=404,
+            )
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = str(request.match_info.get("name") or "").lower().lstrip("/")
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                _openai_error("Request body must be valid JSON", code="invalid_request"),
+                status=400,
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                _openai_error("Request body must be a JSON object", code="invalid_request"),
+                status=400,
+            )
+        raw_args = body.get("args", "")
+        if not isinstance(raw_args, str):
+            return web.json_response(_openai_error("args must be a string", code="invalid_request"), status=400)
+
+        def _resolve_command():
+            from hermes_cli.plugins import get_api_executable_plugin_commands
+
+            return (get_api_executable_plugin_commands() or {}).get(name)
+
+        try:
+            entry = await asyncio.wait_for(
+                asyncio.to_thread(_resolve_command),
+                timeout=_PLUGIN_COMMAND_REGISTRY_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[%s] Plugin command registry timed out", self.name)
+            return web.json_response(
+                _openai_error("Plugin command failed", code="command_failed"),
+                status=500,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Plugin command registry failed (%s)",
+                self.name,
+                type(exc).__name__,
+            )
+            return web.json_response(
+                _openai_error("Plugin command failed", code="command_failed"),
+                status=500,
+            )
+        handler = entry.get("handler") if isinstance(entry, dict) else None
+        if not callable(handler):
+            return web.json_response(_openai_error(f"Command not found: /{name}", code="command_not_found"), status=404)
+        try:
+            async def _invoke_command():
+                if inspect.iscoroutinefunction(handler):
+                    result = handler(raw_args)
+                else:
+                    result = await asyncio.to_thread(handler, raw_args)
+                if inspect.isawaitable(result):
+                    result = await result
+                if result is None or isinstance(result, str):
+                    return result
+                return await asyncio.to_thread(str, result)
+
+            normalized_result = await asyncio.wait_for(
+                _invoke_command(),
+                timeout=_PLUGIN_COMMAND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[%s] Plugin command /%s timed out", self.name, name)
+            return web.json_response(
+                _openai_error("Plugin command failed", code="command_failed"),
+                status=500,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Plugin command /%s failed: %s",
+                self.name,
+                name,
+                redact_sensitive_text(str(exc), force=True),
+            )
+            return web.json_response(_openai_error("Plugin command failed", code="command_failed"), status=500)
+        return web.json_response({
+            "command": f"/{name}",
+            "result": normalized_result,
         })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":

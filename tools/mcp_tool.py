@@ -969,6 +969,62 @@ class NonMcpEndpointError(ConnectionError):
     """
 
 
+# _meta key carrying structured WWW-Authenticate challenges on a tool result
+# (SEP-835 convention: servers that accept anonymous ``initialize`` but
+# protect individual tools deliver the challenge here instead of an HTTP 401).
+_WWW_AUTHENTICATE_META_KEY = "mcp/www_authenticate"
+
+
+class McpToolAuthChallengeError(RuntimeError):
+    """A tool result carried a structured OAuth challenge in ``_meta`` (#69811).
+
+    Raised from the tool-call mapping when ``CallToolResult.isError`` is set
+    and ``_meta["mcp/www_authenticate"]`` is present, so the handler layer can
+    route the challenge through the OAuth manager and retry once. The message
+    intentionally excludes the challenge contents — no auth-flow material in
+    diagnostics.
+    """
+
+    def __init__(
+        self,
+        server_name: str,
+        challenges: List[str],
+        error_text: str = "",
+    ):
+        super().__init__(
+            f"MCP server '{server_name}' returned an OAuth challenge "
+            f"in a tool result"
+        )
+        self.server_name = server_name
+        self.challenges = challenges
+        self.error_text = error_text
+
+
+def _extract_tool_auth_challenges(result: Any) -> List[str]:
+    """Return WWW-Authenticate challenge strings from a tool result's _meta.
+
+    The MCP python SDK exposes ``_meta`` as ``CallToolResult.meta``. The value
+    under ``mcp/www_authenticate`` may be a single string or a list of
+    strings; anything else is ignored. Returns [] when no structured
+    challenge is present — ordinary tool errors must stay untouched.
+    """
+    meta = getattr(result, "meta", None)
+    if not isinstance(meta, dict):
+        return []
+    raw = meta.get(_WWW_AUTHENTICATE_META_KEY)
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    challenges = [
+        item.strip() for item in raw
+        if isinstance(item, str) and item.strip()
+    ]
+    # Defensive cap: a hostile server can't stuff megabytes of "challenges"
+    # into a synthesized header.
+    return challenges[:8]
+
+
 def _unwrap_exception_group(exc: BaseException) -> BaseException:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -3888,6 +3944,128 @@ def _handle_auth_error_and_retry(
     }, ensure_ascii=False)
 
 
+def _handle_tool_challenge_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Recover from a tool-level OAuth challenge and retry once (#69811).
+
+    Counterpart of :func:`_handle_auth_error_and_retry` for challenges that
+    arrive in ``CallToolResult._meta["mcp/www_authenticate"]`` rather than as
+    a transport-level 401 (servers that allow anonymous ``initialize`` but
+    protect individual tools). Workflow:
+
+      1. Route the structured challenge through
+         :meth:`MCPOAuthManager.handle_tool_challenge`, which drives the
+         SDK's own discovery + Authorization Code + S256 PKCE flow from the
+         challenge's ``resource_metadata`` and ``scope``.
+      2. On success, flip the live server to OAuth transport auth (so the
+         rebuilt session sends ``Authorization: Bearer``), signal a
+         reconnect, and wait for readiness.
+      3. Retry the original tool call at most ONCE. A second challenge (or
+         any other failure) surfaces a structured ``needs_reauth`` error —
+         never an unbounded retry loop.
+      4. Return None if ``exc`` is not a tool challenge, so the caller falls
+         through to the other recovery paths.
+    """
+    if not isinstance(exc, McpToolAuthChallengeError):
+        return None
+
+    with _lock:
+        srv = _servers.get(server_name)
+    config = getattr(srv, "_config", None) if srv is not None else None
+    url = (config or {}).get("url")
+
+    recovered = False
+    if srv is not None and url:
+        from tools.mcp_oauth_manager import get_manager
+        manager = get_manager()
+        oauth_cfg = config.get("oauth")
+        challenges = list(exc.challenges)
+
+        async def _recover():
+            return await manager.handle_tool_challenge(
+                server_name, url, oauth_cfg, challenges,
+            )
+
+        # The interactive browser flow legitimately takes minutes — size the
+        # loop timeout from the provider timeout (default 300s) rather than
+        # the 10s used by the non-interactive 401 recovery path.
+        flow_timeout = float((oauth_cfg or {}).get("timeout", 300)) + 30.0
+        try:
+            recovered = bool(_run_on_mcp_loop(_recover, timeout=flow_timeout))
+        except Exception as rec_exc:
+            logger.warning(
+                "MCP OAuth '%s': tool-challenge recovery failed: %s",
+                server_name, rec_exc,
+            )
+            recovered = False
+
+    if recovered:
+        # The server connected anonymously; make the rebuilt transport carry
+        # the OAuth provider. run() reuses this same config dict on every
+        # reconnect iteration, so the flip persists for the process lifetime.
+        if (config.get("auth") or "").lower().strip() != "oauth":
+            config["auth"] = "oauth"
+            srv._auth_type = "oauth"
+            logger.info(
+                "MCP server '%s': enabling OAuth transport auth after a tool "
+                "challenge. Add `auth: oauth` to this server's config to "
+                "skip the challenge round-trip in future sessions.",
+                server_name,
+            )
+
+        reconnected = _signal_reconnect_and_wait(
+            server_name,
+            srv,
+            op_description=f"{op_description} after tool OAuth challenge",
+            timeout=15,
+        )
+        if reconnected:
+            _reset_server_error(server_name)
+
+        try:
+            result = retry_call()
+            try:
+                parsed = json.loads(result)
+                if "error" in parsed:
+                    _bump_server_error(server_name)
+                else:
+                    _reset_server_error(server_name)
+            except (json.JSONDecodeError, TypeError):
+                _reset_server_error(server_name)
+            # Authorization worked — surface the retry outcome verbatim,
+            # success or the tool's ordinary (non-challenge) error.
+            return result
+        except McpToolAuthChallengeError:
+            # Still challenged after OAuth + reconnect: authorization did not
+            # satisfy the server. Hard stop — one retry only.
+            logger.warning(
+                "MCP %s/%s: tool still challenged after OAuth recovery; "
+                "not retrying again",
+                server_name, op_description,
+            )
+        except Exception as retry_exc:
+            logger.warning(
+                "MCP %s/%s retry after tool OAuth challenge failed: %s",
+                server_name, op_description, retry_exc,
+            )
+
+    _bump_server_error(server_name)
+    return json.dumps({
+        "error": (
+            f"MCP server '{server_name}' requires authorization for this "
+            f"tool and automatic OAuth did not complete. Run `hermes mcp "
+            f"login {server_name}` to authorize, then try again. Do NOT "
+            f"retry this tool immediately."
+        ),
+        "needs_reauth": True,
+        "server": server_name,
+    }, ensure_ascii=False)
+
+
 # Substrings (lower-cased match) that indicate the MCP server rejected
 # the request because its server-side transport session expired /
 # was garbage-collected.  The caller's OAuth token is still valid —
@@ -4637,6 +4815,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     res_text = getattr(getattr(block, "resource", None), "text", None)
                     if res_text:
                         error_text += str(res_text)
+                # Structured OAuth challenge in _meta (#69811): the server
+                # accepted anonymous initialize but protects this tool.
+                # Surface as a typed exception so the handler layer can run
+                # the OAuth flow, reconnect, and retry once. HTTP-only —
+                # OAuth over a stdio transport is not a thing.
+                challenges = _extract_tool_auth_challenges(result)
+                if challenges and server._is_http():
+                    raise McpToolAuthChallengeError(
+                        server_name, challenges, error_text,
+                    )
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
@@ -4724,6 +4912,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            # Tool-level OAuth challenge (#69811): the result carried a
+            # structured www-authenticate challenge in _meta. Run the OAuth
+            # flow, reconnect, retry once. Returns None for other exceptions.
+            recovered = _handle_tool_challenge_and_retry(
+                server_name, exc, _call_once,
+                f"tools/call {tool_name}",
+            )
+            if recovered is not None:
+                return recovered
+
             # Auth-specific recovery path: consult the manager, signal
             # reconnect if viable, retry once. Returns None to fall
             # through for non-auth exceptions.

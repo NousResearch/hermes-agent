@@ -492,6 +492,7 @@ class AIAgent:
         checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
+        checkpoint_scope: str = "turn",
         pass_session_id: bool = False,
         requested_provider: str = None,
     ):
@@ -570,6 +571,7 @@ class AIAgent:
             checkpoint_max_snapshots=checkpoint_max_snapshots,
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
+            checkpoint_scope=checkpoint_scope,
             pass_session_id=pass_session_id,
         )
 

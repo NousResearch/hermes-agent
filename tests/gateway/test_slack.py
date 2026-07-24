@@ -6187,6 +6187,45 @@ class TestReplyBroadcast:
         assert kwargs.get("reply_broadcast") is True
 
 
+class TestCanonicalSentThread:
+    """Track the thread Slack actually used, not only the requested reply."""
+
+    @pytest.mark.asyncio
+    async def test_send_records_canonical_thread_from_response(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={
+                "ok": True,
+                "ts": "300.000",
+                "message": {"thread_ts": "100.000"},
+            }
+        )
+
+        await adapter.send(
+            "C123",
+            "hello",
+            metadata={"thread_id": "200.000"},
+        )
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["thread_ts"] == "200.000"
+        assert adapter._workspace_message_marker("", "100.000") in adapter._bot_message_ts
+        assert adapter._workspace_message_marker("", "200.000") not in adapter._bot_message_ts
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_requested_thread(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "300.000"}
+        )
+
+        await adapter.send(
+            "C123",
+            "hello",
+            metadata={"thread_id": "200.000"},
+        )
+
+        assert adapter._workspace_message_marker("", "200.000") in adapter._bot_message_ts
+
+
 # ---------------------------------------------------------------------------
 # TestFallbackPreservesThreadContext
 # ---------------------------------------------------------------------------

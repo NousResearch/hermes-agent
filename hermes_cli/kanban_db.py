@@ -135,6 +135,7 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+_IS_LINUX = sys.platform.startswith("linux")
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -8584,6 +8585,99 @@ def _safe_which_no_cwd(command: str) -> Optional[str]:
     return None
 
 
+def _worker_priority_prefix(kanban_cfg: Optional[dict] = None) -> list[str]:
+    """Build best-effort priority wrappers for a spawned worker child.
+
+    The dispatcher/gateway process is never reniced. Invalid configuration,
+    unsupported platforms, or missing executables preserve the historical
+    unwrapped worker command.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = load_config().get("kanban") or {}
+        except Exception as exc:
+            _log.debug("kanban worker priority config could not be loaded: %s", exc)
+            return []
+    if not isinstance(kanban_cfg, dict):
+        _log.warning(
+            "kanban worker priority config must be a mapping; got %s; "
+            "launching worker without priority wrappers",
+            type(kanban_cfg).__name__,
+        )
+        return []
+
+    raw_nice = kanban_cfg.get("worker_nice", 0)
+    if raw_nice is None:
+        worker_nice = 0
+    elif type(raw_nice) is not int or not 0 <= raw_nice <= 19:
+        _log.warning(
+            "kanban.worker_nice must be an integer from 0 to 19; got %r; "
+            "ignoring the nice wrapper",
+            raw_nice,
+        )
+        worker_nice = 0
+    else:
+        worker_nice = raw_nice
+
+    raw_ionice = kanban_cfg.get("worker_ionice_class", "none")
+    if raw_ionice is None:
+        worker_ionice_class = "none"
+    elif isinstance(raw_ionice, str):
+        worker_ionice_class = raw_ionice.strip().casefold()
+        if worker_ionice_class not in {"none", "idle"}:
+            _log.warning(
+                "kanban.worker_ionice_class must be 'none' or 'idle'; got %r; "
+                "ignoring the ionice wrapper",
+                raw_ionice,
+            )
+            worker_ionice_class = "none"
+    else:
+        _log.warning(
+            "kanban.worker_ionice_class must be 'none' or 'idle'; got %r; "
+            "ignoring the ionice wrapper",
+            raw_ionice,
+        )
+        worker_ionice_class = "none"
+
+    if worker_nice == 0 and worker_ionice_class == "none":
+        return []
+    if _IS_WINDOWS:
+        _log.debug(
+            "kanban worker priority wrappers are unavailable on Windows; "
+            "launching worker without priority changes"
+        )
+        return []
+    if worker_ionice_class == "idle" and not _IS_LINUX:
+        _log.warning(
+            "kanban.worker_ionice_class='idle' requires Linux; "
+            "launching worker without priority wrappers"
+        )
+        return []
+
+    requested: list[tuple[str, list[str]]] = []
+    if worker_nice:
+        requested.append(("nice", ["-n", str(worker_nice)]))
+    if worker_ionice_class == "idle":
+        requested.append(("ionice", ["-c", "3"]))
+
+    prefix: list[str] = []
+    for executable, args in requested:
+        resolved = _safe_which_no_cwd(executable)
+        if not resolved:
+            _log.warning(
+                "kanban worker priority executable %r was not found on PATH; "
+                "launching worker without priority wrappers",
+                executable,
+            )
+            return []
+        # Popen changes cwd to the task workspace. Keep a relative PATH entry
+        # from being reinterpreted after that directory change.
+        prefix.extend([_absolute_hermes_path(resolved), *args])
+    return prefix
+
+
 def _hermes_path_argv(path: str) -> list[str]:
     """Return argv for a resolved Hermes executable path.
 
@@ -8870,25 +8964,50 @@ def _default_spawn(
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
+    priority_prefix = _worker_priority_prefix()
+    spawn_cmd = [*priority_prefix, *cmd]
+
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    popen_kwargs = {
+        "cwd": workspace if os.path.isdir(workspace) else None,
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_f,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+        "start_new_session": True,
+        "creationflags": subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+    }
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            spawn_cmd,
+            **popen_kwargs,
         )
     except FileNotFoundError:
-        log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+        # A resolved optional wrapper may disappear between lookup and exec.
+        # Retry the historical argv once so prioritization cannot block work.
+        if priority_prefix:
+            _log.warning(
+                "kanban worker priority wrapper was unavailable at launch; "
+                "retrying without priority wrappers"
+            )
+            try:
+                proc = subprocess.Popen(  # noqa: S603 -- fixed argv, no shell
+                    cmd,
+                    **popen_kwargs,
+                )
+            except FileNotFoundError:
+                log_f.close()
+                raise RuntimeError(
+                    "`hermes` executable not found on PATH. "
+                    "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+                )
+        else:
+            log_f.close()
+            raise RuntimeError(
+                "`hermes` executable not found on PATH. "
+                "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's

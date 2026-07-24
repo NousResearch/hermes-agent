@@ -717,21 +717,32 @@ All commands are also available as a slash command in the interactive CLI and in
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 
-### Concurrency, scheduling, and child promotion config
+### Concurrency, scheduling, worker priority, and child promotion config
 
 | Config key | Default | What it does |
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
+| `kanban.worker_nice` | `0` (disabled) | Optional CPU-priority wrapper for spawned workers. Integers `1` through `19` are passed to `nice -n`; `0` or unset preserves the normal worker argv. This affects only worker children, never the gateway process. |
+| `kanban.worker_ionice_class` | `none` | Set to `idle` on Linux to launch workers through `ionice -c 3`. `none` or unset preserves normal I/O priority. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
 ```yaml
 kanban:
   max_in_progress: 2
+  worker_nice: 15
+  worker_ionice_class: idle
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
+
+Priority settings are best-effort. Invalid values, Windows, non-Linux
+`ionice`, or a missing `nice`/`ionice` executable all fall back to the normal
+worker command so dispatch continues. When both wrappers are requested, both
+must be available. They are resolved from `PATH` without an implicit
+current-directory search and invoked as argv (never through a shell); both
+exec into the worker, preserving the PID used for crash detection.
 
 ### Scheduled task starts (`scheduled_at`)
 

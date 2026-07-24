@@ -1537,9 +1537,9 @@ def test_list_tasks_order_by(kanban_home):
         t_b = kb.create_task(conn, title="beta", priority=2)
         t_c = kb.create_task(conn, title="gamma", priority=1)
 
-        # Default sort: priority DESC, created ASC
+        # Default sort: priority DESC, created DESC
         default = kb.list_tasks(conn)
-        assert [t.id for t in default] == [t_b, t_a, t_c]
+        assert [t.id for t in default] == [t_b, t_c, t_a]
 
         # Sort by title ASC
         by_title = kb.list_tasks(conn, order_by="title")

@@ -235,11 +235,58 @@ class DaytonaEnvironment(BaseEnvironment):
         else:
             shell_cmd = f"bash -c {shlex.quote(cmd_string)}"
 
+        # Forward explicitly-allowlisted env vars into the remote sandbox.
+        # env_passthrough is otherwise only honored by the local / execute_code
+        # backends, so skill (``required_environment_variables``) and config
+        # (``terminal.env_passthrough``) declarations never reached commands run
+        # on the Daytona backend. Resolve the allowlist HERE in the calling
+        # context: ContextVar-based skill declarations do not propagate into the
+        # _ThreadedProcessHandle worker thread below.
+        sandbox_env = self._collect_passthrough_env()
+
         def exec_fn() -> tuple[str, int]:
-            response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            response = sandbox.process.exec(
+                shell_cmd, env=sandbox_env or None, timeout=timeout)
             return (response.result or "", response.exit_code)
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
+
+    @staticmethod
+    def _collect_passthrough_env() -> dict[str, str]:
+        """Env vars explicitly allowlisted for sandbox passthrough.
+
+        Only names allowed by ``is_env_passthrough`` (a skill's
+        ``required_environment_variables`` or ``terminal.env_passthrough``) are
+        forwarded — never the full host environment — so the remote sandbox
+        stays isolated by default. ``is_env_passthrough`` already refuses Hermes
+        provider credentials (GHSA-rhgp-j443-p4rf).
+
+        Remote boundary hardening: this backend ships env vars to a
+        *third-party cloud* sandbox over the network, so we additionally honor
+        the local backend's ``_ALWAYS_STRIP_KEYS`` invariant ("stripped from
+        EVERY spawned subprocess unconditionally") and refuse dynamically
+        generated Hermes-internal secrets — even if a skill or operator managed
+        to allowlist such a name. ``SLACK_SIGNING_SECRET`` in particular sits in
+        ``_ALWAYS_STRIP_KEYS`` but not in the provider blocklist, so without
+        this deny it would be registerable and tunneled off-host.
+
+        Allowlisted values are preserved as-is, including empty strings — an
+        explicitly-set ``VAR=""`` is a valid environment state and the local
+        backend's sanitizer keeps it too."""
+        try:
+            from tools.env_passthrough import is_env_passthrough
+            from tools.environments.local import (
+                _ALWAYS_STRIP_KEYS,
+                _is_hermes_internal_secret,
+            )
+        except Exception:
+            return {}
+        return {
+            k: v for k, v in os.environ.items()
+            if is_env_passthrough(k)
+            and k not in _ALWAYS_STRIP_KEYS
+            and not _is_hermes_internal_secret(k)
+        }
 
     def cleanup(self):
         with self._lock:

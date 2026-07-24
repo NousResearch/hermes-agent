@@ -440,3 +440,134 @@ class TestSyncSafety:
         assert "; touch" not in mkdir_cmd.replace(
             "'/root/.hermes/skills/evil; touch /tmp/daytona-owned'", ""
         )
+
+
+# ---------------------------------------------------------------------------
+# env_passthrough forwarding (regression)
+# ---------------------------------------------------------------------------
+class TestEnvPassthroughForwarding:
+    """The Daytona backend must forward allowlisted env vars to sandbox exec.
+
+    Regression: daytona.py previously called ``sandbox.process.exec`` without
+    ``env=`` and never consulted ``is_env_passthrough`` (unlike local.py), so a
+    skill's ``required_environment_variables`` / ``terminal.env_passthrough``
+    silently never reached commands run on the Daytona backend.
+    """
+
+    def test_collect_only_forwards_allowlisted(self, monkeypatch):
+        from tools.environments.daytona import DaytonaEnvironment
+        from tools.env_passthrough import (
+            register_env_passthrough,
+            clear_env_passthrough,
+        )
+
+        clear_env_passthrough()
+        # Pin the process-global config allowlist empty: is_env_passthrough
+        # also consults config.yaml's terminal.env_passthrough (cached, and
+        # NOT reset by clear_env_passthrough), so a dev/CI machine that lists
+        # one of these names would otherwise make the assertions flaky.
+        monkeypatch.setattr(
+            "tools.env_passthrough._config_passthrough", frozenset()
+        )
+        monkeypatch.setenv("PCLOUD_S3_TOKEN", "sekret")
+        monkeypatch.setenv("UNRELATED_VAR", "nope")
+        register_env_passthrough(["PCLOUD_S3_TOKEN"])
+        try:
+            collected = DaytonaEnvironment._collect_passthrough_env()
+        finally:
+            clear_env_passthrough()
+
+        assert collected.get("PCLOUD_S3_TOKEN") == "sekret"
+        # Non-allowlisted vars must not leak into the isolated sandbox.
+        assert "UNRELATED_VAR" not in collected
+
+    def test_collect_denies_always_strip_keys_on_remote_boundary(
+        self, monkeypatch
+    ):
+        """Tier-1 secrets must never be forwarded to the remote sandbox.
+
+        ``SLACK_SIGNING_SECRET`` sits in local.py's ``_ALWAYS_STRIP_KEYS``
+        ("stripped from EVERY spawned subprocess unconditionally") but is NOT
+        in the provider-credential blocklist, so ``register_env_passthrough``
+        accepts it. Without a remote-boundary deny in _collect_passthrough_env,
+        it would be tunneled off-host to Daytona's third-party cloud. Enforce
+        the strip here regardless of registration.
+        """
+        from tools.environments.daytona import DaytonaEnvironment
+        from tools.env_passthrough import (
+            register_env_passthrough,
+            clear_env_passthrough,
+            is_env_passthrough,
+        )
+
+        clear_env_passthrough()
+        monkeypatch.setattr(
+            "tools.env_passthrough._config_passthrough", frozenset()
+        )
+        monkeypatch.setenv("SLACK_SIGNING_SECRET", "8f00b204e9800998")
+        monkeypatch.setenv("PCLOUD_S3_TOKEN", "sekret")
+        register_env_passthrough(["SLACK_SIGNING_SECRET", "PCLOUD_S3_TOKEN"])
+        try:
+            # Precondition: registration did NOT refuse the Tier-1 name, so the
+            # deny below is what actually protects the remote boundary.
+            assert is_env_passthrough("SLACK_SIGNING_SECRET")
+            collected = DaytonaEnvironment._collect_passthrough_env()
+        finally:
+            clear_env_passthrough()
+
+        assert "SLACK_SIGNING_SECRET" not in collected
+        # A legitimately allowlisted non-Tier-1 var is still forwarded.
+        assert collected.get("PCLOUD_S3_TOKEN") == "sekret"
+
+    def test_run_bash_passes_env_to_exec(self, make_env, monkeypatch):
+        from tools.env_passthrough import (
+            register_env_passthrough,
+            clear_env_passthrough,
+        )
+
+        clear_env_passthrough()
+        monkeypatch.setenv("PCLOUD_S3_TOKEN", "sekret")
+        register_env_passthrough(["PCLOUD_S3_TOKEN"])
+        env = make_env()
+        sandbox = env._sandbox
+        sandbox.process.exec.reset_mock()  # drop the $HOME-detection call
+        try:
+            handle = env._run_bash("echo hi")
+            handle._done.wait(timeout=5)
+        finally:
+            clear_env_passthrough()
+
+        # Fail loudly if the worker hung rather than passing on a stale call.
+        assert handle._done.is_set()
+        _, kwargs = sandbox.process.exec.call_args
+        assert kwargs.get("env", {}).get("PCLOUD_S3_TOKEN") == "sekret"
+
+    def test_run_bash_forwards_empty_string_value(self, make_env, monkeypatch):
+        """An allowlisted var explicitly set to "" must still be forwarded.
+
+        Regression: _collect_passthrough_env filtered with ``if v``, silently
+        dropping empty-string values that the local backend's sanitizer
+        preserves — the two backends would disagree on a valid env state.
+        """
+        from tools.env_passthrough import (
+            register_env_passthrough,
+            clear_env_passthrough,
+        )
+
+        clear_env_passthrough()
+        monkeypatch.setenv("PCLOUD_S3_TOKEN", "")
+        register_env_passthrough(["PCLOUD_S3_TOKEN"])
+        env = make_env()
+        sandbox = env._sandbox
+        sandbox.process.exec.reset_mock()  # drop the $HOME-detection call
+        try:
+            handle = env._run_bash("echo hi")
+            handle._done.wait(timeout=5)
+        finally:
+            clear_env_passthrough()
+
+        assert handle._done.is_set()
+        _, kwargs = sandbox.process.exec.call_args
+        env_arg = kwargs.get("env")
+        assert env_arg is not None
+        assert env_arg.get("PCLOUD_S3_TOKEN") == ""

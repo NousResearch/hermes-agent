@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
+import { $approvalRequest, type ApprovalRequest } from '@/store/prompts'
 import { $awaitingResponse, $busy } from '@/store/session'
 
 /**
@@ -44,13 +45,18 @@ export interface PetOverlayStatePayload {
   activity: PetActivity
   busy: boolean
   awaiting: boolean
+  /** Active-session approval mirrored into the gateway-less overlay. */
+  approval: ApprovalRequest | null
   /** Drives the overlay's mail icon: a finish landed while you were away. */
   unread: boolean
   /** Latest reaction — bumping its id forwards a burst to the overlay. */
   reaction: PetReaction | null
 }
 
+export const $petOverlayApproval = atom<ApprovalRequest | null>(null)
+
 export type PetOverlayControl =
+  | { type: 'approval'; choice: 'deny' | 'once'; sessionId: string | null }
   | { type: 'pop-in' }
   | { type: 'ready' }
   | { type: 'submit'; text: string }
@@ -137,6 +143,7 @@ export function overlayWindowSize(frameW: number, frameH: number, scale: number)
 let stateUnsubs: Array<() => void> = []
 let controlUnsub: (() => void) | null = null
 let submitHandler: ((text: string) => void) | null = null
+let approvalHandler: ((choice: 'deny' | 'once', sessionId: string | null) => void) | null = null
 let openAppHandler: (() => void) | null = null
 let scaleHandler: ((scale: number) => void) | null = null
 
@@ -146,6 +153,7 @@ function currentPayload(): PetOverlayStatePayload {
     activity: $petActivity.get(),
     busy: $busy.get(),
     awaiting: $awaitingResponse.get(),
+    approval: $approvalRequest.get(),
     unread: $petUnread.get(),
     reaction: $petReaction.get()
   }
@@ -183,6 +191,7 @@ function openOverlay(request: PetOverlayOpenRequest): void {
     $petActivity.subscribe(pushNow),
     $busy.subscribe(pushNow),
     $awaitingResponse.subscribe(pushNow),
+    $approvalRequest.subscribe(pushNow),
     $petUnread.subscribe(pushNow),
     $petReaction.subscribe(pushNow)
   ]
@@ -249,6 +258,13 @@ export function popInPet(): void {
   void window.hermesDesktop?.petOverlay?.close()
 }
 
+/** Register the handler that turns an overlay approval action into the existing gateway response flow. */
+export function setPetOverlayApprovalHandler(
+  fn: ((choice: 'deny' | 'once', sessionId: string | null) => void) | null
+): void {
+  approvalHandler = fn
+}
+
 /** Register the handler that turns an overlay composer submit into a real send. */
 export function setPetOverlaySubmitHandler(fn: ((text: string) => void) | null): void {
   submitHandler = fn
@@ -281,6 +297,8 @@ export function initPetOverlayBridge(): () => void {
     } else if (payload?.type === 'ready') {
       // The overlay just mounted — hand it the current frame.
       pushNow()
+    } else if (payload?.type === 'approval') {
+      approvalHandler?.(payload.choice, payload.sessionId)
     } else if (payload?.type === 'submit' && typeof payload.text === 'string') {
       submitHandler?.(payload.text)
     } else if (payload?.type === 'bounds' && payload.bounds) {

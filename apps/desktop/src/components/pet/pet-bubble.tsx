@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { AlertCircle, Clock, type IconComponent } from '@/lib/icons'
 import { $petActivity, $petState, type PetState } from '@/store/pet'
+import { $petOverlayApproval } from '@/store/pet-overlay'
 
 /**
  * Speech bubble + status glyph for the popped-out pet overlay — the
@@ -29,41 +30,19 @@ interface Spec {
 // Keep them short — the bubble is tiny and never wraps.
 const SPECS: Partial<Record<PetState, Spec>> = {
   run: {
-    lines: [
-      'working…',
-      'on it…',
-      'crunching…',
-      'tinkering…',
-      'cooking…',
-      'in the weeds…',
-      'wiring it up…',
-      'making moves…',
-      'heads down…',
-      'hammering away…'
-    ]
+    lines: ['正在处理…', '我来看看…', '正在执行…', '我需要处理一下…']
   },
   review: {
-    lines: [
-      'thinking…',
-      'reading…',
-      'reviewing…',
-      'pondering…',
-      'connecting dots…',
-      'sizing it up…',
-      'tracing it…',
-      'mulling…',
-      'scheming…',
-      'hmm…'
-    ]
+    lines: ['正在思考…', '我发现了一些线索…', '正在检查…', '我需要确认一下…']
   },
   failed: {
     glyph: AlertCircle,
-    lines: ['hit a snag', 'welp', 'that broke', 'oof', 'snagged'],
+    lines: ['遇到问题了', '这里需要处理', '执行失败了'],
     tone: 'error'
   },
   waiting: {
     glyph: Clock,
-    lines: ['your turn', 'all yours', 'over to you', 'ball’s in your court', 'awaiting orders'],
+    lines: ['需要你的操作', '等你确认', '轮到你啦'],
     tone: 'wait'
   }
 }
@@ -71,6 +50,12 @@ const SPECS: Partial<Record<PetState, Spec>> = {
 const TONE_COLOR: Record<Tone, string> = {
   error: 'var(--ui-red)',
   wait: 'var(--ui-yellow)'
+}
+
+export function summarizePetApproval(command: string, description: string): string {
+  const text = (command.trim() || description.trim() || '待审批操作').split(/\r?\n/, 1)[0] ?? ''
+
+  return text.length > 42 ? `${text.slice(0, 39)}…` : text
 }
 
 // Random pick that avoids repeating the line we're already showing.
@@ -91,7 +76,9 @@ function pick(lines: string[], prev: string): string {
 export function PetBubble() {
   const state = useStore($petState)
   const activity = useStore($petActivity)
+  const approval = useStore($petOverlayApproval)
   const [line, setLine] = useState('')
+  const [submitting, setSubmitting] = useState<'deny' | 'once' | null>(null)
 
   // Finish beats are carried by the sprite/mail icon; idle only speaks up when
   // it's actually the user's turn. Everything else maps to a mood spec.
@@ -121,6 +108,55 @@ export function PetBubble() {
 
     return () => window.clearInterval(id)
   }, [specKey, rotating])
+
+  const respond = (choice: 'deny' | 'once') => {
+    if (!approval || submitting) {
+      return
+    }
+
+    setSubmitting(choice)
+    window.hermesDesktop?.petOverlay?.control({
+      choice,
+      sessionId: approval.sessionId,
+      type: 'approval'
+    })
+    $petOverlayApproval.set(null)
+    setSubmitting(null)
+  }
+
+  if (approval) {
+    return (
+      <div
+        style={{
+          background: 'var(--ui-bg-elevated)',
+          border: '1px solid var(--ui-stroke-secondary)',
+          borderRadius: 10,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.22)',
+          color: 'var(--foreground)',
+          display: 'flex',
+          flexDirection: 'column',
+          fontSize: 11,
+          gap: 6,
+          maxWidth: 250,
+          padding: '7px 9px',
+          pointerEvents: 'auto'
+        }}
+      >
+        <strong>需要审批</strong>
+        <code style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {summarizePetApproval(approval.command, approval.description)}
+        </code>
+        <span style={{ display: 'flex', gap: 6 }}>
+          <button disabled={Boolean(submitting)} onClick={() => respond('once')} type="button">
+            {submitting === 'once' ? '处理中…' : '批准一次'}
+          </button>
+          <button disabled={Boolean(submitting)} onClick={() => respond('deny')} type="button">
+            {submitting === 'deny' ? '处理中…' : '拒绝'}
+          </button>
+        </span>
+      </div>
+    )
+  }
 
   const spec = specKey ? SPECS[specKey] : null
 

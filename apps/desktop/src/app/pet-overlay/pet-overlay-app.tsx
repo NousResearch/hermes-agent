@@ -7,7 +7,7 @@ import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
-import { overlayWindowSize } from '@/store/pet-overlay'
+import { $petOverlayApproval, overlayWindowSize } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 
 // Fallbacks mirror pet-sprite's defaults; the gateway normally sends real values.
@@ -62,6 +62,7 @@ interface DragState {
 
 export function PetOverlayApp() {
   const info = useStore($petInfo)
+  const approval = useStore($petOverlayApproval)
   const [composerOpen, setComposerOpen] = useState(false)
   const [draft, setDraft] = useState('')
   // Mirrored from the main renderer: a finish landed while you were away.
@@ -90,9 +91,12 @@ export function PetOverlayApp() {
   useEffect(() => {
     const off = window.hermesDesktop?.petOverlay?.onState(payload => {
       setPetInfo(payload.info)
-      $petActivity.set(payload.activity ?? {})
-      setBusy(Boolean(payload.busy))
-      setAwaitingResponse(Boolean(payload.awaiting))
+      $petOverlayApproval.set(payload.approval ?? null)
+      // Approval is a user decision, not active work: keep the mascot on its
+      // idle animation while the interactive bubble carries the pending item.
+      $petActivity.set(payload.approval ? {} : (payload.activity ?? {}))
+      setBusy(payload.approval ? false : Boolean(payload.busy))
+      setAwaitingResponse(payload.approval ? false : Boolean(payload.awaiting))
       setUnread(Boolean(payload.unread))
 
       // Play a reaction on a new id (ignore the first sync, which just primes it).

@@ -1672,21 +1672,31 @@ def _tui_need_npm_install(root: Path) -> bool:
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
-    for name, pkg in wanted.items():
+    # In a monorepo with npm workspaces, the root lockfile contains entries for
+    # ALL workspaces (e.g. apps/desktop, apps/shared), but ``npm install
+    # --workspace ui-tui`` only installs the TUI workspace's dependencies.
+    # The hidden lockfile therefore only reflects the installed subset.
+    # Comparing wanted→installed (checking every root lockfile entry exists in
+    # the hidden lockfile) would always flag hundreds of "missing" packages from
+    # other workspaces, triggering a spurious reinstall on every launch.
+    #
+    # Fix: compare installed→wanted instead.  If every package that IS installed
+    # still matches the root lockfile, we are up to date.  New dependencies
+    # added by a git pull are caught by the ``@hermes/ink`` existence check
+    # (upstream bumps ink when its deps change) or by a version mismatch in an
+    # already-installed transitive.
+    for name, pkg in installed.items():
         if not name:
             continue
-
         if not isinstance(pkg, dict):
             continue
-
-        if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
-                continue
-            return True
-
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
-        ):
+        if name not in wanted:
+            # Extra entry in hidden lockfile (stale transitive) — harmless.
+            continue
+        wanted_pkg = wanted[name]
+        if not isinstance(wanted_pkg, dict):
+            continue
+        if comparable(wanted_pkg) != comparable(pkg):
             return True
 
     return False

@@ -207,7 +207,7 @@ class TestPolicyForSource:
                     enabled=True,
                     extra={
                         "allow_admin_from": ["111"],
-                        "user_allowed_commands": ["status"],
+                        "user_allowed_commands": ["history"],
                         "group_allow_admin_from": ["222"],
                         "group_user_allowed_commands": ["help"],
                     },
@@ -220,10 +220,15 @@ class TestPolicyForSource:
         p = policy_for_source(cfg, grp_src)
         assert p.is_admin("222") is True
         assert p.is_admin("111") is False  # DM admin, not group admin
-        # In group scope, the only listed user command is "help"; "status"
-        # is not in the group list and should be denied for non-admins.
+        # In group scope, the only explicitly listed user command is "help".
+        # "status" is NOT in that list but must still be allowed — it's part
+        # of the always-allowed floor (_ALWAYS_ALLOWED_FOR_USERS), which
+        # applies regardless of scope per the module docstring. "history" is
+        # neither listed for this scope nor part of that floor, so it must
+        # still be denied — this is what actually exercises the group list.
         assert p.can_run("999", "help") is True
-        assert p.can_run("999", "status") is False
+        assert p.can_run("999", "status") is True
+        assert p.can_run("999", "history") is False
 
     def test_channel_thread_chat_types_treated_as_group_scope(self):
         # Discord channels and threads are group-scoped, not DM-scoped.

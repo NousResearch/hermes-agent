@@ -90,6 +90,52 @@ class TestParseJudgeResponse:
         v, _, _, _ = _parse_judge_response('{"verdict": "continue", "reason": "r"}')
         assert v == "continue"
 
+    def test_strips_think_block_before_verdict_extraction(self):
+        """Think-enabled judge models (DeepSeek-R1, QwQ, MiniMax M2) emit inline
+        <think> reasoning that echoes the {"verdict": ...} format from the
+        prompt. Without stripping it, the non-greedy first-object fallback
+        latches onto a brace inside the reasoning and returns the WRONG verdict.
+        Here the real verdict after </think> is 'done'."""
+        from hermes_cli.goals import _parse_judge_response
+
+        raw = (
+            '<think>The format is {"verdict": "continue"} or {"verdict": "done"}. '
+            'The deliverable was produced, so the goal is done.</think>\n'
+            '{"verdict": "done", "reason": "task completed"}'
+        )
+        verdict, reason, parse_failed, _w = _parse_judge_response(raw)
+        assert verdict == "done", f"got {verdict!r}"
+        assert parse_failed is False
+        assert reason == "task completed"
+
+    def test_think_block_with_braces_does_not_spuriously_parse_fail(self):
+        """A non-JSON brace inside the reasoning must not make a valid verdict
+        look unparseable — a spurious parse_failed trips the consecutive-failure
+        auto-pause and silently parks the goal loop."""
+        from hermes_cli.goals import _parse_judge_response
+
+        raw = (
+            "<think>Let me reason {step by step} about whether this is complete."
+            "</think>\n"
+            '{"verdict": "done", "reason": "finished"}'
+        )
+        verdict, _reason, parse_failed, _w = _parse_judge_response(raw)
+        assert verdict == "done"
+        assert parse_failed is False
+
+    def test_extract_json_object_strips_think_block(self):
+        """The goal-contract drafter parser shares the same first-object
+        fallback and must also strip reasoning first."""
+        from hermes_cli.goals import _extract_json_object
+
+        raw = (
+            '<think>A contract sketch looks like {goal, verification}.</think>\n'
+            '{"goal": "ship the feature", "verification": "tests pass"}'
+        )
+        data = _extract_json_object(raw)
+        assert isinstance(data, dict)
+        assert data.get("goal") == "ship the feature"
+
     def test_wait_verdict_with_pid(self):
         from hermes_cli.goals import _parse_judge_response
 

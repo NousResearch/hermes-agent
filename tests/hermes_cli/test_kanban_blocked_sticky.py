@@ -277,3 +277,44 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test
 # here; dropped during salvage to avoid two assertions of the same contract.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Regression: block_task from todo status (PR #62342)
+# ---------------------------------------------------------------------------
+
+
+def test_block_todo_child_stays_blocked_after_parent_completes(kanban_home: Path) -> None:
+    """A dependency-gated child in ``todo`` status that is explicitly
+    blocked must stay blocked after its parent completes.
+
+    Before #62342's fix, ``block_task`` refused to act on ``todo`` tasks
+    (SQL guard ``WHERE status IN ('running', 'ready')`` matched 0 rows),
+    so a user could not pre-block a ``todo`` child to prevent auto-dispatch
+    when its parents finished.  The dispatcher would promote the child to
+    ``ready`` and a worker could claim it before the user had a chance to
+    block it.
+
+    This test asserts the full path:
+    1. Create parent + child (child starts in ``todo``, gated by parent).
+    2. Block the child from ``todo`` — must succeed and set status to
+       ``blocked``.
+    3. Complete the parent.
+    4. ``recompute_ready`` must NOT promote the child (sticky block holds).
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Block from todo — the new path enabled by PR #62342.
+        assert kb.block_task(conn, child, reason="pre-block: waiting on external input")
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Complete the parent — this would normally trigger promotion.
+        kb.complete_task(conn, parent, result="parent done")
+
+        # recompute_ready must respect the sticky block.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0, "blocked todo child must not auto-promote after parent completes"
+        assert kb.get_task(conn, child).status == "blocked"

@@ -648,6 +648,7 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.should_compress is False
 
+
     def test_400_cyber_content_policy_blocked(self):
         # When the SDK does attach a status (e.g. 400), the safety pattern
         # must still beat the format_error fallthrough.
@@ -1092,6 +1093,46 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
 
     # ── Message-only patterns (no status code) ──
+
+    @pytest.mark.parametrize(
+        ("provider", "code", "reason"),
+        [
+            ("openai", "SERVER_ERROR", FailoverReason.server_error),
+            ("openai-codex", "SERVER_ERROR", FailoverReason.server_error),
+            ("gemini", "UNAVAILABLE", FailoverReason.overloaded),
+            ("google", "DEADLINE_EXCEEDED", FailoverReason.timeout),
+            ("google-vertex", "INTERNAL", FailoverReason.server_error),
+            ("anthropic", "RATE_LIMIT_ERROR", FailoverReason.rate_limit),
+            ("anthropic", "API_ERROR", FailoverReason.timeout),
+        ],
+    )
+    def test_provider_code_only_error_classification(
+        self, provider, code, reason
+    ):
+        e = MockAPIError("", body={"error": {"code": code}})
+        result = classify_api_error(e, provider=provider)
+
+        assert result.reason == reason
+        assert result.retryable is True
+        if reason == FailoverReason.rate_limit:
+            assert result.should_rotate_credential is True
+            assert result.should_fallback is True
+
+    @pytest.mark.parametrize(
+        ("provider", "code"),
+        [
+            ("anthropic", "SERVER_ERROR"),
+            ("openai", "API_ERROR"),
+            ("custom", "UNAVAILABLE"),
+        ],
+    )
+    def test_provider_code_only_error_does_not_cross_provider_boundaries(
+        self, provider, code
+    ):
+        e = MockAPIError("", body={"error": {"code": code}})
+        result = classify_api_error(e, provider=provider)
+
+        assert result.reason == FailoverReason.unknown
 
     def test_message_billing_pattern(self):
         e = Exception("insufficient credits to complete this request")
@@ -2169,4 +2210,3 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
-

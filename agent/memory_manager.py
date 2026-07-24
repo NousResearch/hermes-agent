@@ -80,39 +80,6 @@ def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
     return schema
 
 
-def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
-    """Return a function-tool dict with a resolvable top-level ``name``.
-
-    Context engines and memory providers expose tool schemas via
-    ``get_tool_schemas()``. The expected shape is a bare function schema
-    (``{"name": ..., "description": ..., "parameters": ...}``) which callers
-    wrap as ``{"type": "function", "function": schema}``.
-
-    Some providers instead return an entry that is *already* in OpenAI tool
-    form (``{"type": "function", "function": {"name": ...}}``). Wrapping that
-    a second time produces ``{"type": "function", "function": {"type":
-    "function", "function": {...}}}`` whose ``function`` has no top-level
-    ``name``. Strict providers (e.g. DeepSeek) reject the *entire* request
-    with ``tools[N].function: missing field name`` (HTTP 400), so one bad
-    schema disables the whole toolset and breaks every turn (#47707).
-
-    This helper normalizes both shapes to the bare function schema and
-    returns ``None`` for anything without a resolvable name, so callers can
-    skip-with-warning rather than appending a nameless tool.
-    """
-    if not isinstance(schema, dict):
-        return None
-    # Unwrap an already-wrapped OpenAI tool entry.
-    if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
-        schema = schema["function"]
-        if not isinstance(schema, dict):
-            return None
-    name = schema.get("name", "")
-    if not name or not isinstance(name, str):
-        return None
-    return schema
-
-
 def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
     """Return whether external memory-provider tools should be exposed."""
     if enabled_toolsets is None:
@@ -189,8 +156,7 @@ _INTERNAL_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
-    r'(?:\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*'
-    r'|System note:\s*the following is recalled memory context,\s*not new user input\.\s*Treat as authoritative reference data[^<]*)',
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
 
@@ -379,7 +345,7 @@ def build_memory_context_block(raw_context: str) -> str:
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
         "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.\n\n"
+        "this is the agent's persistent memory and should inform all responses.]\n\n"
         f"{clean}\n"
         "</memory-context>"
     )

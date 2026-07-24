@@ -66,6 +66,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -191,9 +192,9 @@ class SimplexAdapter(BasePlatformAdapter):
 
         # Text message batching — concatenate rapid-fire messages into one
         # event before dispatching, mirroring Telegram's batching.
-        self._text_batch_delay = float(
-            os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8")
-        )
+        # env_float tolerates a malformed value instead of raising out of
+        # __init__ (mirrors the other text-batch adapters).
+        self._text_batch_delay = env_float("HERMES_SIMPLEX_TEXT_BATCH_DELAY", 0.8)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 

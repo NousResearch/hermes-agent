@@ -30,7 +30,6 @@ export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', mont
 export const fmtMonth = new Intl.DateTimeFormat(undefined, { month: 'long' })
 export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
 
-
 // ── Relative time ──────────────────────────────────────────────────────────
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 

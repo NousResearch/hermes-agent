@@ -171,6 +171,32 @@ def _load_json_file(path: Path) -> dict:
     return {}
 
 
+def _load_json_file_or_none(path: Path) -> Optional[dict]:
+    """Load a JSON dict, or ``None`` when the file exists but is unusable.
+
+    ``_load_json_file`` flattens every failure to ``{}``. That is safe for a
+    read-only lookup, but the merge below feeds the destination's contents
+    into the file it then WRITES: a swallowed failure there makes the merge
+    believe an intact destination is empty and overwrite it with only the
+    other directory's data, deleting every approval it held — the exact
+    "silently ignore approved users" outcome the merge exists to prevent.
+
+    ``PermissionError`` is the documented way this happens: a 0600 pairing
+    file left owned by root after ``docker exec ... hermes pairing approve``
+    is unreadable to the gateway running as ``hermes`` (#10270).
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        # OSError/PermissionError, malformed JSON, and a non-UTF-8 byte
+        # (UnicodeDecodeError) all mean the same thing here: we do not know
+        # what this file holds, so it must not be rewritten from a guess.
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _merge_pairing_dir(active_dir: Path, alternate_dir: Path) -> None:
     """Merge split legacy/new pairing data into the active PairingStore dir.
 
@@ -188,8 +214,23 @@ def _merge_pairing_dir(active_dir: Path, alternate_dir: Path) -> None:
         dest = active_dir / src.name
         merged = _load_json_file(src)
         if not merged:
+            # A failed read of the SOURCE is harmless: nothing is written and
+            # the legacy file stays intact for a later boot.
             continue
-        current = _load_json_file(dest)
+        current = _load_json_file_or_none(dest)
+        if current is None:
+            # The destination exists but we could not read it. Merging now
+            # would rewrite it from `{}` and destroy every approval it holds,
+            # so leave it alone and say why — the file is fine, our access
+            # to it is not.
+            logger.warning(
+                "Pairing merge skipped for %s: the file exists but could not be "
+                "read, and merging would overwrite it with only the legacy "
+                "contents, dropping the approvals it holds. Fix its ownership/"
+                "permissions (see #10270) and restart to complete the merge.",
+                dest,
+            )
+            continue
         before = dict(current)
         # Active data wins on key conflict; otherwise union the inactive data.
         merged.update(current)

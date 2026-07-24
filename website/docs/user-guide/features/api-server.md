@@ -221,6 +221,52 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
+## Per-request model selection
+
+Authenticated clients can override Hermes' default model selection per request
+by sending:
+
+- `model` — the target model id for this turn
+- `provider` — the Hermes provider slug to resolve credentials/runtime for this turn
+- `model_options` — request-scoped reasoning / service-tier controls
+
+The same request fields are accepted on:
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/runs`
+- `POST /api/sessions/{session_id}/chat`
+- `POST /api/sessions/{session_id}/chat/stream`
+
+Precedence is deterministic:
+
+1. Session `/model` override, if that session already has one
+2. A static `gateway.platforms.api_server.model_routes` mapping selected when
+   the request's `model` is a configured route alias
+3. Direct request `model` / `provider` when no route alias matches
+4. Global gateway config / environment defaults
+
+`model_options` stays request-scoped regardless of which model/provider wins.
+If a request sends a `provider` that conflicts with a configured `model_routes`
+alias, Hermes rejects the request with `400` instead of silently remixing route
+credentials with another provider.
+
+Example:
+
+```json
+{
+  "model": "MiniMax-M3",
+  "provider": "minimax",
+  "model_options": {
+    "reasoning_effort": "high",
+    "service_tier": "priority"
+  },
+  "messages": [
+    {"role": "user", "content": "Summarize the repo status."}
+  ]
+}
+```
+
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
@@ -521,7 +567,9 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
 - **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
-- **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.
+- **Simple OpenAI clients still see an alias** — `/v1/models` advertises the
+  stable Hermes alias (`hermes-agent` or the active profile name). Richer
+  clients can send explicit `provider` / `model_options` overrides on requests.
 
 ## Proxy Mode
 

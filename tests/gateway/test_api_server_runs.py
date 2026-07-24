@@ -255,6 +255,73 @@ class TestStartRun:
                 )
                 assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_start_rejects_conflicting_route_and_request_provider(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "model_routes": {
+                        "alias": {
+                            "model": "route/model",
+                            "provider": "openrouter",
+                        }
+                    }
+                },
+            )
+        )
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "model": "alias",
+                        "provider": "minimax",
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert "provider" in data["error"]["message"].lower()
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        model_options = {"reasoning_effort": "medium", "service_tier": "priority"}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                    },
+                )
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status

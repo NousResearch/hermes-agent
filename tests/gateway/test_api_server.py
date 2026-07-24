@@ -16,7 +16,9 @@ import asyncio
 import json
 import os
 import stat
+import sys
 import time
+import types
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -661,6 +663,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
+    app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
+    app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -711,11 +715,15 @@ class TestAgentExecution:
         mock_agent.session_completion_tokens = 2
         mock_agent.session_total_tokens = 3
 
-        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+        model_options = {"reasoning": {"enabled": False}, "fast": False}
+        with patch.object(adapter, "_create_agent", return_value=mock_agent) as mock_create_agent:
             result, usage = await adapter._run_agent(
                 user_message="hello",
                 conversation_history=[],
                 session_id="session-123",
+                requested_model="MiniMax-M3",
+                requested_provider="minimax",
+                model_options=model_options,
             )
 
         # _run_agent annotates result with the effective agent.session_id
@@ -725,11 +733,160 @@ class TestAgentExecution:
         # the annotation — header will fall back to the provided session_id.
         assert result["final_response"] == "ok"
         assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        create_kwargs = mock_create_agent.call_args.kwargs
+        assert create_kwargs["requested_model"] == "MiniMax-M3"
+        assert create_kwargs["requested_provider"] == "minimax"
+        assert create_kwargs["model_options"] == model_options
         mock_agent.run_conversation.assert_called_once_with(
             user_message="hello",
             conversation_history=[],
             task_id="session-123",
         )
+
+    def test_create_agent_honors_request_model_provider_and_options(self, adapter, monkeypatch):
+        import gateway.run as gateway_run
+        import hermes_cli.runtime_provider as runtime_provider
+        import hermes_cli.tools_config as tools_config
+
+        class _CapturingAgent:
+            last_kwargs = None
+
+            def __init__(self, **kwargs):
+                type(self).last_kwargs = dict(kwargs)
+
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _CapturingAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 7)
+        monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "api_key": "codex-key",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+                "max_tokens": None,
+            },
+        )
+        monkeypatch.setattr(gateway_run.GatewayRunner, "_load_reasoning_config", staticmethod(lambda: {"enabled": True, "effort": "medium"}))
+        monkeypatch.setattr(gateway_run.GatewayRunner, "_load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr(tools_config, "_get_platform_tools", lambda _cfg, _platform: {"web"})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        def _fake_resolve_runtime_provider(*, requested=None, target_model=None, **_kwargs):
+            assert requested == "minimax"
+            assert target_model == "MiniMax-M3"
+            return {
+                "api_key": "minimax-key",
+                "base_url": "https://api.minimax.io/v1",
+                "provider": "minimax",
+                "api_mode": "anthropic_messages",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+                "max_output_tokens": 32000,
+            }
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", _fake_resolve_runtime_provider)
+        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+
+        adapter._create_agent(
+            session_id="session-123",
+            requested_model="MiniMax-M3",
+            requested_provider="minimax",
+            model_options={
+                "reasoning": {"enabled": True, "effort": "high"},
+                "reasoning_effort": "high",
+                "fast": True,
+            },
+        )
+
+        kwargs = _CapturingAgent.last_kwargs
+        assert kwargs is not None
+        assert kwargs["model"] == "MiniMax-M3"
+        assert kwargs["provider"] == "minimax"
+        assert kwargs["api_mode"] == "anthropic_messages"
+        assert kwargs["base_url"] == "https://api.minimax.io/v1"
+        assert kwargs["api_key"] == "minimax-key"
+        assert kwargs["max_tokens"] == 32000
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+        assert kwargs["service_tier"] == "priority"
+        assert kwargs["enabled_toolsets"] == ["web"]
+
+    def test_create_agent_session_override_beats_request_and_route_but_keeps_model_options(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, target_model=None, **_kwargs: {
+                "api_key": f"sk-{requested}",
+                "base_url": f"https://{requested}.example/v1",
+                "provider": requested,
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": f"pool-{requested}",
+                "max_output_tokens": 64000,
+            },
+        )
+        monkeypatch.setattr("hermes_cli.runtime_provider._get_model_config", lambda: {})
+
+        adapter = _make_routing_adapter(
+            {
+                "alias": {
+                    "model": "route/model",
+                    "api_key": "sk-route",
+                    "base_url": "https://route.example/v1",
+                }
+            }
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(
+            adapter,
+            "_session_model_override_for",
+            lambda *_: {
+                "model": "session/model",
+                "provider": "sessionprov",
+                "api_key": "sk-session",
+                "base_url": "https://session.example/v1",
+                "api_mode": "responses",
+                "credential_pool": "pool-session",
+            },
+        )
+
+        adapter._create_agent(
+            session_id="session-123",
+            route=adapter._resolve_route("alias"),
+            requested_model="MiniMax-M3",
+            requested_provider="minimax",
+            model_options={
+                "reasoning": {"enabled": True, "effort": "high"},
+                "fast": True,
+            },
+        )
+
+        assert captured["model"] == "session/model"
+        assert captured["provider"] == "sessionprov"
+        assert captured["api_key"] == "sk-session"
+        assert captured["base_url"] == "https://session.example/v1"
+        assert captured["api_mode"] == "responses"
+        assert captured["credential_pool"] == "pool-session"
+        assert captured["reasoning_config"] == {"enabled": True, "effort": "high"}
+        assert captured["service_tier"] == "priority"
 
 
 # ---------------------------------------------------------------------------
@@ -1245,6 +1402,209 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_passes_request_model_provider_options(self, adapter):
+        app = _create_app(adapter)
+        model_options = {
+            "reasoning": {"enabled": True, "effort": "high"},
+            "reasoning_effort": "high",
+            "service_tier": "priority",
+            "fast": True,
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+
+        assert resp.status == 200
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_stream_passes_request_model_provider_options(self, adapter):
+        app = _create_app(adapter)
+        model_options = {"reasoning": {"enabled": False}, "reasoning_effort": "none", "fast": False}
+
+        async def _mock_run_agent(**kwargs):
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("ok")
+            return (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "data: " in body
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
+
+    @pytest.mark.asyncio
+    async def test_session_chat_passes_request_model_provider_options(self, adapter):
+        app = _create_app(adapter)
+        model_options = {"reasoning": {"enabled": True, "effort": "low"}, "fast": True}
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": "s1"}, None)),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/api/sessions/s1/chat",
+                    json={
+                        "message": "hi",
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                    },
+                )
+
+        assert resp.status == 200
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_passes_request_model_provider_options(self, adapter):
+        app = _create_app(adapter)
+        model_options = {"reasoning_effort": "medium", "service_tier": "priority"}
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": "s1"}, None)),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/api/sessions/s1/chat/stream",
+                    json={
+                        "message": "hi",
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "event: run.completed" in body
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("path", "body", "needs_session"),
+        [
+            (
+                "/v1/chat/completions",
+                {
+                    "model": "alias",
+                    "provider": "minimax",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                False,
+            ),
+            (
+                "/v1/responses",
+                {
+                    "model": "alias",
+                    "provider": "minimax",
+                    "input": "hi",
+                },
+                False,
+            ),
+            (
+                "/api/sessions/s1/chat",
+                {
+                    "model": "alias",
+                    "provider": "minimax",
+                    "message": "hi",
+                },
+                True,
+            ),
+            (
+                "/api/sessions/s1/chat/stream",
+                {
+                    "model": "alias",
+                    "provider": "minimax",
+                    "message": "hi",
+                },
+                True,
+            ),
+        ],
+    )
+    async def test_handlers_reject_conflicting_route_and_request_provider(
+        self, path, body, needs_session
+    ):
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "route/model", "provider": "openrouter"}}
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                if needs_session:
+                    with (
+                        patch.object(
+                            adapter,
+                            "_get_existing_session_or_404",
+                            return_value=({"id": "s1"}, None),
+                        ),
+                        patch.object(
+                            adapter,
+                            "_conversation_history_for_session",
+                            return_value=[],
+                        ),
+                    ):
+                        resp = await cli.post(path, json=body)
+                        data = await resp.json()
+                else:
+                    resp = await cli.post(path, json=body)
+                    data = await resp.json()
+
+        assert resp.status == 400
+        assert "provider" in data["error"]["message"].lower()
+        mock_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
@@ -1947,6 +2307,35 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+    @pytest.mark.asyncio
+    async def test_response_passes_request_model_provider_options(self, adapter):
+        app = _create_app(adapter)
+        model_options = {
+            "reasoning": {"enabled": True, "effort": "medium"},
+            "service_tier": "priority",
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                        "input": "hi",
+                    },
+                )
+
+        assert resp.status == 200
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
 
     @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):
@@ -4658,15 +5047,21 @@ class TestModelRoutesAgentCreation:
         monkeypatch.setattr(
             adapter,
             "_session_model_override_for",
-            lambda key: {"model": "session/override-model"},
+            lambda key: {
+                "model": "session/override-model",
+                "provider": "sessionprov",
+                "api_key": "sk-session",
+                "base_url": "https://session.example/v1",
+                "api_mode": "responses",
+                "credential_pool": "pool-session",
+            },
         )
 
         adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
 
-        # The route must NOT be applied — the session override path (global
-        # runtime here, since the gateway applies /model separately) wins.
-        assert captured["model"] == "global/model"
-        assert captured["api_key"] == "sk-global"
+        assert captured["model"] == "session/override-model"
+        assert captured["provider"] == "sessionprov"
+        assert captured["api_key"] == "sk-session"
 
     def test_session_override_lookup_reads_gateway_runner(self, monkeypatch):
         """_session_model_override_for consults GatewayRunner._session_model_overrides."""
